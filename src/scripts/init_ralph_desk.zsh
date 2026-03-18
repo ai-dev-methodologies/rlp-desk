@@ -70,25 +70,27 @@ Independent verifier for Ralph Desk: $SLUG
 Required reads:
 - PRD: $DESK/plans/prd-$SLUG.md
 - Test Spec: $DESK/plans/test-spec-$SLUG.md
-- Campaign Memory: $DESK/memos/$SLUG-memory.md
+- Campaign Memory: $DESK/memos/$SLUG-memory.md (orientation only — not source of truth)
 - Latest Context: $DESK/context/$SLUG-latest.md
 - Done Claim: $DESK/memos/$SLUG-done-claim.json
 
 Process:
 1. Read PRD acceptance criteria
 2. Read done claim
-3. Run fresh verification: build, test, lint, typecheck
-4. Check each criterion against fresh evidence
-5. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
+3. Identify scope: run \`git diff --name-only\` to find changed files, then read those files + related imports only
+4. Run fresh verification: build, test, lint, typecheck (per test-spec tools)
+5. Check each criterion against fresh evidence
+6. Run smoke test if defined in PRD
+7. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
 
 Verdict JSON:
 {
-  "verdict": "pass|fail|blocked",
+  "verdict": "pass|fail|request_info",
   "verified_at_utc": "ISO timestamp",
   "summary": "...",
   "criteria_results": [{"criterion":"...","met":true/false,"evidence":"..."}],
   "missing_evidence": [],
-  "issues": [],
+  "issues": [{"id":"...","severity":"critical|major|minor","description":"...","fix_hint":"(suggestion, non-authoritative)"}],
   "recommended_state_transition": "complete|continue|blocked",
   "next_iteration_contract": "...",
   "evidence_paths": []
@@ -96,7 +98,9 @@ Verdict JSON:
 
 Rules:
 - Do NOT trust the worker's claim. Verify with fresh evidence.
-- If uncertain, verdict = fail.
+- If uncertain, verdict = request_info (describe your specific question in summary so Leader can decide).
+- Campaign Memory is for orientation only — do NOT use it as source of truth for AC verification.
+- Deterministic checks (type hints, linting, security) delegate to test-spec tools; focus on AC verification + semantic review + smoke test.
 - Do NOT modify code or write sentinel files.
 EOF
   echo "  + $F"
@@ -167,6 +171,8 @@ $OBJECTIVE
 
 ### US-001: [Title]
 - **Priority**: P0
+- **Size**: S|M|L
+- **Depends on**: []
 - **Acceptance Criteria**:
   - [ ] [Specific, testable criterion]
 - **Status**: not started
