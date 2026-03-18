@@ -10,6 +10,12 @@ This guide walks you through your first RLP Desk loop using a simple Python calc
 ## Step 1: Install RLP Desk
 
 ```bash
+npm install -g @ai-dev-methodologies/rlp-desk
+```
+
+Or without npm:
+
+```bash
 curl -sSL https://raw.githubusercontent.com/ai-dev-methodologies/rlp-desk/main/install.sh | bash
 ```
 

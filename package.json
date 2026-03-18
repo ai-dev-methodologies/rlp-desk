@@ -1,0 +1,40 @@
+{
+  "name": "@ai-dev-methodologies/rlp-desk",
+  "version": "0.0.1",
+  "description": "Fresh-context iterative loops for Claude Code — autonomous task completion with independent verification",
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "uninstall": "node scripts/uninstall.js"
+  },
+  "files": [
+    "src/",
+    "scripts/",
+    "docs/",
+    "examples/",
+    "install.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude-code",
+    "ralph-loop",
+    "ai-coding",
+    "fresh-context",
+    "agent-loop",
+    "autonomous",
+    "verification"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ai-dev-methodologies/rlp-desk.git"
+  },
+  "homepage": "https://github.com/ai-dev-methodologies/rlp-desk",
+  "bugs": {
+    "url": "https://github.com/ai-dev-methodologies/rlp-desk/issues"
+  },
+  "license": "MIT",
+  "author": "ai-dev-methodologies",
+  "engines": {
+    "node": ">=16"
+  }
+}

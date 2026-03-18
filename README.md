@@ -21,6 +21,12 @@ RLP Desk brings [Geoffrey Huntley's Ralph Loop](https://ghuntley.com/ralph/) phi
 ### 1. Install
 
 ```bash
+npm install -g @ai-dev-methodologies/rlp-desk
+```
+
+Or without npm:
+
+```bash
 curl -sSL https://raw.githubusercontent.com/ai-dev-methodologies/rlp-desk/main/install.sh | bash
 ```
 
