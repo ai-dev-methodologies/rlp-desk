@@ -63,7 +63,15 @@ test -f .claude/ralph-desk/memos/<slug>-complete.md  # → done
 test -f .claude/ralph-desk/memos/<slug>-blocked.md   # → stop
 ```
 
+**①½ Prep-stage cleanup**
+```bash
+rm -f .claude/ralph-desk/memos/<slug>-done-claim.json
+rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
+```
+
 **② Read memory.md** → Stop Status, Next Iteration Contract
+- Also read **Completed Stories** → verified work so far
+- Also read **Key Decisions** → settled architectural choices
 
 **③ Decide model** (§4 of governance.md)
 - Previous iteration failed → upgrade model
@@ -106,18 +114,30 @@ Agent(
 ```
 - Read `verify-verdict.json`:
   - `pass` + `complete` → write COMPLETE sentinel, report done!
-  - `fail` + `continue` → go to ⑧
+  - `fail` + `continue` → **run Fix Loop** (governance.md §7½):
+    1. Read `issues` array, sort by severity (`critical` → `major` → `minor`)
+    2. Build structured fix contract with traceability rule
+    3. Include `fix_hint` values labeled `(suggestion, non-authoritative)` if present
+    4. Increment `consecutive_failures` in `status.json`
+    5. Go to ⑧ with fix contract as next Worker contract
+  - `request_info` → Leader reads Verifier's questions, decides outcome (or relays to Worker in next contract) → go to ⑧
   - `blocked` → write BLOCKED sentinel, stop
 
-**⑧ Report iteration result to user, continue loop**
+**⑧ Write result log and report to user, continue loop**
+- Write `logs/<slug>/iter-NNN.result.md`:
+  - Result status `[leader-measured]`
+  - Files changed via `git diff --stat HEAD~1 HEAD` `[git-measured]`
+  - Verifier verdict `[leader-measured]`
 - Write `status.json`
 - Report: iteration N, phase, model used, result
-- Clean `done-claim.json`, `verify-verdict.json` for next iteration
 
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
-- Same error 2x → upgrade model, retry once, then BLOCKED
+- Same acceptance criterion fails 2 consecutive iterations → upgrade model, retry once, then BLOCKED
+- 3 consecutive **fail** verdicts on 3 unique criterion IDs → upgrade to opus, retry once, then BLOCKED
 - max_iter reached → TIMEOUT, report to user
+
+Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pass`, unchanged by `request_info`). Only **fail** verdicts count for CB chains — `request_info` does not break or contribute.
 
 ### Important Rules
 - Each Agent() = new process = fresh context

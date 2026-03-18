@@ -29,9 +29,13 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 
 ### Verifier (fresh context)
 - Independently verifies Worker's done claim
+- Identifies scope via `git diff --name-only` — reads changed files and related imports only
 - Runs commands directly to collect fresh evidence
-- Writes verdict (pass/fail/blocked)
-- **Must NEVER modify code**
+- Campaign Memory is for orientation only — not the source of truth
+- Writes verdict (`pass` | `fail` | `request_info`) — if uncertain, use `request_info` with specific questions; Leader decides
+- Delegates deterministic checks (type hints, linting, security) to tools defined in test-spec
+- Focuses on AC verification, semantic review, and smoke tests
+- **Must NEVER modify code or write sentinel files**
 
 ## 3. State Flow
 
@@ -114,6 +118,7 @@ Characteristics:
 └── logs/<slug>/
     ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy
     ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy
+    ├── iter-NNN.result.md           # Iteration result (leader-measured + git-measured)
     └── status.json                  # Leader's loop state
 ```
 
@@ -126,7 +131,13 @@ for iteration in 1..max_iter:
      - complete.md exists → stop
      - blocked.md exists → stop
 
+  ①½ Prep-stage cleanup
+     - Delete done-claim.json if exists
+     - Delete verify-verdict.json if exists
+
   ② Read memory.md → check Stop Status, Next Iteration Contract
+     - Also parse Completed Stories (verified work so far)
+     - Also parse Key Decisions (settled architectural choices)
 
   ③ Select model
      - Default or situational decision (see §4)
@@ -152,7 +163,31 @@ for iteration in 1..max_iter:
        • fail + continue → go to ⑧
        • blocked → write BLOCKED sentinel, stop
 
-  ⑧ Update status.json, report to user, continue to next iteration
+  ⑧ Write iter-NNN.result.md to logs/<slug>/ (result status + git diff --stat)
+     Update status.json, report to user, continue to next iteration
+```
+
+## 7½. Fix Loop Protocol
+
+When the Verifier returns `fail`, the Leader runs the Fix Loop before issuing the next Worker contract:
+
+1. **Read issues** from `verify-verdict.json` — sort by severity (`critical` → `major` → `minor`)
+2. **Build fix contract** — include each issue as a numbered task with criterion reference
+   - `fix_hint` (if present) is passed as `(suggestion, non-authoritative)` — Worker may ignore
+3. **Traceability rule**: "Only changes that resolve a listed issue are allowed — every change must be justified by the issue it addresses"
+4. **Update status.json** — increment `consecutive_failures`; reset to 0 on any `pass`
+
+The `consecutive_failures` counter is maintained by the Leader in `status.json`.
+
+**Fix contract format:**
+```
+Fix issues from Verifier verdict (iter-NNN):
+
+1. [critical] US-002 AC3: <description> — fix_hint: (suggestion, non-authoritative) <hint>
+2. [major] US-001 AC1: <description>
+
+Traceability: only changes that resolve a listed issue are allowed.
+Every change must be justified by the issue it addresses.
 ```
 
 ## 8. Circuit Breaker
@@ -160,8 +195,14 @@ for iteration in 1..max_iter:
 | Condition | Verdict |
 |-----------|---------|
 | context-latest.md unchanged for 3 consecutive iterations | BLOCKED |
-| Worker repeats the same error twice | Upgrade model, retry once; if still failing → BLOCKED |
+| Same acceptance criterion fails 2 consecutive iterations | Upgrade model, retry once; if still failing → BLOCKED |
+| 3 consecutive **fail** verdicts on 3 unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED |
 | max_iter reached | TIMEOUT (report to user) |
+
+The Leader tracks `consecutive_failures` in `status.json`:
+- Increments on `fail`, resets on `pass`, **unchanged by `request_info`**.
+- "Same error" = same acceptance criterion ID in two consecutive **fail** verdicts (`request_info` does not break or contribute to this chain).
+- "Diverse failures" = 3 most recent `fail` verdicts each have a unique criterion ID.
 
 ## 9. Change Policy
 

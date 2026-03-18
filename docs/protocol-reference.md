@@ -11,9 +11,16 @@ for iteration in 1..max_iter:
      - <slug>-complete.md exists → stop (success)
      - <slug>-blocked.md exists → stop (failure)
 
+  ①½ Prep-stage cleanup (before each iteration)
+     - Delete <slug>-done-claim.json if exists  [leader-measured]
+     - Delete <slug>-verify-verdict.json if exists  [leader-measured]
+     (Ensures stale runtime files from a previous run cannot mislead the loop)
+
   ② Read memory.md
      - Parse "Stop Status" section → continue/verify/blocked
      - Parse "Next Iteration Contract" → task for this iteration
+       • Also read "Completed Stories" → track what has been verified
+       • Also read "Key Decisions" → architectural choices already settled
 
   ③ Select model
      - Apply model routing rules (see below)
@@ -42,7 +49,8 @@ for iteration in 1..max_iter:
        • verdict=fail + recommended=continue → go to ⑧
        • verdict=blocked → write BLOCKED sentinel, stop
 
-  ⑧ Update status.json, report to user, clean runtime files, next iteration
+  ⑧ Write iter-NNN.result.md (see Result Log below)
+     Update status.json, report to user, next iteration
 ```
 
 ## Signal Contracts
@@ -63,15 +71,35 @@ continue | verify | blocked
 ## Current State
 Iteration N - <description>
 
+## Completed Stories
+- US-001: Calculator add/subtract implemented [interface: `add(a, b) -> float`]
+- US-002: pytest suite — 8 tests passing
+
 ## Next Iteration Contract
-<specific task for the next worker>
+**Story**: US-003 — Edge case handling
+**Task**: Handle divide-by-zero in calc.py.
+1. Raise ValueError with message "division by zero"
+2. Add test_divide_by_zero to test_calc.py
+
+**Criteria**:
+- `pytest` exits 0
+- `grep "ValueError" calc.py` matches
+
+## Key Decisions
+- Iteration 2: Chose ValueError over ZeroDivisionError — matches project error style.
+- Iteration 3: Skipped type hints — out of scope per PRD Non-Goals.
 
 ## Patterns Discovered
 ## Learnings
 ## Evidence Chain
 ```
 
-The Leader reads **Stop Status** and **Next Iteration Contract** to decide what happens next.
+The Leader reads:
+- **Stop Status** and **Next Iteration Contract** to decide what happens next.
+- **Completed Stories** to track verified work without re-reading full history.
+- **Key Decisions** to carry forward settled architectural choices.
+
+All sections use plain Markdown. No YAML.
 
 ### Done Claim (`<slug>-done-claim.json`)
 
@@ -96,7 +124,7 @@ Written by the Verifier after independent verification:
 
 ```json
 {
-  "verdict": "pass|fail|blocked",
+  "verdict": "pass|fail|request_info",
   "verified_at_utc": "2025-01-15T10:35:00Z",
   "summary": "All criteria verified with fresh evidence",
   "criteria_results": [
@@ -107,12 +135,75 @@ Written by the Verifier after independent verification:
     }
   ],
   "missing_evidence": [],
-  "issues": [],
+  "issues": [
+    {
+      "criterion": "US-002 AC1",
+      "description": "Test file missing",
+      "severity": "critical|major|minor",
+      "fix_hint": "(suggestion, non-authoritative) Add test_calc.py"
+    }
+  ],
   "recommended_state_transition": "complete|continue|blocked",
   "next_iteration_contract": "Fix failing test for divide by zero",
   "evidence_paths": ["test_calc.py::test_divide_by_zero"]
 }
 ```
+
+**Verdict values:**
+- `pass`: all criteria met — Leader may write COMPLETE sentinel
+- `fail`: one or more criteria not met — Leader reads issues, builds next contract
+- `request_info`: Verifier cannot determine pass/fail without more information — summary contains specific questions; Leader decides outcome and may relay questions to Worker
+
+**Issues severity:**
+- `critical`: blocking — must be fixed before COMPLETE
+- `major`: significant gap in acceptance criteria
+- `minor`: cosmetic or non-blocking concern
+
+**Verifier scope:**
+- Identify changed files via `git diff --name-only` — read those files and their direct imports only
+- Campaign Memory (`<slug>-memory.md`) is for orientation only — not the source of truth for verification
+- Delegate deterministic checks (type hints, linting, security) to tools defined in test-spec
+- Focus on: AC verification, semantic review, smoke tests
+- Do NOT use `fail` when uncertain — use `request_info` with specific questions instead
+
+### Fix Loop Protocol
+
+When the Verifier returns `fail`, the Leader executes the Fix Loop before dispatching the next Worker:
+
+#### Flow
+
+```
+Verifier fail
+  → Leader reads verify-verdict.json issues
+  → Sort issues by severity: critical → major → minor
+  → Build structured fix contract (see format below)
+  → Increment consecutive_failures in status.json
+  → Dispatch Worker with fix contract as Next Iteration Contract
+```
+
+#### Fix Contract Format
+
+```markdown
+## Next Iteration Contract
+**Mode**: fix
+**Verifier verdict reference**: iter-NNN
+
+**Issues to fix** (severity-sorted):
+1. [critical] US-002 AC3: <description>
+   - fix_hint: (suggestion, non-authoritative) <hint text>
+2. [major] US-001 AC1: <description>
+3. [minor] US-003 AC2: <description>
+
+**Traceability rule**: Only changes that resolve a listed issue are allowed (traceability enforcement).
+Every change must be justified by the issue it addresses.
+```
+
+#### Rules
+
+- `fix_hint` is optional. When present it is labeled `(suggestion, non-authoritative)` — the Worker may choose a different approach.
+- **traceability**: the Worker must not introduce changes beyond what is needed to resolve the listed issues.
+- The Leader increments `consecutive_failures` in `status.json` after each `fail` verdict, and resets it to 0 after any `pass`.
+- The Leader (not the Worker) owns the `consecutive_failures` counter.
 
 ### Sentinels
 
@@ -155,7 +246,8 @@ Updated by the Worker each iteration to reflect the current frontier:
 | Condition | Detection | Action |
 |-----------|-----------|--------|
 | Stale context | `context-latest.md` hash unchanged for 3 consecutive iterations | Write BLOCKED sentinel |
-| Repeated error | Worker produces the same error message 2 iterations in a row | Upgrade model, retry once; still failing → BLOCKED |
+| Repeated criterion failure | Same acceptance criterion fails in 2 consecutive Verifier verdicts | Upgrade model, retry once; still failing → BLOCKED |
+| Persistent diverse failures | 3 consecutive **fail** verdicts on 3 unique acceptance criterion IDs | Upgrade to opus, retry once; still failing → BLOCKED |
 | Timeout | Iteration count reaches `max_iter` | Write TIMEOUT status, report to user |
 
 ### Stale Context Detection
@@ -165,9 +257,19 @@ The Leader computes a hash (or diff) of `context-latest.md` before and after eac
 ### Error Escalation
 
 ```
-Error in iteration N (sonnet) → retry with opus in iteration N+1
-Same error in iteration N+1 (opus) → BLOCKED
+Same acceptance criterion fails iteration N (sonnet) → retry with opus in iteration N+1
+Same acceptance criterion still fails iteration N+1 (opus) → BLOCKED
 ```
+
+"Same error" is defined as: **the same acceptance criterion ID appears in the `issues` list of two consecutive Verifier `fail` verdicts.** A `request_info` verdict does not break or contribute to this chain — only `fail` verdicts are counted.
+
+### Consecutive Failures Counter
+
+The Leader maintains `consecutive_failures` in `status.json`. This counter:
+- Increments by 1 after each Verifier `fail` verdict
+- Resets to 0 after any Verifier `pass` verdict
+- **Unchanged** by `request_info` verdicts (neither increments nor resets)
+- Triggers the 3-consecutive-diverse-failures CB when it reaches 3 and the 3 most recent `fail` verdicts each have a unique criterion ID
 
 ## Model Routing
 
@@ -191,6 +293,29 @@ The Leader reassesses the model every iteration:
 3. If simple/repetitive → consider downgrade
 4. User override via `--worker-model` / `--verifier-model` takes precedence
 
+## Result Log (`iter-NNN.result.md`)
+
+Written by the Leader after each iteration completes (step ⑧). Stored in `logs/<slug>/`.
+
+```markdown
+# Iteration NNN Result
+
+## Result Status
+pass | fail | continue  [leader-measured]
+
+## Files Changed
+(output of `git diff --stat HEAD~1 HEAD`)  [git-measured]
+
+## Summary
+<1–2 sentence summary of what the Worker did this iteration>
+
+## Verifier Verdict
+pass | fail | blocked | (not run)  [leader-measured]
+```
+
+- `[leader-measured]`: value determined by the Leader reading memory/verdict files.
+- `[git-measured]`: value determined by running `git diff --stat` — not from Worker's claim.
+
 ## Status File (`status.json`)
 
 Updated by the Leader after each iteration:
@@ -204,9 +329,25 @@ Updated by the Leader after each iteration:
   "worker_model": "sonnet",
   "verifier_model": "opus",
   "last_result": "continue|verify|pass|fail|blocked",
+  "consecutive_failures": 0,
   "updated_at_utc": "2025-01-15T10:30:00Z"
 }
 ```
+
+- `consecutive_failures`: number of consecutive Verifier `fail` verdicts since the last `pass`. Reset to 0 on any `pass`. Unchanged by `request_info`. Used by the Circuit Breaker (see above).
+- `last_failing_criteria`: (optional) array of criterion IDs from recent `fail` verdicts, used by Leader to detect same-criterion and diverse-failure CB patterns. Leaders may add additional tracking fields as needed.
+
+## Project Plans Files
+
+The `plans/` directory holds documents that define the project's acceptance criteria and verification approach:
+
+| File | Required | Description |
+|------|----------|-------------|
+| `plans/prd-<slug>.md` | Yes | Product Requirements Document — user stories, acceptance criteria, non-goals |
+| `plans/test-spec-<slug>.md` | Yes | Test specification — verification commands, criteria-to-test mapping |
+| `plans/quality-spec-<slug>.md` | Optional | Additional quality constraints (coding standards, performance budgets, security requirements). Not generated by `init` — create manually when needed. |
+
+The `quality-spec` file is not generated by `init`. Create it manually when a project requires additional quality constraints beyond the acceptance criteria in the PRD.
 
 ## Slash Command Reference
 
