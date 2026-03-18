@@ -196,10 +196,13 @@ Every change must be justified by the issue it addresses.
 |-----------|---------|
 | context-latest.md unchanged for 3 consecutive iterations | BLOCKED |
 | Same acceptance criterion fails 2 consecutive iterations | Upgrade model, retry once; if still failing → BLOCKED |
-| 3 consecutive failures on different acceptance criteria | Upgrade to opus, retry once; if still failing → BLOCKED |
+| 3 consecutive **fail** verdicts on 3 unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED |
 | max_iter reached | TIMEOUT (report to user) |
 
-The Leader tracks `consecutive_failures` in `status.json`. "Same error" means the same acceptance criterion fails in two consecutive Verifier verdicts.
+The Leader tracks `consecutive_failures` in `status.json`:
+- Increments on `fail`, resets on `pass`, **unchanged by `request_info`**.
+- "Same error" = same acceptance criterion ID in two consecutive **fail** verdicts (`request_info` does not break or contribute to this chain).
+- "Diverse failures" = 3 most recent `fail` verdicts each have a unique criterion ID.
 
 ## 9. Change Policy
 

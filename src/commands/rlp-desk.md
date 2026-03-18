@@ -134,10 +134,10 @@ Agent(
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
 - Same acceptance criterion fails 2 consecutive iterations → upgrade model, retry once, then BLOCKED
-- 3 consecutive failures on different acceptance criteria → upgrade to opus, retry once, then BLOCKED
+- 3 consecutive **fail** verdicts on 3 unique criterion IDs → upgrade to opus, retry once, then BLOCKED
 - max_iter reached → TIMEOUT, report to user
 
-Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pass`).
+Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pass`, unchanged by `request_info`). Only **fail** verdicts count for CB chains — `request_info` does not break or contribute.
 
 ### Important Rules
 - Each Agent() = new process = fresh context

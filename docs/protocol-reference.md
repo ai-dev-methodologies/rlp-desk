@@ -247,7 +247,7 @@ Updated by the Worker each iteration to reflect the current frontier:
 |-----------|-----------|--------|
 | Stale context | `context-latest.md` hash unchanged for 3 consecutive iterations | Write BLOCKED sentinel |
 | Repeated criterion failure | Same acceptance criterion fails in 2 consecutive Verifier verdicts | Upgrade model, retry once; still failing → BLOCKED |
-| Persistent diverse failures | 3 consecutive failures on different acceptance criteria | Upgrade to opus, retry once; still failing → BLOCKED |
+| Persistent diverse failures | 3 consecutive **fail** verdicts on 3 unique acceptance criterion IDs | Upgrade to opus, retry once; still failing → BLOCKED |
 | Timeout | Iteration count reaches `max_iter` | Write TIMEOUT status, report to user |
 
 ### Stale Context Detection
@@ -261,14 +261,15 @@ Same acceptance criterion fails iteration N (sonnet) → retry with opus in iter
 Same acceptance criterion still fails iteration N+1 (opus) → BLOCKED
 ```
 
-"Same error" is defined as: **the same acceptance criterion ID appears in the `issues` list of two consecutive Verifier verdicts.**
+"Same error" is defined as: **the same acceptance criterion ID appears in the `issues` list of two consecutive Verifier `fail` verdicts.** A `request_info` verdict does not break or contribute to this chain — only `fail` verdicts are counted.
 
 ### Consecutive Failures Counter
 
 The Leader maintains `consecutive_failures` in `status.json`. This counter:
 - Increments by 1 after each Verifier `fail` verdict
 - Resets to 0 after any Verifier `pass` verdict
-- Triggers the 3-consecutive-different-errors CB when it reaches 3 and the failing criteria differ each time
+- **Unchanged** by `request_info` verdicts (neither increments nor resets)
+- Triggers the 3-consecutive-diverse-failures CB when it reaches 3 and the 3 most recent `fail` verdicts each have a unique criterion ID
 
 ## Model Routing
 
@@ -333,7 +334,8 @@ Updated by the Leader after each iteration:
 }
 ```
 
-- `consecutive_failures`: number of consecutive Verifier `fail` verdicts since the last `pass`. Reset to 0 on any `pass`. Used by the Circuit Breaker (see above).
+- `consecutive_failures`: number of consecutive Verifier `fail` verdicts since the last `pass`. Reset to 0 on any `pass`. Unchanged by `request_info`. Used by the Circuit Breaker (see above).
+- `last_failing_criteria`: (optional) array of criterion IDs from recent `fail` verdicts, used by Leader to detect same-criterion and diverse-failure CB patterns. Leaders may add additional tracking fields as needed.
 
 ## Project Plans Files
 
