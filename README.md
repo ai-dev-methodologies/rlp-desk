@@ -107,8 +107,8 @@ for iteration in 1..max_iter:
 | Simple, single-file changes | `haiku` |
 | Standard work (default) | `sonnet` |
 | Architecture changes, multi-file, prior failure | `opus` |
-| Standard verification | `sonnet` |
-| Security/critical logic verification | `opus` |
+| Verification (default) | `opus` |
+| Lightweight verification | `sonnet` |
 
 ## Commands
 
@@ -127,7 +127,7 @@ for iteration in 1..max_iter:
 |------|---------|-------------|
 | `--max-iter N` | 100 | Maximum iterations before timeout |
 | `--worker-model MODEL` | sonnet | Worker model (haiku/sonnet/opus) |
-| `--verifier-model MODEL` | sonnet | Verifier model (haiku/sonnet/opus) |
+| `--verifier-model MODEL` | opus | Verifier model (haiku/sonnet/opus) |
 
 ## Project Structure
 

@@ -46,7 +46,7 @@ If brainstorm was done, auto-fill PRD and test-spec with the results.
 Options (parse from `$ARGUMENTS`):
 - `--max-iter N` (default: 100)
 - `--worker-model MODEL` (default: sonnet)
-- `--verifier-model MODEL` (default: sonnet)
+- `--verifier-model MODEL` (default: opus)
 
 ### Preparation
 1. Validate scaffold: `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.

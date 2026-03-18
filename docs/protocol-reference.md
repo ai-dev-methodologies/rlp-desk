@@ -179,8 +179,8 @@ Same error in iteration N+1 (opus) → BLOCKED
 | Standard implementation | `sonnet` | Balanced (default) |
 | Multi-file, architecture | `opus` | Needs broad understanding |
 | Previous iteration failed | upgrade | Harder model may succeed |
-| Verification (standard) | `sonnet` | Sufficient for running checks |
-| Verification (security) | `opus` | Critical logic needs thoroughness |
+| Verification (default) | `opus` | Independent verification requires thoroughness |
+| Verification (lightweight) | `sonnet` | Simple, well-defined checks only |
 
 ### Dynamic Adaptation
 
@@ -202,7 +202,7 @@ Updated by the Leader after each iteration:
   "max_iter": 100,
   "phase": "worker|verifier|complete|blocked|timeout",
   "worker_model": "sonnet",
-  "verifier_model": "sonnet",
+  "verifier_model": "opus",
   "last_result": "continue|verify|pass|fail|blocked",
   "updated_at_utc": "2025-01-15T10:30:00Z"
 }

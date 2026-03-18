@@ -48,7 +48,7 @@ The brainstorm phase interactively determines:
 | **User Stories** | US-001: calculator functions, US-002: pytest tests |
 | **Iteration Unit** | One user story per iteration |
 | **Verification** | `python3 -m pytest test_calc.py -v` |
-| **Models** | Worker: sonnet, Verifier: sonnet |
+| **Models** | Worker: sonnet, Verifier: opus |
 | **Max Iterations** | 10 |
 
 On approval, brainstorm offers to run `init` automatically.
@@ -119,7 +119,7 @@ You'll see status updates after each iteration:
 ```
 Iteration 1 | Worker (sonnet) | US-001 complete, continuing
 Iteration 2 | Worker (sonnet) | All stories done, requesting verification
-Iteration 3 | Verifier (sonnet) | PASS — all criteria met
+Iteration 3 | Verifier (opus) | PASS — all criteria met
 ✓ COMPLETE
 ```
 

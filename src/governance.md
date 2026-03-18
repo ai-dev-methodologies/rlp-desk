@@ -46,8 +46,8 @@ RUNNING → DONE_CLAIMED → VERIFYING → COMPLETE | CONTINUE | BLOCKED
 | Worker (simple) | haiku | Single file, clear change |
 | Worker (standard) | sonnet | Most tasks (default) |
 | Worker (complex) | opus | Architecture changes, multi-file, prior iteration failure |
-| Verifier | sonnet | Sufficient for most cases |
-| Verifier (strict) | opus | Security/critical logic verification |
+| Verifier | opus | Independent verification requires thoroughness |
+| Verifier (lightweight) | sonnet | Simple, well-defined checks only |
 
 The Leader decides each iteration. Decision criteria:
 - Previous iteration failed → upgrade model
