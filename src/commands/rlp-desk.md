@@ -114,7 +114,8 @@ Agent(
 ```
 - Read `verify-verdict.json`:
   - `pass` + `complete` → write COMPLETE sentinel, report done!
-  - `fail` + `continue` → go to ⑧
+  - `fail` + `continue` → read issues (sorted by severity), build Fix Loop contract → go to ⑧
+  - `request_info` → Leader reads Verifier's questions, decides outcome (or relays to Worker in next contract) → go to ⑧
   - `blocked` → write BLOCKED sentinel, stop
 
 **⑧ Write result log and report to user, continue loop**
@@ -127,8 +128,11 @@ Agent(
 
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
-- Same error 2x → upgrade model, retry once, then BLOCKED
+- Same acceptance criterion fails 2 consecutive iterations → upgrade model, retry once, then BLOCKED
+- 3 consecutive failures on different acceptance criteria → upgrade to opus, retry once, then BLOCKED
 - max_iter reached → TIMEOUT, report to user
+
+Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pass`).
 
 ### Important Rules
 - Each Agent() = new process = fresh context

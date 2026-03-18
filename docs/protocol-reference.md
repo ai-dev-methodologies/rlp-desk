@@ -124,7 +124,7 @@ Written by the Verifier after independent verification:
 
 ```json
 {
-  "verdict": "pass|fail|blocked",
+  "verdict": "pass|fail|request_info",
   "verified_at_utc": "2025-01-15T10:35:00Z",
   "summary": "All criteria verified with fresh evidence",
   "criteria_results": [
@@ -135,12 +135,36 @@ Written by the Verifier after independent verification:
     }
   ],
   "missing_evidence": [],
-  "issues": [],
+  "issues": [
+    {
+      "criterion": "US-002 AC1",
+      "description": "Test file missing",
+      "severity": "critical|major|minor",
+      "fix_hint": "(suggestion, non-authoritative) Add test_calc.py"
+    }
+  ],
   "recommended_state_transition": "complete|continue|blocked",
   "next_iteration_contract": "Fix failing test for divide by zero",
   "evidence_paths": ["test_calc.py::test_divide_by_zero"]
 }
 ```
+
+**Verdict values:**
+- `pass`: all criteria met — Leader may write COMPLETE sentinel
+- `fail`: one or more criteria not met — Leader reads issues, builds next contract
+- `request_info`: Verifier cannot determine pass/fail without more information — summary contains specific questions; Leader decides outcome and may relay questions to Worker
+
+**Issues severity:**
+- `critical`: blocking — must be fixed before COMPLETE
+- `major`: significant gap in acceptance criteria
+- `minor`: cosmetic or non-blocking concern
+
+**Verifier scope:**
+- Identify changed files via `git diff --name-only` — read those files and their direct imports only
+- Campaign Memory (`<slug>-memory.md`) is for orientation only — not the source of truth for verification
+- Delegate deterministic checks (type hints, linting, security) to tools defined in test-spec
+- Focus on: AC verification, semantic review, smoke tests
+- Do NOT use `fail` when uncertain — use `request_info` with specific questions instead
 
 ### Sentinels
 
@@ -183,7 +207,8 @@ Updated by the Worker each iteration to reflect the current frontier:
 | Condition | Detection | Action |
 |-----------|-----------|--------|
 | Stale context | `context-latest.md` hash unchanged for 3 consecutive iterations | Write BLOCKED sentinel |
-| Repeated error | Worker produces the same error message 2 iterations in a row | Upgrade model, retry once; still failing → BLOCKED |
+| Repeated criterion failure | Same acceptance criterion fails in 2 consecutive Verifier verdicts | Upgrade model, retry once; still failing → BLOCKED |
+| Persistent diverse failures | 3 consecutive failures on different acceptance criteria | Upgrade to opus, retry once; still failing → BLOCKED |
 | Timeout | Iteration count reaches `max_iter` | Write TIMEOUT status, report to user |
 
 ### Stale Context Detection
@@ -193,9 +218,18 @@ The Leader computes a hash (or diff) of `context-latest.md` before and after eac
 ### Error Escalation
 
 ```
-Error in iteration N (sonnet) → retry with opus in iteration N+1
-Same error in iteration N+1 (opus) → BLOCKED
+Same acceptance criterion fails iteration N (sonnet) → retry with opus in iteration N+1
+Same acceptance criterion still fails iteration N+1 (opus) → BLOCKED
 ```
+
+"Same error" is defined as: **the same acceptance criterion ID appears in the `issues` list of two consecutive Verifier verdicts.**
+
+### Consecutive Failures Counter
+
+The Leader maintains `consecutive_failures` in `status.json`. This counter:
+- Increments by 1 after each Verifier `fail` verdict
+- Resets to 0 after any Verifier `pass` verdict
+- Triggers the 3-consecutive-different-errors CB when it reaches 3 and the failing criteria differ each time
 
 ## Model Routing
 
@@ -255,9 +289,12 @@ Updated by the Leader after each iteration:
   "worker_model": "sonnet",
   "verifier_model": "opus",
   "last_result": "continue|verify|pass|fail|blocked",
+  "consecutive_failures": 0,
   "updated_at_utc": "2025-01-15T10:30:00Z"
 }
 ```
+
+- `consecutive_failures`: number of consecutive Verifier `fail` verdicts since the last `pass`. Reset to 0 on any `pass`. Used by the Circuit Breaker (see above).
 
 ## Slash Command Reference
 

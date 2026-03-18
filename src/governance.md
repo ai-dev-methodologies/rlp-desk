@@ -29,9 +29,13 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 
 ### Verifier (fresh context)
 - Independently verifies Worker's done claim
+- Identifies scope via `git diff --name-only` — reads changed files and related imports only
 - Runs commands directly to collect fresh evidence
-- Writes verdict (pass/fail/blocked)
-- **Must NEVER modify code**
+- Campaign Memory is for orientation only — not the source of truth
+- Writes verdict (`pass` | `fail` | `request_info`) — if uncertain, use `request_info` with specific questions; Leader decides
+- Delegates deterministic checks (type hints, linting, security) to tools defined in test-spec
+- Focuses on AC verification, semantic review, and smoke tests
+- **Must NEVER modify code or write sentinel files**
 
 ## 3. State Flow
 
@@ -168,8 +172,11 @@ for iteration in 1..max_iter:
 | Condition | Verdict |
 |-----------|---------|
 | context-latest.md unchanged for 3 consecutive iterations | BLOCKED |
-| Worker repeats the same error twice | Upgrade model, retry once; if still failing → BLOCKED |
+| Same acceptance criterion fails 2 consecutive iterations | Upgrade model, retry once; if still failing → BLOCKED |
+| 3 consecutive failures on different acceptance criteria | Upgrade to opus, retry once; if still failing → BLOCKED |
 | max_iter reached | TIMEOUT (report to user) |
+
+The Leader tracks `consecutive_failures` in `status.json`. "Same error" means the same acceptance criterion fails in two consecutive Verifier verdicts.
 
 ## 9. Change Policy
 
