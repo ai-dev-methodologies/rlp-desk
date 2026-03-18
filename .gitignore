@@ -13,6 +13,9 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Worktrees
+.worktrees/
+
 # RLP Desk runtime artifacts (generated during runs)
 .claude/ralph-desk/logs/
 .claude/ralph-desk/memos/*-done-claim.json
