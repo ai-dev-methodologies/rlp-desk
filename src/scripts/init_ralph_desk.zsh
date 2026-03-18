@@ -130,8 +130,15 @@ $OBJECTIVE
 ## Current State
 Iteration 0 - not started
 
+## Completed Stories
+
 ## Next Iteration Contract
 Start from the beginning: read PRD and plan the first bounded action.
+
+**Criteria**:
+- (to be defined by first worker after reading PRD)
+
+## Key Decisions
 
 ## Patterns Discovered
 ## Learnings

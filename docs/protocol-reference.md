@@ -11,9 +11,16 @@ for iteration in 1..max_iter:
      - <slug>-complete.md exists → stop (success)
      - <slug>-blocked.md exists → stop (failure)
 
+  ①½ Prep-stage cleanup (before each iteration)
+     - Delete <slug>-done-claim.json if exists  [leader-measured]
+     - Delete <slug>-verify-verdict.json if exists  [leader-measured]
+     (Ensures stale runtime files from a previous run cannot mislead the loop)
+
   ② Read memory.md
      - Parse "Stop Status" section → continue/verify/blocked
      - Parse "Next Iteration Contract" → task for this iteration
+       • Also read "Completed Stories" → track what has been verified
+       • Also read "Key Decisions" → architectural choices already settled
 
   ③ Select model
      - Apply model routing rules (see below)
@@ -42,7 +49,8 @@ for iteration in 1..max_iter:
        • verdict=fail + recommended=continue → go to ⑧
        • verdict=blocked → write BLOCKED sentinel, stop
 
-  ⑧ Update status.json, report to user, clean runtime files, next iteration
+  ⑧ Write iter-NNN.result.md (see Result Log below)
+     Update status.json, report to user, next iteration
 ```
 
 ## Signal Contracts
@@ -63,15 +71,35 @@ continue | verify | blocked
 ## Current State
 Iteration N - <description>
 
+## Completed Stories
+- US-001: Calculator add/subtract implemented [interface: `add(a, b) -> float`]
+- US-002: pytest suite — 8 tests passing
+
 ## Next Iteration Contract
-<specific task for the next worker>
+**Story**: US-003 — Edge case handling
+**Task**: Handle divide-by-zero in calc.py.
+1. Raise ValueError with message "division by zero"
+2. Add test_divide_by_zero to test_calc.py
+
+**Criteria**:
+- `pytest` exits 0
+- `grep "ValueError" calc.py` matches
+
+## Key Decisions
+- Iteration 2: Chose ValueError over ZeroDivisionError — matches project error style.
+- Iteration 3: Skipped type hints — out of scope per PRD Non-Goals.
 
 ## Patterns Discovered
 ## Learnings
 ## Evidence Chain
 ```
 
-The Leader reads **Stop Status** and **Next Iteration Contract** to decide what happens next.
+The Leader reads:
+- **Stop Status** and **Next Iteration Contract** to decide what happens next.
+- **Completed Stories** to track verified work without re-reading full history.
+- **Key Decisions** to carry forward settled architectural choices.
+
+All sections use plain Markdown. No YAML.
 
 ### Done Claim (`<slug>-done-claim.json`)
 
@@ -190,6 +218,29 @@ The Leader reassesses the model every iteration:
 2. If failed → upgrade one level (haiku → sonnet → opus)
 3. If simple/repetitive → consider downgrade
 4. User override via `--worker-model` / `--verifier-model` takes precedence
+
+## Result Log (`iter-NNN.result.md`)
+
+Written by the Leader after each iteration completes (step ⑧). Stored in `logs/<slug>/`.
+
+```markdown
+# Iteration NNN Result
+
+## Result Status
+pass | fail | continue  [leader-measured]
+
+## Files Changed
+(output of `git diff --stat HEAD~1 HEAD`)  [git-measured]
+
+## Summary
+<1–2 sentence summary of what the Worker did this iteration>
+
+## Verifier Verdict
+pass | fail | blocked | (not run)  [leader-measured]
+```
+
+- `[leader-measured]`: value determined by the Leader reading memory/verdict files.
+- `[git-measured]`: value determined by running `git diff --stat` — not from Worker's claim.
 
 ## Status File (`status.json`)
 

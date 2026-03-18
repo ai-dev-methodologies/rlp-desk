@@ -63,7 +63,15 @@ test -f .claude/ralph-desk/memos/<slug>-complete.md  # → done
 test -f .claude/ralph-desk/memos/<slug>-blocked.md   # → stop
 ```
 
+**①½ Prep-stage cleanup**
+```bash
+rm -f .claude/ralph-desk/memos/<slug>-done-claim.json
+rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
+```
+
 **② Read memory.md** → Stop Status, Next Iteration Contract
+- Also read **Completed Stories** → verified work so far
+- Also read **Key Decisions** → settled architectural choices
 
 **③ Decide model** (§4 of governance.md)
 - Previous iteration failed → upgrade model
@@ -109,10 +117,13 @@ Agent(
   - `fail` + `continue` → go to ⑧
   - `blocked` → write BLOCKED sentinel, stop
 
-**⑧ Report iteration result to user, continue loop**
+**⑧ Write result log and report to user, continue loop**
+- Write `logs/<slug>/iter-NNN.result.md`:
+  - Result status `[leader-measured]`
+  - Files changed via `git diff --stat HEAD~1 HEAD` `[git-measured]`
+  - Verifier verdict `[leader-measured]`
 - Write `status.json`
 - Report: iteration N, phase, model used, result
-- Clean `done-claim.json`, `verify-verdict.json` for next iteration
 
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED

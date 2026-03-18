@@ -114,6 +114,7 @@ Characteristics:
 └── logs/<slug>/
     ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy
     ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy
+    ├── iter-NNN.result.md           # Iteration result (leader-measured + git-measured)
     └── status.json                  # Leader's loop state
 ```
 
@@ -126,7 +127,13 @@ for iteration in 1..max_iter:
      - complete.md exists → stop
      - blocked.md exists → stop
 
+  ①½ Prep-stage cleanup
+     - Delete done-claim.json if exists
+     - Delete verify-verdict.json if exists
+
   ② Read memory.md → check Stop Status, Next Iteration Contract
+     - Also parse Completed Stories (verified work so far)
+     - Also parse Key Decisions (settled architectural choices)
 
   ③ Select model
      - Default or situational decision (see §4)
@@ -152,7 +159,8 @@ for iteration in 1..max_iter:
        • fail + continue → go to ⑧
        • blocked → write BLOCKED sentinel, stop
 
-  ⑧ Update status.json, report to user, continue to next iteration
+  ⑧ Write iter-NNN.result.md to logs/<slug>/ (result status + git diff --stat)
+     Update status.json, report to user, continue to next iteration
 ```
 
 ## 8. Circuit Breaker
