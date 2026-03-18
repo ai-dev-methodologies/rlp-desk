@@ -114,7 +114,12 @@ Agent(
 ```
 - Read `verify-verdict.json`:
   - `pass` + `complete` → write COMPLETE sentinel, report done!
-  - `fail` + `continue` → read issues (sorted by severity), build Fix Loop contract → go to ⑧
+  - `fail` + `continue` → **run Fix Loop** (governance.md §7½):
+    1. Read `issues` array, sort by severity (`critical` → `major` → `minor`)
+    2. Build structured fix contract with traceability rule
+    3. Include `fix_hint` values labeled `(suggestion, non-authoritative)` if present
+    4. Increment `consecutive_failures` in `status.json`
+    5. Go to ⑧ with fix contract as next Worker contract
   - `request_info` → Leader reads Verifier's questions, decides outcome (or relays to Worker in next contract) → go to ⑧
   - `blocked` → write BLOCKED sentinel, stop
 

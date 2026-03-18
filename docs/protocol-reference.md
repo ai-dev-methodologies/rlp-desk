@@ -166,6 +166,45 @@ Written by the Verifier after independent verification:
 - Focus on: AC verification, semantic review, smoke tests
 - Do NOT use `fail` when uncertain — use `request_info` with specific questions instead
 
+### Fix Loop Protocol
+
+When the Verifier returns `fail`, the Leader executes the Fix Loop before dispatching the next Worker:
+
+#### Flow
+
+```
+Verifier fail
+  → Leader reads verify-verdict.json issues
+  → Sort issues by severity: critical → major → minor
+  → Build structured fix contract (see format below)
+  → Increment consecutive_failures in status.json
+  → Dispatch Worker with fix contract as Next Iteration Contract
+```
+
+#### Fix Contract Format
+
+```markdown
+## Next Iteration Contract
+**Mode**: fix
+**Verifier verdict reference**: iter-NNN
+
+**Issues to fix** (severity-sorted):
+1. [critical] US-002 AC3: <description>
+   - fix_hint: (suggestion, non-authoritative) <hint text>
+2. [major] US-001 AC1: <description>
+3. [minor] US-003 AC2: <description>
+
+**Traceability rule**: Only changes that resolve a listed issue are allowed (traceability enforcement).
+Every change must be justified by the issue it addresses.
+```
+
+#### Rules
+
+- `fix_hint` is optional. When present it is labeled `(suggestion, non-authoritative)` — the Worker may choose a different approach.
+- **traceability**: the Worker must not introduce changes beyond what is needed to resolve the listed issues.
+- The Leader increments `consecutive_failures` in `status.json` after each `fail` verdict, and resets it to 0 after any `pass`.
+- The Leader (not the Worker) owns the `consecutive_failures` counter.
+
 ### Sentinels
 
 Leader-only files that terminate the loop:

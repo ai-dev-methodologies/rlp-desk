@@ -167,6 +167,29 @@ for iteration in 1..max_iter:
      Update status.json, report to user, continue to next iteration
 ```
 
+## 7½. Fix Loop Protocol
+
+When the Verifier returns `fail`, the Leader runs the Fix Loop before issuing the next Worker contract:
+
+1. **Read issues** from `verify-verdict.json` — sort by severity (`critical` → `major` → `minor`)
+2. **Build fix contract** — include each issue as a numbered task with criterion reference
+   - `fix_hint` (if present) is passed as `(suggestion, non-authoritative)` — Worker may ignore
+3. **Traceability rule**: "Only changes that resolve a listed issue are allowed — every change must be justified by the issue it addresses"
+4. **Update status.json** — increment `consecutive_failures`; reset to 0 on any `pass`
+
+The `consecutive_failures` counter is maintained by the Leader in `status.json`.
+
+**Fix contract format:**
+```
+Fix issues from Verifier verdict (iter-NNN):
+
+1. [critical] US-002 AC3: <description> — fix_hint: (suggestion, non-authoritative) <hint>
+2. [major] US-001 AC1: <description>
+
+Traceability: only changes that resolve a listed issue are allowed.
+Every change must be justified by the issue it addresses.
+```
+
 ## 8. Circuit Breaker
 
 | Condition | Verdict |

@@ -30,26 +30,33 @@ if [[ ! -f "$F" ]]; then
   cat > "$F" <<EOF
 Execute the plan for $SLUG.
 
-Required reads every iteration:
-- PRD: $DESK/plans/prd-$SLUG.md
-- Test Spec: $DESK/plans/test-spec-$SLUG.md
-- Campaign Memory: $DESK/memos/$SLUG-memory.md
-- Latest Context: $DESK/context/$SLUG-latest.md
+## Before you start
+Read these files in order:
+1. Campaign Memory: $DESK/memos/$SLUG-memory.md → Next Iteration Contract is your mission
+2. PRD: $DESK/plans/prd-$SLUG.md → acceptance criteria
+3. Test Spec: $DESK/plans/test-spec-$SLUG.md → verification methods
+4. Latest Context: $DESK/context/$SLUG-latest.md → current state
 
-Iteration rules:
+## Scope rules (do not violate)
+- No file creation or modification outside the project root
+- Do not modify this prompt file or any PRD/test-spec files
+- Do not perform work not described in the Next Iteration Contract
+
+## Iteration rules
 - Use fresh context only; do NOT depend on prior chat history.
-- Execute exactly ONE bounded next action.
-- If campaign memory has an unresolved Next iteration contract, do that first.
+- Execute exactly ONE bounded next action (the Next Iteration Contract).
 - Refresh context file with the current frontier.
 - Rewrite campaign memory in full.
 - Write evidence artifacts.
+- **Commit all changes when the iteration is complete** (include iteration number and story ID in commit message).
 
-Stop behavior:
+## Stop behavior
 - Objective achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json, exit
 - Autonomous blocker → write to $DESK/memos/$SLUG-blocked.md, exit
 - Otherwise → set stop=continue, define next iteration contract in memory, exit
 
-Objective: $OBJECTIVE
+## Objective
+$OBJECTIVE
 EOF
   echo "  + $F"
 else echo "  · $F"; fi
