@@ -1,5 +1,5 @@
 {
-  "name": "rlp-desk",
+  "name": "@ai-dev-methodologies/rlp-desk",
   "version": "0.0.1",
   "description": "Fresh-context iterative loops for Claude Code — autonomous task completion with independent verification",
   "scripts": {
