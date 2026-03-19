@@ -15,20 +15,28 @@ Parse the first word of `$ARGUMENTS` as the subcommand.
 
 ## `brainstorm <description>`
 
-Planning phase BEFORE init. Interactively define the contract with the user.
+Planning phase BEFORE init. Interactively define the contract **with the user**.
 
-Determine all of the following:
-1. **Slug** — short identifier (e.g., `auth-refactor`)
+You MUST ask the user about each item below. Do NOT decide for them.
+Present your suggestion, then wait for the user's confirmation or change.
+
+Ask about these items one by one (or in small groups):
+1. **Slug** — short identifier (e.g., `auth-refactor`). Suggest one, ask if OK.
 2. **Objective** — what the loop achieves
-3. **User Stories** — discrete units with testable acceptance criteria
-4. **Iteration Unit** — one worker does per iteration (default: one user story)
+3. **User Stories** — discrete units with testable acceptance criteria. Propose a breakdown, ask the user to confirm/modify.
+4. **Iteration Unit** — what one worker does per iteration. Explicitly ask:
+   - "One US per iteration (bounded, incremental verification)?"
+   - "All stories at once (faster, single verification)?"
+   - Default recommendation: one US per iteration for 3+ stories.
 5. **Verification Commands** — build, test, lint commands
 6. **Completion / Blocked Criteria**
-7. **Worker / Verifier Model** — haiku, sonnet, opus
-8. **Max Iterations**
+7. **Worker / Verifier Model** — haiku, sonnet, opus. Suggest defaults (worker: sonnet, verifier: opus), ask if OK.
+8. **Max Iterations** — suggest based on story count, ask if OK.
 
-Present the contract summary. On approval, offer to run `init`.
+After all items are confirmed, present the full contract summary.
+On approval, offer to run `init`.
 Do NOT create files during brainstorm.
+Do NOT auto-decide iteration unit — the user MUST explicitly choose.
 
 ---
 
@@ -44,9 +52,40 @@ If brainstorm was done, auto-fill PRD and test-spec with the results.
 **YOU are the leader. Do NOT delegate leadership.**
 
 Options (parse from `$ARGUMENTS`):
+- `--mode agent|tmux` (default: `agent`) — execution mode
 - `--max-iter N` (default: 100)
 - `--worker-model MODEL` (default: sonnet)
 - `--verifier-model MODEL` (default: opus)
+- `--debug` — enable debug logging (tmux mode only, writes to logs/<slug>/debug.log)
+
+### Mode Selection
+
+Parse the `--mode` flag. If absent or `agent`, use the Agent() path below. If `tmux`, use the Tmux path.
+
+#### Tmux Mode (`--mode tmux`)
+
+When `--mode tmux` is specified:
+
+1. **Validate scaffold** — same as Agent() mode: check `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
+2. **Check sentinels** — same as Agent() mode.
+3. **Check prerequisites** — verify `tmux` and `jq` are installed. If not, report what is missing and stop.
+4. **Locate runner script** — find `run_ralph_desk.zsh` at `~/.claude/ralph-desk/run_ralph_desk.zsh`. If not found, tell the user to reinstall (`npm install` or `install.sh`).
+5. **Launch** — shell out to the runner script with env vars derived from flags:
+```bash
+LOOP_NAME="<slug>" \
+ROOT="$PWD" \
+MAX_ITER=<--max-iter value> \
+WORKER_MODEL=<--worker-model value> \
+VERIFIER_MODEL=<--verifier-model value> \
+DEBUG=<1 if --debug, else 0> \
+  zsh ~/.claude/ralph-desk/run_ralph_desk.zsh
+```
+6. **If the script exits with error (exit code 1)** — report the error to the user and STOP. Do NOT attempt to work around it. Do NOT create tmux sessions yourself. Do NOT re-launch the script in a different way. Just tell the user what went wrong and suggest using Agent mode instead.
+7. **If successful** — tell the user the tmux session has been started. The shell script takes over as the deterministic Leader. No Agent() calls are made in tmux mode.
+
+**IMPORTANT:** Tmux mode requires the user to already be inside a tmux session. If the runner script rejects because $TMUX is not set, do NOT try to create a tmux session yourself. Tell the user: "Start tmux first, then retry."
+
+#### Agent Mode (`--mode agent` or default)
 
 ### Preparation
 1. Validate scaffold: `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
@@ -54,6 +93,8 @@ Options (parse from `$ARGUMENTS`):
 3. Clean previous `done-claim.json`, `verify-verdict.json`.
 
 ### Leader Loop
+
+**CRITICAL: DO NOT STOP between iterations.** You MUST continue the loop automatically until a sentinel is written (COMPLETE or BLOCKED) or max_iter is reached. Do NOT pause to ask the user. Do NOT wait for confirmation. The loop is fully autonomous — just report each iteration result briefly and immediately proceed to the next iteration.
 
 For each iteration (1 to max_iter):
 
@@ -154,31 +195,61 @@ Read `.claude/ralph-desk/logs/<slug>/status.json` and display.
 - No N: show latest `iter-*.worker-prompt.md` summary
 - With N: read `iter-N.worker-prompt.md` and `iter-N.verifier-prompt.md`
 
-## `clean <slug>`
+## `clean <slug> [--kill-session]`
 Remove:
 - `.claude/ralph-desk/memos/<slug>-complete.md`
 - `.claude/ralph-desk/memos/<slug>-blocked.md`
 - `.claude/ralph-desk/memos/<slug>-done-claim.json`
 - `.claude/ralph-desk/memos/<slug>-verify-verdict.json`
+- `.claude/ralph-desk/memos/<slug>-iter-signal.json`
 - `.claude/ralph-desk/logs/<slug>/circuit-breaker.json`
+- `.claude/ralph-desk/logs/<slug>/session-config.json`
+- `.claude/ralph-desk/logs/<slug>/worker-heartbeat.json`
+- `.claude/ralph-desk/logs/<slug>/verifier-heartbeat.json`
+
+If `--kill-session` is passed, also kill any tmux session matching `rlp-desk-<slug>-*`:
+```bash
+tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^rlp-desk-<slug>-" | while read s; do tmux kill-session -t "$s"; done
+```
 
 ## No args or `help`
 ```
-/rlp-desk brainstorm <description>     Plan before init (interactive)
-/rlp-desk init  <slug> [objective]     Create project scaffold
-/rlp-desk run   <slug> [--opts]        Run loop (this session = leader)
-/rlp-desk status <slug>                Show loop status
-/rlp-desk logs  <slug> [N]             Show iteration log
-/rlp-desk clean <slug>                 Reset for re-run
+/rlp-desk brainstorm <description>          Plan before init (interactive)
+/rlp-desk init  <slug> [objective]          Create project scaffold
+/rlp-desk run   <slug> [--mode agent|tmux]  Run loop (agent=LLM leader, tmux=shell leader)
+/rlp-desk status <slug>                     Show loop status
+/rlp-desk logs  <slug> [N]                  Show iteration log
+/rlp-desk clean <slug> [--kill-session]     Reset for re-run (--kill-session kills tmux)
 ```
 
 ## Architecture
+
+### Agent Mode (default: `--mode agent`)
 ```
-[This session = LEADER]
+[This session = LEADER (LLM)]
         │
   Agent()├──▶ [Worker: executor (fresh context)]
         │     └── reads desk files, implements, updates memory
         │
   Agent()└──▶ [Verifier: executor (fresh context)]
               └── reads done-claim, runs checks, writes verdict
+```
+
+### Tmux Mode (`--mode tmux`)
+```
+[tmux session: rlp-desk-<slug>-<timestamp>]
++-------------------------------------+
+| Leader pane (shell loop)            |
+| - writes prompts to files           |
+| - sends short triggers via send-keys|
+| - polls iter-signal.json            |
+| - monitors heartbeat files          |
+| - writes sentinels                  |
++------------------+------------------+
+| Worker pane      | Verifier pane    |
+| bash trigger.sh  | bash trigger.sh  |
+| -> claude -p ... | -> claude -p ... |
+| heartbeat writer | heartbeat writer |
+| (fresh context)  | (fresh context)  |
++------------------+------------------+
 ```

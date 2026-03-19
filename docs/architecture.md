@@ -39,14 +39,40 @@ Agent(
 
 The Agent returns synchronously. No polling, no signal files, no tmux. The Leader simply reads the filesystem after each Agent completes.
 
-### Why Agent() Over Other Approaches
+### Two Execution Modes
 
-| Approach | Problem |
-|----------|---------|
-| Single long session | Context drift, token limits |
-| tmux + polling | Complex, brittle, race conditions |
-| Signal files + sleep loops | Fragile timing, wasted compute |
-| **Agent() subprocess** | **Clean, synchronous, guaranteed fresh context** |
+RLP Desk supports two modes for running the Leader loop. Both honor the same governance protocol (section 7). Choose based on your use case.
+
+| Mode | Leader | Model Routing | Session Required | Best For |
+|------|--------|---------------|------------------|----------|
+| **Agent() — "Smart mode"** (default) | LLM (current session) | Dynamic — Leader reasons about which model to use each iteration | Active Claude Code session | Interactive development, complex routing decisions |
+| **Tmux — "Lean mode"** | Shell script (`run_ralph_desk.zsh`) | Static — set via `WORKER_MODEL`/`VERIFIER_MODEL` env vars | None (runs detached) | Long campaigns, CI, observability, zero-token orchestration |
+
+**Agent() mode** is synchronous and simple: each `Agent()` call blocks until the subprocess finishes, then the Leader reads the filesystem. No polling, no signal files, no tmux.
+
+**Tmux mode** trades dynamic routing for visibility and independence. The shell Leader writes prompts to files, sends short trigger commands via `tmux send-keys`, and polls structured JSON signal files (`iter-signal.json`, `verify-verdict.json`) for control flow. It uses proven [omc-teams](https://github.com/anthropics/omc-teams) tmux patterns — write-then-notify, pane ID stability, copy-mode guards, heartbeat monitoring — for reliable, race-free orchestration.
+
+The tmux script is a second implementation of the governance protocol. Traceability is maintained via governance.md section 7 step-number comments throughout the script.
+
+#### Tmux Architecture
+
+```
+[tmux session: rlp-desk-<slug>-<timestamp>]
++-------------------------------------+
+| Leader pane (shell loop)            |
+| - writes prompts to files           |
+| - sends short triggers via send-keys|
+| - polls iter-signal.json via jq     |
+| - monitors heartbeat files          |
+| - writes sentinels                  |
++------------------+------------------+
+| Worker pane      | Verifier pane    |
+| bash trigger.sh  | bash trigger.sh  |
+| -> claude -p ... | -> claude -p ... |
+| heartbeat writer | heartbeat writer |
+| (fresh context)  | (fresh context)  |
++------------------+------------------+
+```
 
 ## Three-Role Architecture
 
