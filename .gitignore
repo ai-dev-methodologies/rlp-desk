@@ -17,9 +17,5 @@ Thumbs.db
 .worktrees/
 
 # RLP Desk runtime artifacts (generated during runs)
-.claude/ralph-desk/logs/
-.claude/ralph-desk/memos/*-done-claim.json
-.claude/ralph-desk/memos/*-verify-verdict.json
-.claude/ralph-desk/memos/*-complete.md
-.claude/ralph-desk/memos/*-blocked.md
-.claude/ralph-desk/memos/*-iter-signal.json
+# The entire .claude/ralph-desk/ directory is project-local runtime state
+.claude/ralph-desk/

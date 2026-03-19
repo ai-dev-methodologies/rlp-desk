@@ -58,7 +58,7 @@ The Leader decides each iteration. Decision criteria:
 - Simple repetitive task → downgrade model
 - User explicitly specified → use as given
 
-## 5. Execution: Unified Agent() Approach
+## 5a. Execution: Agent() Approach (default) — "Smart Mode"
 
 All environments (Claude Code, OpenCode) use the same Agent tool.
 
@@ -87,6 +87,46 @@ Characteristics:
 - No tmux required.
 - Monitor in real-time via ctrl+o (Claude Code UI).
 - Prompts are still logged to logs/ for audit trail.
+- Leader is an LLM — can dynamically route models, reason about context, and adapt.
+
+## 5b. Execution: Tmux Runner (alternative) — "Lean Mode"
+
+For long campaigns, observability, headless/CI execution, or when zero-token orchestration is preferred.
+
+```bash
+# Launched via slash command:
+/rlp-desk run <slug> --mode tmux
+
+# Or directly:
+LOOP_NAME=<slug> ROOT=$(pwd) ~/.claude/ralph-desk/run_ralph_desk.zsh
+```
+
+The tmux runner (`run_ralph_desk.zsh`) creates a tmux session with three panes:
+- **Leader pane** — deterministic shell loop (no LLM)
+- **Worker pane** — receives `claude -p` invocations via trigger scripts
+- **Verifier pane** — receives `claude -p` invocations via trigger scripts
+
+All `claude` CLI calls use `--dangerously-skip-permissions`:
+```bash
+claude -p "$(cat /path/to/prompt.md)" \
+  --model sonnet \
+  --dangerously-skip-permissions
+```
+
+**Security implication:** `--dangerously-skip-permissions` allows the CLI to execute code without user confirmation. The tmux runner requires this because there is no interactive user to approve each action. Only run tmux mode in trusted environments with trusted prompts.
+
+Characteristics:
+- Leader is a shell script, not an LLM — zero tokens consumed for orchestration.
+- Leader reads ONLY `iter-signal.json` and `verify-verdict.json` for control flow (structured JSON via `jq`). No markdown parsing.
+- Model routing is static via environment variables (`WORKER_MODEL`, `VERIFIER_MODEL`). This is an explicit trade-off vs Agent() mode's dynamic routing.
+- **Write-then-notify:** All prompts and payloads are written to files first. Only short trigger commands (`bash /path/to/trigger.sh`) are sent via `tmux send-keys`.
+- **Pane IDs (`%N` format):** Captured at pane creation, stored in `session-config.json`. Never uses positional indices.
+- **Copy-mode guard:** Checks `#{pane_in_mode}` before every `send-keys` to avoid sending into scrollback.
+- **Heartbeat monitoring:** Trigger scripts write heartbeat files; Leader checks freshness.
+- **Atomic file writes:** All file writes use `{path}.tmp.{pid}` + `mv` for crash safety.
+- Can run detached (`tmux detach`) for overnight/CI campaigns.
+- User can watch Worker/Verifier execution in real-time via tmux panes.
+- Traceability: governance section 7 step numbers appear as comments throughout the shell script.
 
 ## 6. File Structure
 
@@ -109,6 +149,7 @@ Characteristics:
 ├── memos/
 │   ├── <slug>-memory.md             # Campaign memory (Worker updates)
 │   ├── <slug>-done-claim.json       # Worker's completion claim (runtime)
+│   ├── <slug>-iter-signal.json      # Worker's iteration signal (runtime)
 │   ├── <slug>-verify-verdict.json   # Verifier's verdict (runtime)
 │   ├── <slug>-complete.md           # SENTINEL (Leader only)
 │   └── <slug>-blocked.md            # SENTINEL (Leader only)
@@ -154,6 +195,9 @@ for iteration in 1..max_iter:
      - "continue" → go to ⑧
      - "verify"   → go to ⑦
      - "blocked"  → write BLOCKED sentinel, stop
+     Note: In tmux mode, the Leader polls `<slug>-iter-signal.json` instead of
+     parsing memory.md. In Agent() mode, the Leader MAY read iter-signal.json
+     as a structured alternative to parsing the Stop Status from memory.md.
 
   ⑦ Execute Verifier
      - Build prompt → log to logs/<slug>/iter-NNN.verifier-prompt.md

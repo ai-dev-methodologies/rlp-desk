@@ -37,18 +37,29 @@ Read these files in order:
 3. Test Spec: $DESK/plans/test-spec-$SLUG.md → verification methods
 4. Latest Context: $DESK/context/$SLUG-latest.md → current state
 
-## Scope rules (do not violate)
-- No file creation or modification outside the project root
-- Do not modify this prompt file or any PRD/test-spec files
-- Do not perform work not described in the Next Iteration Contract
+## SCOPE LOCK (hard constraint — violation causes verification failure)
+- You MUST only implement the work described in the "Next Iteration Contract" from campaign memory.
+- If the contract says "implement US-001 only", do ONLY that. Do NOT touch other stories.
+- If the contract says "implement all remaining stories", you may do all of them.
+- Do NOT go beyond the contracted scope, even if you can see more work in the PRD.
+- No file creation or modification outside the project root.
+- Do not modify this prompt file or any PRD/test-spec files.
 
 ## Iteration rules
 - Use fresh context only; do NOT depend on prior chat history.
-- Execute exactly ONE bounded next action (the Next Iteration Contract).
+- Execute exactly the work specified in the Next Iteration Contract.
 - Refresh context file with the current frontier.
 - Rewrite campaign memory in full.
 - Write evidence artifacts.
 - **Commit all changes when the iteration is complete** (include iteration number and story ID in commit message).
+
+MANDATORY: When done with this iteration, write the following signal file:
+- Path: $DESK/memos/$SLUG-iter-signal.json
+- Format: {"iteration": N, "status": "continue|verify|blocked", "summary": "what was done", "timestamp": "ISO"}
+- Status values:
+  - "continue" = current action done but more work remains
+  - "verify" = all work complete + done-claim written
+  - "blocked" = autonomous blocker
 
 ## Stop behavior
 - Objective achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json, exit
@@ -222,12 +233,7 @@ if [[ -f "$GITIGNORE" ]]; then
     echo "" >> "$GITIGNORE"
     cat >> "$GITIGNORE" <<'GIEOF'
 # RLP Desk runtime artifacts
-.claude/ralph-desk/logs/
-.claude/ralph-desk/memos/*-done-claim.json
-.claude/ralph-desk/memos/*-verify-verdict.json
-.claude/ralph-desk/memos/*-complete.md
-.claude/ralph-desk/memos/*-blocked.md
-.claude/ralph-desk/memos/*-iter-signal.json
+.claude/ralph-desk/
 GIEOF
     echo "  + .gitignore (rlp-desk rules appended)"
   else
@@ -236,12 +242,7 @@ GIEOF
 else
   cat > "$GITIGNORE" <<'GIEOF'
 # RLP Desk runtime artifacts
-.claude/ralph-desk/logs/
-.claude/ralph-desk/memos/*-done-claim.json
-.claude/ralph-desk/memos/*-verify-verdict.json
-.claude/ralph-desk/memos/*-complete.md
-.claude/ralph-desk/memos/*-blocked.md
-.claude/ralph-desk/memos/*-iter-signal.json
+.claude/ralph-desk/
 GIEOF
   echo "  + .gitignore (created with rlp-desk rules)"
 fi

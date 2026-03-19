@@ -30,15 +30,20 @@ Or without npm:
 curl -sSL https://raw.githubusercontent.com/ai-dev-methodologies/rlp-desk/main/install.sh | bash
 ```
 
-### 2. Brainstorm
+### 2. Brainstorm (recommended)
 
-In your project directory, start a Claude Code session:
+**Always start with brainstorm.** It interactively walks you through the project contract:
 
 ```
 /rlp-desk brainstorm "implement a Python calculator with tests"
 ```
 
-This interactively defines the contract: slug, objective, user stories, verification commands, and iteration settings.
+You'll be asked to confirm each item:
+- **Slug** — project identifier
+- **User Stories** — discrete, testable units of work
+- **Iteration Unit** — one story per iteration (incremental) or all at once (fast)
+- **Verification Commands** — how to check the work
+- **Models** — which Claude model for Worker/Verifier
 
 ### 3. Run
 
@@ -118,7 +123,7 @@ for iteration in 1..max_iter:
 /rlp-desk run   <slug> [--opts]        Run the loop (this session = leader)
 /rlp-desk status <slug>                Show loop status
 /rlp-desk logs  <slug> [N]             Show iteration logs
-/rlp-desk clean <slug>                 Reset for re-run
+/rlp-desk clean <slug> [--kill-session]  Reset for re-run
 ```
 
 ### Run Options
@@ -128,6 +133,65 @@ for iteration in 1..max_iter:
 | `--max-iter N` | 100 | Maximum iterations before timeout |
 | `--worker-model MODEL` | sonnet | Worker model (haiku/sonnet/opus) |
 | `--verifier-model MODEL` | opus | Verifier model (haiku/sonnet/opus) |
+| `--mode agent\|tmux` | agent | Execution mode (see below) |
+
+## Execution Modes
+
+RLP Desk supports two execution modes. Both honor the same governance protocol.
+
+### Environment Compatibility
+
+| Environment | Agent Mode | Tmux Mode |
+|-------------|-----------|-----------|
+| Claude Code (any terminal) | **Works** | Requires tmux |
+| Inside tmux session | **Works** | **Works** — panes split in current window |
+| Outside tmux session | **Works** | **Rejected** — "start tmux first" |
+
+### Agent Mode (default) — "Smart Mode"
+
+```
+/rlp-desk run calculator
+```
+
+The current Claude Code session acts as the Leader, dispatching Workers and Verifiers via `Agent()`. The Leader is an LLM that dynamically routes models and reasons about context.
+
+- Works anywhere — no tmux required
+- Dynamic model routing — Leader upgrades models on failure
+- Fix Loop — extracts verifier issues and feeds them back to the next worker
+- Best for interactive development
+
+### Tmux Mode — "Lean Mode"
+
+```
+/rlp-desk run calculator --mode tmux
+```
+
+**Requires running inside a tmux session.** A shell script takes over as Leader, splitting your current window into three panes. Workers run interactive `claude` sessions — you can watch them work in real-time.
+
+```
++---------------------+---------------------+
+| Your pane (Leader)  | Worker pane         |
+| shell loop running  | claude TUI running  |
+| polls signal files  | you see it working  |
+|                     +---------------------+
+|                     | Verifier pane       |
+|                     | claude TUI running  |
+|                     | (only when needed)  |
++---------------------+---------------------+
+```
+
+- Real-time visibility — watch Worker/Verifier execute live
+- Zero-token orchestration — shell loop, not LLM
+- Automatic cleanup — panes removed on completion
+- Best for long campaigns and observability
+
+Prerequisites: `tmux` and `jq` must be installed.
+
+To clean up tmux artifacts:
+
+```
+/rlp-desk clean calculator --kill-session
+```
 
 ## Project Structure
 
@@ -169,7 +233,7 @@ mkdir my-calc && cd my-calc
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — Design philosophy and the Agent() approach
+- [Architecture](docs/architecture.md) — Design philosophy, Agent() and tmux execution modes
 - [Getting Started](docs/getting-started.md) — Step-by-step tutorial with the calculator example
 - [Protocol Reference](docs/protocol-reference.md) — Full protocol specification
 

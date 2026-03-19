@@ -18,7 +18,7 @@ Iteration rules:
 
 MANDATORY: When done, write the following signal file:
 - Path: .claude/ralph-desk/memos/loop-test-iter-signal.json
-- Format: {"iteration": N, "status": "continue|verify|blocked", "timestamp": "ISO"}
+- Format: {"iteration": N, "status": "continue|verify|blocked", "summary": "what was done", "timestamp": "ISO"}
 - Status values:
   - "continue" = current story done but other stories remain
   - "verify" = all stories complete + done-claim written

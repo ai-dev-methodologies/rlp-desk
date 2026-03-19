@@ -35,19 +35,33 @@ echo "  Downloading init script..."
 curl -sSL "$REPO_URL/src/scripts/init_ralph_desk.zsh" -o "$DESK_DIR/init_ralph_desk.zsh"
 chmod +x "$DESK_DIR/init_ralph_desk.zsh"
 
+# Download tmux runner script
+echo "  Downloading tmux runner script..."
+curl -sSL "$REPO_URL/src/scripts/run_ralph_desk.zsh" -o "$DESK_DIR/run_ralph_desk.zsh"
+chmod +x "$DESK_DIR/run_ralph_desk.zsh"
+
 # Download governance protocol
 echo "  Downloading governance protocol..."
 curl -sSL "$REPO_URL/src/governance.md" -o "$DESK_DIR/governance.md"
+
+# Check tmux availability
+if ! command -v tmux &>/dev/null; then
+  echo ""
+  echo "  [warn] tmux not found. Tmux execution mode (--mode tmux) will not be available."
+  echo "         Install tmux to use lean mode: https://github.com/tmux/tmux/wiki/Installing"
+fi
 
 echo ""
 echo "  Done! Installed to:"
 echo ""
 echo "    Slash command:  $COMMANDS_DIR/rlp-desk.md"
 echo "    Init script:    $DESK_DIR/init_ralph_desk.zsh"
+echo "    Tmux runner:    $DESK_DIR/run_ralph_desk.zsh"
 echo "    Governance:     $DESK_DIR/governance.md"
 echo ""
 echo "  Usage:"
 echo "    1. Open Claude Code in your project directory"
 echo "    2. Run: /rlp-desk brainstorm \"your task description\""
 echo "    3. Run: /rlp-desk run <slug>"
+echo "    4. Run: /rlp-desk run <slug> --mode tmux  (lean mode)"
 echo ""
