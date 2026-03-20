@@ -30,6 +30,7 @@ set -uo pipefail
 #   MAX_NUDGES                - max nudges per pane per iteration (default: 3)
 #
 # Dependencies: tmux, claude CLI, jq
+# Optional: codex CLI (required only when WORKER_ENGINE=codex or VERIFIER_ENGINE=codex)
 # =============================================================================
 
 # --- Environment Variables ---
@@ -44,6 +45,13 @@ HEARTBEAT_STALE_THRESHOLD="${HEARTBEAT_STALE_THRESHOLD:-120}"
 MAX_RESTARTS="${MAX_RESTARTS:-3}"
 IDLE_NUDGE_THRESHOLD="${IDLE_NUDGE_THRESHOLD:-30}"
 MAX_NUDGES="${MAX_NUDGES:-3}"
+
+# --- Engine Selection ---
+WORKER_ENGINE="${WORKER_ENGINE:-claude}"    # claude|codex
+VERIFIER_ENGINE="${VERIFIER_ENGINE:-claude}"  # claude|codex
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
+CODEX_REASONING="${CODEX_REASONING:-high}"   # low|medium|high
+CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 
 # --- Derived Paths ---
 DESK="$ROOT/.claude/ralph-desk"
@@ -135,6 +143,15 @@ check_dependencies() {
     missing=1
   fi
 
+  # Codex binary required only when engine=codex
+  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" ]]; then
+    if ! command -v codex >/dev/null 2>&1; then
+      log_error "codex CLI is required when WORKER_ENGINE or VERIFIER_ENGINE is 'codex'."
+      log_error "Install with: npm install -g @openai/codex"
+      missing=1
+    fi
+  fi
+
   if (( missing )); then
     exit 1
   fi
@@ -142,6 +159,12 @@ check_dependencies() {
   # Resolve full path to claude binary for reliable launches
   CLAUDE_BIN=$(command -v claude 2>/dev/null || echo "claude")
   log "  Claude binary: $CLAUDE_BIN"
+
+  # Resolve codex binary if needed
+  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" ]]; then
+    CODEX_BIN=$(command -v codex 2>/dev/null || echo "codex")
+    log "  Codex binary:  $CODEX_BIN"
+  fi
 }
 
 # =============================================================================
@@ -305,10 +328,13 @@ safe_send_keys() {
     log_debug " Trust prompt detected, dismissing"
     tmux send-keys -t "$pane_id" C-m
     sleep 0.12
-    tmux send-keys -t "$pane_id" C-m
+  fi
+  # Auto-dismiss codex update prompt (select Skip)
+  if echo "$initial_capture" | grep -qi "new version\|update.*codex\|codex.*update" 2>/dev/null; then
+    log_debug " Codex update prompt detected, selecting Skip"
+    tmux send-keys -t "$pane_id" "2" Enter
     sleep 0.2
   fi
-
   # Send text in literal mode with -- separator
   log_debug " Sending text to pane $pane_id (${#text} chars)"
   tmux send-keys -t "$pane_id" -l -- "$text"
@@ -404,6 +430,14 @@ wait_for_pane_ready() {
       sleep 0.12
       tmux send-keys -t "$pane_id" Enter
       sleep 2
+      continue
+    fi
+
+    # Auto-dismiss codex update prompt (select Skip = option 2)
+    if echo "$captured" | grep -qi "new version\|update.*codex\|codex.*update" 2>/dev/null; then
+      log "  Codex update prompt detected, selecting Skip..."
+      tmux send-keys -t "$pane_id" "2" Enter
+      sleep 0.5
       continue
     fi
 
@@ -529,8 +563,12 @@ restart_worker() {
   tmux send-keys -t "$pane_id" "/exit" Enter 2>/dev/null
   sleep 2
 
-  # Re-launch claude (tmux interactive pattern)
-  safe_send_keys "$pane_id" "$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
+  # Re-launch worker (tmux interactive pattern)
+  if [[ "$WORKER_ENGINE" = "codex" ]]; then
+    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+  else
+    safe_send_keys "$pane_id" "$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
+  fi
   WORKER_RESTARTS[$iter]=$((restart_count + 1))
   return 0
 }
@@ -578,6 +616,23 @@ write_worker_trigger() {
   } | atomic_write "$prompt_file"
 
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
+  # Engine-specific launch command (expanded at write time)
+  if [[ "$WORKER_ENGINE" = "codex" ]]; then
+    local engine_cmd="${CODEX_BIN:-codex} -m $CODEX_MODEL \\
+  -c model_reasoning_effort=\"$CODEX_REASONING\" \\
+  --dangerously-bypass-approvals-and-sandbox \\
+  \"\$(cat $prompt_file)\" \\
+  2>&1 | tee $output_log"
+    local engine_comment="# Run codex with fresh context (governance.md s7 step 5)"
+  else
+    local engine_cmd="$CLAUDE_BIN -p \"\$(cat $prompt_file)\" \\
+  --model $WORKER_MODEL \\
+  --dangerously-skip-permissions \\
+  --output-format text \\
+  2>&1 | tee $output_log"
+    local engine_comment="# Run claude with fresh context (governance.md s7 step 5)"
+  fi
+
   {
     cat <<TRIGGER_EOF
 #!/bin/zsh
@@ -596,12 +651,8 @@ HEARTBEAT_FILE="$WORKER_HEARTBEAT"
 ) &
 HEARTBEAT_PID=\$!
 
-# Run claude with fresh context (governance.md s7 step 5)
-claude -p "\$(cat $prompt_file)" \\
-  --model $WORKER_MODEL \\
-  --dangerously-skip-permissions \\
-  --output-format text \\
-  2>&1 | tee $output_log
+$engine_comment
+$engine_cmd
 
 # Cleanup heartbeat writer
 kill \$HEARTBEAT_PID 2>/dev/null
@@ -633,6 +684,23 @@ write_verifier_trigger() {
   } | atomic_write "$prompt_file"
 
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
+  # Engine-specific launch command (expanded at write time)
+  if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+    local engine_cmd="${CODEX_BIN:-codex} -m $CODEX_MODEL \\
+  -c model_reasoning_effort=\"$CODEX_REASONING\" \\
+  --dangerously-bypass-approvals-and-sandbox \\
+  \"\$(cat $prompt_file)\" \\
+  2>&1 | tee $output_log"
+    local engine_comment="# Run codex with fresh context (governance.md s7 step 7)"
+  else
+    local engine_cmd="$CLAUDE_BIN -p \"\$(cat $prompt_file)\" \\
+  --model $VERIFIER_MODEL \\
+  --dangerously-skip-permissions \\
+  --output-format text \\
+  2>&1 | tee $output_log"
+    local engine_comment="# Run claude with fresh context (governance.md s7 step 7)"
+  fi
+
   {
     cat <<TRIGGER_EOF
 #!/bin/zsh
@@ -651,12 +719,8 @@ HEARTBEAT_FILE="$VERIFIER_HEARTBEAT"
 ) &
 HEARTBEAT_PID=\$!
 
-# Run claude with fresh context (governance.md s7 step 7)
-claude -p "\$(cat $prompt_file)" \\
-  --model $VERIFIER_MODEL \\
-  --dangerously-skip-permissions \\
-  --output-format text \\
-  2>&1 | tee $output_log
+$engine_comment
+$engine_cmd
 
 # Cleanup heartbeat writer
 kill \$HEARTBEAT_PID 2>/dev/null
@@ -687,6 +751,8 @@ update_status() {
   "phase": "'"$phase"'",
   "worker_model": "'"$WORKER_MODEL"'",
   "verifier_model": "'"$VERIFIER_MODEL"'",
+  "worker_engine": "'"$WORKER_ENGINE"'",
+  "verifier_engine": "'"$VERIFIER_ENGINE"'",
   "last_result": "'"$last_result"'",
   "consecutive_failures": '"$CONSECUTIVE_FAILURES"',
   "updated_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
@@ -1021,10 +1087,16 @@ main() {
 
     update_status "worker" "running"
 
-    # --- governance.md s7 step 5: Execute Worker (interactive claude, tmux pattern) ---
-    # Step 5a: Launch interactive claude in Worker pane
-    local worker_launch="$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
-    log "  Launching Worker claude in pane $WORKER_PANE..."
+    # --- governance.md s7 step 5: Execute Worker (interactive TUI, tmux pattern) ---
+    # Step 5a: Launch interactive worker engine in Worker pane
+    local worker_launch
+    if [[ "$WORKER_ENGINE" = "codex" ]]; then
+      worker_launch="${CODEX_BIN:-codex} -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+      log "  Launching Worker codex in pane $WORKER_PANE..."
+    else
+      worker_launch="$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
+      log "  Launching Worker claude in pane $WORKER_PANE..."
+    fi
     tmux send-keys -t "$WORKER_PANE" -l -- "$worker_launch"
     tmux send-keys -t "$WORKER_PANE" Enter
 
@@ -1109,8 +1181,14 @@ main() {
           wait_for_pane_ready "$VERIFIER_PANE" 5 2>/dev/null || true
         fi
 
-        local verifier_launch="$CLAUDE_BIN --model $VERIFIER_MODEL --dangerously-skip-permissions"
-        log "  Launching Verifier claude in pane $VERIFIER_PANE..."
+        local verifier_launch
+        if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+          verifier_launch="${CODEX_BIN:-codex} -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+          log "  Launching Verifier codex in pane $VERIFIER_PANE..."
+        else
+          verifier_launch="$CLAUDE_BIN --model $VERIFIER_MODEL --dangerously-skip-permissions"
+          log "  Launching Verifier claude in pane $VERIFIER_PANE..."
+        fi
         tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_launch"
         tmux send-keys -t "$VERIFIER_PANE" Enter
 

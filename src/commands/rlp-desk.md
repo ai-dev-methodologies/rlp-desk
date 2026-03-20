@@ -31,7 +31,8 @@ Ask about these items one by one (or in small groups):
 5. **Verification Commands** — build, test, lint commands
 6. **Completion / Blocked Criteria**
 7. **Worker / Verifier Model** — haiku, sonnet, opus. Suggest defaults (worker: sonnet, verifier: opus), ask if OK.
-8. **Max Iterations** — suggest based on story count, ask if OK.
+8. **Engine** — claude (default) or codex for Worker/Verifier. Ask: "Use claude (default) or codex for Worker/Verifier?" If codex: ask for model (default: gpt-5.4) and reasoning effort (default: high).
+9. **Max Iterations** — suggest based on story count, ask if OK.
 
 After all items are confirmed, present the full contract summary.
 On approval, offer to run `init`.
@@ -56,6 +57,10 @@ Options (parse from `$ARGUMENTS`):
 - `--max-iter N` (default: 100)
 - `--worker-model MODEL` (default: sonnet)
 - `--verifier-model MODEL` (default: opus)
+- `--worker-engine claude|codex` (default: `claude`) — engine for Worker
+- `--verifier-engine claude|codex` (default: `claude`) — engine for Verifier
+- `--codex-model MODEL` (default: `gpt-5.4`) — model passed to codex CLI
+- `--codex-reasoning low|medium|high` (default: `high`) — reasoning effort for codex
 - `--debug` — enable debug logging (tmux mode only, writes to logs/<slug>/debug.log)
 
 ### Mode Selection
@@ -77,6 +82,10 @@ ROOT="$PWD" \
 MAX_ITER=<--max-iter value> \
 WORKER_MODEL=<--worker-model value> \
 VERIFIER_MODEL=<--verifier-model value> \
+WORKER_ENGINE=<--worker-engine value, default: claude> \
+VERIFIER_ENGINE=<--verifier-engine value, default: claude> \
+CODEX_MODEL=<--codex-model value, default: gpt-5.4> \
+CODEX_REASONING=<--codex-reasoning value, default: high> \
 DEBUG=<1 if --debug, else 0> \
   zsh ~/.claude/ralph-desk/run_ralph_desk.zsh
 ```
@@ -124,7 +133,9 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 - Combine with iteration number + memory contract
 - Write to `.claude/ralph-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail)
 
-**⑤ Execute Worker via Agent()**
+**⑤ Execute Worker**
+
+If `--worker-engine claude` (default):
 ```
 Agent(
   description="rlp-desk worker iter-NNN",
@@ -137,13 +148,22 @@ Agent(
 - Agent returns synchronously. No polling needed.
 - Each Agent() = fresh context. Guaranteed.
 
+If `--worker-engine codex`:
+```
+Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full worker prompt text>")
+```
+- Codex runs as a subprocess via Bash(), not Agent().
+- Each Bash() call = fresh context for codex.
+
 **⑥ Read memory.md again** (Worker updated it)
 - `stop=continue` → go to ⑧
 - `stop=verify` → go to ⑦
 - `stop=blocked` → write BLOCKED sentinel, stop
 
-**⑦ Execute Verifier via Agent()**
+**⑦ Execute Verifier**
 - Build verifier prompt, write to `iter-NNN.verifier-prompt.md`
+
+If `--verifier-engine claude` (default):
 ```
 Agent(
   description="rlp-desk verifier iter-NNN",
@@ -152,6 +172,11 @@ Agent(
   mode="bypassPermissions",
   prompt=<full verifier prompt text>
 )
+```
+
+If `--verifier-engine codex`:
+```
+Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full verifier prompt text>")
 ```
 - Read `verify-verdict.json`:
   - `pass` + `complete` → write COMPLETE sentinel, report done!

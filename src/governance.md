@@ -12,7 +12,7 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 - **Worker claim ≠ complete**: A Worker's DONE is merely a claim. The Verifier must independently verify before it's confirmed.
 - **Verifier is independent**: The Verifier judges based on evidence alone, without knowledge of the Worker's reasoning process.
 - **Sentinels are Leader-owned**: Only the Leader writes COMPLETE/BLOCKED sentinels.
-- **Claude models only**: haiku, sonnet, opus.
+- **Supported engines**: claude (default; models: haiku, sonnet, opus) and codex (opt-in via `--worker-engine codex` / `--verifier-engine codex`).
 
 ## 2. Roles
 
@@ -43,7 +43,9 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 RUNNING → DONE_CLAIMED → VERIFYING → COMPLETE | CONTINUE | BLOCKED
 ```
 
-## 4. Model Routing (Claude only)
+## 4. Model Routing
+
+### Claude (default engine)
 
 | Role | Default Model | Override Criteria |
 |------|---------------|-------------------|
@@ -58,12 +60,21 @@ The Leader decides each iteration. Decision criteria:
 - Simple repetitive task → downgrade model
 - User explicitly specified → use as given
 
+### Codex (opt-in engine)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--codex-model` | `gpt-5.4` | Model passed to the `codex` CLI |
+| `--codex-reasoning` | `high` | Reasoning effort: `low`, `medium`, or `high` |
+
+Model routing is static when using codex: the same model and reasoning effort apply to both Worker and Verifier. There is no dynamic upgrade path. Claude is the default engine; codex is explicitly opt-in.
+
 ## 5a. Execution: Agent() Approach (default) — "Smart Mode"
 
 All environments (Claude Code, OpenCode) use the same Agent tool.
 
 ```
-# Worker
+# Worker (claude engine, default)
 Agent(
   subagent_type="executor",
   model="sonnet",
@@ -71,7 +82,7 @@ Agent(
   mode="bypassPermissions"
 )
 
-# Verifier
+# Verifier (claude engine, default)
 Agent(
   subagent_type="executor",
   model="sonnet",
@@ -79,6 +90,15 @@ Agent(
   mode="bypassPermissions"
 )
 ```
+
+If `--worker-engine codex` or `--verifier-engine codex` (opt-in):
+```
+# Worker or Verifier (codex engine)
+Bash("codex -m <codex_model> -c model_reasoning_effort=<codex_reasoning> --dangerously-bypass-approvals-and-sandbox <prompt>")
+```
+- Codex runs as a subprocess via `Bash()`, not `Agent()` — the Agent tool is Claude-specific.
+- Each `Bash()` call = fresh context for codex.
+- Claude is the default engine. Codex is explicitly opt-in.
 
 Characteristics:
 - Each call = fresh context (new subprocess)
@@ -106,14 +126,25 @@ The tmux runner (`run_ralph_desk.zsh`) creates a tmux session with three panes:
 - **Worker pane** — receives `claude -p` invocations via trigger scripts
 - **Verifier pane** — receives `claude -p` invocations via trigger scripts
 
-All `claude` CLI calls use `--dangerously-skip-permissions`:
+By default, `claude` CLI calls use `--dangerously-skip-permissions`:
 ```bash
+# claude engine (default)
 claude -p "$(cat /path/to/prompt.md)" \
   --model sonnet \
   --dangerously-skip-permissions
 ```
 
-**Security implication:** `--dangerously-skip-permissions` allows the CLI to execute code without user confirmation. The tmux runner requires this because there is no interactive user to approve each action. Only run tmux mode in trusted environments with trusted prompts.
+When `WORKER_ENGINE=codex` or `VERIFIER_ENGINE=codex`, the `codex` CLI is used instead:
+```bash
+# codex engine (opt-in)
+codex -m gpt-5.4 \
+  -c model_reasoning_effort="high" \
+  --dangerously-bypass-approvals-and-sandbox \
+  "$(cat /path/to/prompt.md)"
+```
+The codex CLI is only required when an engine is set to `codex`. Claude remains the default engine throughout.
+
+**Security implication:** Both `--dangerously-skip-permissions` (claude) and `--dangerously-bypass-approvals-and-sandbox` (codex) allow the CLI to execute code without user confirmation. The tmux runner requires this because there is no interactive user to approve each action. Only run tmux mode in trusted environments with trusted prompts.
 
 Characteristics:
 - Leader is a shell script, not an LLM — zero tokens consumed for orchestration.

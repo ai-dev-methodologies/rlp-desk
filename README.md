@@ -134,6 +134,10 @@ for iteration in 1..max_iter:
 | `--worker-model MODEL` | sonnet | Worker model (haiku/sonnet/opus) |
 | `--verifier-model MODEL` | opus | Verifier model (haiku/sonnet/opus) |
 | `--mode agent\|tmux` | agent | Execution mode (see below) |
+| `--worker-engine claude\|codex` | claude | Engine for Worker (claude uses Agent(), codex uses Bash CLI) |
+| `--verifier-engine claude\|codex` | claude | Engine for Verifier |
+| `--codex-model MODEL` | gpt-5.4 | Model passed to the Codex CLI (when engine=codex) |
+| `--codex-reasoning low\|medium\|high` | high | Reasoning effort for Codex |
 
 ## Execution Modes
 
@@ -192,6 +196,42 @@ To clean up tmux artifacts:
 ```
 /rlp-desk clean calculator --kill-session
 ```
+
+## Engine Support
+
+RLP Desk supports two execution engines for Worker and Verifier. **Claude is the default.** Codex is opt-in.
+
+### Claude (default)
+
+```
+/rlp-desk run calculator
+/rlp-desk run calculator --worker-engine claude --verifier-engine claude
+```
+
+Uses Claude Code's `Agent()` tool (agent mode) or `claude -p` CLI (tmux mode). Supports dynamic model routing (haiku/sonnet/opus).
+
+### Codex (opt-in)
+
+```bash
+# Install codex CLI first
+npm install -g @openai/codex
+
+# Run with codex worker
+/rlp-desk run calculator --worker-engine codex
+
+# Customize model and reasoning effort
+/rlp-desk run calculator --worker-engine codex --codex-model gpt-5.4 --codex-reasoning high
+
+# Mix engines: codex worker, claude verifier
+/rlp-desk run calculator --worker-engine codex --verifier-engine claude
+```
+
+Uses the `codex` CLI via `Bash()` (agent mode) or as an interactive TUI (tmux mode). The `codex` binary is only required when an engine is set to `codex`.
+
+| Engine | Agent Mode | Tmux Mode | Dynamic Routing |
+|--------|-----------|-----------|-----------------|
+| claude | `Agent()` tool | `claude -p` TUI | Yes (haiku/sonnet/opus) |
+| codex  | `Bash("codex ...")` | `codex` TUI | No (static model) |
 
 ## Project Structure
 
