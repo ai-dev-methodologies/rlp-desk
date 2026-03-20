@@ -50,7 +50,7 @@ RLP Desk supports two modes for running the Leader loop. Both honor the same gov
 
 **Agent() mode** is synchronous and simple: each `Agent()` call blocks until the subprocess finishes, then the Leader reads the filesystem. No polling, no signal files, no tmux.
 
-**Tmux mode** trades dynamic routing for visibility and independence. The shell Leader writes prompts to files, sends short trigger commands via `tmux send-keys`, and polls structured JSON signal files (`iter-signal.json`, `verify-verdict.json`) for control flow. It uses proven [omc-teams](https://github.com/anthropics/omc-teams) tmux patterns — write-then-notify, pane ID stability, copy-mode guards, heartbeat monitoring — for reliable, race-free orchestration.
+**Tmux mode** trades dynamic routing for visibility and independence. The shell Leader writes prompts to files, sends short trigger commands via `tmux send-keys`, and polls structured JSON signal files (`iter-signal.json`, `verify-verdict.json`) for control flow. It uses proven tmux patterns — write-then-notify, pane ID stability, copy-mode guards, heartbeat monitoring — for reliable, race-free orchestration.
 
 The tmux script is a second implementation of the governance protocol. Traceability is maintained via governance.md section 7 step-number comments throughout the script.
 

@@ -7,7 +7,7 @@ set -uo pipefail
 # Ralph Desk Tmux Runner
 #
 # Implements the Leader loop from governance.md section 7 as a shell script.
-# Uses omc-teams proven patterns: write-then-notify, pane IDs (%N),
+# Uses tmux proven patterns: write-then-notify, pane IDs (%N),
 # copy-mode guards, verification-based retry, heartbeat monitoring,
 # idle pane nudging, exponential backoff restarts, atomic file writes.
 #
@@ -103,7 +103,7 @@ log_error() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2
 }
 
-# --- governance.md s7: Atomic file writes (omc-teams pattern) ---
+# --- governance.md s7: Atomic file writes (tmux pattern) ---
 # All file writes by the Leader use tmp+mv to prevent corruption.
 atomic_write() {
   local target="$1"
@@ -180,7 +180,7 @@ validate_scaffold() {
 }
 
 # =============================================================================
-# Session Management (omc-teams pattern: pane IDs)
+# Session Management (tmux pattern: pane IDs)
 # =============================================================================
 
 # --- governance.md s7 step 1: Check for existing sessions ---
@@ -205,7 +205,7 @@ check_existing_sessions() {
 create_session() {
   log "Creating tmux session: $SESSION_NAME"
 
-  # omc-teams split-pane pattern
+  # tmux split-pane pattern
   if [[ -n "${TMUX:-}" ]]; then
     # Inside tmux: split CURRENT pane in place
     # Current pane stays as-is (leader/user stays here)
@@ -220,7 +220,7 @@ create_session() {
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
   else
     # Outside tmux: wrap current terminal into a new tmux session and attach
-    # omc-teams pattern: user sees panes immediately, no separate attach needed
+    # tmux pattern: user sees panes immediately, no separate attach needed
     tmux new-session -d -s "$SESSION_NAME" -x 200 -y 50 -c "$ROOT"
     LEADER_PANE=$(tmux display-message -p -t "$SESSION_NAME" '#{pane_id}')
     WORKER_PANE=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
@@ -263,7 +263,7 @@ create_session() {
 }
 
 # =============================================================================
-# Copy-Mode Guard (omc-teams pattern)
+# Copy-Mode Guard (tmux pattern)
 # =============================================================================
 
 # --- governance.md s7 step 5: Check pane_in_mode before every send-keys ---
@@ -278,7 +278,7 @@ check_copy_mode() {
 }
 
 # =============================================================================
-# Verification-Based Send Retry (omc-teams pattern)
+# Verification-Based Send Retry (tmux pattern)
 # =============================================================================
 
 # --- governance.md s7 step 5: Send with copy-mode guard and retry ---
@@ -286,7 +286,7 @@ safe_send_keys() {
   local pane_id="$1"
   local text="$2"
 
-  # --- Exact omc-teams sendToWorker pattern (tmux-session.js:527-626) ---
+  # --- Exact tmux sendToWorker pattern (tmux-session.js:527-626) ---
 
   # Guard: copy-mode captures keys; skip entirely
   if ! check_copy_mode "$pane_id"; then
@@ -313,7 +313,7 @@ safe_send_keys() {
   log_debug " Sending text to pane $pane_id (${#text} chars)"
   tmux send-keys -t "$pane_id" -l -- "$text"
 
-  # Allow input buffer to settle (omc-teams: 150ms)
+  # Allow input buffer to settle (tmux: 150ms)
   sleep 0.15
 
   # Submit: up to 6 rounds of C-m double-press
@@ -321,7 +321,7 @@ safe_send_keys() {
   while (( round < 6 )); do
     sleep 0.1
     if (( round == 0 && pane_busy )); then
-      # Busy pane: Tab+C-m queue semantics (omc-teams pattern)
+      # Busy pane: Tab+C-m queue semantics (tmux pattern)
       tmux send-keys -t "$pane_id" Tab
       sleep 0.08
       tmux send-keys -t "$pane_id" C-m
@@ -349,7 +349,7 @@ safe_send_keys() {
     return 1
   fi
 
-  # Adaptive fallback: C-u clear line, resend (omc-teams pattern)
+  # Adaptive fallback: C-u clear line, resend (tmux pattern)
   log_debug " Adaptive retry — clearing line and resending"
   tmux send-keys -t "$pane_id" C-u
   sleep 0.08
@@ -385,19 +385,19 @@ safe_send_keys() {
 }
 
 # =============================================================================
-# Wait for Pane Ready (omc-teams pattern: paneLooksReady)
+# Wait for Pane Ready (tmux pattern: paneLooksReady)
 # =============================================================================
 
 wait_for_pane_ready() {
   local pane_id="$1"
-  local timeout="${2:-10}"  # omc-teams default: 10s
+  local timeout="${2:-10}"  # tmux default: 10s
   local start=$(date +%s)
   log "  Waiting for pane $pane_id ready..."
   while (( $(date +%s) - start < timeout )); do
     local captured
     captured=$(tmux capture-pane -t "$pane_id" -p -S -20 2>/dev/null)
 
-    # Auto-dismiss trust prompt (omc-teams pattern: paneHasTrustPrompt)
+    # Auto-dismiss trust prompt (tmux pattern: paneHasTrustPrompt)
     if echo "$captured" | grep -q "Do you trust" 2>/dev/null; then
       log "  Trust prompt detected, auto-dismissing..."
       tmux send-keys -t "$pane_id" Enter
@@ -407,7 +407,7 @@ wait_for_pane_ready() {
       continue
     fi
 
-    # omc-teams paneLooksReady: check each line for prompt char at line start
+    # tmux paneLooksReady: check each line for prompt char at line start
     local ready=0
     echo "$captured" | while IFS= read -r line; do
       local trimmed="${line## }"
@@ -437,7 +437,7 @@ wait_for_pane_ready() {
 }
 
 # =============================================================================
-# Heartbeat Monitoring (omc-teams pattern)
+# Heartbeat Monitoring (tmux pattern)
 # =============================================================================
 
 # --- governance.md s7 step 5+6: Check heartbeat freshness ---
@@ -473,7 +473,7 @@ check_heartbeat_exited() {
 }
 
 # =============================================================================
-# Idle Pane Nudging (omc-teams pattern)
+# Idle Pane Nudging (tmux pattern)
 # =============================================================================
 
 # --- governance.md s7 step 5+6: Nudge idle panes ---
@@ -503,7 +503,7 @@ check_and_nudge_idle_pane() {
 }
 
 # =============================================================================
-# Exponential Backoff Restart (omc-teams pattern)
+# Exponential Backoff Restart (tmux pattern)
 # =============================================================================
 
 # --- governance.md s7 step 5: Restart dead workers with backoff ---
@@ -529,14 +529,14 @@ restart_worker() {
   tmux send-keys -t "$pane_id" "/exit" Enter 2>/dev/null
   sleep 2
 
-  # Re-launch claude (omc-teams interactive pattern)
+  # Re-launch claude (tmux interactive pattern)
   safe_send_keys "$pane_id" "$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
   WORKER_RESTARTS[$iter]=$((restart_count + 1))
   return 0
 }
 
 # =============================================================================
-# Write-Then-Notify: Trigger Script Generation (omc-teams CRITICAL pattern)
+# Write-Then-Notify: Trigger Script Generation (tmux CRITICAL pattern)
 # =============================================================================
 
 # --- governance.md s7 step 4+5: Write prompt and trigger to files ---
@@ -586,7 +586,7 @@ write_worker_trigger() {
 
 HEARTBEAT_FILE="$WORKER_HEARTBEAT"
 
-# Background heartbeat writer (omc-teams pattern)
+# Background heartbeat writer (tmux pattern)
 (
   while true; do
     echo '{"epoch":'\$(date +%s)',"pid":'"\$\$"'}' > "\${HEARTBEAT_FILE}.tmp.\$\$"
@@ -641,7 +641,7 @@ write_verifier_trigger() {
 
 HEARTBEAT_FILE="$VERIFIER_HEARTBEAT"
 
-# Background heartbeat writer (omc-teams pattern)
+# Background heartbeat writer (tmux pattern)
 (
   while true; do
     echo '{"epoch":'\$(date +%s)',"pid":'"\$\$"'}' > "\${HEARTBEAT_FILE}.tmp.\$\$"
@@ -841,7 +841,7 @@ poll_for_signal() {
       return 0  # success
     fi
 
-    # Check heartbeat freshness (omc-teams pattern)
+    # Check heartbeat freshness (tmux pattern)
     if [[ -f "$heartbeat_file" ]]; then
       if check_heartbeat_exited "$heartbeat_file"; then
         # Process exited but no signal file -- give a brief grace period
@@ -887,7 +887,7 @@ poll_for_signal() {
       fi
     fi
 
-    # Idle pane nudging (omc-teams pattern)
+    # Idle pane nudging (tmux pattern)
     check_and_nudge_idle_pane "$pane_id" "nudge_count"
 
     sleep "$POLL_INTERVAL"
@@ -1021,14 +1021,14 @@ main() {
 
     update_status "worker" "running"
 
-    # --- governance.md s7 step 5: Execute Worker (interactive claude, omc-teams pattern) ---
+    # --- governance.md s7 step 5: Execute Worker (interactive claude, tmux pattern) ---
     # Step 5a: Launch interactive claude in Worker pane
     local worker_launch="$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
     log "  Launching Worker claude in pane $WORKER_PANE..."
     tmux send-keys -t "$WORKER_PANE" -l -- "$worker_launch"
     tmux send-keys -t "$WORKER_PANE" Enter
 
-    # Step 5b: Wait for claude TUI to be ready (omc-teams pattern)
+    # Step 5b: Wait for claude TUI to be ready (tmux pattern)
     if ! wait_for_pane_ready "$WORKER_PANE" 30; then
       log_error "Worker claude failed to start"
       write_blocked_sentinel "Worker claude failed to start in pane"
