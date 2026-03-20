@@ -1051,10 +1051,19 @@ main() {
     # --- governance.md s7 step 5+6: Poll for Worker completion ---
     log "  Polling for iter-signal.json..."
     if ! poll_for_signal "$SIGNAL_FILE" "$WORKER_HEARTBEAT" "$WORKER_PANE" "$worker_launch" "Worker"; then
-      # Monitor failure or timeout
+      # Check if Worker is still actively running (not stuck)
+      local worker_cmd
+      worker_cmd=$(tmux display-message -p -t "$WORKER_PANE" '#{pane_current_command}' 2>/dev/null)
+      if [[ "$worker_cmd" == "node" || "$worker_cmd" == "claude" ]]; then
+        # Worker is still active — timeout but not a failure, just slow
+        log "  Worker timed out but still active ($worker_cmd). Extending..."
+        update_status "worker" "slow"
+        continue
+      fi
+      # Worker is truly dead/stuck
       (( MONITOR_FAILURE_COUNT++ ))
       if (( MONITOR_FAILURE_COUNT >= 3 )); then
-        write_blocked_sentinel "3 consecutive monitor failures"
+        write_blocked_sentinel "3 consecutive monitor failures (worker not active)"
         update_status "blocked" "monitor_failures"
         return 1
       fi
