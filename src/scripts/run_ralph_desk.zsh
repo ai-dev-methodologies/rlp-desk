@@ -29,6 +29,16 @@ set -uo pipefail
 #   IDLE_NUDGE_THRESHOLD      - seconds of idle before nudge (default: 30)
 #   MAX_NUDGES                - max nudges per pane per iteration (default: 3)
 #
+# Per-role codex config:
+#   WORKER_CODEX_MODEL            - codex model for Worker (default: gpt-5.4)
+#   WORKER_CODEX_REASONING        - codex reasoning for Worker (default: high)
+#   VERIFIER_CODEX_MODEL          - codex model for Verifier (default: gpt-5.4)
+#   VERIFIER_CODEX_REASONING      - codex reasoning for Verifier (default: high)
+#
+# Consensus scope:
+#   CONSENSUS_SCOPE               - when consensus applies (default: all)
+#                                   all=every verify, final-only=final ALL only
+#
 # Dependencies: tmux, claude CLI, jq
 # Optional: codex CLI (required when WORKER_ENGINE=codex, VERIFIER_ENGINE=codex, or VERIFY_CONSENSUS=1)
 # =============================================================================
@@ -49,13 +59,16 @@ MAX_NUDGES="${MAX_NUDGES:-3}"
 # --- Engine Selection ---
 WORKER_ENGINE="${WORKER_ENGINE:-claude}"    # claude|codex
 VERIFIER_ENGINE="${VERIFIER_ENGINE:-claude}"  # claude|codex
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
-CODEX_REASONING="${CODEX_REASONING:-high}"   # low|medium|high
+WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.4}"
+WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high
+VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.4}"
+VERIFIER_CODEX_REASONING="${VERIFIER_CODEX_REASONING:-high}"   # low|medium|high
 CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 
 # --- Verify Mode ---
 VERIFY_MODE="${VERIFY_MODE:-per-us}"        # per-us|batch
 VERIFY_CONSENSUS="${VERIFY_CONSENSUS:-0}"   # 0|1
+CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-all}"   # all|final-only
 
 # --- Derived Paths ---
 DESK="$ROOT/.claude/ralph-desk"
@@ -125,6 +138,24 @@ atomic_write() {
   local tmp="${target}.tmp.$$"
   cat > "$tmp"
   mv "$tmp" "$target"
+}
+
+# --- omc-teams pattern: Kill-and-replace dead/stuck worker panes ---
+replace_worker_pane() {
+  local old_pane="$1"
+  local role="$2"  # "worker" or "verifier"
+
+  log "  Replacing dead $role pane $old_pane..."
+  tmux kill-pane -t "$old_pane" 2>/dev/null
+
+  # Create fresh pane via split-window off leader (omc-teams kill-and-replace pattern)
+  local new_pane
+  new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+
+  log "  New $role pane: $new_pane (replaced $old_pane)"
+  log_debug "[EXEC] iter=$ITERATION pane_replaced=${role} old=$old_pane new=$new_pane"
+
+  echo "$new_pane"
 }
 
 # =============================================================================
@@ -590,7 +621,7 @@ restart_worker() {
 
   # Re-launch worker (tmux interactive pattern)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
-    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
   else
     safe_send_keys "$pane_id" "$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
   fi
@@ -681,8 +712,8 @@ write_worker_trigger() {
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
   # Engine-specific launch command (expanded at write time)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
-    local engine_cmd="${CODEX_BIN:-codex} -m $CODEX_MODEL \\
-  -c model_reasoning_effort=\"$CODEX_REASONING\" \\
+    local engine_cmd="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL \\
+  -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" \\
   --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\" \\
   2>&1 | tee $output_log"
@@ -768,8 +799,8 @@ write_verifier_trigger() {
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
   # Engine-specific launch command (expanded at write time)
   if [[ "$verifier_engine" = "codex" ]]; then
-    local engine_cmd="${CODEX_BIN:-codex} -m $CODEX_MODEL \\
-  -c model_reasoning_effort=\"$CODEX_REASONING\" \\
+    local engine_cmd="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
+  -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" \\
   --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\" \\
   2>&1 | tee $output_log"
@@ -836,6 +867,7 @@ update_status() {
   local consensus_json=""
   if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
     consensus_json=',
+  "consensus_scope": "'"$CONSENSUS_SCOPE"'",
   "consensus_round": '"$CONSENSUS_ROUND"',
   "claude_verdict": "'"${CLAUDE_VERDICT:-}"'",
   "codex_verdict": "'"${CODEX_VERDICT:-}"'"'
@@ -850,6 +882,10 @@ update_status() {
   "verifier_model": "'"$VERIFIER_MODEL"'",
   "worker_engine": "'"$WORKER_ENGINE"'",
   "verifier_engine": "'"$VERIFIER_ENGINE"'",
+  "worker_codex_model": "'"$WORKER_CODEX_MODEL"'",
+  "worker_codex_reasoning": "'"$WORKER_CODEX_REASONING"'",
+  "verifier_codex_model": "'"$VERIFIER_CODEX_MODEL"'",
+  "verifier_codex_reasoning": "'"$VERIFIER_CODEX_REASONING"'",
   "verify_mode": "'"$VERIFY_MODE"'",
   "verify_consensus": '"$VERIFY_CONSENSUS"',
   "last_result": "'"$last_result"'",
@@ -1212,7 +1248,7 @@ run_single_verifier() {
   # Launch verifier
   if [[ "$engine" = "codex" ]]; then
     # Codex: use non-interactive exec mode in pane (more reliable than TUI for sequential runs)
-    local codex_cmd="${CODEX_BIN:-codex} exec \"\$(cat $prompt_file)\" -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+    local codex_cmd="${CODEX_BIN:-codex} exec \"\$(cat $prompt_file)\" -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
     log "  Running $suffix verifier (codex exec) in pane $VERIFIER_PANE..."
     tmux send-keys -t "$VERIFIER_PANE" -l -- "$codex_cmd"
     tmux send-keys -t "$VERIFIER_PANE" Enter
@@ -1237,13 +1273,21 @@ run_single_verifier() {
 
     # Verify claude actually started working
     local v_submit=0
-    while (( v_submit < 10 )); do
+    while (( v_submit < 15 )); do
       sleep 2
       local v_check
       v_check=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null)
       if echo "$v_check" | grep -qi "esc to interrupt\|thinking\|working\|kneading\|crunching\|clauding\|billowing\|brewing\|tinkering\|burrowing\|saut" 2>/dev/null; then
         log_debug "Verifier$suffix started working after $((v_submit + 1)) checks"
         break
+      fi
+      # After 8 failed attempts, try C-u clear + re-type (omc-teams adaptive retry)
+      if (( v_submit == 8 )); then
+        log_debug "Adaptive instruction retry: clearing line and re-typing"
+        tmux send-keys -t "$VERIFIER_PANE" C-u 2>/dev/null
+        sleep 0.1
+        tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_instruction"
+        tmux send-keys -t "$VERIFIER_PANE" Enter
       fi
       tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null
       sleep 0.3
@@ -1308,13 +1352,15 @@ run_consensus_verification() {
       return 1
     fi
     CLAUDE_VERDICT=$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)
+    log_debug "[EXEC] iter=$iter phase=consensus_claude verdict=$CLAUDE_VERDICT model=$VERIFIER_MODEL"
 
     # Run codex verifier second
-    if ! run_single_verifier "$iter" "codex" "$CODEX_MODEL" "-codex" "$codex_verdict_file"; then
+    if ! run_single_verifier "$iter" "codex" "$VERIFIER_CODEX_MODEL" "-codex" "$codex_verdict_file"; then
       log_error "Codex verifier failed in consensus round $CONSENSUS_ROUND"
       return 1
     fi
     CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
+    log_debug "[EXEC] iter=$iter phase=consensus_codex verdict=$CODEX_VERDICT model=$VERIFIER_CODEX_MODEL reasoning=$VERIFIER_CODEX_REASONING"
 
     log "  Consensus: claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT"
     local _combined_action="retry"
@@ -1325,10 +1371,25 @@ run_consensus_verification() {
 
     # Both pass → success
     if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then
-      # Merge verdicts: use claude verdict as primary, note codex agreement
-      cp "$claude_verdict_file" "$VERDICT_FILE"
+      # Create merged verdict with per-engine details
+      {
+        echo '{'
+        echo '  "verdict": "pass",'
+        echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
+        echo '  "summary": "Consensus PASS: both claude and codex verified independently",'
+        echo '  "recommended_state_transition": "complete",'
+        echo '  "consensus": {'
+        echo '    "claude": { "verdict": "pass", "file": "'"$claude_verdict_file"'" },'
+        echo '    "codex": { "verdict": "pass", "file": "'"$codex_verdict_file"'" },'
+        echo '    "round": '"$CONSENSUS_ROUND"
+        echo '  }'
+        echo '}'
+      } | atomic_write "$VERDICT_FILE"
       return 0
     fi
+
+    # Consensus disagreement
+    log_debug "[EXEC] iter=$iter phase=consensus_disagreement round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT action=fix_contract"
 
     # Either fails → build combined fix contract
     local fix_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
@@ -1431,6 +1492,7 @@ main() {
   log "  Verifier model:  $VERIFIER_MODEL"
   log "  Verify mode:     $VERIFY_MODE"
   log "  Verify consensus:$VERIFY_CONSENSUS"
+  log "  Consensus scope: $CONSENSUS_SCOPE"
   log "  Poll interval:   ${POLL_INTERVAL}s"
   log "  Iter timeout:    ${ITER_TIMEOUT}s"
   # --- Debug: Log execution plan ---
@@ -1446,7 +1508,7 @@ main() {
     log_debug "[PLAN] slug=$SLUG us_count=$us_count us_list=$us_list"
     log_debug "[PLAN] worker_engine=$WORKER_ENGINE worker_model=$WORKER_MODEL"
     log_debug "[PLAN] verifier_engine=$VERIFIER_ENGINE verifier_model=$VERIFIER_MODEL"
-    log_debug "[PLAN] verify_mode=$VERIFY_MODE consensus=$VERIFY_CONSENSUS max_iter=$MAX_ITER"
+    log_debug "[PLAN] verify_mode=$VERIFY_MODE consensus=$VERIFY_CONSENSUS consensus_scope=$CONSENSUS_SCOPE max_iter=$MAX_ITER"
 
     if [[ "$VERIFY_MODE" = "per-us" ]]; then
       # Build expected flow
@@ -1544,7 +1606,7 @@ main() {
     # Step 5a: Launch interactive worker engine in Worker pane
     local worker_launch
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
-      worker_launch="${CODEX_BIN:-codex} -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+      worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
       log "  Launching Worker codex in pane $WORKER_PANE..."
     else
       worker_launch="$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
@@ -1571,7 +1633,7 @@ main() {
 
     # Verify claude actually started working — keep sending C-m until activity detected
     local submit_attempts=0
-    while (( submit_attempts < 10 )); do
+    while (( submit_attempts < 15 )); do
       sleep 2
       local pane_check
       pane_check=$(tmux capture-pane -t "$WORKER_PANE" -p 2>/dev/null)
@@ -1580,14 +1642,22 @@ main() {
         log_debug "[EXEC] iter=$ITERATION worker_submit_check=OK attempts=$((submit_attempts + 1))"
         break
       fi
+      # After 8 failed attempts, try C-u clear + re-type (omc-teams adaptive retry)
+      if (( submit_attempts == 8 )); then
+        log_debug "Adaptive instruction retry: clearing line and re-typing"
+        tmux send-keys -t "$WORKER_PANE" C-u 2>/dev/null
+        sleep 0.1
+        tmux send-keys -t "$WORKER_PANE" -l -- "$worker_instruction"
+        tmux send-keys -t "$WORKER_PANE" Enter
+      fi
       tmux send-keys -t "$WORKER_PANE" C-m 2>/dev/null
       sleep 0.3
       tmux send-keys -t "$WORKER_PANE" C-m 2>/dev/null
       (( submit_attempts++ ))
     done
-    if (( submit_attempts >= 10 )); then
-      log "  WARNING: Could not confirm Worker started working after 10 attempts"
-      log_debug "[EXEC] iter=$ITERATION worker_submit_check=FAILED attempts=10"
+    if (( submit_attempts >= 15 )); then
+      log "  WARNING: Could not confirm Worker started working after 15 attempts"
+      log_debug "[EXEC] iter=$ITERATION worker_submit_check=FAILED attempts=15"
     fi
 
     # --- governance.md s7 step 5+6: Poll for Worker completion ---
@@ -1621,10 +1691,8 @@ main() {
           update_status "worker" "poll_failed"
           worker_poll_done=1  # exit poll loop, continue to next iteration
           log_debug "[EXEC] iter=$ITERATION poll_worker_dead=true worker_cmd=$worker_cmd"
-          # Kill dead worker session so next iteration starts fresh
-          tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
-          tmux send-keys -t "$WORKER_PANE" "/exit" Enter 2>/dev/null
-          sleep 1
+          # Worker is truly dead/stuck — kill and replace pane (omc-teams pattern)
+          WORKER_PANE=$(replace_worker_pane "$WORKER_PANE" "worker")
         fi
       fi
     done
@@ -1666,8 +1734,17 @@ main() {
 
         update_status "verifier" "running"
 
-        # --- Consensus vs single verification ---
+        # --- Consensus scope check ---
+        local use_consensus=0
         if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+          case "$CONSENSUS_SCOPE" in
+            all) use_consensus=1 ;;
+            final-only) [[ "$signal_us_id" == "ALL" ]] && use_consensus=1 ;;
+          esac
+        fi
+
+        # --- Consensus vs single verification ---
+        if (( use_consensus )); then
           # US-004: Run consensus verification (claude + codex sequentially)
           local consensus_rc=0
           run_consensus_verification "$ITERATION" || consensus_rc=$?
@@ -1700,7 +1777,7 @@ main() {
 
           local verifier_launch
           if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
-            verifier_launch="${CODEX_BIN:-codex} -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+            verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
             log "  Launching Verifier codex in pane $VERIFIER_PANE..."
           else
             verifier_launch="$CLAUDE_BIN --model $VERIFIER_MODEL --dangerously-skip-permissions"
@@ -1726,13 +1803,21 @@ main() {
 
           # Verify verifier actually started working
           local vs_submit=0
-          while (( vs_submit < 10 )); do
+          while (( vs_submit < 15 )); do
             sleep 2
             local vs_check
             vs_check=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null)
             if echo "$vs_check" | grep -qi "esc to interrupt\|thinking\|working\|kneading\|crunching\|clauding\|billowing\|brewing\|tinkering\|burrowing\|saut\|Exploring\|Running\|exec\|Explored" 2>/dev/null; then
               log_debug "Verifier started working after $((vs_submit + 1)) checks"
               break
+            fi
+            # After 8 failed attempts, try C-u clear + re-type (omc-teams adaptive retry)
+            if (( vs_submit == 8 )); then
+              log_debug "Adaptive instruction retry: clearing line and re-typing"
+              tmux send-keys -t "$VERIFIER_PANE" C-u 2>/dev/null
+              sleep 0.1
+              tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_instruction"
+              tmux send-keys -t "$VERIFIER_PANE" Enter
             fi
             tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null
             sleep 0.3
@@ -1745,6 +1830,8 @@ main() {
           if ! poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier"; then
             log_error "Verifier poll failed"
             update_status "verifier" "poll_failed"
+            # Verifier is dead/stuck — kill and replace pane (omc-teams pattern)
+            VERIFIER_PANE=$(replace_worker_pane "$VERIFIER_PANE" "verifier")
             continue
           fi
         fi

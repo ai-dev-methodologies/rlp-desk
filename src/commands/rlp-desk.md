@@ -31,10 +31,16 @@ Ask about these items one by one (or in small groups):
 5. **Verification Commands** — build, test, lint commands
 6. **Completion / Blocked Criteria**
 7. **Worker / Verifier Model** — haiku, sonnet, opus. Suggest defaults (worker: sonnet, verifier: opus), ask if OK.
-8. **Engine** — claude (default) or codex for Worker/Verifier. Ask: "Use claude (default) or codex for Worker/Verifier?" If codex: ask for model (default: gpt-5.4) and reasoning effort (default: high).
+8. **Engine & Model** — For each role (Worker, Verifier):
+   - Engine: claude (default) or codex
+   - If claude: suggest model (haiku/sonnet/opus) based on task complexity
+   - If codex: suggest model (default: gpt-5.4) and reasoning effort (low/medium/high)
+   - AI should recommend: "For this task complexity, I suggest Worker: sonnet, Verifier: opus"
+   - If codex selected: "For codex Worker, I suggest gpt-5.4 with high reasoning"
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
 10. **Verify Consensus** — Ask: "Use cross-engine consensus verification? (Both claude and codex verify independently, both must pass.) Requires codex CLI." Default: no.
-11. **Max Iterations** — suggest based on story count, ask if OK.
+11. **Consensus Scope** — If consensus enabled, ask: "Consensus on every verify (all, default) or only on final verify (final-only)?" Default: all.
+12. **Max Iterations** — suggest based on story count, ask if OK.
 
 After all items are confirmed, present the full contract summary.
 On approval, offer to run `init`.
@@ -61,12 +67,17 @@ Options (parse from `$ARGUMENTS`):
 - `--verifier-model MODEL` (default: opus)
 - `--worker-engine claude|codex` (default: `claude`) — engine for Worker
 - `--verifier-engine claude|codex` (default: `claude`) — engine for Verifier
-- `--codex-model MODEL` (default: `gpt-5.4`) — model passed to codex CLI
-- `--codex-reasoning low|medium|high` (default: `high`) — reasoning effort for codex
+- `--worker-codex-model MODEL` (default: `gpt-5.4`) — codex model for Worker
+- `--worker-codex-reasoning low|medium|high` (default: `high`) — reasoning for Worker
+- `--verifier-codex-model MODEL` (default: `gpt-5.4`) — codex model for Verifier
+- `--verifier-codex-reasoning low|medium|high` (default: `high`) — reasoning for Verifier
 - `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
   - `per-us`: verify after each US, then final full verify of all AC
   - `batch`: verify only after all US done (legacy behavior)
 - `--verify-consensus` — enable cross-engine consensus verification (both claude and codex verify independently; both must pass)
+- `--consensus-scope all|final-only` — when consensus runs (default: `all`)
+  - `all`: consensus runs on every verify (current behavior)
+  - `final-only`: consensus only on final ALL verify
 - `--debug` — enable debug logging (tmux mode only, writes to logs/<slug>/debug.log)
 
 ### Mode Selection
@@ -90,10 +101,13 @@ WORKER_MODEL=<--worker-model value> \
 VERIFIER_MODEL=<--verifier-model value> \
 WORKER_ENGINE=<--worker-engine value, default: claude> \
 VERIFIER_ENGINE=<--verifier-engine value, default: claude> \
-CODEX_MODEL=<--codex-model value, default: gpt-5.4> \
-CODEX_REASONING=<--codex-reasoning value, default: high> \
+WORKER_CODEX_MODEL=<--worker-codex-model value, default: gpt-5.4> \
+WORKER_CODEX_REASONING=<--worker-codex-reasoning value, default: high> \
+VERIFIER_CODEX_MODEL=<--verifier-codex-model value, default: gpt-5.4> \
+VERIFIER_CODEX_REASONING=<--verifier-codex-reasoning value, default: high> \
 VERIFY_MODE=<--verify-mode value, default: per-us> \
 VERIFY_CONSENSUS=<1 if --verify-consensus, else 0> \
+CONSENSUS_SCOPE=<--consensus-scope value, default: all> \
 DEBUG=<1 if --debug, else 0> \
   zsh ~/.claude/ralph-desk/run_ralph_desk.zsh
 ```
@@ -161,7 +175,7 @@ Agent(
 
 If `--worker-engine codex`:
 ```
-Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full worker prompt text>")
+Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_reasoning> <full worker prompt text>")
 ```
 - Codex runs as a subprocess via Bash(), not Agent().
 - Each Bash() call = fresh context for codex.
@@ -206,7 +220,7 @@ Agent(
 
 If `--verifier-engine codex`:
 ```
-Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full verifier prompt text>")
+Bash("codex exec --model <verifier_codex_model> --reasoning-effort <verifier_codex_reasoning> <full verifier prompt text>")
 ```
 
 **⑦b Consensus Verification** (when `--verify-consensus` is enabled):
@@ -302,10 +316,13 @@ Run options:
   --verifier-model MODEL     Verifier model (default: opus)
   --worker-engine claude|codex   Worker engine (default: claude)
   --verifier-engine claude|codex Verifier engine (default: claude)
-  --codex-model MODEL        Codex model (default: gpt-5.4)
-  --codex-reasoning LEVEL    Codex reasoning (default: high)
+  --worker-codex-model MODEL          Worker codex model (default: gpt-5.4)
+  --worker-codex-reasoning LEVEL      Worker codex reasoning (default: high)
+  --verifier-codex-model MODEL        Verifier codex model (default: gpt-5.4)
+  --verifier-codex-reasoning LEVEL    Verifier codex reasoning (default: high)
   --verify-mode per-us|batch Verification strategy (default: per-us)
   --verify-consensus         Cross-engine consensus verification
+  --consensus-scope SCOPE    When consensus runs: all|final-only (default: all)
   --debug                    Debug logging (tmux mode only)
 ```
 
