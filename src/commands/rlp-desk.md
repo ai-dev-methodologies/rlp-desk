@@ -31,7 +31,10 @@ Ask about these items one by one (or in small groups):
 5. **Verification Commands** — build, test, lint commands
 6. **Completion / Blocked Criteria**
 7. **Worker / Verifier Model** — haiku, sonnet, opus. Suggest defaults (worker: sonnet, verifier: opus), ask if OK.
-8. **Max Iterations** — suggest based on story count, ask if OK.
+8. **Engine** — claude (default) or codex for Worker/Verifier. Ask: "Use claude (default) or codex for Worker/Verifier?" If codex: ask for model (default: gpt-5.4) and reasoning effort (default: high).
+9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
+10. **Verify Consensus** — Ask: "Use cross-engine consensus verification? (Both claude and codex verify independently, both must pass.) Requires codex CLI." Default: no.
+11. **Max Iterations** — suggest based on story count, ask if OK.
 
 After all items are confirmed, present the full contract summary.
 On approval, offer to run `init`.
@@ -56,6 +59,14 @@ Options (parse from `$ARGUMENTS`):
 - `--max-iter N` (default: 100)
 - `--worker-model MODEL` (default: sonnet)
 - `--verifier-model MODEL` (default: opus)
+- `--worker-engine claude|codex` (default: `claude`) — engine for Worker
+- `--verifier-engine claude|codex` (default: `claude`) — engine for Verifier
+- `--codex-model MODEL` (default: `gpt-5.4`) — model passed to codex CLI
+- `--codex-reasoning low|medium|high` (default: `high`) — reasoning effort for codex
+- `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
+  - `per-us`: verify after each US, then final full verify of all AC
+  - `batch`: verify only after all US done (legacy behavior)
+- `--verify-consensus` — enable cross-engine consensus verification (both claude and codex verify independently; both must pass)
 - `--debug` — enable debug logging (tmux mode only, writes to logs/<slug>/debug.log)
 
 ### Mode Selection
@@ -77,13 +88,22 @@ ROOT="$PWD" \
 MAX_ITER=<--max-iter value> \
 WORKER_MODEL=<--worker-model value> \
 VERIFIER_MODEL=<--verifier-model value> \
+WORKER_ENGINE=<--worker-engine value, default: claude> \
+VERIFIER_ENGINE=<--verifier-engine value, default: claude> \
+CODEX_MODEL=<--codex-model value, default: gpt-5.4> \
+CODEX_REASONING=<--codex-reasoning value, default: high> \
+VERIFY_MODE=<--verify-mode value, default: per-us> \
+VERIFY_CONSENSUS=<1 if --verify-consensus, else 0> \
 DEBUG=<1 if --debug, else 0> \
   zsh ~/.claude/ralph-desk/run_ralph_desk.zsh
 ```
 6. **If the script exits with error (exit code 1)** — report the error to the user and STOP. Do NOT attempt to work around it. Do NOT create tmux sessions yourself. Do NOT re-launch the script in a different way. Just tell the user what went wrong and suggest using Agent mode instead.
 7. **If successful** — tell the user the tmux session has been started. The shell script takes over as the deterministic Leader. No Agent() calls are made in tmux mode.
 
-**IMPORTANT:** Tmux mode requires the user to already be inside a tmux session. If the runner script rejects because $TMUX is not set, do NOT try to create a tmux session yourself. Tell the user: "Start tmux first, then retry."
+**IMPORTANT RULES:**
+- Tmux mode requires the user to already be inside a tmux session. If the runner script rejects because $TMUX is not set, do NOT try to create a tmux session yourself. Tell the user: "Start tmux first, then retry."
+- Do NOT run the script in background (`&`, `run_in_background`). The script must run in foreground so panes remain visible to the user. The user needs to see Worker/Verifier panes in real-time.
+- Do NOT kill panes after completion. Panes stay alive for inspection. User cleans up with `/rlp-desk clean <slug> --kill-session`.
 
 #### Agent Mode (`--mode agent` or default)
 
@@ -124,7 +144,9 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 - Combine with iteration number + memory contract
 - Write to `.claude/ralph-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail)
 
-**⑤ Execute Worker via Agent()**
+**⑤ Execute Worker**
+
+If `--worker-engine claude` (default):
 ```
 Agent(
   description="rlp-desk worker iter-NNN",
@@ -137,24 +159,69 @@ Agent(
 - Agent returns synchronously. No polling needed.
 - Each Agent() = fresh context. Guaranteed.
 
+If `--worker-engine codex`:
+```
+Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full worker prompt text>")
+```
+- Codex runs as a subprocess via Bash(), not Agent().
+- Each Bash() call = fresh context for codex.
+
 **⑥ Read memory.md again** (Worker updated it)
 - `stop=continue` → go to ⑧
 - `stop=verify` → go to ⑦
 - `stop=blocked` → write BLOCKED sentinel, stop
+- Also read `iter-signal.json` for `us_id` field (which US was just completed)
 
-**⑦ Execute Verifier via Agent()**
-- Build verifier prompt, write to `iter-NNN.verifier-prompt.md`
+**⑦ Execute Verifier**
+
+**Per-US mode** (default, `--verify-mode per-us`):
+- Read `us_id` from `iter-signal.json` (e.g., "US-001" or "ALL")
+- Build verifier prompt scoped to `us_id`:
+  - If `us_id` is a specific story: "Verify ONLY the acceptance criteria for {us_id}"
+  - If `us_id` is "ALL": "Verify ALL acceptance criteria (final full verify)"
+- Write to `iter-NNN.verifier-prompt.md`
+- Track verified US in `status.json` field `verified_us` (array)
+- After verifier passes a specific US:
+  - Add that US to `verified_us` in status.json
+  - If more US remain → Worker does next US → verify → ...
+  - If all US individually passed → signal final full verify (us_id=ALL)
+  - After final full verify passes → COMPLETE
+
+**Batch mode** (`--verify-mode batch`):
+- Legacy behavior: verify only when Worker signals all work is done
+- Verifier checks all AC at once
+
+**⑦a Dispatch Verifier**
+
+If `--verifier-engine claude` (default):
 ```
 Agent(
-  description="rlp-desk verifier iter-NNN",
+  description="rlp-desk verifier iter-NNN (us_id)",
   subagent_type="executor",
   model=<verifier_model>,
   mode="bypassPermissions",
-  prompt=<full verifier prompt text>
+  prompt=<full verifier prompt text with US scope>
 )
 ```
-- Read `verify-verdict.json`:
+
+If `--verifier-engine codex`:
+```
+Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full verifier prompt text>")
+```
+
+**⑦b Consensus Verification** (when `--verify-consensus` is enabled):
+After the primary verifier runs, run a second verifier with the OTHER engine:
+- If primary engine is claude → run codex verifier
+- If primary engine is codex → run claude verifier
+- Both produce `verify-verdict.json` (Leader renames to `verify-verdict-claude.json` and `verify-verdict-codex.json`)
+- **Both pass** → proceed (next US or COMPLETE)
+- **Either fails** → combine issues from both verdicts into a single fix contract → Worker retry
+- Max 3 consensus rounds per US. After 3 rounds → BLOCKED.
+
+**⑦c Read verdict(s)**
+- Read `verify-verdict.json` (or both `-claude.json` and `-codex.json` if consensus):
   - `pass` + `complete` → write COMPLETE sentinel, report done!
+  - `pass` + specific US → add to `verified_us`, Worker does next US
   - `fail` + `continue` → **run Fix Loop** (governance.md §7½):
     1. Read `issues` array, sort by severity (`critical` → `major` → `minor`)
     2. Build structured fix contract with traceability rule
@@ -179,6 +246,13 @@ Agent(
 - max_iter reached → TIMEOUT, report to user
 
 Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pass`, unchanged by `request_info`). Only **fail** verdicts count for CB chains — `request_info` does not break or contribute.
+
+Track `verified_us` (array of US IDs that passed verification) in `status.json` when using `--verify-mode per-us`.
+
+When `--verify-consensus` is enabled, also track in `status.json`:
+- `consensus_round`: current consensus round for this US (resets per US)
+- `claude_verdict`: latest claude verifier verdict for this US
+- `codex_verdict`: latest codex verifier verdict for this US
 
 ### Important Rules
 - Each Agent() = new process = fresh context
@@ -216,10 +290,23 @@ tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^rlp-desk-<slug>-" |
 ```
 /rlp-desk brainstorm <description>          Plan before init (interactive)
 /rlp-desk init  <slug> [objective]          Create project scaffold
-/rlp-desk run   <slug> [--mode agent|tmux]  Run loop (agent=LLM leader, tmux=shell leader)
+/rlp-desk run   <slug> [options]            Run loop (agent=LLM leader, tmux=shell leader)
 /rlp-desk status <slug>                     Show loop status
 /rlp-desk logs  <slug> [N]                  Show iteration log
 /rlp-desk clean <slug> [--kill-session]     Reset for re-run (--kill-session kills tmux)
+
+Run options:
+  --mode agent|tmux          Execution mode (default: agent)
+  --max-iter N               Max iterations (default: 100)
+  --worker-model MODEL       Worker model (default: sonnet)
+  --verifier-model MODEL     Verifier model (default: opus)
+  --worker-engine claude|codex   Worker engine (default: claude)
+  --verifier-engine claude|codex Verifier engine (default: claude)
+  --codex-model MODEL        Codex model (default: gpt-5.4)
+  --codex-reasoning LEVEL    Codex reasoning (default: high)
+  --verify-mode per-us|batch Verification strategy (default: per-us)
+  --verify-consensus         Cross-engine consensus verification
+  --debug                    Debug logging (tmux mode only)
 ```
 
 ## Architecture
