@@ -16,6 +16,13 @@ Thumbs.db
 # Worktrees
 .worktrees/
 
+# OMC/OMX runtime state
+.omx/
+.omc/
+
+# Misc
+write
+
 # RLP Desk runtime artifacts (generated during runs)
 # The entire .claude/ralph-desk/ directory is project-local runtime state
 .claude/ralph-desk/

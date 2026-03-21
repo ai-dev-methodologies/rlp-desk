@@ -224,23 +224,69 @@ for iteration in 1..max_iter:
 
   ⑥ Read memory.md again → check Worker's updated state
      - "continue" → go to ⑧
-     - "verify"   → go to ⑦
+     - "verify"   → go to ⑦ (also read iter-signal.json for us_id)
      - "blocked"  → write BLOCKED sentinel, stop
      Note: In tmux mode, the Leader polls `<slug>-iter-signal.json` instead of
      parsing memory.md. In Agent() mode, the Leader MAY read iter-signal.json
      as a structured alternative to parsing the Stop Status from memory.md.
 
-  ⑦ Execute Verifier
-     - Build prompt → log to logs/<slug>/iter-NNN.verifier-prompt.md
+  ⑦ Execute Verifier (see §7a for per-US and §7b for consensus details)
+     - Build prompt (scoped to us_id if per-us mode) → log
      - Agent(subagent_type="executor", model=selected, prompt=prompt)
+     - If --verify-consensus: run second verifier with alternate engine (see §7b)
      - Read verify-verdict.json:
-       • pass + complete → write COMPLETE sentinel, stop
+       • pass + specific US → add to verified_us, Worker does next US
+       • pass + us_id=ALL or complete → write COMPLETE sentinel, stop
        • fail + continue → go to ⑧
        • blocked → write BLOCKED sentinel, stop
 
   ⑧ Write iter-NNN.result.md to logs/<slug>/ (result status + git diff --stat)
      Update status.json, report to user, continue to next iteration
 ```
+
+## 7a. Per-US Verification
+
+By default (`--verify-mode per-us`), each user story is verified independently before proceeding to the next:
+
+```
+Worker completes US-001 → signal verify (us_id: "US-001")
+  → Verifier checks ONLY US-001 AC → pass
+  → Worker completes US-002 → signal verify (us_id: "US-002")
+  → Verifier checks ONLY US-002 AC → pass
+  → ...
+  → All US individually pass → signal verify (us_id: "ALL")
+  → Verifier runs FINAL FULL VERIFY (all AC) → pass → COMPLETE
+```
+
+**Key rules:**
+- Worker signals `verify` after each US with `us_id` set in `iter-signal.json`
+- Verifier checks only the scoped US acceptance criteria (or all if us_id=ALL)
+- Leader tracks `verified_us` array in `status.json`
+- If a per-US verify fails, the Worker retries that specific US (fix loop)
+- Final full verify ensures nothing was broken by later changes
+
+**Batch mode** (`--verify-mode batch`) preserves legacy behavior: Worker signals `verify` only after all work is done, and the Verifier checks all AC at once.
+
+## 7b. Cross-Engine Consensus Verification
+
+When `--verify-consensus` is enabled, after the primary verifier runs, a second verifier runs with the alternate engine:
+
+```
+Worker completes US → signal verify
+  → Claude Verifier runs (checks AC)
+  → Codex Verifier runs (checks AC)
+  → Both pass → proceed (next US or COMPLETE)
+  → Either fails → combined issues → fix contract → Worker retry
+  → Max 3 consensus rounds per US → BLOCKED if still disagreeing
+```
+
+**Key rules:**
+- Both claude and codex CLI must be installed
+- Verifiers run sequentially in the same Verifier pane (tmux) or as sequential calls (Agent mode)
+- Verdicts are saved as `verify-verdict-claude.json` and `verify-verdict-codex.json`
+- Combined fix contracts include issues from both engines
+- `status.json` includes `consensus_round`, `claude_verdict`, and `codex_verdict` fields
+- Consensus can be combined with per-US verification (each US gets consensus-verified)
 
 ## 7½. Fix Loop Protocol
 

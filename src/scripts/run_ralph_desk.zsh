@@ -30,7 +30,7 @@ set -uo pipefail
 #   MAX_NUDGES                - max nudges per pane per iteration (default: 3)
 #
 # Dependencies: tmux, claude CLI, jq
-# Optional: codex CLI (required only when WORKER_ENGINE=codex or VERIFIER_ENGINE=codex)
+# Optional: codex CLI (required when WORKER_ENGINE=codex, VERIFIER_ENGINE=codex, or VERIFY_CONSENSUS=1)
 # =============================================================================
 
 # --- Environment Variables ---
@@ -52,6 +52,10 @@ VERIFIER_ENGINE="${VERIFIER_ENGINE:-claude}"  # claude|codex
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
 CODEX_REASONING="${CODEX_REASONING:-high}"   # low|medium|high
 CODEX_BIN=""  # resolved by check_dependencies when engine=codex
+
+# --- Verify Mode ---
+VERIFY_MODE="${VERIFY_MODE:-per-us}"        # per-us|batch
+VERIFY_CONSENSUS="${VERIFY_CONSENSUS:-0}"   # 0|1
 
 # --- Derived Paths ---
 DESK="$ROOT/.claude/ralph-desk"
@@ -88,6 +92,9 @@ CONSECUTIVE_FAILURES=0
 PREV_CONTEXT_HASH=""
 ITERATION=0
 START_TIME=$(date +%s)
+VERIFIED_US=""           # comma-separated list of verified US IDs (per-us mode)
+CONSENSUS_ROUND=0        # current consensus round for current US
+US_LIST=""               # comma-separated US IDs from PRD (per-us mode)
 
 # =============================================================================
 # Utility Functions
@@ -143,10 +150,14 @@ check_dependencies() {
     missing=1
   fi
 
-  # Codex binary required only when engine=codex
-  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" ]]; then
+  # Codex binary required only when engine=codex or consensus verification is enabled
+  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" || "$VERIFY_CONSENSUS" = "1" ]]; then
     if ! command -v codex >/dev/null 2>&1; then
-      log_error "codex CLI is required when WORKER_ENGINE or VERIFIER_ENGINE is 'codex'."
+      if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+        log_error "codex CLI is required for consensus verification (VERIFY_CONSENSUS=1)."
+      else
+        log_error "codex CLI is required when WORKER_ENGINE or VERIFIER_ENGINE is 'codex'."
+      fi
       log_error "Install with: npm install -g @openai/codex"
       missing=1
     fi
@@ -161,7 +172,7 @@ check_dependencies() {
   log "  Claude binary: $CLAUDE_BIN"
 
   # Resolve codex binary if needed
-  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" ]]; then
+  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" || "$VERIFY_CONSENSUS" = "1" ]]; then
     CODEX_BIN=$(command -v codex 2>/dev/null || echo "codex")
     log "  Codex binary:  $CODEX_BIN"
   fi
@@ -329,6 +340,12 @@ safe_send_keys() {
     tmux send-keys -t "$pane_id" C-m
     sleep 0.12
   fi
+  # Auto-approve permission prompts ("Do you want to create/overwrite X?")
+  if echo "$initial_capture" | grep -q "Do you want to" 2>/dev/null; then
+    log_debug " Permission prompt detected, auto-approving"
+    tmux send-keys -t "$pane_id" Enter
+    sleep 0.3
+  fi
   # Auto-dismiss codex update prompt (select Skip)
   if echo "$initial_capture" | grep -qi "new version\|update.*codex\|codex.*update" 2>/dev/null; then
     log_debug " Codex update prompt detected, selecting Skip"
@@ -430,6 +447,14 @@ wait_for_pane_ready() {
       sleep 0.12
       tmux send-keys -t "$pane_id" Enter
       sleep 2
+      continue
+    fi
+
+    # Auto-approve permission prompts ("Do you want to create/overwrite X?")
+    if echo "$captured" | grep -q "Do you want to" 2>/dev/null; then
+      log "  Permission prompt detected, auto-approving..."
+      tmux send-keys -t "$pane_id" Enter
+      sleep 0.5
       continue
     fi
 
@@ -613,6 +638,44 @@ write_worker_trigger() {
       echo ""
       cat "$fix_contract_file"
     fi
+
+    # Per-US mode: tell Worker exactly which US to work on
+    if [[ "$VERIFY_MODE" = "per-us" && -n "$US_LIST" ]]; then
+      # Find next unverified US
+      local next_us=""
+      for us in $(echo "$US_LIST" | tr ',' ' '); do
+        if ! echo ",$VERIFIED_US," | grep -q ",$us,"; then
+          next_us="$us"
+          break
+        fi
+      done
+
+      if [[ -n "$next_us" ]]; then
+        echo ""
+        echo "---"
+        echo "## PER-US SCOPE LOCK (this iteration)"
+        echo "You MUST implement ONLY **${next_us}** in this iteration."
+        echo "Do NOT implement any other user stories."
+        echo "When done, signal verify with us_id=\"${next_us}\" (not \"ALL\")."
+        echo "Signal format: {\"iteration\": N, \"status\": \"verify\", \"us_id\": \"${next_us}\", ...}"
+      elif [[ -n "$VERIFIED_US" ]]; then
+        # All individual US verified — this is the final full verify iteration
+        echo ""
+        echo "---"
+        echo "## FINAL VERIFICATION ITERATION"
+        echo "All individual US have been verified: $VERIFIED_US"
+        echo "Run all tests and verification commands to confirm everything works together."
+        echo "Signal verify with us_id=\"ALL\" for the final full verification."
+      fi
+    elif [[ "$VERIFY_MODE" = "batch" ]]; then
+      echo ""
+      echo "---"
+      echo "## BATCH MODE OVERRIDE"
+      echo "Ignore any per-US signal instructions above. In batch mode:"
+      echo "- Implement ALL user stories in this iteration"
+      echo '- Signal verify with us_id="ALL" only when ALL stories are complete'
+      echo "- Do NOT signal verify after individual stories"
+    fi
   } | atomic_write "$prompt_file"
 
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
@@ -669,11 +732,20 @@ TRIGGER_EOF
 
 write_verifier_trigger() {
   local iter="$1"
-  local prompt_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier-prompt.md"
-  local trigger_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier-trigger.sh"
-  local output_log="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier-output.log"
+  local verifier_engine="${2:-$VERIFIER_ENGINE}"  # allow override for consensus
+  local verifier_model="${3:-$VERIFIER_MODEL}"
+  local suffix="${4:-}"  # optional suffix for consensus (e.g., "-claude", "-codex")
+  local prompt_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier${suffix}-prompt.md"
+  local trigger_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier${suffix}-trigger.sh"
+  local output_log="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier${suffix}-output.log"
 
-  # Build verifier prompt from base
+  # Read us_id from iter-signal.json for per-US scoping
+  local us_id=""
+  if [[ -f "$SIGNAL_FILE" ]]; then
+    us_id=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
+  fi
+
+  # Build verifier prompt from base with US scope
   {
     cat "$VERIFIER_PROMPT_BASE"
     echo ""
@@ -681,11 +753,21 @@ write_verifier_trigger() {
     echo "## Verification Context"
     echo "- **Iteration**: $iter"
     echo "- **Done Claim**: $DONE_CLAIM_FILE"
+    echo "- **Verify Mode**: $VERIFY_MODE"
+    if [[ "$VERIFY_MODE" = "per-us" && -n "$us_id" ]]; then
+      if [[ "$us_id" = "ALL" ]]; then
+        echo "- **Scope**: FINAL FULL VERIFY — check ALL acceptance criteria from the PRD"
+        echo "- **Previously verified US**: $VERIFIED_US"
+      else
+        echo "- **Scope**: Verify ONLY the acceptance criteria for **${us_id}**"
+        echo "- **Previously verified US**: $VERIFIED_US"
+      fi
+    fi
   } | atomic_write "$prompt_file"
 
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
   # Engine-specific launch command (expanded at write time)
-  if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+  if [[ "$verifier_engine" = "codex" ]]; then
     local engine_cmd="${CODEX_BIN:-codex} -m $CODEX_MODEL \\
   -c model_reasoning_effort=\"$CODEX_REASONING\" \\
   --dangerously-bypass-approvals-and-sandbox \\
@@ -694,7 +776,7 @@ write_verifier_trigger() {
     local engine_comment="# Run codex with fresh context (governance.md s7 step 7)"
   else
     local engine_cmd="$CLAUDE_BIN -p \"\$(cat $prompt_file)\" \\
-  --model $VERIFIER_MODEL \\
+  --model $verifier_model \\
   --dangerously-skip-permissions \\
   --output-format text \\
   2>&1 | tee $output_log"
@@ -704,7 +786,7 @@ write_verifier_trigger() {
   {
     cat <<TRIGGER_EOF
 #!/bin/zsh
-# Trigger for iteration $iter verifier - generated by run_ralph_desk.zsh
+# Trigger for iteration $iter verifier${suffix} - generated by run_ralph_desk.zsh
 # DO NOT use exec here -- it breaks heartbeat cleanup
 
 HEARTBEAT_FILE="$VERIFIER_HEARTBEAT"
@@ -744,6 +826,21 @@ update_status() {
   local phase="$1"
   local last_result="$2"
 
+  # Build verified_us as JSON array
+  local verified_us_json="[]"
+  if [[ -n "$VERIFIED_US" ]]; then
+    verified_us_json=$(echo "$VERIFIED_US" | tr ',' '\n' | jq -R . | jq -s .)
+  fi
+
+  # Build consensus fields
+  local consensus_json=""
+  if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+    consensus_json=',
+  "consensus_round": '"$CONSENSUS_ROUND"',
+  "claude_verdict": "'"${CLAUDE_VERDICT:-}"'",
+  "codex_verdict": "'"${CODEX_VERDICT:-}"'"'
+  fi
+
   echo '{
   "slug": "'"$SLUG"'",
   "iteration": '"$ITERATION"',
@@ -753,8 +850,11 @@ update_status() {
   "verifier_model": "'"$VERIFIER_MODEL"'",
   "worker_engine": "'"$WORKER_ENGINE"'",
   "verifier_engine": "'"$VERIFIER_ENGINE"'",
+  "verify_mode": "'"$VERIFY_MODE"'",
+  "verify_consensus": '"$VERIFY_CONSENSUS"',
   "last_result": "'"$last_result"'",
   "consecutive_failures": '"$CONSECUTIVE_FAILURES"',
+  "verified_us": '"$verified_us_json"''"$consensus_json"',
   "updated_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
 }' | atomic_write "$STATUS_FILE"
 }
@@ -819,6 +919,9 @@ Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$BLOCKED_SENTINEL"
 cleanup() {
   log "Cleaning up..."
 
+  # Remove lockfile
+  rm -f "$DESK/logs/.rlp-desk-$SLUG.lock" 2>/dev/null
+
   # Kill claude processes then kill panes
   log_debug "cleanup: WORKER_PANE=${WORKER_PANE:-unset} VERIFIER_PANE=${VERIFIER_PANE:-unset}"
   if [[ -n "${WORKER_PANE:-}" ]]; then
@@ -830,10 +933,14 @@ cleanup() {
     tmux send-keys -t "$VERIFIER_PANE" "/exit" Enter 2>/dev/null
   fi
   sleep 2
-  # Kill the panes themselves
-  log_debug "cleanup: killing panes $WORKER_PANE $VERIFIER_PANE"
-  tmux kill-pane -t "$WORKER_PANE" 2>&1 | while read -r line; do log_debug "kill worker: $line"; done
-  tmux kill-pane -t "$VERIFIER_PANE" 2>&1 | while read -r line; do log_debug "kill verifier: $line"; done
+  # Kill panes on completion
+  if [[ -n "${WORKER_PANE:-}" ]]; then
+    tmux kill-pane -t "$WORKER_PANE" 2>/dev/null
+  fi
+  if [[ -n "${VERIFIER_PANE:-}" ]]; then
+    tmux kill-pane -t "$VERIFIER_PANE" 2>/dev/null
+  fi
+  log "  Panes cleaned up."
 
   # Remove any leftover tmp files (setopt nonomatch to avoid zsh glob errors)
   setopt local_options nonomatch 2>/dev/null
@@ -845,6 +952,70 @@ cleanup() {
   local elapsed=$(( end_time - START_TIME ))
   local minutes=$(( elapsed / 60 ))
   local seconds=$(( elapsed % 60 ))
+
+  local final_status="UNKNOWN"
+  if [[ -f "$COMPLETE_SENTINEL" ]]; then final_status="COMPLETE"
+  elif [[ -f "$BLOCKED_SENTINEL" ]]; then final_status="BLOCKED"
+  else final_status="TIMEOUT"; fi
+
+  if (( DEBUG )); then
+    local end_ts=$(date +%s)
+    local elapsed=$((end_ts - START_TIME))
+
+    log_debug "[EXEC] final status=$final_status iterations=$ITERATION elapsed=${elapsed}s"
+
+    # --- Validation ---
+    log_debug "[VALIDATE] === Execution Validation ==="
+
+    # 1. Did the correct verify mode run?
+    log_debug "[VALIDATE] verify_mode=$VERIFY_MODE configured=true"
+
+    # 2. Per-US: were all US individually verified?
+    if [[ "$VERIFY_MODE" = "per-us" ]]; then
+      local prd_file="$DESK/plans/prd-$SLUG.md"
+      local expected_us=""
+      if [[ -f "$prd_file" ]]; then
+        expected_us=$(grep -oE 'US-[0-9]+' "$prd_file" | sort -u | tr '\n' ',' | sed 's/,$//')
+      fi
+      local verified_count=$(echo "$VERIFIED_US" | tr ',' '\n' | grep -c 'US-' 2>/dev/null || echo 0)
+      local expected_count=$(echo "$expected_us" | tr ',' '\n' | grep -c 'US-' 2>/dev/null || echo 0)
+
+      if [[ "$final_status" = "COMPLETE" ]]; then
+        if (( verified_count >= expected_count )); then
+          log_debug "[VALIDATE] per_us_coverage=PASS verified=$verified_count/$expected_count us=$VERIFIED_US"
+        else
+          log_debug "[VALIDATE] per_us_coverage=FAIL verified=$verified_count/$expected_count expected=$expected_us got=$VERIFIED_US"
+        fi
+      else
+        log_debug "[VALIDATE] per_us_coverage=INCOMPLETE verified=$verified_count/$expected_count status=$final_status"
+      fi
+    fi
+
+    # 3. Consensus: were both engines used?
+    if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+      if [[ -n "${CLAUDE_VERDICT:-}" && -n "${CODEX_VERDICT:-}" ]]; then
+        log_debug "[VALIDATE] consensus=USED claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT rounds=$CONSENSUS_ROUND"
+      else
+        log_debug "[VALIDATE] consensus=NOT_TRIGGERED claude=${CLAUDE_VERDICT:-none} codex=${CODEX_VERDICT:-none}"
+      fi
+    fi
+
+    # 4. Engine match: did the configured engines actually run?
+    local worker_dispatches=$(grep -c '\[EXEC\].*phase=worker.*dispatched=true' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    local verifier_dispatches=$(grep -c '\[EXEC\].*phase=verifier.*dispatched=true' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    log_debug "[VALIDATE] dispatches worker=$worker_dispatches verifier=$verifier_dispatches"
+
+    # 5. Fix loops: how many fix contracts were generated?
+    local fix_count=$(grep -c '\[EXEC\].*phase=fix_loop' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    log_debug "[VALIDATE] fix_loops=$fix_count consecutive_failures=$CONSECUTIVE_FAILURES"
+
+    # 6. Circuit breakers: any triggered?
+    local cb_count=$(grep -c '\[EXEC\].*circuit_breaker=' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    log_debug "[VALIDATE] circuit_breakers_triggered=$cb_count"
+
+    # 7. Overall result
+    log_debug "[VALIDATE] result=$final_status iterations=$ITERATION elapsed=${elapsed}s verified_us=$VERIFIED_US"
+  fi
 
   echo ""
   echo "============================================================"
@@ -936,6 +1107,7 @@ poll_for_signal() {
         (( HEARTBEAT_STALE_COUNT++ ))
         # Circuit breaker: 3 consecutive heartbeat stale events
         if (( HEARTBEAT_STALE_COUNT >= 3 )); then
+          log_debug "[EXEC] iter=$ITERATION circuit_breaker=heartbeat_stale detail=\"3 consecutive heartbeat stale events\""
           log_error "Circuit breaker: 3 consecutive heartbeat stale events"
           return 1
         fi
@@ -951,6 +1123,16 @@ poll_for_signal() {
         # Heartbeat is fresh, reset stale counter
         HEARTBEAT_STALE_COUNT=0
       fi
+    fi
+
+    # Auto-approve permission prompts during poll
+    local poll_capture
+    poll_capture=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
+    if echo "$poll_capture" | grep -q "Do you want to" 2>/dev/null; then
+      log "  Permission prompt detected during poll, auto-approving..."
+      log_debug "[EXEC] iter=$ITERATION permission_prompt_auto_approved=true"
+      tmux send-keys -t "$pane_id" Enter
+      sleep 0.5
     fi
 
     # Idle pane nudging (tmux pattern)
@@ -993,6 +1175,218 @@ check_stale_context() {
 }
 
 # =============================================================================
+# Consensus Verification (run two verifiers sequentially in same pane)
+# =============================================================================
+
+# --- US-004: Run a single verifier in the Verifier pane and poll for verdict ---
+run_single_verifier() {
+  local iter="$1"
+  local engine="$2"       # claude|codex
+  local model="$3"        # model for this verifier
+  local suffix="$4"       # "-claude" or "-codex"
+  local verdict_dest="$5" # where to copy the verdict file
+
+  # Write trigger for this engine
+  write_verifier_trigger "$iter" "$engine" "$model" "$suffix"
+  local trigger_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier${suffix}-trigger.sh"
+  local prompt_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier${suffix}-prompt.md"
+
+  # Clean previous Verifier session
+  local verifier_cmd
+  verifier_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null)
+  if [[ "$verifier_cmd" == "node" || "$verifier_cmd" == "claude" || "$verifier_cmd" == "codex" ]]; then
+    tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null
+    sleep 0.5
+    tmux send-keys -t "$VERIFIER_PANE" "/exit" Enter 2>/dev/null
+    sleep 2
+  fi
+  # Always ensure clean shell state before launching new verifier
+  wait_for_pane_ready "$VERIFIER_PANE" 10 2>/dev/null || true
+  # Clear pane to avoid residual text interference
+  tmux send-keys -t "$VERIFIER_PANE" C-l 2>/dev/null
+  sleep 0.5
+
+  # Remove previous verdict file
+  rm -f "$VERDICT_FILE" 2>/dev/null
+
+  # Launch verifier
+  if [[ "$engine" = "codex" ]]; then
+    # Codex: use non-interactive exec mode in pane (more reliable than TUI for sequential runs)
+    local codex_cmd="${CODEX_BIN:-codex} exec \"\$(cat $prompt_file)\" -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+    log "  Running $suffix verifier (codex exec) in pane $VERIFIER_PANE..."
+    tmux send-keys -t "$VERIFIER_PANE" -l -- "$codex_cmd"
+    tmux send-keys -t "$VERIFIER_PANE" Enter
+    log_debug "Verifier$suffix codex exec sent directly"
+  else
+    # Claude: use interactive TUI
+    local verifier_launch="$CLAUDE_BIN --model $model --dangerously-skip-permissions"
+    log "  Launching $suffix verifier (claude) in pane $VERIFIER_PANE..."
+    tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_launch"
+    tmux send-keys -t "$VERIFIER_PANE" Enter
+
+    if ! wait_for_pane_ready "$VERIFIER_PANE" 30; then
+      log_error "Verifier$suffix failed to start"
+      return 1
+    fi
+
+    sleep 3
+    local verifier_instruction="Read and execute the instructions in $prompt_file"
+    tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_instruction"
+    tmux send-keys -t "$VERIFIER_PANE" Enter
+    log_debug "Verifier$suffix instruction sent directly"
+
+    # Verify claude actually started working
+    local v_submit=0
+    while (( v_submit < 10 )); do
+      sleep 2
+      local v_check
+      v_check=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null)
+      if echo "$v_check" | grep -qi "esc to interrupt\|thinking\|working\|kneading\|crunching\|clauding\|billowing\|brewing\|tinkering\|burrowing\|saut" 2>/dev/null; then
+        log_debug "Verifier$suffix started working after $((v_submit + 1)) checks"
+        break
+      fi
+      tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null
+      sleep 0.3
+      tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null
+      (( v_submit++ ))
+    done
+  fi
+
+  # Poll for verdict
+  if [[ "$engine" = "codex" ]]; then
+    # Codex exec: simple file poll (non-interactive, no heartbeat/nudge needed)
+    log "  Polling for verify-verdict.json ($suffix, codex exec)..."
+    local codex_poll_start
+    codex_poll_start=$(date +%s)
+    while true; do
+      if [[ -f "$VERDICT_FILE" ]]; then
+        # Validate JSON
+        if jq . "$VERDICT_FILE" >/dev/null 2>&1; then
+          log "  Verdict file detected: $VERDICT_FILE"
+          break
+        fi
+      fi
+      local codex_elapsed=$(( $(date +%s) - codex_poll_start ))
+      if (( codex_elapsed >= ITER_TIMEOUT )); then
+        log_error "Codex verifier$suffix timed out after ${ITER_TIMEOUT}s"
+        return 1
+      fi
+      sleep "$POLL_INTERVAL"
+    done
+  else
+    # Claude: use full poll_for_signal with heartbeat/nudge
+    log "  Polling for verify-verdict.json ($suffix)..."
+    if ! poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier$suffix"; then
+      log_error "Verifier$suffix poll failed"
+      return 1
+    fi
+  fi
+
+  # Copy verdict to destination
+  cp "$VERDICT_FILE" "$verdict_dest"
+  log "  Verifier$suffix verdict saved to $verdict_dest"
+  return 0
+}
+
+# --- US-004: Run consensus verification (claude + codex sequentially) ---
+run_consensus_verification() {
+  local iter="$1"
+  local claude_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-claude.json"
+  local codex_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-codex.json"
+
+  CONSENSUS_ROUND=0
+  CLAUDE_VERDICT=""
+  CODEX_VERDICT=""
+
+  while (( CONSENSUS_ROUND < 3 )); do
+    (( CONSENSUS_ROUND++ ))
+    log "  Consensus round $CONSENSUS_ROUND/3..."
+
+    # Run claude verifier first
+    if ! run_single_verifier "$iter" "claude" "$VERIFIER_MODEL" "-claude" "$claude_verdict_file"; then
+      log_error "Claude verifier failed in consensus round $CONSENSUS_ROUND"
+      return 1
+    fi
+    CLAUDE_VERDICT=$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)
+
+    # Run codex verifier second
+    if ! run_single_verifier "$iter" "codex" "$CODEX_MODEL" "-codex" "$codex_verdict_file"; then
+      log_error "Codex verifier failed in consensus round $CONSENSUS_ROUND"
+      return 1
+    fi
+    CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
+
+    log "  Consensus: claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT"
+    local _combined_action="retry"
+    if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then _combined_action="pass"
+    elif (( CONSENSUS_ROUND >= 3 )); then _combined_action="blocked"
+    fi
+    log_debug "[EXEC] iter=$iter phase=consensus round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT combined_action=$_combined_action"
+
+    # Both pass → success
+    if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then
+      # Merge verdicts: use claude verdict as primary, note codex agreement
+      cp "$claude_verdict_file" "$VERDICT_FILE"
+      return 0
+    fi
+
+    # Either fails → build combined fix contract
+    local fix_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
+    {
+      echo "# Fix Contract (Consensus Round $CONSENSUS_ROUND, iteration $iter)"
+      echo ""
+      echo "## Claude Verdict: $CLAUDE_VERDICT"
+      if [[ "$CLAUDE_VERDICT" = "fail" ]]; then
+        echo "### Claude Issues"
+        jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$claude_verdict_file" 2>/dev/null || echo "- (no structured issues)"
+      fi
+      echo ""
+      echo "## Codex Verdict: $CODEX_VERDICT"
+      if [[ "$CODEX_VERDICT" = "fail" ]]; then
+        echo "### Codex Issues"
+        jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$codex_verdict_file" 2>/dev/null || echo "- (no structured issues)"
+      fi
+      echo ""
+      echo "## Traceability"
+      echo "Only changes that resolve a listed issue are allowed."
+    } | atomic_write "$fix_contract"
+
+    log "  Combined fix contract: $fix_contract"
+
+    # If this is not the last round, the caller will dispatch the Worker with the fix contract
+    # For now, write a fail verdict so the main loop can handle the fix loop
+    if (( CONSENSUS_ROUND < 3 )); then
+      # Create a merged fail verdict for the main loop
+      {
+        echo '{'
+        echo '  "verdict": "fail",'
+        echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
+        echo '  "summary": "Consensus disagreement (round '"$CONSENSUS_ROUND"'/3): claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
+        echo '  "issues": [],'
+        echo '  "recommended_state_transition": "continue",'
+        echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": '"$CONSENSUS_ROUND"' }'
+        echo '}'
+      } | atomic_write "$VERDICT_FILE"
+      return 2  # special return: consensus disagreement, needs retry
+    fi
+  done
+
+  # Max consensus rounds exceeded
+  log_error "Consensus failed after 3 rounds"
+  {
+    echo '{'
+    echo '  "verdict": "fail",'
+    echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
+    echo '  "summary": "Consensus failed after 3 rounds: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
+    echo '  "issues": [],'
+    echo '  "recommended_state_transition": "blocked",'
+    echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": 3 }'
+    echo '}'
+  } | atomic_write "$VERDICT_FILE"
+  return 1
+}
+
+# =============================================================================
 # Security Warning
 # =============================================================================
 
@@ -1013,6 +1407,21 @@ print_security_warning() {
 # =============================================================================
 
 main() {
+  # --- Lockfile: prevent duplicate execution ---
+  local lockfile="$DESK/logs/.rlp-desk-$SLUG.lock"
+  mkdir -p "$(dirname "$lockfile")" 2>/dev/null
+  if ! (set -C; echo $$ > "$lockfile") 2>/dev/null; then
+    local lock_pid
+    lock_pid=$(cat "$lockfile" 2>/dev/null)
+    if kill -0 "$lock_pid" 2>/dev/null; then
+      log_error "Another instance is already running (PID $lock_pid)"
+      exit 1
+    fi
+    # Stale lock — overwrite
+    echo $$ > "$lockfile"
+  fi
+  mkdir -p "$LOGS_DIR" 2>/dev/null
+
   # --- Startup ---
   log "Ralph Desk Tmux Runner starting..."
   log "  Slug:            $SLUG"
@@ -1020,8 +1429,49 @@ main() {
   log "  Max iterations:  $MAX_ITER"
   log "  Worker model:    $WORKER_MODEL"
   log "  Verifier model:  $VERIFIER_MODEL"
+  log "  Verify mode:     $VERIFY_MODE"
+  log "  Verify consensus:$VERIFY_CONSENSUS"
   log "  Poll interval:   ${POLL_INTERVAL}s"
   log "  Iter timeout:    ${ITER_TIMEOUT}s"
+  # --- Debug: Log execution plan ---
+  if (( DEBUG )); then
+    # Extract US IDs from PRD
+    local prd_file="$DESK/plans/prd-$SLUG.md"
+    local us_list=""
+    if [[ -f "$prd_file" ]]; then
+      us_list=$(grep -oE 'US-[0-9]+' "$prd_file" | sort -u | tr '\n' ',' | sed 's/,$//')
+    fi
+    local us_count=$(echo "$us_list" | tr ',' '\n' | grep -c 'US-')
+
+    log_debug "[PLAN] slug=$SLUG us_count=$us_count us_list=$us_list"
+    log_debug "[PLAN] worker_engine=$WORKER_ENGINE worker_model=$WORKER_MODEL"
+    log_debug "[PLAN] verifier_engine=$VERIFIER_ENGINE verifier_model=$VERIFIER_MODEL"
+    log_debug "[PLAN] verify_mode=$VERIFY_MODE consensus=$VERIFY_CONSENSUS max_iter=$MAX_ITER"
+
+    if [[ "$VERIFY_MODE" = "per-us" ]]; then
+      # Build expected flow
+      local expected_flow=""
+      for us in $(echo "$us_list" | tr ',' ' '); do
+        expected_flow="${expected_flow}worker->verify($us)->"
+      done
+      expected_flow="${expected_flow}verify(ALL)->COMPLETE"
+      log_debug "[PLAN] expected_flow=$expected_flow"
+    else
+      log_debug "[PLAN] expected_flow=worker(all)->verify(ALL)->COMPLETE"
+    fi
+
+    if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+      log_debug "[PLAN] consensus_flow=each_verify_runs_claude+codex_both_must_pass"
+    fi
+  fi
+
+  # Extract US list for per-US sequencing
+  if [[ "$VERIFY_MODE" = "per-us" ]]; then
+    local prd_file="$DESK/plans/prd-$SLUG.md"
+    if [[ -f "$prd_file" ]]; then
+      US_LIST=$(grep -oE 'US-[0-9]+' "$prd_file" | sort -u | tr '\n' ',' | sed 's/,$//')
+    fi
+  fi
 
   # Dependency checks
   check_dependencies
@@ -1048,6 +1498,9 @@ main() {
   for (( ITERATION = 1; ITERATION <= MAX_ITER; ITERATION++ )); do
     log ""
     log "========== Iteration $ITERATION / $MAX_ITER =========="
+    local _iter_contract=""
+    _iter_contract=$(sed -n '/^## Next Iteration Contract$/,/^## /{ /^## Next/d; /^## [^N]/d; p; }' "$MEMORY_FILE" 2>/dev/null | head -1 | tr '\n' ' ')
+    log_debug "[EXEC] iter=$ITERATION start contract=\"${_iter_contract:-none}\""
 
     # --- governance.md s7 step 1: Check sentinels ---
     if [[ -f "$COMPLETE_SENTINEL" ]]; then
@@ -1099,6 +1552,7 @@ main() {
     fi
     tmux send-keys -t "$WORKER_PANE" -l -- "$worker_launch"
     tmux send-keys -t "$WORKER_PANE" Enter
+    log_debug "[EXEC] iter=$ITERATION phase=worker engine=$WORKER_ENGINE model=$WORKER_MODEL dispatched=true"
 
     # Step 5b: Wait for claude TUI to be ready (tmux pattern)
     if ! wait_for_pane_ready "$WORKER_PANE" 30; then
@@ -1108,39 +1562,76 @@ main() {
       return 1
     fi
 
-    # Step 5c: Wait for claude to fully initialize, then send instruction
+    # Step 5c: Wait for claude to fully initialize, then send instruction directly
     sleep 3
     local worker_instruction="Read and execute the instructions in $worker_prompt"
-    if ! safe_send_keys "$WORKER_PANE" "$worker_instruction"; then
-      log_error "Failed to send instruction to Worker"
+    tmux send-keys -t "$WORKER_PANE" -l -- "$worker_instruction"
+    tmux send-keys -t "$WORKER_PANE" Enter
+    log_debug "Worker instruction sent directly (${#worker_instruction} chars)"
+
+    # Verify claude actually started working — keep sending C-m until activity detected
+    local submit_attempts=0
+    while (( submit_attempts < 10 )); do
+      sleep 2
+      local pane_check
+      pane_check=$(tmux capture-pane -t "$WORKER_PANE" -p 2>/dev/null)
+      if echo "$pane_check" | grep -qi "esc to interrupt\|thinking\|working\|kneading\|crunching\|clauding\|billowing\|brewing\|tinkering\|burrowing\|saut\|Exploring\|Running\|exec\|Explored" 2>/dev/null; then
+        log_debug "Worker started working after $((submit_attempts + 1)) submit checks"
+        log_debug "[EXEC] iter=$ITERATION worker_submit_check=OK attempts=$((submit_attempts + 1))"
+        break
+      fi
+      tmux send-keys -t "$WORKER_PANE" C-m 2>/dev/null
+      sleep 0.3
+      tmux send-keys -t "$WORKER_PANE" C-m 2>/dev/null
+      (( submit_attempts++ ))
+    done
+    if (( submit_attempts >= 10 )); then
+      log "  WARNING: Could not confirm Worker started working after 10 attempts"
+      log_debug "[EXEC] iter=$ITERATION worker_submit_check=FAILED attempts=10"
     fi
-    # Extra C-m to ensure submission (long text may false-positive the consumed check)
-    sleep 0.5
-    tmux send-keys -t "$WORKER_PANE" C-m 2>/dev/null
-    sleep 0.3
-    tmux send-keys -t "$WORKER_PANE" C-m 2>/dev/null
 
     # --- governance.md s7 step 5+6: Poll for Worker completion ---
     log "  Polling for iter-signal.json..."
-    if ! poll_for_signal "$SIGNAL_FILE" "$WORKER_HEARTBEAT" "$WORKER_PANE" "$worker_launch" "Worker"; then
-      # Check if Worker is still actively running (not stuck)
-      local worker_cmd
-      worker_cmd=$(tmux display-message -p -t "$WORKER_PANE" '#{pane_current_command}' 2>/dev/null)
-      if [[ "$worker_cmd" == "node" || "$worker_cmd" == "claude" ]]; then
-        # Worker is still active — timeout but not a failure, just slow
-        log "  Worker timed out but still active ($worker_cmd). Extending..."
-        update_status "worker" "slow"
-        continue
+    local worker_poll_done=0
+    while (( ! worker_poll_done )); do
+      if poll_for_signal "$SIGNAL_FILE" "$WORKER_HEARTBEAT" "$WORKER_PANE" "$worker_launch" "Worker"; then
+        worker_poll_done=1
+        log_debug "[EXEC] iter=$ITERATION poll_signal_received=true"
+      else
+        # Check if Worker is still actively running (not stuck)
+        local worker_cmd
+        worker_cmd=$(tmux display-message -p -t "$WORKER_PANE" '#{pane_current_command}' 2>/dev/null)
+        if [[ "$worker_cmd" == "node" || "$worker_cmd" == "claude" || "$worker_cmd" == "codex" ]]; then
+          log "  Worker timed out but still active ($worker_cmd). Extending poll..."
+          log_debug "[EXEC] iter=$ITERATION timeout_active=true process=$worker_cmd"
+          log_debug "[EXEC] iter=$ITERATION poll_extended=true worker_cmd=$worker_cmd"
+          update_status "worker" "slow"
+          # Loop continues — re-poll same iteration
+        else
+          # Worker is truly dead/stuck
+          (( MONITOR_FAILURE_COUNT++ ))
+          log_debug "[EXEC] iter=$ITERATION monitor_failure=$MONITOR_FAILURE_COUNT/3"
+          if (( MONITOR_FAILURE_COUNT >= 3 )); then
+            log_debug "[EXEC] iter=$ITERATION circuit_breaker=monitor_failures detail=\"3 consecutive monitor failures\""
+            write_blocked_sentinel "3 consecutive monitor failures (worker not active)"
+            update_status "blocked" "monitor_failures"
+            return 1
+          fi
+          log "  WARNING: Worker poll failed (monitor failure $MONITOR_FAILURE_COUNT/3)"
+          update_status "worker" "poll_failed"
+          worker_poll_done=1  # exit poll loop, continue to next iteration
+          log_debug "[EXEC] iter=$ITERATION poll_worker_dead=true worker_cmd=$worker_cmd"
+          # Kill dead worker session so next iteration starts fresh
+          tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
+          tmux send-keys -t "$WORKER_PANE" "/exit" Enter 2>/dev/null
+          sleep 1
+        fi
       fi
-      # Worker is truly dead/stuck
-      (( MONITOR_FAILURE_COUNT++ ))
-      if (( MONITOR_FAILURE_COUNT >= 3 )); then
-        write_blocked_sentinel "3 consecutive monitor failures (worker not active)"
-        update_status "blocked" "monitor_failures"
-        return 1
-      fi
-      log "  WARNING: Worker poll failed (monitor failure $MONITOR_FAILURE_COUNT/3)"
-      update_status "worker" "poll_failed"
+    done
+
+    if [[ ! -f "$SIGNAL_FILE" ]]; then
+      log_debug "[EXEC] iter=$ITERATION no_signal_after_poll=true continuing"
+      # No signal — monitor failure, go to next iteration
       continue
     fi
 
@@ -1155,6 +1646,11 @@ main() {
 
     log "  Worker signal: status=$signal_status summary=\"$signal_summary\""
 
+    # Read us_id early for EXEC logging (also used later in verify branch)
+    local signal_us_id_early=""
+    signal_us_id_early=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
+    log_debug "[EXEC] iter=$ITERATION phase=worker_signal status=$signal_status us_id=${signal_us_id_early:-none} summary=\"$signal_summary\""
+
     case "$signal_status" in
       continue)
         # --- governance.md s7 step 6: continue -> go to step 8 ---
@@ -1163,58 +1659,94 @@ main() {
         ;;
       verify)
         # --- governance.md s7 step 7: Execute Verifier ---
-        log "  Worker claims done. Dispatching Verifier..."
-
-        write_verifier_trigger "$ITERATION"
-        local verifier_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).verifier-prompt.md"
+        # Read us_id from signal for per-US scoping
+        local signal_us_id=""
+        signal_us_id=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
+        log "  Worker claims done (us_id=${signal_us_id:-all}). Dispatching Verifier..."
 
         update_status "verifier" "running"
 
-        # Step 7a: Clean previous Verifier session if claude is running
-        local verifier_cmd
-        verifier_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null)
-        if [[ "$verifier_cmd" == "node" || "$verifier_cmd" == "claude" ]]; then
-          tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null
-          sleep 0.5
-          tmux send-keys -t "$VERIFIER_PANE" "/exit" Enter 2>/dev/null
-          sleep 2
-          wait_for_pane_ready "$VERIFIER_PANE" 5 2>/dev/null || true
-        fi
+        # --- Consensus vs single verification ---
+        if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+          # US-004: Run consensus verification (claude + codex sequentially)
+          local consensus_rc=0
+          run_consensus_verification "$ITERATION" || consensus_rc=$?
 
-        local verifier_launch
-        if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
-          verifier_launch="${CODEX_BIN:-codex} -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
-          log "  Launching Verifier codex in pane $VERIFIER_PANE..."
+          if (( consensus_rc == 2 )); then
+            # Consensus disagreement — treat as fail, fix loop will handle
+            log "  Consensus disagreement, treating as fail."
+          elif (( consensus_rc != 0 )); then
+            # Consensus verification failed entirely
+            log_error "Consensus verification failed"
+            write_blocked_sentinel "Consensus verification failed after max rounds"
+            update_status "blocked" "consensus_failed"
+            return 1
+          fi
         else
-          verifier_launch="$CLAUDE_BIN --model $VERIFIER_MODEL --dangerously-skip-permissions"
-          log "  Launching Verifier claude in pane $VERIFIER_PANE..."
-        fi
-        tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_launch"
-        tmux send-keys -t "$VERIFIER_PANE" Enter
+          # Standard single-engine verification
+          write_verifier_trigger "$ITERATION"
+          local verifier_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).verifier-prompt.md"
 
-        # Step 7b: Wait for claude TUI to be ready
-        if ! wait_for_pane_ready "$VERIFIER_PANE" 30; then
-          log_error "Verifier claude failed to start"
-          update_status "verifier" "start_failed"
-          continue
-        fi
+          # Step 7a: Clean previous Verifier session if running
+          local verifier_cmd
+          verifier_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null)
+          if [[ "$verifier_cmd" == "node" || "$verifier_cmd" == "claude" || "$verifier_cmd" == "codex" ]]; then
+            tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null
+            sleep 0.5
+            tmux send-keys -t "$VERIFIER_PANE" "/exit" Enter 2>/dev/null
+            sleep 2
+            wait_for_pane_ready "$VERIFIER_PANE" 5 2>/dev/null || true
+          fi
 
-        # Step 7c: Wait for claude to fully initialize, then send instruction
-        sleep 3
-        local verifier_instruction="Read and execute the instructions in $verifier_prompt"
-        safe_send_keys "$VERIFIER_PANE" "$verifier_instruction"
-        # Extra C-m to ensure submission
-        sleep 0.5
-        tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null
-        sleep 0.3
-        tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null
+          local verifier_launch
+          if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+            verifier_launch="${CODEX_BIN:-codex} -m $CODEX_MODEL -c model_reasoning_effort=\"$CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+            log "  Launching Verifier codex in pane $VERIFIER_PANE..."
+          else
+            verifier_launch="$CLAUDE_BIN --model $VERIFIER_MODEL --dangerously-skip-permissions"
+            log "  Launching Verifier claude in pane $VERIFIER_PANE..."
+          fi
+          tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_launch"
+          tmux send-keys -t "$VERIFIER_PANE" Enter
+          log_debug "[EXEC] iter=$ITERATION phase=verifier engine=$VERIFIER_ENGINE model=$VERIFIER_MODEL scope=${signal_us_id:-all} dispatched=true"
 
-        # Poll for verify-verdict.json
-        log "  Polling for verify-verdict.json..."
-        if ! poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier"; then
-          log_error "Verifier poll failed"
-          update_status "verifier" "poll_failed"
-          continue
+          # Step 7b: Wait for TUI to be ready
+          if ! wait_for_pane_ready "$VERIFIER_PANE" 30; then
+            log_error "Verifier failed to start"
+            update_status "verifier" "start_failed"
+            continue
+          fi
+
+          # Step 7c: Send instruction
+          sleep 3
+          local verifier_instruction="Read and execute the instructions in $verifier_prompt"
+          tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_instruction"
+          tmux send-keys -t "$VERIFIER_PANE" Enter
+          log_debug "Verifier instruction sent directly"
+
+          # Verify verifier actually started working
+          local vs_submit=0
+          while (( vs_submit < 10 )); do
+            sleep 2
+            local vs_check
+            vs_check=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null)
+            if echo "$vs_check" | grep -qi "esc to interrupt\|thinking\|working\|kneading\|crunching\|clauding\|billowing\|brewing\|tinkering\|burrowing\|saut\|Exploring\|Running\|exec\|Explored" 2>/dev/null; then
+              log_debug "Verifier started working after $((vs_submit + 1)) checks"
+              break
+            fi
+            tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null
+            sleep 0.3
+            tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null
+            (( vs_submit++ ))
+          done
+
+          # Poll for verify-verdict.json
+          log "  Polling for verify-verdict.json..."
+          if ! poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier"; then
+            log_error "Verifier poll failed"
+            update_status "verifier" "poll_failed"
+            continue
+          fi
         fi
 
         # --- governance.md s7 step 7: Read verdict via jq ---
@@ -1227,12 +1759,28 @@ main() {
 
         log "  Verifier: verdict=$verdict recommended=$recommended"
         log "  Verifier summary: \"$verdict_summary\""
+        local _issues_count=$(jq '.issues | length' "$VERDICT_FILE" 2>/dev/null || echo 0)
+        log_debug "[EXEC] iter=$ITERATION phase=verdict engine=$VERIFIER_ENGINE verdict=$verdict recommended=$recommended us_id=${signal_us_id:-all} issues=$_issues_count"
 
         case "$verdict" in
           pass)
             CONSECUTIVE_FAILURES=0
-            if [[ "$recommended" == "complete" ]]; then
-              # Write COMPLETE sentinel (only Leader writes sentinels)
+            CONSENSUS_ROUND=0
+
+            # --- Per-US tracking ---
+            if [[ "$VERIFY_MODE" = "per-us" && -n "$signal_us_id" && "$signal_us_id" != "ALL" ]]; then
+              # Add this US to verified list
+              if [[ -n "$VERIFIED_US" ]]; then
+                VERIFIED_US="${VERIFIED_US},${signal_us_id}"
+              else
+                VERIFIED_US="$signal_us_id"
+              fi
+              log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
+              log_debug "[EXEC] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
+              update_status "verifier" "pass_us"
+              # Worker will do next US on next iteration
+            elif [[ "$recommended" == "complete" || "$signal_us_id" == "ALL" ]]; then
+              # Final full verify passed or complete recommended
               write_complete_sentinel "$verdict_summary"
               update_status "complete" "pass"
               return 0
@@ -1263,9 +1811,11 @@ main() {
               jq -r '.next_iteration_contract // "Fix the issues listed above."' "$VERDICT_FILE" 2>/dev/null
             } | atomic_write "$fix_contract"
             log "  Fix contract: $fix_contract"
+            log_debug "[EXEC] iter=$ITERATION phase=fix_loop trigger=$verdict consecutive_failures=$CONSECUTIVE_FAILURES fix_contract=$fix_contract"
 
             # Circuit breaker: consecutive failures
             if (( CONSECUTIVE_FAILURES >= 3 )); then
+              log_debug "[EXEC] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"3 consecutive verification failures\""
               log_error "Circuit breaker: 3 consecutive verification failures"
               write_blocked_sentinel "3 consecutive verification failures"
               update_status "blocked" "consecutive_failures"
@@ -1311,6 +1861,7 @@ main() {
 
     # --- governance.md s7 step 8: Circuit breaker - stale context check ---
     if ! check_stale_context; then
+      log_debug "[EXEC] iter=$ITERATION circuit_breaker=stale_context detail=\"context unchanged for 3 consecutive iterations\""
       write_blocked_sentinel "Context unchanged for 3 consecutive iterations (stale)"
       update_status "blocked" "stale_context"
       return 1

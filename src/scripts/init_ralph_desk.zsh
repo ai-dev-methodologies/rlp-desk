@@ -55,14 +55,22 @@ Read these files in order:
 
 MANDATORY: When done with this iteration, write the following signal file:
 - Path: $DESK/memos/$SLUG-iter-signal.json
-- Format: {"iteration": N, "status": "continue|verify|blocked", "summary": "what was done", "timestamp": "ISO"}
+- Format: {"iteration": N, "status": "continue|verify|blocked", "us_id": "US-NNN or null", "summary": "what was done", "timestamp": "ISO"}
 - Status values:
-  - "continue" = current action done but more work remains
-  - "verify" = all work complete + done-claim written
+  - "continue" = current action done but more work remains (no verify needed yet)
+  - "verify" = current US complete + done-claim written → Verifier checks this US
   - "blocked" = autonomous blocker
 
+## Signal rules (per-US verification)
+- After completing EACH user story → signal "verify" with "us_id" set to the story you just finished (e.g., "US-001").
+- The Verifier will check ONLY that story's acceptance criteria.
+- After ALL stories individually pass verification → signal "verify" with "us_id": "ALL" for a final full verify of all AC.
+- Do NOT signal "continue" when a US is done — always signal "verify" per US.
+- Signal "continue" ONLY when you have more work to do within the same US (e.g., a multi-step task).
+
 ## Stop behavior
-- Objective achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json, exit
+- Single US achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json with the specific US, signal verify, exit
+- All US achieved → write done-claim JSON with all US, signal verify with us_id "ALL", exit
 - Autonomous blocker → write to $DESK/memos/$SLUG-blocked.md, exit
 - Otherwise → set stop=continue, define next iteration contract in memory, exit
 
@@ -84,19 +92,27 @@ Required reads:
 - Campaign Memory: $DESK/memos/$SLUG-memory.md (orientation only — not source of truth)
 - Latest Context: $DESK/context/$SLUG-latest.md
 - Done Claim: $DESK/memos/$SLUG-done-claim.json
+- Iteration Signal: $DESK/memos/$SLUG-iter-signal.json (check us_id field)
+
+## Verification Scope
+Check the iter-signal.json "us_id" field:
+- If us_id is a specific story (e.g., "US-001"): verify ONLY that story's acceptance criteria from the PRD.
+- If us_id is "ALL": verify ALL acceptance criteria from the PRD (final full verify).
+- If us_id is absent or null: verify all criteria in the done-claim (legacy/batch mode).
 
 Process:
-1. Read PRD acceptance criteria
+1. Read PRD acceptance criteria (scoped to us_id if present)
 2. Read done claim
 3. Identify scope: run \`git diff --name-only\` to find changed files, then read those files + related imports only
 4. Run fresh verification: build, test, lint, typecheck (per test-spec tools)
-5. Check each criterion against fresh evidence
+5. Check each criterion against fresh evidence (only for the scoped US, or all if us_id=ALL)
 6. Run smoke test if defined in PRD
 7. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
 
 Verdict JSON:
 {
   "verdict": "pass|fail|request_info",
+  "us_id": "US-NNN or ALL (matches the scope you verified)",
   "verified_at_utc": "ISO timestamp",
   "summary": "...",
   "criteria_results": [{"criterion":"...","met":true/false,"evidence":"..."}],
