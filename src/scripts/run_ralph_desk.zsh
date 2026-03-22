@@ -155,6 +155,13 @@ replace_worker_pane() {
   log "  New $role pane: $new_pane (replaced $old_pane)"
   log_debug "[EXEC] iter=$ITERATION pane_replaced=${role} old=$old_pane new=$new_pane"
 
+  # Update session-config.json with new pane ID
+  if [[ -f "$SESSION_CONFIG" ]]; then
+    jq --arg role "$role" --arg pane "$new_pane" \
+      '.panes[$role] = $pane' "$SESSION_CONFIG" | atomic_write "$SESSION_CONFIG"
+    log_debug "Updated session-config.json: $role pane → $new_pane"
+  fi
+
   echo "$new_pane"
 }
 
@@ -312,6 +319,19 @@ create_session() {
   "models": {
     "worker": "'"$WORKER_MODEL"'",
     "verifier": "'"$VERIFIER_MODEL"'"
+  },
+  "engines": {
+    "worker": "'"$WORKER_ENGINE"'",
+    "verifier": "'"$VERIFIER_ENGINE"'",
+    "worker_codex_model": "'"$WORKER_CODEX_MODEL"'",
+    "worker_codex_reasoning": "'"$WORKER_CODEX_REASONING"'",
+    "verifier_codex_model": "'"$VERIFIER_CODEX_MODEL"'",
+    "verifier_codex_reasoning": "'"$VERIFIER_CODEX_REASONING"'"
+  },
+  "verification": {
+    "verify_mode": "'"$VERIFY_MODE"'",
+    "verify_consensus": '"$VERIFY_CONSENSUS"',
+    "consensus_scope": "'"$CONSENSUS_SCOPE"'"
   },
   "config": {
     "max_iter": '"$MAX_ITER"',
