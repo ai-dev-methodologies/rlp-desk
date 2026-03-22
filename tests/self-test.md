@@ -62,5 +62,3 @@ echo "=== VALIDATE ===" && grep '\[VALIDATE\]' "$LOG"
 ```
 
 Paste output to this session for automated evaluation.
-</content>
-</invoke>

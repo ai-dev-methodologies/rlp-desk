@@ -4,7 +4,7 @@ Run each test in a separate project directory. After completion, paste the resul
 
 ---
 
-## Test 1: Agent + per-US verify (기본)
+## Test 1: Agent + per-US verify (default)
 
 ```bash
 mkdir /tmp/eval-perus && cd /tmp/eval-perus && git init
@@ -13,17 +13,17 @@ mkdir /tmp/eval-perus && cd /tmp/eval-perus && git init
 /rlp-desk run greeter --verify-mode per-us
 ```
 
-**평가 기준:**
-- [ ] Brainstorm이 engine, verify-mode, consensus 질문했는가
-- [ ] US-001 완료 후 verify 실행됐는가 (per-US)
-- [ ] US-002 완료 후 verify 실행됐는가
-- [ ] US-003 완료 후 verify 실행됐는가
-- [ ] 마지막에 ALL verify (전체 AC 검증) 실행됐는가
-- [ ] COMPLETE sentinel 작성됐는가
-- [ ] status.json에 verified_us 배열이 있는가
-- [ ] Leader가 iteration 사이에 멈추지 않고 자동 진행했는가
+**Pass criteria:**
+- [ ] Brainstorm asked about engine, verify-mode, and consensus
+- [ ] Verify ran after US-001 completion (per-US)
+- [ ] Verify ran after US-002 completion
+- [ ] Verify ran after US-003 completion
+- [ ] Final ALL verify (full AC check) ran at the end
+- [ ] COMPLETE sentinel written
+- [ ] `status.json` contains `verified_us` array
+- [ ] Leader continued automatically between iterations (no pause)
 
-**확인 명령어:**
+**Verification commands:**
 ```bash
 cat .claude/ralph-desk/logs/greeter/status.json | jq '.verified_us, .verify_mode'
 cat .claude/ralph-desk/memos/greeter-complete.md
@@ -41,38 +41,38 @@ mkdir /tmp/eval-batch && cd /tmp/eval-batch && git init
 /rlp-desk run batch-test --verify-mode batch
 ```
 
-**평가 기준:**
-- [ ] Worker가 모든 US 완료 후에만 verify 실행됐는가
-- [ ] 중간 iteration에 verify 없이 continue만 했는가
-- [ ] 마지막에 한번 verify → COMPLETE
+**Pass criteria:**
+- [ ] Verify ran only after all US were completed
+- [ ] Intermediate iterations used continue (no verify)
+- [ ] Single verify at the end → COMPLETE
 
-**확인 명령어:**
+**Verification commands:**
 ```bash
 cat .claude/ralph-desk/logs/batch-test/status.json | jq '.verify_mode'
 ls .claude/ralph-desk/logs/batch-test/iter-*.verifier-prompt.md | wc -l
-# batch면 verifier prompt 1개만 있어야 함
+# batch mode should have only 1 verifier prompt
 ```
 
 ---
 
-## Test 3: tmux 기본 (tmux 안에서)
+## Test 3: tmux basic (run inside tmux)
 
 ```bash
-# tmux 안에서 실행
+# Run inside a tmux session
 mkdir /tmp/eval-tmux && cd /tmp/eval-tmux && git init
 /rlp-desk init tmux-test "Python counter: increment(), decrement(), get() + pytest"
 # Edit PRD with 2 US
 /rlp-desk run tmux-test --mode tmux --debug
 ```
 
-**평가 기준:**
-- [ ] 현재 window에서 pane split 됐는가 (오른쪽에 Worker/Verifier)
-- [ ] Worker pane에 claude TUI가 보이는가
-- [ ] instruction이 자동 전달됐는가 (30초 내)
-- [ ] 완료 후 pane이 남아있는가
-- [ ] debug.log가 생성됐는가
+**Pass criteria:**
+- [ ] Current window split into panes (Worker/Verifier on the right)
+- [ ] Claude TUI visible in Worker pane
+- [ ] Instruction delivered automatically (within 30s)
+- [ ] Panes remain after completion
+- [ ] `debug.log` created
 
-**확인 명령어:**
+**Verification commands:**
 ```bash
 tmux list-panes -F '#{pane_id} #{pane_current_command}'
 cat .claude/ralph-desk/logs/tmux-test/debug.log | tail -10
@@ -84,20 +84,20 @@ cat .claude/ralph-desk/logs/tmux-test/status.json
 ## Test 4: tmux + per-US verify
 
 ```bash
-# tmux 안에서
+# Run inside tmux
 mkdir /tmp/eval-tmux-perus && cd /tmp/eval-tmux-perus && git init
 /rlp-desk init tmux-perus "Python math: add(a,b), multiply(a,b), power(a,b) + pytest"
 # Edit PRD with 3 US
 /rlp-desk run tmux-perus --mode tmux --verify-mode per-us --debug
 ```
 
-**평가 기준:**
-- [ ] 매 US 완료 후 Verifier pane에 claude가 뜨는가
-- [ ] Verifier가 해당 US의 AC만 검증하는가 (prompt에 scope 명시)
-- [ ] 마지막에 ALL verify가 실행되는가
-- [ ] debug.log에 per-US verify 흐름이 기록되는가
+**Pass criteria:**
+- [ ] Claude appeared in Verifier pane after each US completion
+- [ ] Verifier checked only the scoped US acceptance criteria (scope in prompt)
+- [ ] Final ALL verify ran at the end
+- [ ] `debug.log` recorded per-US verify flow
 
-**확인 명령어:**
+**Verification commands:**
 ```bash
 cat .claude/ralph-desk/logs/tmux-perus/status.json | jq '.verified_us'
 cat .claude/ralph-desk/logs/tmux-perus/debug.log | grep "us_id"
@@ -105,42 +105,42 @@ cat .claude/ralph-desk/logs/tmux-perus/debug.log | grep "us_id"
 
 ---
 
-## Test 5: tmux 밖 거부
+## Test 5: tmux rejection outside tmux
 
 ```bash
-# tmux 밖에서 실행 (새 터미널 또는 tmux 없는 세션)
+# Run OUTSIDE tmux (new terminal or non-tmux session)
 cd /tmp/eval-tmux
 /rlp-desk run tmux-test --mode tmux
 ```
 
-**평가 기준:**
-- [ ] "ERROR: tmux mode requires running inside a tmux session" 출력
-- [ ] exit code 1
-- [ ] LLM이 우회 시도하지 않고 멈췄는가
+**Pass criteria:**
+- [ ] Error message: "tmux mode requires running inside a tmux session"
+- [ ] Exit code 1
+- [ ] LLM did not attempt workarounds
 
 ---
 
-## Test 6: codex worker (codex 설치 필요)
+## Test 6: codex worker (requires codex CLI)
 
 ```bash
 mkdir /tmp/eval-codex && cd /tmp/eval-codex && git init
 /rlp-desk init codex-test "Python fizzbuzz: fizzbuzz(n) returns list + pytest"
-/rlp-desk run codex-test --worker-engine codex --codex-model gpt-5.4
+/rlp-desk run codex-test --worker-engine codex --worker-codex-model gpt-5.4
 ```
 
-**평가 기준:**
-- [ ] Worker가 codex exec로 실행됐는가 (Bash 사용)
-- [ ] Verifier는 claude(Agent)로 실행됐는가
-- [ ] status.json에 worker_engine: "codex"가 있는가
+**Pass criteria:**
+- [ ] Worker executed via codex exec (using Bash)
+- [ ] Verifier executed via claude (using Agent)
+- [ ] `status.json` contains `worker_engine: "codex"`
 
-**확인 명령어:**
+**Verification commands:**
 ```bash
 cat .claude/ralph-desk/logs/codex-test/status.json | jq '.worker_engine'
 ```
 
 ---
 
-## Test 7: consensus verify (codex 설치 필요)
+## Test 7: consensus verify (requires codex CLI)
 
 ```bash
 mkdir /tmp/eval-consensus && cd /tmp/eval-consensus && git init
@@ -148,43 +148,42 @@ mkdir /tmp/eval-consensus && cd /tmp/eval-consensus && git init
 /rlp-desk run consensus-test --verify-consensus
 ```
 
-**평가 기준:**
-- [ ] Worker 완료 후 claude verifier 실행
-- [ ] 이어서 codex verifier 실행
-- [ ] 둘 다 pass → COMPLETE
-- [ ] status.json에 claude_verdict, codex_verdict 필드 있는가
+**Pass criteria:**
+- [ ] Claude verifier ran after Worker completion
+- [ ] Codex verifier ran after Claude verifier
+- [ ] Both passed → COMPLETE
+- [ ] `status.json` contains `claude_verdict` and `codex_verdict` fields
 
-**확인 명령어:**
+**Verification commands:**
 ```bash
 cat .claude/ralph-desk/logs/consensus-test/status.json | jq '.claude_verdict, .codex_verdict, .verify_consensus'
 ```
 
 ---
 
-## Test 8: brainstorm 질문 확인
+## Test 8: brainstorm questions
 
 ```bash
 /rlp-desk brainstorm "any description"
 ```
 
-**평가 기준:**
-- [ ] Engine 질문 (claude/codex) 나오는가
-- [ ] Verify mode 질문 (per-us/batch) 나오는가
-- [ ] Verify consensus 질문 나오는가
-- [ ] 사용자가 선택할 수 있는가 (자동 결정 안 하는가)
+**Pass criteria:**
+- [ ] Engine question asked (claude/codex)
+- [ ] Verify mode question asked (per-us/batch)
+- [ ] Verify consensus question asked
+- [ ] User allowed to choose (no auto-decisions)
 
 ---
 
-## 평가 제출 방법
+## Submitting Results
 
-테스트 완료 후 아래 정보를 Claude에게 제출:
+After completing tests, run the following in each test directory:
 
 ```bash
-# 각 테스트 디렉토리에서 실행
 echo "=== STATUS ===" && cat .claude/ralph-desk/logs/<slug>/status.json
 echo "=== SENTINEL ===" && cat .claude/ralph-desk/memos/<slug>-complete.md 2>/dev/null || echo "NOT COMPLETE"
 echo "=== DEBUG ===" && tail -20 .claude/ralph-desk/logs/<slug>/debug.log 2>/dev/null || echo "NO DEBUG LOG"
 echo "=== VERIFIER PROMPTS ===" && ls .claude/ralph-desk/logs/<slug>/iter-*.verifier*.md 2>/dev/null | wc -l
 ```
 
-이 출력을 붙여넣으면 평가합니다.
+Paste the output to Claude for automated evaluation.
