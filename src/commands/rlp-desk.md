@@ -97,7 +97,7 @@ Options (parse from `$ARGUMENTS`):
 - `--consensus-scope all|final-only` — when consensus runs (default: `all`)
   - `all`: consensus runs on every verify (current behavior)
   - `final-only`: consensus only on final ALL verify
-- `--debug` — enable debug logging (tmux mode only, writes to logs/<slug>/debug.log)
+- `--debug` — enable debug logging (writes to logs/<slug>/debug.log)
 
 ### Mode Selection
 
@@ -144,10 +144,13 @@ DEBUG=<1 if --debug, else 0> \
 1. Validate scaffold: `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
 2. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
 3. Clean previous `done-claim.json`, `verify-verdict.json`.
+4. If `--debug`: create/clear `logs/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> .claude/ralph-desk/logs/<slug>/debug.log")`.
 
 ### Leader Loop
 
 **CRITICAL: DO NOT STOP between iterations.** You MUST continue the loop automatically until a sentinel is written (COMPLETE or BLOCKED) or max_iter is reached. Do NOT pause to ask the user. Do NOT wait for confirmation. The loop is fully autonomous — just report each iteration result briefly and immediately proceed to the next iteration.
+
+If `--debug`, at loop start debug_log: `[PLAN] slug=<slug> max_iter=<N> worker_engine=<engine> worker_model=<model> verifier_engine=<engine> verifier_model=<model> verify_mode=<mode> consensus=<0|1> consensus_scope=<scope>`
 
 For each iteration (1 to max_iter):
 
@@ -166,11 +169,13 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 **② Read memory.md** → Stop Status, Next Iteration Contract
 - Also read **Completed Stories** → verified work so far
 - Also read **Key Decisions** → settled architectural choices
+- If `--debug`: debug_log `[EXEC] iter=N phase=read_memory stop_status=<status> contract="<summary>"`
 
 **③ Decide model** (§4 of governance.md)
 - Previous iteration failed → upgrade model
 - Simple task → downgrade
 - User specified → use that
+- If `--debug`: debug_log `[EXEC] iter=N phase=model_select worker_model=<model> reason=<reason>`
 
 **④ Build worker prompt**
 - Read `.claude/ralph-desk/prompts/<slug>.worker.prompt.md`
@@ -178,6 +183,7 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 - Write to `.claude/ralph-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail)
 
 **⑤ Execute Worker**
+- If `--debug`: debug_log `[EXEC] iter=N phase=worker engine=<engine> model=<model> dispatched=true`
 
 If `--worker-engine claude` (default):
 ```
@@ -199,11 +205,14 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
 - Codex runs as a subprocess via Bash(), not Agent().
 - Each Bash() call = fresh context for codex.
 
+- If `--debug`: debug_log `[EXEC] iter=N phase=worker_done engine=<engine>`
+
 **⑥ Read memory.md again** (Worker updated it)
 - `stop=continue` → go to ⑧
 - `stop=verify` → go to ⑦
 - `stop=blocked` → write BLOCKED sentinel, stop
 - Also read `iter-signal.json` for `us_id` field (which US was just completed)
+- If `--debug`: debug_log `[EXEC] iter=N phase=worker_signal status=<stop_status> us_id=<us_id>`
 
 **⑦ Execute Verifier**
 
@@ -225,6 +234,7 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
 - Verifier checks all AC at once
 
 **⑦a Dispatch Verifier**
+- If `--debug`: debug_log `[EXEC] iter=N phase=verifier engine=<engine> model=<model> scope=<us_id> dispatched=true`
 
 If `--verifier-engine claude` (default):
 ```
@@ -263,6 +273,8 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
     5. Go to ⑧ with fix contract as next Worker contract
   - `request_info` → Leader reads Verifier's questions, decides outcome (or relays to Worker in next contract) → go to ⑧
   - `blocked` → write BLOCKED sentinel, stop
+- If `--debug`: debug_log `[EXEC] iter=N phase=verdict engine=<engine> verdict=<pass|fail|request_info> us_id=<us_id>`
+- If `--debug` and consensus: debug_log `[EXEC] iter=N phase=consensus claude=<verdict> codex=<verdict> round=<N>`
 
 **⑧ Write result log and report to user, continue loop**
 - Write `logs/<slug>/iter-NNN.result.md`:
@@ -271,6 +283,10 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
   - Verifier verdict `[leader-measured]`
 - Write `status.json`
 - Report: iteration N, phase, model used, result
+- If `--debug`: debug_log `[EXEC] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
+
+At loop end (COMPLETE, BLOCKED, or TIMEOUT):
+- If `--debug`: debug_log `[VALIDATE] result=<COMPLETE|BLOCKED|TIMEOUT> iterations=<N> verified_us=<list>`
 
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
@@ -342,7 +358,7 @@ Run options:
   --verify-mode per-us|batch Verification strategy (default: per-us)
   --verify-consensus         Cross-engine consensus verification
   --consensus-scope SCOPE    When consensus runs: all|final-only (default: all)
-  --debug                    Debug logging (tmux mode only)
+  --debug                    Debug logging (logs/<slug>/debug.log)
 ```
 
 ## Architecture
