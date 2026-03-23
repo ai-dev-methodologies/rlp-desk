@@ -62,7 +62,41 @@ Logged at cleanup. Compares plan vs execution:
 [VALIDATE] result=COMPLETE iterations=4 elapsed=760s verified_us=US-001,US-002,US-003
 ```
 
-## Visible Pane Self-Verification
+## Agent Mode Self-Verification
+
+When verifying agent mode features, the AI acts as the Leader and runs the full loop within the current session.
+
+### Process
+
+1. **Setup** — create test project in `/tmp`, run `init_ralph_desk.zsh`, write minimal PRD + test-spec
+2. **Execute** — invoke `/rlp-desk run <slug> --debug` via Skill tool. The AI follows the slash command instructions as Leader:
+   - Writes `[PLAN]` to `debug.log` at loop start
+   - Dispatches Worker via `Agent()`, writes `[EXEC]` logs at each step
+   - Reads signal, dispatches Verifier via `Agent()`, writes verdict logs
+   - Writes `[VALIDATE]` at loop end
+3. **Evaluate** — read `debug.log` and verify:
+   - `[PLAN]` entry exists with correct config
+   - `[EXEC]` entries cover all steps (read_memory, model_select, worker, worker_done, worker_signal, verifier, verdict, result)
+   - `[VALIDATE]` entry shows COMPLETE/BLOCKED/TIMEOUT with correct verified_us
+   - `verify-verdict.json` exists with pass/fail and criteria_results
+   - Actual files created by Worker exist and work
+
+### Key difference from tmux mode
+- No panes, no shell script — the AI IS the Leader
+- Debug logging is done by the AI executing Bash echo commands (not `log_debug()`)
+- Worker/Verifier run as `Agent()` calls, not `claude -p` in panes
+- The AI must explicitly follow every `If --debug: debug_log` instruction in the slash command
+
+### What does NOT count as agent mode verification
+- Running `echo` commands in isolation to test Bash syntax
+- Reading code and checking with grep
+- Simulating output without dispatching actual Agent() calls
+
+Only a full loop (init → run with Agent() → Worker completes → Verifier checks → COMPLETE/BLOCKED) counts.
+
+---
+
+## Visible Pane Self-Verification (Tmux Mode)
 
 Self-verification runs in **visible tmux panes** so the user can observe all roles in real-time.
 
