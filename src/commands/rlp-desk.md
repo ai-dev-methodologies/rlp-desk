@@ -54,6 +54,25 @@ Do NOT auto-decide iteration unit — the user MUST explicitly choose.
 Run: `~/.claude/ralph-desk/init_ralph_desk.zsh <slug> "<objective>"`
 If brainstorm was done, auto-fill PRD and test-spec with the results.
 
+**After init completes, STOP. Do NOT auto-run the loop.**
+
+Tell the user:
+1. The scaffold has been created — list the generated files
+2. Ask them to review/edit the PRD and test-spec if needed
+3. Show the run command with available options:
+```
+/rlp-desk run <slug> [options]
+
+Options:
+  --mode agent|tmux
+  --worker-engine claude|codex
+  --verifier-engine claude|codex
+  --verify-mode per-us|batch
+  --verify-consensus
+  --consensus-scope all|final-only
+```
+4. Wait for the user to explicitly invoke `/rlp-desk run`
+
 ---
 
 ## `run <slug> [options]`
