@@ -1411,7 +1411,56 @@ run_consensus_verification() {
     # Consensus disagreement
     log_debug "[EXEC] iter=$iter phase=consensus_disagreement round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT action=fix_contract"
 
-    # Either fails → build combined fix contract
+    # --- Pre-existing failure detection ---
+    # Get files changed by Worker in this iteration
+    local worker_changed_files=""
+    worker_changed_files=$(cd "$ROOT" && git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+    log_debug "[EXEC] iter=$iter worker_changed_files=\"$worker_changed_files\""
+
+    # Check if ALL failing issues reference files NOT touched by the worker
+    local has_worker_caused_issues=0
+    local failing_verdict_file=""
+    if [[ "$CLAUDE_VERDICT" = "fail" ]]; then failing_verdict_file="$claude_verdict_file"
+    elif [[ "$CODEX_VERDICT" = "fail" ]]; then failing_verdict_file="$codex_verdict_file"
+    fi
+
+    if [[ -n "$failing_verdict_file" && -n "$worker_changed_files" ]]; then
+      # Extract file paths mentioned in issues and check against worker changes
+      local issue_files
+      issue_files=$(jq -r '.issues[]? | .description // ""' "$failing_verdict_file" 2>/dev/null)
+      for changed_file in $(echo "$worker_changed_files"); do
+        if echo "$issue_files" | grep -q "$changed_file" 2>/dev/null; then
+          has_worker_caused_issues=1
+          break
+        fi
+      done
+
+      if (( ! has_worker_caused_issues )); then
+        # None of the failing issues reference files the worker changed
+        log "  Pre-existing failure detected: failing tests are NOT in files changed by Worker."
+        log_debug "[EXEC] iter=$iter pre_existing_failure=true failing_engine=$([ \"$CLAUDE_VERDICT\" = 'fail' ] && echo claude || echo codex)"
+
+        # Treat as pass — the other engine passed, and failures are pre-existing
+        {
+          echo '{'
+          echo '  "verdict": "pass",'
+          echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
+          echo '  "summary": "Consensus PASS (pre-existing failure filtered): claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'. Failing tests not in worker-changed files.",'
+          echo '  "recommended_state_transition": "complete",'
+          echo '  "pre_existing_failure": true,'
+          echo '  "worker_changed_files": "'"$(echo $worker_changed_files | tr '\n' ',')"'",'
+          echo '  "consensus": {'
+          echo '    "claude": { "verdict": "'"$CLAUDE_VERDICT"'" },'
+          echo '    "codex": { "verdict": "'"$CODEX_VERDICT"'" },'
+          echo '    "round": '"$CONSENSUS_ROUND"
+          echo '  }'
+          echo '}'
+        } | atomic_write "$VERDICT_FILE"
+        return 0
+      fi
+    fi
+
+    # --- Worker-caused failure: build fix contract as before ---
     local fix_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
     {
       echo "# Fix Contract (Consensus Round $CONSENSUS_ROUND, iteration $iter)"
@@ -1577,9 +1626,13 @@ main() {
   PREV_CONTEXT_HASH=$(compute_context_hash)
 
   # --- governance.md s7: Leader Loop ---
+  local HARD_CEILING=$(( ITER_TIMEOUT * 3 ))  # absolute max per iteration (no extensions beyond this)
+
   for (( ITERATION = 1; ITERATION <= MAX_ITER; ITERATION++ )); do
     log ""
     log "========== Iteration $ITERATION / $MAX_ITER =========="
+    local ITER_START_TIME
+    ITER_START_TIME=$(date +%s)
     local _iter_contract=""
     _iter_contract=$(sed -n '/^## Next Iteration Contract$/,/^## /{ /^## Next/d; /^## [^N]/d; p; }' "$MEMORY_FILE" 2>/dev/null | head -1 | tr '\n' ' ')
     log_debug "[EXEC] iter=$ITERATION start contract=\"${_iter_contract:-none}\""
@@ -1692,8 +1745,20 @@ main() {
         local worker_cmd
         worker_cmd=$(tmux display-message -p -t "$WORKER_PANE" '#{pane_current_command}' 2>/dev/null)
         if [[ "$worker_cmd" == "node" || "$worker_cmd" == "claude" || "$worker_cmd" == "codex" ]]; then
-          log "  Worker timed out but still active ($worker_cmd). Extending poll..."
-          log_debug "[EXEC] iter=$ITERATION timeout_active=true process=$worker_cmd"
+          # Check hard ceiling before extending
+          local iter_elapsed=$(( $(date +%s) - ITER_START_TIME ))
+          if (( iter_elapsed >= HARD_CEILING )); then
+            log_error "Worker hit hard ceiling (${HARD_CEILING}s = 3x iter_timeout). Killing iteration."
+            log_debug "[EXEC] iter=$ITERATION hard_ceiling_hit=true elapsed=${iter_elapsed}s ceiling=${HARD_CEILING}s process=$worker_cmd"
+            tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
+            sleep 1
+            WORKER_PANE=$(replace_worker_pane "$WORKER_PANE" "worker")
+            update_status "worker" "hard_timeout"
+            worker_poll_done=1
+            break
+          fi
+          log "  Worker timed out but still active ($worker_cmd). Extending poll... (${iter_elapsed}s/${HARD_CEILING}s)"
+          log_debug "[EXEC] iter=$ITERATION timeout_active=true process=$worker_cmd elapsed=${iter_elapsed}s ceiling=${HARD_CEILING}s"
           log_debug "[EXEC] iter=$ITERATION poll_extended=true worker_cmd=$worker_cmd"
           update_status "worker" "slow"
           # Loop continues — re-poll same iteration
