@@ -23,6 +23,9 @@ Thumbs.db
 # Misc
 write
 
+# Internal strategy/research docs (local only, never publish)
+docs/internal/
+
 # RLP Desk runtime artifacts (generated during runs)
 # The entire .claude/ralph-desk/ directory is project-local runtime state
 .claude/ralph-desk/
