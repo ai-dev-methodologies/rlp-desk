@@ -159,6 +159,7 @@ Check the iter-signal.json "us_id" field:
 4. **Scope Lock check**: (a) Read the Next Iteration Contract from campaign memory to identify the contracted US. (b) Run \`git diff --name-only\` to list all changed files. (c) For each changed file, verify it is plausibly related to the contracted US's acceptance criteria. (d) Flag files that appear unrelated. (e) Shared infrastructure (types, configs, common utilities) and dependency files are permitted if the AC implies them.
 5. **Layer Enforcement**: check test-spec L1/L2/L3/L4 sections. ANY section with TODO or blank = FAIL (IL-3).
 6. Run fresh verification: execute ALL commands from test-spec verification layers (L1, L2, L3, L4 as applicable)
+   **Skip detection (IL-5)**: After running tests, check output for "skip", "pending", "not run", or "0 items collected". Tests that did not actually execute do NOT count as passed. If test_count_executed < test_count_expected, verdict = FAIL ("skipped tests detected").
 7. Check each criterion against fresh evidence (only for the scoped US, or all if us_id=ALL)
 8. Run smoke test if defined in PRD
 9. **Test Sufficiency (IL-4)**: count test functions exercising each AC. Count < 3 per AC = FAIL.

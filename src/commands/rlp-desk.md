@@ -107,7 +107,7 @@ Available run commands (copy the one you want):
 #   --max-iter N               Max iterations (default: 100)
 ```
 
-**CRITICAL: Do NOT offer to run for the user. Do NOT ask "실행할까요?" or "shall I run?". The user MUST type the run command themselves. Just present the options, recommend one, and STOP.**
+**CRITICAL: Do NOT offer to run for the user. Do NOT ask "shall I run?" or offer to execute. The user MUST type the run command themselves. Just present the options, recommend one, and STOP.**
 
 ---
 
@@ -318,6 +318,8 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
 - **Either fails** → combine issues from both verdicts into a single fix contract → Worker retry
 - Max 3 consensus rounds per US. After 3 rounds → BLOCKED.
 
+**NO ENGINE PRIORITY (ABSOLUTE):** There is no primary or secondary engine. Claude and Codex have EQUAL weight. If one passes and the other fails, the verdict is FAIL — always. The Leader MUST NOT override, prioritize, or dismiss either engine's verdict. "Claude priority", "primary engine override", "infrastructure failure" (when a valid verdict file exists), or any similar rationalization = governance violation. Infrastructure failure means ONLY: CLI crash (exit ≠ 0), timeout, or verdict file not generated.
+
 **⑦c Read verdict(s)**
 - Read `verify-verdict.json` (or both `-claude.json` and `-codex.json` if consensus):
   - `pass` + `complete` → write COMPLETE sentinel, report done!
@@ -345,6 +347,10 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
   - Result status `[leader-measured]`
   - Files changed via `git diff --stat HEAD~1 HEAD` `[git-measured]`
   - Verifier verdict `[leader-measured]`
+- **Record cost & performance per iteration**:
+  - Agent mode: record `total_tokens` and `duration_ms` from Agent() return metadata for both Worker and Verifier
+  - Tmux mode: record `duration_seconds` from shell timing. Estimate tokens from file sizes: `(prompt_bytes + done_claim_bytes + verdict_bytes) / 4` — label as "estimated"
+  - Write to `status.json`: `{"iter_N": {"worker_tokens": N, "worker_duration_ms": N, "verifier_tokens": N, "verifier_duration_ms": N, "token_source": "measured|estimated"}}`
 - Write `status.json`
 - Report via tool call: `Bash("echo 'Iter N | US-NNN | verdict | model | next_action'")` — NEVER plain text. This keeps the turn alive for the next iteration.
 - **Always**: append to baseline.log: `[timestamp] iter=N verdict=<pass|fail|continue> us=<us_id> model=<worker_model>`
@@ -362,7 +368,7 @@ After the loop ends, the Leader performs post-campaign analysis:
 3. **Generate versioned report**: `logs/<slug>/self-verification-report-NNN.md` (NNN = auto-increment from existing reports)
 4. **Report to user**: Display the full report content
 
-Report template (9 sections):
+Report template (10 sections):
 
 ```
 # Campaign Self-Verification Report: <slug>
@@ -401,7 +407,12 @@ Weaknesses: systemic issues
 ### PRD (ambiguous or oversized ACs) — citing iter/AC
 ### Test-Spec (missing layers, weak mappings) — citing iter/AC
 
-## 9. Blind Spots
+## 9. Cost & Performance
+Table: Iter | Role | Model | Tokens | Duration | Source
+Aggregate: total Worker tokens, total Verifier tokens, total campaign tokens, total duration
+Source: "measured" (Agent mode) or "estimated" (Tmux mode, from file sizes / 4)
+
+## 10. Blind Spots
 What this report CANNOT prove from available data
 
 ## Data Provenance Rule

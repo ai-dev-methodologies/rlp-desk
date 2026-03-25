@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # =============================================================================
-# RLP Desk v2-protocol 종합 검증 스크립트
-# 8개 User Story의 48개 Acceptance Criteria를 자동 검증
+# RLP Desk v2-protocol comprehensive verification script
+# Automated verification of 48 Acceptance Criteria across 8 User Stories
 # =============================================================================
 
 ROOT="/Users/kyjin/dev/own/ai-dev-methodologies/rlp-desk/.worktrees/v2-protocol"
@@ -39,7 +39,7 @@ check_no_grep() {
 }
 
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║  RLP Desk v2-protocol 종합 검증                             ║"
+echo "║  RLP Desk v2-protocol Comprehensive Verification            ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -108,7 +108,7 @@ check_grep "$PROTO" "severity.*critical\|critical.*major.*minor" "AC5: severity 
 check_no_grep "$PROTO" "uncertain.*=.*fail\|If uncertain.*fail" "AC6: No 'uncertain=fail' rule"
 check_grep "$PROTO" "Delegate.*deterministic\|deterministic.*tool\|delegate.*check\|tool.*defined.*test-spec" "AC7: Deterministic checks delegated"
 check_grep "$PROTO" "AC verification\|semantic review\|smoke test" "AC8: Verifier focus areas"
-check_grep "$GOV" "git diff\|orientation\|request_info" "AC9: governance.md §2 Verifier updated"
+check_grep "$GOV" "git diff\|orientation\|request_info" "AC9: governance.md Verifier updated"
 check_grep "$CMD" "request_info" "AC10: rlp-desk.md has request_info branch"
 echo ""
 
@@ -132,8 +132,8 @@ check_grep "$INIT" "Campaign Memory\|memory" "AC2a: Memory in read order"
 check_grep "$INIT" "PRD\|prd" "AC2b: PRD in read order"
 check_grep "$INIT" "Test Spec\|test-spec\|test spec" "AC2c: Test Spec in read order"
 check_grep "$INIT" "Latest Context\|context" "AC2d: Latest Context in read order"
-check_grep "$INIT" "Scope rules\|scope rule\|프로젝트 루트\|루트 밖\|outside.*root" "AC3: Scope rules"
-check_grep "$INIT" "commit\|Commit\|커밋" "AC4: Commit rule"
+check_grep "$INIT" "Scope rules\|scope rule\|SCOPE LOCK\|outside.*root" "AC3: Scope rules"
+check_grep "$INIT" "commit\|Commit" "AC4: Commit rule"
 echo ""
 
 # =============================================================================
@@ -172,7 +172,7 @@ if ROOT="$TMPDIR" bash "$INIT" smoke-test "test objective" > /dev/null 2>&1; the
   # Worker prompt checks
   if [ -f "$WORKER" ]; then
     check_grep "$WORKER" "Before you start\|Before You Start" "Worker: has 'Before you start'"
-    check_grep "$WORKER" "Scope rules\|scope rule" "Worker: has scope rules"
+    check_grep "$WORKER" "Scope rules\|scope rule\|SCOPE LOCK" "Worker: has scope rules"
     check_grep "$WORKER" "commit\|Commit" "Worker: has commit rule"
   else
     fail "Worker prompt not generated"
@@ -256,15 +256,15 @@ echo ""
 
 # =============================================================================
 echo "╔══════════════════════════════════════════════════════════════╗"
-printf "║  결과: ✅ PASS=%d  ❌ FAIL=%d  ⚠️  WARN=%d %*s║\n" "$PASS" "$FAIL" "$WARN" $((24 - ${#PASS} - ${#FAIL} - ${#WARN})) ""
+printf "║  Result: ✅ PASS=%d  ❌ FAIL=%d  ⚠️  WARN=%d %*s║\n" "$PASS" "$FAIL" "$WARN" $((24 - ${#PASS} - ${#FAIL} - ${#WARN})) ""
 echo "╚══════════════════════════════════════════════════════════════╝"
 
 if [ "$FAIL" -eq 0 ]; then
   echo ""
-  echo "🎉 모든 검증 통과! v2-protocol 변경사항이 올바르게 적용되었습니다."
+  echo "All verifications passed! v2-protocol changes are correctly applied."
   exit 0
 else
   echo ""
-  echo "⛔ $FAIL 개의 검증 실패. 위의 ❌ 항목을 확인하세요."
+  echo "$FAIL verification(s) failed. Check the items marked with ❌ above."
   exit 1
 fi

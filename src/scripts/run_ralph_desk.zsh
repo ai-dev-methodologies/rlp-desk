@@ -1411,56 +1411,13 @@ run_consensus_verification() {
     # Consensus disagreement
     log_debug "[EXEC] iter=$iter phase=consensus_disagreement round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT action=fix_contract"
 
-    # --- Pre-existing failure detection ---
-    # Get files changed by Worker in this iteration
-    local worker_changed_files=""
-    worker_changed_files=$(cd "$ROOT" && git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
-    log_debug "[EXEC] iter=$iter worker_changed_files=\"$worker_changed_files\""
+    # NOTE: pre_existing_failure heuristic was removed (v0.3.5).
+    # It used unreliable grep-in-description string matching to classify
+    # consensus failures as "pre-existing", bypassing the consensus rule.
+    # Consensus disagreement now ALWAYS flows to fix contract.
+    # Codex CLI crash (no verdict file) is handled upstream via run_single_verifier return 1 → BLOCKED.
 
-    # Check if ALL failing issues reference files NOT touched by the worker
-    local has_worker_caused_issues=0
-    local failing_verdict_file=""
-    if [[ "$CLAUDE_VERDICT" = "fail" ]]; then failing_verdict_file="$claude_verdict_file"
-    elif [[ "$CODEX_VERDICT" = "fail" ]]; then failing_verdict_file="$codex_verdict_file"
-    fi
-
-    if [[ -n "$failing_verdict_file" && -n "$worker_changed_files" ]]; then
-      # Extract file paths mentioned in issues and check against worker changes
-      local issue_files
-      issue_files=$(jq -r '.issues[]? | .description // ""' "$failing_verdict_file" 2>/dev/null)
-      for changed_file in $(echo "$worker_changed_files"); do
-        if echo "$issue_files" | grep -q "$changed_file" 2>/dev/null; then
-          has_worker_caused_issues=1
-          break
-        fi
-      done
-
-      if (( ! has_worker_caused_issues )); then
-        # None of the failing issues reference files the worker changed
-        log "  Pre-existing failure detected: failing tests are NOT in files changed by Worker."
-        log_debug "[EXEC] iter=$iter pre_existing_failure=true failing_engine=$([ \"$CLAUDE_VERDICT\" = 'fail' ] && echo claude || echo codex)"
-
-        # Treat as pass — the other engine passed, and failures are pre-existing
-        {
-          echo '{'
-          echo '  "verdict": "pass",'
-          echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-          echo '  "summary": "Consensus PASS (pre-existing failure filtered): claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'. Failing tests not in worker-changed files.",'
-          echo '  "recommended_state_transition": "complete",'
-          echo '  "pre_existing_failure": true,'
-          echo '  "worker_changed_files": "'"$(echo $worker_changed_files | tr '\n' ',')"'",'
-          echo '  "consensus": {'
-          echo '    "claude": { "verdict": "'"$CLAUDE_VERDICT"'" },'
-          echo '    "codex": { "verdict": "'"$CODEX_VERDICT"'" },'
-          echo '    "round": '"$CONSENSUS_ROUND"
-          echo '  }'
-          echo '}'
-        } | atomic_write "$VERDICT_FILE"
-        return 0
-      fi
-    fi
-
-    # --- Worker-caused failure: build fix contract as before ---
+    # --- Consensus disagreement: build fix contract ---
     local fix_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
     {
       echo "# Fix Contract (Consensus Round $CONSENSUS_ROUND, iteration $iter)"

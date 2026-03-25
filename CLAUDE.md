@@ -3,7 +3,7 @@
 ## Mandatory Rules
 
 ### Commit & Publish Gate (ABSOLUTE — no exceptions)
-- **NEVER commit without explicit user approval.** Always show the diff summary and ask "커밋할까요?" before `git commit`.
+- **NEVER commit without explicit user approval.** Always show the diff summary and ask before `git commit`.
 - **NEVER run `npm publish` without explicit user approval.** Always confirm version number and ask before publishing.
 - **NEVER push to remote without explicit user approval.**
 - These rules apply regardless of context — autopilot, ralph, team, or any execution mode.
@@ -28,6 +28,12 @@
   - `src/commands/rlp-desk.md` → `~/.claude/commands/rlp-desk.md`
   - `src/governance.md` → `~/.claude/ralph-desk/governance.md`
   - `src/scripts/init_ralph_desk.zsh` → `~/.claude/ralph-desk/init_ralph_desk.zsh`
+
+### Release Notes Rule
+- Release notes MUST only contain **user-facing features and fixes**.
+- NEVER include CLAUDE.md changes, internal dev process rules, or review history in release notes.
+- CLAUDE.md is for AI working on this repo, NOT a feature of the npm-distributed rlp-desk.
+
 
 ### Release Workflow
 1. All changes committed and pushed

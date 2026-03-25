@@ -24,6 +24,7 @@ IL-1: NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 IL-2: NO INIT WITHOUT AC QUALITY SCORE >= 6
 IL-3: NO PASS WITH TODO IN ANY REQUIRED VERIFICATION LAYER
 IL-4: NO PASS WITHOUT TEST COUNT >= AC COUNT x 3
+IL-5: NO PASS WHEN TESTS ARE SKIPPED OR NOT EXECUTED
 ```
 
 **IL-1: Evidence Mandate**
@@ -83,6 +84,7 @@ Count < 3 per any AC = FAIL.
 | IL-2 | Leader | brainstorm/init | scored (6-dimension rubric) |
 | IL-3 | Verifier | verification time | mechanical (TODO/blank scan) |
 | IL-4 | Verifier | verification time | scored (test count per AC) |
+| IL-5 | Verifier | verification time | mechanical (skip/pending/0-collected scan in test output) |
 
 - Violation of any Iron Law overrides all other verdict considerations — verdict MUST be FAIL.
 - When an Iron Law is violated, the verdict MUST be `fail` regardless of uncertainty.
@@ -479,6 +481,8 @@ Worker completes US → signal verify
   → Both pass → proceed (next US or COMPLETE)
   → Either fails → combined issues → fix contract → Worker retry
   → Max 3 consensus rounds per US → BLOCKED if still disagreeing
+
+**NO ENGINE PRIORITY:** Claude and Codex have equal weight. If one passes and the other fails, the verdict is FAIL. No engine may be prioritized or dismissed. Infrastructure failure = CLI crash, timeout, or verdict file not generated — NOT a valid verdict with verdict=fail.
 ```
 
 **Key rules:**
