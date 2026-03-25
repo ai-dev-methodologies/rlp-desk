@@ -183,6 +183,14 @@ RLP Desk supports two execution modes. Both honor the same governance protocol.
 | Inside tmux session | **Works** | **Works** — panes split in current window |
 | Outside tmux session | **Works** | **Rejected** — "start tmux first" |
 
+### Choosing Your Mode
+
+| Need | Use |
+|------|-----|
+| Reliable autonomous loop (no interruption) | `--mode tmux` |
+| Interactive development, quick tasks | `--mode agent` (default) |
+| Long campaigns, CI, overnight runs | `--mode tmux` |
+
 ### Agent Mode (default) — "Smart Mode"
 
 ```
@@ -193,6 +201,8 @@ The current Claude Code session acts as the Leader, dispatching Workers and Veri
 
 - Works anywhere — no tmux required
 - Dynamic model routing — Leader upgrades models on failure
+
+**Known limitation:** Agent mode runs inside Claude Code's turn-based request-response model. If the LLM outputs text without a tool call, the turn terminates and the loop pauses until the user sends "continue." This is a platform constraint — the protocol mitigates it but cannot guarantee 100% uninterrupted execution. For guaranteed autonomous loops, use tmux mode.
 - Fix Loop — extracts verifier issues and feeds them back to the next worker
 - Best for interactive development
 
