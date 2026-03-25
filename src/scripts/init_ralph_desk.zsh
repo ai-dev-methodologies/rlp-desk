@@ -71,6 +71,8 @@ Read these files in order:
 - Refresh context file with the current frontier.
 - Rewrite campaign memory in full.
 - Write evidence artifacts.
+- **After writing tests, update test-spec Criteria Mapping with actual test file paths and function names** (replace placeholder -k filters).
+- Ensure **each AC has >= 3 tests** (happy + negative + boundary). Do not just meet the total count — distribute evenly per AC.
 - **Commit all changes when the iteration is complete** (include iteration number and story ID in commit message).
 
 MANDATORY: When done with this iteration, write the following signal file:
@@ -105,6 +107,7 @@ When writing done-claim JSON, ALWAYS include execution_steps — what you did, i
 }
 \`\`\`
 This is NOT optional. Every done-claim must include the steps you took and the evidence for each.
+execution_steps MUST be a JSON array of objects (not a dict with string keys). Each object MUST have: "step", "ac_id", "command", "exit_code", "summary".
 
 ## Stop behavior
 - Single US achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json with the specific US, signal verify, exit
@@ -371,11 +374,18 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 
 ### L3: E2E Simulation (REQUIRED)
 Known input → full pipeline → quantitative output comparison.
-- **Input**: TODO (specific test data)
-- **Expected output**: TODO (quantitative value)
-- **Command**:
+Must cover ALL AC types: happy path + boundary + error path.
+- **Happy path input**: TODO (specific test data)
+- **Happy path expected output**: TODO (quantitative value)
+- **Happy path command**:
 \`\`\`bash
-# TODO — E2E verification command
+# TODO — E2E happy path command
+\`\`\`
+- **Error path input**: TODO (invalid/boundary input that triggers error)
+- **Error path expected**: TODO (error type + non-zero exit code)
+- **Error path command**:
+\`\`\`bash
+# TODO — E2E error path command (expected exit ≠ 0)
 \`\`\`
 
 ### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
