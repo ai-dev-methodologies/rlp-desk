@@ -465,9 +465,19 @@ Remove:
 - `.claude/ralph-desk/memos/<slug>-escalation.md`
 Note: `logs/<slug>/self-verification-data.json` and `self-verification-report-NNN.md` are intentionally preserved across clean for historical comparison.
 
-If `--kill-session` is passed, also kill any tmux session matching `rlp-desk-<slug>-*`:
+If `--kill-session` is passed, clean up ALL tmux artifacts:
 ```bash
+# Kill rlp-desk tmux sessions
 tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^rlp-desk-<slug>-" | while read s; do tmux kill-session -t "$s"; done
+
+# Kill split panes in current window (Worker/Verifier panes from --mode tmux)
+# Find panes running claude/codex for this slug and kill them
+for pane_id in $(tmux list-panes -F '#{pane_id}:#{pane_current_command}' 2>/dev/null | grep -i 'claude\|codex' | cut -d: -f1); do
+  tmux kill-pane -t "$pane_id" 2>/dev/null
+done
+
+# Kill any remaining claude/codex processes for this campaign
+ps aux | grep -E "claude.*<slug>|codex.*<slug>" | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null
 ```
 
 ## No args or `help`
