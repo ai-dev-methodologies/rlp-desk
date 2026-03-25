@@ -79,19 +79,35 @@ If brainstorm was done, auto-fill PRD and test-spec with the results.
 Tell the user:
 1. The scaffold has been created — list the generated files
 2. Ask them to review/edit the PRD and test-spec if needed
-3. Show the run command with available options:
-```
-/rlp-desk run <slug> [options]
+3. Present run options with explanations and ONE recommendation. The user MUST copy and paste the command themselves:
 
-Options:
-  --mode agent|tmux
-  --worker-engine claude|codex
-  --verifier-engine claude|codex
-  --verify-mode per-us|batch
-  --verify-consensus
-  --consensus-scope all|final-only
 ```
-4. Wait for the user to explicitly invoke `/rlp-desk run`
+Available run commands (copy the one you want):
+
+# Recommended for most cases — agent mode, per-US verification, debug logging:
+/rlp-desk run <slug> --debug
+
+# With self-verification campaign report (recommended for MEDIUM+ risk):
+/rlp-desk run <slug> --debug --with-self-verification
+
+# Tmux mode for long campaigns with real-time visibility:
+/rlp-desk run <slug> --mode tmux --debug
+
+# Cross-engine consensus (requires codex CLI installed):
+/rlp-desk run <slug> --debug --verify-consensus
+
+# Full options reference:
+#   --mode agent|tmux          Agent mode (default) or tmux shell leader
+#   --debug                    Always-on detailed logging (recommended)
+#   --with-self-verification   Post-campaign analysis report
+#   --verify-mode per-us|batch Per-US (default) or batch verification
+#   --verify-consensus         Both claude+codex must pass
+#   --worker-model MODEL       haiku/sonnet/opus (default: sonnet)
+#   --verifier-model MODEL     haiku/sonnet/opus (default: opus)
+#   --max-iter N               Max iterations (default: 100)
+```
+
+**CRITICAL: Do NOT offer to run for the user. Do NOT ask "실행할까요?" or "shall I run?". The user MUST type the run command themselves. Just present the options, recommend one, and STOP.**
 
 ---
 
@@ -170,7 +186,13 @@ DEBUG=<1 if --debug, else 0> \
 
 ### Leader Loop
 
-**CRITICAL: DO NOT STOP between iterations.** You MUST continue the loop automatically until a sentinel is written (COMPLETE or BLOCKED) or max_iter is reached. Do NOT pause to ask the user. Do NOT wait for confirmation. The loop is fully autonomous — just report each iteration result briefly and immediately proceed to the next iteration.
+**CRITICAL: DO NOT STOP between iterations.** You MUST continue the loop automatically until a sentinel is written (COMPLETE or BLOCKED) or max_iter is reached. Do NOT pause to ask the user. Do NOT wait for confirmation. The loop is fully autonomous.
+
+**PLATFORM CONSTRAINT (Agent mode):** In Agent mode, the Leader is an LLM in Claude Code's turn-based model. A turn ENDS when the response contains no tool calls. This means:
+- **NEVER output plain text without an accompanying tool call.** Text-only output = turn ends = loop stops.
+- **Use `Bash("echo '...'")` for all status reports** instead of plain text. This keeps the tool-call chain alive.
+- **After every step result, IMMEDIATELY start the next step's tool call in the SAME response.** For example, after reading the verdict (⑦c), report via Bash("echo") AND start ⑧'s tool calls in one response.
+- If you output "Iter 1 complete, moving to iter 2" as plain text without a tool call, the turn terminates and the loop breaks. This is a platform constraint, not a compliance issue — no amount of "DO NOT STOP" text can override it.
 
 If `--debug`, at loop start debug_log: `[PLAN] slug=<slug> max_iter=<N> worker_engine=<engine> worker_model=<model> verifier_engine=<engine> verifier_model=<model> verify_mode=<mode> consensus=<0|1> consensus_scope=<scope>`
 
@@ -324,7 +346,7 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
   - Files changed via `git diff --stat HEAD~1 HEAD` `[git-measured]`
   - Verifier verdict `[leader-measured]`
 - Write `status.json`
-- Report: iteration N, phase, model used, result
+- Report via tool call: `Bash("echo 'Iter N | US-NNN | verdict | model | next_action'")` — NEVER plain text. This keeps the turn alive for the next iteration.
 - **Always**: append to baseline.log: `[timestamp] iter=N verdict=<pass|fail|continue> us=<us_id> model=<worker_model>`
 - If `--debug`: debug_log `[EXEC] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
 
