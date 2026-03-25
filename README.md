@@ -40,9 +40,11 @@ curl -sSL https://raw.githubusercontent.com/ai-dev-methodologies/rlp-desk/main/i
 
 You'll be asked to confirm each item:
 - **Slug** — project identifier
-- **User Stories** — discrete, testable units of work
+- **User Stories** — discrete, testable units with Given/When/Then acceptance criteria
+- **Task Type & Risk Level** — code/visual/content/integration/infra × LOW/MEDIUM/HIGH/CRITICAL
 - **Iteration Unit** — one story per iteration (incremental) or all at once (fast)
 - **Verification Commands** — how to check the work
+- **Ambiguity Gate** — AC quality scoring (IL-2, 0-12 scale, blocks init if < 6)
 - **Models** — which Claude model for Worker/Verifier
 
 ### 3. Run
@@ -97,12 +99,38 @@ for iteration in 1..max_iter:
   8. Update status, report to user, continue or stop
 ```
 
+### Verification Policy (v0.3.0)
+
+RLP Desk enforces a comprehensive verification policy defined in `governance.md`:
+
+**Iron Laws (§1a)** — 4 absolute rules that cannot be violated:
+- **IL-1**: No completion claims without fresh verification evidence
+- **IL-2**: No init without AC quality score ≥ 6 (Ambiguity Gate)
+- **IL-3**: No pass with TODO in any required verification layer
+- **IL-4**: No pass without test count ≥ AC count × 3
+
+**Evidence Gate (§1b)** — 5-step protocol: IDENTIFY → RUN → READ → VERIFY → ONLY THEN claim
+
+**Risk Classification (§1c)** — Proportional verification layers per risk level:
+
+| Risk | Required Layers |
+|------|----------------|
+| LOW | L1 (Unit) + L3 (E2E) |
+| MEDIUM | L1 + L2 (Integration) + L3 |
+| HIGH | L1 + L2 + L3 + L4 (Deploy) |
+| CRITICAL | L1 + L2 + L3 + L4 + mutation testing |
+
+**Execution Traceability (§1f)** — Always-on, not flag-gated:
+- Worker records `execution_steps` in done-claim.json (what was done, in what order, with evidence)
+- Verifier records `reasoning` in verify-verdict.json (why each judgment was made)
+
 ### Circuit Breakers
 
 | Condition | Action |
 |-----------|--------|
 | Context unchanged for 3 iterations | BLOCKED |
 | Same error repeated twice | Upgrade model, retry once, then BLOCKED |
+| 3 consecutive failures | Architecture Escalation (§7¾) → report to user |
 | Max iterations reached | TIMEOUT |
 
 ### Model Routing
@@ -140,6 +168,8 @@ for iteration in 1..max_iter:
 | `--codex-reasoning low\|medium\|high` | high | Reasoning effort for Codex |
 | `--verify-mode per-us\|batch` | per-us | Verification strategy (see below) |
 | `--verify-consensus` | off | Cross-engine consensus verification (see below) |
+| `--debug` | off | Debug logging to `logs/<slug>/debug.log` |
+| `--with-self-verification` | off | Campaign-level post-loop analysis report |
 
 ## Execution Modes
 
@@ -334,6 +364,7 @@ mkdir my-calc && cd my-calc
 - [Architecture](docs/architecture.md) — Design philosophy, Agent() and tmux execution modes
 - [Getting Started](docs/getting-started.md) — Step-by-step tutorial with the calculator example
 - [Protocol Reference](docs/protocol-reference.md) — Full protocol specification
+- [Future Plans](docs/TODO-verification-next.md) — P3 items and upcoming features
 
 ## Contributing
 

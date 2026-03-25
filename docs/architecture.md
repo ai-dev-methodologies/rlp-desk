@@ -48,6 +48,31 @@ RLP Desk supports two modes for running the Leader loop. Both honor the same gov
 | **Agent() — "Smart mode"** (default) | LLM (current session) | Dynamic — Leader reasons about which model to use each iteration | Active Claude Code session | Interactive development, complex routing decisions |
 | **Tmux — "Lean mode"** | Shell script (`run_ralph_desk.zsh`) | Static — set via `WORKER_MODEL`/`VERIFIER_MODEL` env vars | None (runs detached) | Long campaigns, CI, observability, zero-token orchestration |
 
+### Verification Policy Layer
+
+Both modes enforce the same verification policy (governance §1a-§1f):
+
+```
+                    ┌─────────────────────────────────┐
+                    │     Governance (§1a-§1f)         │
+                    │  Iron Laws · Evidence Gate       │
+                    │  Risk Classification · Layers    │
+                    │  Checkpoints · Traceability      │
+                    └──────────┬──────────────────────┘
+                               │ enforced by
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+         Worker Template  Verifier Template  Leader Loop
+         (Test-First,     (12-step process,  (Contract review,
+          12 Shortcuts,    5 reasoning       Checkpoints,
+          execution_steps) categories)       Escalation)
+```
+
+Key design decisions:
+- **execution_steps** (Worker) and **reasoning** (Verifier) are always-on (§1f), not gated by flags
+- **`--with-self-verification`** adds post-campaign analysis only — does not change loop behavior
+- **Risk-proportional layers**: LOW gets L1+L3, CRITICAL gets L1+L2+L3+L4+mutation
+
 **Agent() mode** is synchronous and simple: each `Agent()` call blocks until the subprocess finishes, then the Leader reads the filesystem. No polling, no signal files, no tmux.
 
 **Tmux mode** trades dynamic routing for visibility and independence. The shell Leader writes prompts to files, sends short trigger commands via `tmux send-keys`, and polls structured JSON signal files (`iter-signal.json`, `verify-verdict.json`) for control flow. It uses proven tmux patterns — write-then-notify, pane ID stability, copy-mode guards, heartbeat monitoring — for reliable, race-free orchestration.

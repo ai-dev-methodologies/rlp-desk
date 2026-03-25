@@ -45,10 +45,12 @@ The brainstorm phase interactively determines:
 |------|---------|
 | **Slug** | `loop-test` |
 | **Objective** | Implement calc.py + test_calc.py |
-| **User Stories** | US-001: calculator functions, US-002: pytest tests |
+| **User Stories** | US-001: calculator functions (Given/When/Then AC format) |
+| **Task Type & Risk** | code, LOW |
 | **Iteration Unit** | One user story per iteration |
 | **Verification** | `python3 -m pytest test_calc.py -v` |
 | **Models** | Worker: sonnet, Verifier: opus |
+| **Ambiguity Gate (IL-2)** | AC quality score ≥ 6 required to proceed |
 | **Max Iterations** | 10 |
 
 On approval, brainstorm offers to run `init` automatically.
@@ -81,9 +83,11 @@ This creates the scaffold:
 Edit `.claude/ralph-desk/plans/prd-loop-test.md` to define your user stories and acceptance criteria. See [`examples/calculator/`](../examples/calculator/.claude/ralph-desk/plans/prd-loop-test.md) for a complete example.
 
 Key sections:
-- **User Stories** with specific, testable acceptance criteria
+- **User Stories** with Given/When/Then acceptance criteria, Task Type, and Risk Level
+- **Boundary Cases** for each US
+- **Verification Layers** (L1-L4 based on risk level per governance §1c)
 - **Technical Constraints** (e.g., "Python 3 + pytest only")
-- **Done When** conditions
+- **Done When** conditions (must reference Evidence Gate §1b)
 
 ## Step 6: Define the Test Spec
 
@@ -147,7 +151,10 @@ If you want to run the loop again:
 ## Tips
 
 - **Start small**: One or two user stories for your first loop
-- **Be specific in acceptance criteria**: "function returns float" is testable; "function works well" is not
+- **Use Given/When/Then**: "Given 10 and 5, When add, Then 15" — not "function works well"
+- **Set risk levels**: LOW for docs/config, MEDIUM for features, HIGH for deploys, CRITICAL for security/finance
 - **Include verification commands**: The verifier needs concrete commands to run
 - **One story per iteration**: Each worker should do one bounded action
 - **Check logs when stuck**: `logs/<slug>/iter-NNN.worker-prompt.md` shows exactly what the worker received
+- **Review done-claims**: Worker's `execution_steps` show exactly what was done and in what order
+- **Review verdict reasoning**: Verifier's `reasoning` shows why each judgment was made

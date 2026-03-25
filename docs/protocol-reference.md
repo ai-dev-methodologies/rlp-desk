@@ -136,24 +136,28 @@ Written by the Worker at the end of every iteration. Provides a structured JSON 
 
 ### Done Claim (`<slug>-done-claim.json`)
 
-Written by the Worker when claiming all work is complete:
+Written by the Worker when claiming work is complete. **Must include `execution_steps`** (governance §1f — always-on, not optional):
 
 ```json
 {
-  "iteration": 3,
-  "claimed_at_utc": "2025-01-15T10:30:00Z",
-  "summary": "All user stories implemented and tests passing",
-  "stories_completed": ["US-001", "US-002"],
-  "evidence": {
-    "test_output": "8 passed in 0.05s",
-    "files_created": ["calc.py", "test_calc.py"]
-  }
+  "us_id": "US-001",
+  "claims": ["AC1: add(10,5)=15", "AC2: subtract(10,5)=5"],
+  "execution_steps": [
+    {"step": "write_test", "ac_id": "AC1", "command": null, "exit_code": null, "summary": "wrote tests/test_add.py"},
+    {"step": "verify_red", "ac_id": "AC1", "command": "pytest tests/", "exit_code": 1, "summary": "RED: test fails"},
+    {"step": "implement", "ac_id": "AC1", "command": null, "exit_code": null, "summary": "created add()"},
+    {"step": "verify_green", "ac_id": "AC1", "command": "pytest tests/", "exit_code": 0, "summary": "GREEN: 3 passed"},
+    {"step": "verify_e2e", "ac_id": "AC1", "command": "python -c '...'", "exit_code": 0, "summary": "E2E matches"},
+    {"step": "commit", "ac_id": "AC1", "command": "git commit", "exit_code": 0, "summary": "committed abc1234"}
+  ]
 }
 ```
 
+`execution_steps` must be a JSON array of objects. Step types from §1f vocabulary: `write_test`, `verify_red`, `implement`, `verify_green`, `refactor`, `verify_e2e`, `commit`, `verify`.
+
 ### Verify Verdict (`<slug>-verify-verdict.json`)
 
-Written by the Verifier after independent verification.
+Written by the Verifier after independent verification. **Must include `reasoning`** (governance §1f — always-on, not optional).
 
 **Tmux mode polling:** In tmux mode, after dispatching the Verifier, the shell Leader polls for the existence of `verify-verdict.json` (same pattern as `iter-signal.json`). Once it appears, the Leader reads the `verdict` and `recommended_state_transition` fields via `jq` to decide whether to write a COMPLETE sentinel, continue iterating, or write a BLOCKED sentinel.
 
@@ -171,6 +175,13 @@ Written by the Verifier after independent verification.
       "met": true,
       "evidence": "test -f calc.py → exit 0"
     }
+  ],
+  "reasoning": [
+    {"check": "IL-1 Evidence Gate", "decision": "pass", "basis": "ran pytest fresh, exit 0"},
+    {"check": "Layer Enforcement", "decision": "pass", "basis": "L1+L3 required and executed"},
+    {"check": "Test Sufficiency", "decision": "pass", "basis": "9 tests / 3 AC = 3.0 ratio"},
+    {"check": "Anti-Gaming", "decision": "pass", "basis": "no tautological tests, no mocking"},
+    {"check": "Worker Process Audit", "decision": "pass", "basis": "verify_red present with exit≠0"}
   ],
   "missing_evidence": [],
   "issues": [
