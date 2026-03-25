@@ -165,7 +165,8 @@ DEBUG=<1 if --debug, else 0> \
 1. Validate scaffold: `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
 2. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
 3. Clean previous `done-claim.json`, `verify-verdict.json`.
-4. If `--debug`: create/clear `logs/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> .claude/ralph-desk/logs/<slug>/debug.log")`.
+4. **Always**: write baseline log entry to `.claude/ralph-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
+5. If `--debug`: also create/clear `logs/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> .claude/ralph-desk/logs/<slug>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.
 
 ### Leader Loop
 
@@ -198,11 +199,14 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 - User specified → use that
 - If `--debug`: debug_log `[EXEC] iter=N phase=model_select worker_model=<model> reason=<reason>`
 
-**④ Build worker prompt**
-- Read `.claude/ralph-desk/prompts/<slug>.worker.prompt.md`
-- Combine with iteration number + memory contract
-- Write to `.claude/ralph-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail)
+**④ Build worker prompt (Prompt Assembly Protocol)**
+1. Capture `WORKING_DIR` once: use `$PWD` from when `/rlp-desk run` was invoked. Store for all prompt construction.
+2. Read `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` — use its content **verbatim**. Do NOT rewrite, paraphrase, or regenerate paths. The prompt file contains correct absolute paths from init.
+3. Prepend meta comment: `## WORKING_DIR: {absolute path}` — Worker must use this as its working directory.
+4. Append iteration number + memory contract.
+5. Write to `.claude/ralph-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail).
 - Note: Worker ALWAYS records execution_steps in done-claim.json per governance §1f. No flag needed.
+- **Rewriting paths from absolute to relative WILL break worktree campaigns. Only additions (WORKING_DIR header, iteration context) are allowed.**
 
 **④½ Contract review** (agent mode only)
 - Before dispatching Worker, spawn a lightweight review: "Is this iteration contract sufficient to achieve the US's AC? Any missing steps?"
@@ -241,6 +245,8 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
 - Also read `iter-signal.json` for `us_id` field (which US was just completed)
 - If `--debug`: debug_log `[EXEC] iter=N phase=worker_signal status=<stop_status> us_id=<us_id>`
 
+**CRITICAL: Immediately proceed to ⑦. Do NOT pause, do NOT ask the user, do NOT wait for confirmation. The loop is autonomous.**
+
 **⑦ Execute Verifier**
 
 **Per-US mode** (default, `--verify-mode per-us`):
@@ -262,6 +268,7 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
 
 **⑦a Dispatch Verifier**
 - Note: Verifier ALWAYS records reasoning in verify-verdict.json per governance §1f. No flag needed.
+- **Prompt Assembly Protocol (same as ④)**: Read verifier prompt file verbatim. Prepend `## WORKING_DIR: {absolute path}`. Do NOT rewrite paths.
 - If `--debug`: debug_log `[EXEC] iter=N phase=verifier engine=<engine> model=<model> scope=<us_id> dispatched=true`
 
 If `--verifier-engine claude` (default):
@@ -309,6 +316,8 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
 - If `--debug`: debug_log `[EXEC] iter=N phase=checkpoint level=<1|2> evidence=<summary>`
 - If `--debug` and consensus: debug_log `[EXEC] iter=N phase=consensus claude=<verdict> codex=<verdict> round=<N>`
 
+**CRITICAL: Immediately proceed to ⑧. Do NOT pause, do NOT ask the user. Continue the loop.**
+
 **⑧ Write result log and report to user, continue loop**
 - Write `logs/<slug>/iter-NNN.result.md`:
   - Result status `[leader-measured]`
@@ -316,6 +325,7 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
   - Verifier verdict `[leader-measured]`
 - Write `status.json`
 - Report: iteration N, phase, model used, result
+- **Always**: append to baseline.log: `[timestamp] iter=N verdict=<pass|fail|continue> us=<us_id> model=<worker_model>`
 - If `--debug`: debug_log `[EXEC] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
 
 At loop end (COMPLETE, BLOCKED, or TIMEOUT):
@@ -346,7 +356,7 @@ Per failure: Worker steps → Verifier reasoning → Root cause → Resolution
 ## 3. Worker Process Quality (§1f audit)
 Table: Iter | US | Steps | verify_red? | RED exit≠0? | verify_green? | Test-First? | E2E? | AC linked?
 Aggregate: TDD compliance %, RED confirmation %, E2E evidence %, step completeness %
-Audit: each step must have type from §1f vocabulary + ac_id + command + exit_code
+Audit: each step object must have "step" field with value from §1f vocabulary (write_test, verify_red, implement, verify_green, refactor, verify_e2e, commit, verify) + ac_id + command + exit_code
 
 ## 4. Verifier Judgment Quality (§1f audit)
 Table: Iter | US | Checks | All Basis? | Independent? | IL-1? | Layer? | Sufficiency? | Anti-Gaming? | Worker Audit?

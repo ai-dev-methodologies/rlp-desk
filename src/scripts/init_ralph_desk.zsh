@@ -472,6 +472,27 @@ GIEOF
   echo "  + .gitignore (created with rlp-desk rules)"
 fi
 
+# --- Post-init validation gate ---
+INIT_FAIL=0
+for REQUIRED_FILE in \
+  "$DESK/prompts/$SLUG.worker.prompt.md" \
+  "$DESK/prompts/$SLUG.verifier.prompt.md" \
+  "$DESK/context/$SLUG-latest.md" \
+  "$DESK/memos/$SLUG-memory.md" \
+  "$DESK/plans/prd-$SLUG.md" \
+  "$DESK/plans/test-spec-$SLUG.md"; do
+  if [[ ! -f "$REQUIRED_FILE" ]]; then
+    echo "  ✗ MISSING: $REQUIRED_FILE"
+    INIT_FAIL=1
+  fi
+done
+if [[ $INIT_FAIL -eq 1 ]]; then
+  echo ""
+  echo "ERROR: Scaffold incomplete. Some required files were not created."
+  echo "Re-run init or check filesystem permissions."
+  exit 1
+fi
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Scaffold ready: $SLUG"
