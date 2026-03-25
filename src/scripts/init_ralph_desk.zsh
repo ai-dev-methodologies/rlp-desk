@@ -45,6 +45,26 @@ Read these files in order:
 - No file creation or modification outside the project root.
 - Do not modify this prompt file or any PRD/test-spec files.
 
+## Test-First Approach (read test-spec BEFORE coding)
+1. Read test-spec "Impacted Tests" — if TODO (first iteration), skip to step 2 and fill this section during your work. Otherwise, run these FIRST to confirm they pass before your changes.
+2. Read test-spec "Required New Tests" — write these. They SHOULD FAIL initially.
+3. Implement minimum code to make all tests pass.
+4. Run ALL tests (impacted + new) to confirm nothing is broken.
+
+## Forbidden Shortcuts (Verifier will check these)
+- Do not mock external services when L2 integration test is required by test-spec.
+- Do not delete or weaken existing assertions to make tests pass.
+- Do not add test-specific logic (code that detects it is running in a test).
+- Do not skip boundary cases listed in the PRD.
+- Do not claim "code inspection" as verification — run the actual command.
+- Do not say "too simple to test" — simple code breaks. Test takes 30 seconds.
+- Do not say "I'll test after" — tests passing immediately prove nothing.
+- Do not say "already manually tested" — ad-hoc is not systematic, no record.
+- Do not say "partial check is enough" — partial proves nothing about the whole.
+- Do not say "I'm confident" — confidence is not evidence.
+- Do not say "existing code has no tests" — you are improving it, add tests.
+- Do not write code before tests — if you did, delete it and start with tests.
+
 ## Iteration rules
 - Use fresh context only; do NOT depend on prior chat history.
 - Execute exactly the work specified in the Next Iteration Contract.
@@ -68,6 +88,24 @@ MANDATORY: When done with this iteration, write the following signal file:
 - Do NOT signal "continue" when a US is done — always signal "verify" per US.
 - Signal "continue" ONLY when you have more work to do within the same US (e.g., a multi-step task).
 
+## Done Claim Format
+When writing done-claim JSON, ALWAYS include execution_steps — what you did, in what order, with evidence:
+\`\`\`json
+{
+  "us_id": "US-NNN",
+  "claims": ["AC1: ...", "AC2: ..."],
+  "execution_steps": [
+    {"step": "write_test", "ac_id": "AC1", "command": null, "summary": "wrote tests/test_add.py with 3 tests"},
+    {"step": "verify_red", "ac_id": "AC1", "command": "pytest tests/...", "exit_code": 1, "summary": "RED: test fails as expected"},
+    {"step": "implement", "ac_id": "AC1", "command": null, "summary": "created add() function"},
+    {"step": "verify_green", "ac_id": "AC1", "command": "pytest tests/...", "exit_code": 0, "summary": "GREEN: 3 passed"},
+    {"step": "verify_e2e", "ac_id": "AC1", "command": "python -c '...'", "exit_code": 0, "summary": "E2E output matches expected"},
+    {"step": "commit", "ac_id": "AC1", "command": "git commit ...", "exit_code": 0, "summary": "committed abc1234"}
+  ]
+}
+\`\`\`
+This is NOT optional. Every done-claim must include the steps you took and the evidence for each.
+
 ## Stop behavior
 - Single US achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json with the specific US, signal verify, exit
 - All US achieved → write done-claim JSON with all US, signal verify with us_id "ALL", exit
@@ -86,6 +124,17 @@ if [[ ! -f "$F" ]]; then
   cat > "$F" <<EOF
 Independent verifier for Ralph Desk: $SLUG
 
+## Iron Law (ABSOLUTE — no exceptions)
+> NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
+> "should pass", "probably works", "seems to" = automatic FAIL
+
+## Evidence Gate (MANDATORY before any verdict)
+1. IDENTIFY: What command proves this claim?
+2. RUN: Execute the FULL command (fresh, complete)
+3. READ: Full output, check exit code, count failures
+4. VERIFY: Does output confirm the claim?
+5. ONLY THEN: Issue verdict
+
 Required reads:
 - PRD: $DESK/plans/prd-$SLUG.md
 - Test Spec: $DESK/plans/test-spec-$SLUG.md
@@ -100,14 +149,24 @@ Check the iter-signal.json "us_id" field:
 - If us_id is "ALL": verify ALL acceptance criteria from the PRD (final full verify).
 - If us_id is absent or null: verify all criteria in the done-claim (legacy/batch mode).
 
-Process:
+## Verification Process
 1. Read PRD acceptance criteria (scoped to us_id if present)
 2. Read done claim
 3. Identify scope: run \`git diff --name-only\` to find changed files, then read those files + related imports only
-4. Run fresh verification: build, test, lint, typecheck (per test-spec tools)
-5. Check each criterion against fresh evidence (only for the scoped US, or all if us_id=ALL)
-6. Run smoke test if defined in PRD
-7. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
+4. **Scope Lock check**: (a) Read the Next Iteration Contract from campaign memory to identify the contracted US. (b) Run \`git diff --name-only\` to list all changed files. (c) For each changed file, verify it is plausibly related to the contracted US's acceptance criteria. (d) Flag files that appear unrelated. (e) Shared infrastructure (types, configs, common utilities) and dependency files are permitted if the AC implies them.
+5. **Layer Enforcement**: check test-spec L1/L2/L3/L4 sections. ANY section with TODO or blank = FAIL (IL-3).
+6. Run fresh verification: execute ALL commands from test-spec verification layers (L1, L2, L3, L4 as applicable)
+7. Check each criterion against fresh evidence (only for the scoped US, or all if us_id=ALL)
+8. Run smoke test if defined in PRD
+9. **Test Sufficiency (IL-4)**: count test functions exercising each AC. Count < 3 per AC = FAIL.
+   Check diversity: at least 2 of 3 categories (happy, negative, boundary) per AC.
+10. **Anti-Gaming Detection**:
+   - Assertion integrity: compare assertion count/strength via \`git diff HEAD~1\` — assertions not deleted or weakened
+   - Test-specific logic: no environment-detection patterns
+   - "Code inspection" claims: Worker must run actual commands
+   - Tautological tests: expected values that mirror implementation logic
+11. **Reproducibility check**: verify lock file committed, clean install succeeds, security scan passes, env vars documented (per test-spec Reproducibility Gate). Skip if test-spec says "N/A."
+12. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
 
 Verdict JSON:
 {
@@ -118,6 +177,14 @@ Verdict JSON:
   "criteria_results": [{"criterion":"...","met":true/false,"evidence":"..."}],
   "missing_evidence": [],
   "issues": [{"id":"...","severity":"critical|major|minor","description":"...","fix_hint":"(suggestion, non-authoritative)"}],
+  "reasoning": [
+    {"check": "IL-1 Evidence Gate", "decision": "pass|fail", "basis": "what command was run, what output confirmed the decision"},
+    {"check": "Layer Enforcement", "decision": "pass|fail", "basis": "which layers checked, any TODO found"},
+    {"check": "Test Sufficiency", "decision": "pass|fail", "basis": "test count per AC, category coverage"},
+    {"check": "Anti-Gaming", "decision": "pass|fail", "basis": "what was checked, any suspicious patterns"}
+  ],
+  "layer_status": {"L1":"pass|fail|todo|na","L2":"pass|fail|todo|na","L3":"pass|fail|todo|na","L4":"pass|fail|todo|na"},
+  "test_quality": {"test_count":0,"ac_count":0,"sufficiency":"pass|fail","anti_patterns_found":[]},
   "recommended_state_transition": "complete|continue|blocked",
   "next_iteration_contract": "...",
   "evidence_paths": []
@@ -129,6 +196,7 @@ Rules:
 - Campaign Memory is for orientation only — do NOT use it as source of truth for AC verification.
 - Deterministic checks (type hints, linting, security) delegate to test-spec tools; focus on AC verification + semantic review + smoke test.
 - Do NOT modify code or write sentinel files.
+- If Worker claims "inspection" or "review" for an AC that requires an automated command, verdict = FAIL.
 EOF
   echo "  + $F"
 else echo "  · $F"; fi
@@ -199,16 +267,29 @@ $OBJECTIVE
 ### US-001: [Title]
 - **Priority**: P0
 - **Size**: S|M|L
+- **Type**: code|visual|content|integration|infra
+- **Risk**: LOW|MEDIUM|HIGH|CRITICAL (governance §1c)
 - **Depends on**: []
-- **Acceptance Criteria**:
-  - [ ] [Specific, testable criterion]
+- **Acceptance Criteria** (Given/When/Then — domain language only):
+  - AC1:
+    - Given: [precondition in domain language]
+    - When: [action in domain language]
+    - Then: [expected outcome with quantitative criteria]
+  - AC2:
+    - Given: [precondition]
+    - When: [action]
+    - Then: [expected outcome with quantitative criteria]
+- **Boundary Cases**: [edge cases — empty input, max values, error conditions, concurrent access]
+- **Verification Layers**: [Fill per Risk level — LOW: L1+L3, MEDIUM: L1+L2(if ext deps)+L3, HIGH: L1+L2+L3+L4, CRITICAL: L1+L2+L3+L4+mutation (governance §1c)]
 - **Status**: not started
 
 ## Non-Goals
 ## Technical Constraints
 ## Done When
-- All acceptance criteria pass
-- Independent verifier confirms
+- All acceptance criteria pass with quantitative evidence
+- All boundary cases covered
+- All required verification layers executed (no TODO remaining)
+- Independent verifier confirms via Evidence Gate (governance §1b)
 EOF
   echo "  + $F"
 else echo "  · $F"; fi
@@ -218,6 +299,12 @@ F="$DESK/plans/test-spec-$SLUG.md"
 if [[ ! -f "$F" ]]; then
   cat > "$F" <<EOF
 # Test Specification: $SLUG
+
+## Iron Law Reference
+> IL-3: NO PASS WITH TODO IN ANY REQUIRED VERIFICATION LAYER
+> IL-4: NO PASS WITHOUT TEST COUNT >= AC COUNT x 3
+
+---
 
 ## Verification Commands
 ### Build
@@ -233,10 +320,122 @@ if [[ ! -f "$F" ]]; then
 # TODO
 \`\`\`
 
+---
+
+## Verification Context (fill BEFORE implementation)
+
+### Target Behavior
+What behavior does this project change or introduce?
+- TODO
+
+### Impacted Tests
+Existing tests that may break due to this change:
+- TODO (acceptable at init; Worker fills during first iteration)
+
+### Required New Tests
+Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
+- TODO
+
+### Forbidden Shortcuts (see Worker prompt for full list)
+- Do not mock external services when L2 integration test is required
+- Do not delete or weaken existing assertions to make tests pass
+- Do not add test-specific logic (if __name__ == '__test__' patterns)
+- Do not skip boundary cases listed in the PRD
+- Do not claim "code inspection" as verification — run the actual command
+- Do not say "too simple to test" — simple code breaks
+- Do not say "I'll test after" — tests passing immediately prove nothing
+- Do not say "already manually tested" — ad-hoc is not systematic
+- Do not say "partial check is enough" — partial proves nothing
+- Do not say "I'm confident" — confidence is not evidence
+- Do not say "existing code has no tests" — you are improving it, add tests
+- Do not write code before tests — delete it and start with tests
+
+### Pass/Fail Evidence Format
+- Command output with exit code 0
+- Quantitative result matching expected value
+- Screenshot comparison (for visual tasks)
+
+---
+
+## Verification Layers (ALL required sections — TODO in required layer = Verifier FAIL)
+
+### L1: Unit Test (REQUIRED)
+\`\`\`bash
+# TODO — unit test command (e.g., pytest, jest, go test)
+\`\`\`
+
+### L2: Integration (required if external services exist, otherwise "N/A — reason")
+\`\`\`bash
+# TODO — integration test command, or write: N/A — no external services (pure computation/transformation)
+\`\`\`
+
+### L3: E2E Simulation (REQUIRED)
+Known input → full pipeline → quantitative output comparison.
+- **Input**: TODO (specific test data)
+- **Expected output**: TODO (quantitative value)
+- **Command**:
+\`\`\`bash
+# TODO — E2E verification command
+\`\`\`
+
+### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
+\`\`\`bash
+# TODO — deploy verification command, or write: N/A — no deployment (library/tool, local-only change)
+\`\`\`
+
+---
+
+## Mutation Testing Gate (CRITICAL risk only)
+- Required: only for CRITICAL risk classification (governance §1c)
+- Tool: TODO (e.g., mutmut, Stryker, go-mutesting) or "N/A — not CRITICAL risk"
+- Target: >= 60% mutation score on core business logic (project default; override in PRD if justified)
+- Scope: core business logic files (not config/tests/docs)
+- Command:
+\`\`\`bash
+# TODO — mutation testing command, or write: N/A — not CRITICAL risk
+\`\`\`
+
+---
+
+## Test Quality Checklist (Verifier checks these)
+- [ ] Tests verify behavior, not implementation details
+- [ ] Each test has meaningful assertions (not just "no error thrown")
+- [ ] Boundary cases covered (empty, max, zero, null, concurrent)
+- [ ] No tautological tests (expected value copied from implementation)
+- [ ] Mock usage limited to external boundaries only
+- [ ] No test-specific logic in production code
+- [ ] Each AC has >= 3 tests (happy + negative + boundary) per IL-4
+
+## Traceability Matrix (Worker fills during implementation)
+
+| US | AC | Test File :: Function | Layer | Evidence | Status |
+|----|----|----------------------|-------|----------|--------|
+| US-001 | AC1 | TODO | L1 | TODO | pending |
+
+---
+
+## Code Quality Gates (defaults — override in PRD with justification)
+- **Code duplication**: <= 3% (project-appropriate tool, e.g., jscpd, pylint, sonar)
+- **Mock ratio**: mock-based assertions <= 30% of total assertions
+- **Cyclomatic complexity**: <= 10 per function
+- **Function length**: <= 50 lines per function
+- **File length**: <= 800 lines per file
+
+---
+
+## Reproducibility Gate
+- [ ] Lock file exists and committed (package-lock.json, poetry.lock, go.sum, etc.) or "N/A — no external dependencies"
+- [ ] Clean install succeeds (npm ci, pip install, etc.) or "N/A — no external dependencies"
+- [ ] Security scan passes (or known vulnerabilities documented and acknowledged in PRD) or "N/A — no dependencies"
+- [ ] Environment variables documented (.env.example or equivalent) or "N/A — no env vars"
+
+---
+
 ## Criteria → Verification Mapping
-| Criterion | Method | Command |
-|-----------|--------|---------|
-| US-001 AC1 | TODO | TODO |
+
+| US | AC | Layer | Method | Command | Expected Output | Pass Criteria |
+|----|----|-------|--------|---------|-----------------|---------------|
+| US-001 | AC1 | L1 | TODO | TODO | TODO | TODO |
 EOF
   echo "  + $F"
 else echo "  · $F"; fi

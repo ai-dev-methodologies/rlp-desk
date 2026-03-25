@@ -24,6 +24,17 @@ Ask about these items one by one (or in small groups):
 1. **Slug** — short identifier (e.g., `auth-refactor`). Suggest one, ask if OK.
 2. **Objective** — what the loop achieves
 3. **User Stories** — discrete units with testable acceptance criteria. Propose a breakdown, ask the user to confirm/modify.
+   - Apply INVEST criteria: each US must be Independent, Negotiable, Valuable, Estimable, Small, Testable.
+   - Each AC MUST use Given/When/Then format with **domain language only** (no class names, API paths, DB tables):
+     ```
+     Given [precondition in domain language]
+     When [action in domain language]
+     Then [expected outcome with quantitative criteria]
+     ```
+   - Include at least 1 negative test per US ("must NOT happen").
+   - Include boundary cases per US (empty, max, zero, concurrent).
+   - **Task Type** per US: `code` | `visual` | `content` | `integration` | `infra`
+   - **Risk Level** per US (governance §1c): `LOW` | `MEDIUM` | `HIGH` | `CRITICAL`
 4. **Iteration Unit** — what one worker does per iteration. Explicitly ask:
    - "One US per iteration (bounded, incremental verification)?"
    - "All stories at once (faster, single verification)?"
@@ -42,8 +53,17 @@ Ask about these items one by one (or in small groups):
 11. **Consensus Scope** — If consensus enabled, ask: "Consensus on every verify (all, default) or only on final verify (final-only)?" Default: all.
 12. **Max Iterations** — suggest based on story count, ask if OK.
 
-After all items are confirmed, present the full contract summary.
-On approval, offer to run `init`.
+After all items are confirmed:
+
+1. **Ambiguity Gate (IL-2)** — score each AC per governance §1a IL-2 (6 dimensions, 0-12 points).
+   If ANY AC scores below 6: **REJECT** — refine that AC before proceeding.
+   If all ACs score 6-9: **WARN** — proceed with logged warning, show low-scoring dimensions.
+   If all ACs score 10-12: **PASS** — clean.
+   Present the score table to the user before proceeding.
+2. Present the full contract summary.
+3. **Self-Verification** — Ask: "Enable self-verification? Worker records step-by-step evidence, Verifier cross-validates process. Recommended for MEDIUM+ risk." Default: yes for HIGH/CRITICAL, no for LOW/MEDIUM.
+4. On approval, offer to run `init`.
+
 Do NOT create files during brainstorm.
 Do NOT auto-decide iteration unit — the user MUST explicitly choose.
 
@@ -98,6 +118,7 @@ Options (parse from `$ARGUMENTS`):
   - `all`: consensus runs on every verify (current behavior)
   - `final-only`: consensus only on final ALL verify
 - `--debug` — enable debug logging (writes to logs/<slug>/debug.log)
+- `--with-self-verification` — enable campaign-level self-verification analysis. After COMPLETE, Leader analyzes all iteration records (done-claims + verdicts) and generates a campaign self-verification summary with patterns and recommendations for next planning cycle. (Note: execution_steps and reasoning are ALWAYS recorded per governance §1f — this flag adds post-campaign analysis.)
 
 ### Mode Selection
 
@@ -181,6 +202,12 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 - Read `.claude/ralph-desk/prompts/<slug>.worker.prompt.md`
 - Combine with iteration number + memory contract
 - Write to `.claude/ralph-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail)
+- Note: Worker ALWAYS records execution_steps in done-claim.json per governance §1f. No flag needed.
+
+**④½ Contract review** (agent mode only)
+- Before dispatching Worker, spawn a lightweight review: "Is this iteration contract sufficient to achieve the US's AC? Any missing steps?"
+- If `--debug`: debug_log `[EXEC] iter=N phase=contract_review result=<ok|issues>`
+- In tmux mode: skip (shell leader cannot reason). Log: `[EXEC] iter=N phase=contract_review skipped=tmux_mode`
 
 **⑤ Execute Worker**
 - If `--debug`: debug_log `[EXEC] iter=N phase=worker engine=<engine> model=<model> dispatched=true`
@@ -234,6 +261,7 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
 - Verifier checks all AC at once
 
 **⑦a Dispatch Verifier**
+- Note: Verifier ALWAYS records reasoning in verify-verdict.json per governance §1f. No flag needed.
 - If `--debug`: debug_log `[EXEC] iter=N phase=verifier engine=<engine> model=<model> scope=<us_id> dispatched=true`
 
 If `--verifier-engine claude` (default):
@@ -269,11 +297,16 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
     1. Read `issues` array, sort by severity (`critical` → `major` → `minor`)
     2. Build structured fix contract with traceability rule
     3. Include `fix_hint` values labeled `(suggestion, non-authoritative)` if present
-    4. Increment `consecutive_failures` in `status.json`
-    5. Go to ⑧ with fix contract as next Worker contract
+    4. Include impacted tests from test-spec (so Worker can run them before and after the fix)
+    5. Increment `consecutive_failures` in `status.json`
+    6. If `consecutive_failures >= 3` for same US → **Architecture Escalation** (governance §7¾): stop fixing, report to user
+    7. Go to ⑧ with fix contract as next Worker contract
   - `request_info` → Leader reads Verifier's questions, decides outcome (or relays to Worker in next contract) → go to ⑧
   - `blocked` → write BLOCKED sentinel, stop
 - If `--debug`: debug_log `[EXEC] iter=N phase=verdict engine=<engine> verdict=<pass|fail|request_info> us_id=<us_id>`
+- If `--debug`: debug_log `[EXEC] iter=N phase=layer_check L1=<status> L2=<status> L3=<status> L4=<status>`
+- If `--debug`: debug_log `[EXEC] iter=N phase=sufficiency test_count=<N> ac_count=<N> ratio=<N> verdict=<pass|fail>`
+- If `--debug`: debug_log `[EXEC] iter=N phase=checkpoint level=<1|2> evidence=<summary>`
 - If `--debug` and consensus: debug_log `[EXEC] iter=N phase=consensus claude=<verdict> codex=<verdict> round=<N>`
 
 **⑧ Write result log and report to user, continue loop**
@@ -287,6 +320,63 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
 
 At loop end (COMPLETE, BLOCKED, or TIMEOUT):
 - If `--debug`: debug_log `[VALIDATE] result=<COMPLETE|BLOCKED|TIMEOUT> iterations=<N> verified_us=<list>`
+
+**⑨ Campaign Self-Verification** (when `--with-self-verification` is enabled):
+
+After the loop ends, the Leader performs post-campaign analysis:
+
+1. **Collect data**: Read all archived `iter-NNN.result.md`, done-claim.json (with execution_steps), and verify-verdict.json (with reasoning) from `logs/<slug>/`
+2. **Write cumulative data**: `logs/<slug>/self-verification-data.json` — normalized iteration records
+3. **Generate versioned report**: `logs/<slug>/self-verification-report-NNN.md` (NNN = auto-increment from existing reports)
+4. **Report to user**: Display the full report content
+
+Report template (9 sections):
+
+```
+# Campaign Self-Verification Report: <slug>
+Report Version: NNN | Generated: timestamp | Campaign: slug — objective
+Schema Version: governance hash | Data Quality: N% iterations complete
+
+## 1. Automated Validation Summary
+Table: Iter | US | Worker Verdict | Verifier Verdict | Outcome
+
+## 2. Failure Deep Dive (per failed iteration)
+Per failure: Worker steps → Verifier reasoning → Root cause → Resolution
+
+## 3. Worker Process Quality (§1f audit)
+Table: Iter | US | Steps | verify_red? | RED exit≠0? | verify_green? | Test-First? | E2E? | AC linked?
+Aggregate: TDD compliance %, RED confirmation %, E2E evidence %, step completeness %
+Audit: each step must have type from §1f vocabulary + ac_id + command + exit_code
+
+## 4. Verifier Judgment Quality (§1f audit)
+Table: Iter | US | Checks | All Basis? | Independent? | IL-1? | Layer? | Sufficiency? | Anti-Gaming? | Worker Audit?
+Aggregate: Reasoning completeness %, Independent verification %, §1f category coverage %
+Audit: verify all 5 mandatory check categories (IL-1, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit) are present
+
+## 5. AC Lifecycle
+Table: US | AC | First Claimed (iter) | First Verified (iter) | Reopen Count | Final Status
+
+## 6. Test-Spec Adherence
+Spec completeness (layers/commands/mappings present)
+Spec execution fidelity (exact checks run and cited)
+
+## 7. Patterns: Strengths & Weaknesses
+Strengths: what worked well
+Weaknesses: systemic issues
+
+## 8. Recommendations for Next Cycle
+### Brainstorm (missing scenarios/constraints) — citing iter/AC
+### PRD (ambiguous or oversized ACs) — citing iter/AC
+### Test-Spec (missing layers, weak mappings) — citing iter/AC
+
+## 9. Blind Spots
+What this report CANNOT prove from available data
+
+## Data Provenance Rule
+Report content MUST be derivable from: done-claim.json (execution_steps), verify-verdict.json (reasoning),
+PRD, and test-spec. Information from source code inspection that is not in these files must be excluded
+or explicitly marked as "[source-inspection]" with justification.
+```
 
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
@@ -329,6 +419,8 @@ Remove:
 - `.claude/ralph-desk/logs/<slug>/session-config.json`
 - `.claude/ralph-desk/logs/<slug>/worker-heartbeat.json`
 - `.claude/ralph-desk/logs/<slug>/verifier-heartbeat.json`
+- `.claude/ralph-desk/memos/<slug>-escalation.md`
+Note: `logs/<slug>/self-verification-data.json` and `self-verification-report-NNN.md` are intentionally preserved across clean for historical comparison.
 
 If `--kill-session` is passed, also kill any tmux session matching `rlp-desk-<slug>-*`:
 ```bash
@@ -359,6 +451,7 @@ Run options:
   --verify-consensus         Cross-engine consensus verification
   --consensus-scope SCOPE    When consensus runs: all|final-only (default: all)
   --debug                    Debug logging (logs/<slug>/debug.log)
+  --with-self-verification   Campaign self-verification analysis (post-loop report)
 ```
 
 ## Architecture
