@@ -62,7 +62,11 @@ After all items are confirmed:
    Present the score table to the user before proceeding.
 2. Present the full contract summary.
 3. **Self-Verification** — Ask: "Enable self-verification? Worker records step-by-step evidence, Verifier cross-validates process. Recommended for MEDIUM+ risk." Default: yes for HIGH/CRITICAL, no for LOW/MEDIUM.
-4. On approval, offer to run `init`.
+4. **Re-execution check**: After slug is confirmed, check if `.claude/ralph-desk/plans/prd-<slug>.md` already exists. If a PRD already exists for this slug, ask: "A PRD already exists for this slug. Improve the existing PRD or start fresh (delete and recreate)?"
+   - "improve" → pass `--mode improve` to init
+   - "start fresh" → pass `--mode fresh` to init
+   - If no PRD exists: standard first-run (no --mode needed)
+5. On approval, offer to run `init`.
 
 Do NOT create files during brainstorm.
 Do NOT auto-decide iteration unit — the user MUST explicitly choose.
@@ -71,7 +75,7 @@ Do NOT auto-decide iteration unit — the user MUST explicitly choose.
 
 ## `init <slug> [objective]`
 
-Run: `~/.claude/ralph-desk/init_ralph_desk.zsh <slug> "<objective>"`
+Run: `~/.claude/ralph-desk/init_ralph_desk.zsh <slug> "<objective>" [--mode fresh|improve]`
 If brainstorm was done, auto-fill PRD and test-spec with the results.
 
 **After init completes, STOP. Do NOT auto-run the loop.**
@@ -133,6 +137,8 @@ Options (parse from `$ARGUMENTS`):
 - `--consensus-scope all|final-only` — when consensus runs (default: `all`)
   - `all`: consensus runs on every verify (current behavior)
   - `final-only`: consensus only on final ALL verify
+- `--cb-threshold N` — circuit breaker threshold: consecutive failures before BLOCKED (default: 3). When `--verify-consensus` is active, effective threshold is automatically doubled (e.g., default becomes 6).
+- `--iter-timeout N` — per-iteration timeout in seconds (default: 600). Enforced in tmux mode only. Agent mode: not enforced (Agent() has no timeout API).
 - `--debug` — enable debug logging (writes to logs/<slug>/debug.log)
 - `--with-self-verification` — enable campaign-level self-verification analysis. After COMPLETE, Leader analyzes all iteration records (done-claims + verdicts) and generates a campaign self-verification summary with patterns and recommendations for next planning cycle. (Note: execution_steps and reasoning are ALWAYS recorded per governance §1f — this flag adds post-campaign analysis.)
 
@@ -164,7 +170,10 @@ VERIFIER_CODEX_REASONING=<--verifier-codex-reasoning value, default: high> \
 VERIFY_MODE=<--verify-mode value, default: per-us> \
 VERIFY_CONSENSUS=<1 if --verify-consensus, else 0> \
 CONSENSUS_SCOPE=<--consensus-scope value, default: all> \
+CB_THRESHOLD=<--cb-threshold value, default: 3> \
+ITER_TIMEOUT=<--iter-timeout value, default: 600> \
 DEBUG=<1 if --debug, else 0> \
+WITH_SELF_VERIFICATION=<1 if --with-self-verification, else 0> \
   zsh ~/.claude/ralph-desk/run_ralph_desk.zsh
 ```
 6. **If the script exits with error (exit code 1)** — report the error to the user and STOP. Do NOT attempt to work around it. Do NOT create tmux sessions yourself. Do NOT re-launch the script in a different way. Just tell the user what went wrong and suggest using Agent mode instead.
@@ -174,6 +183,7 @@ DEBUG=<1 if --debug, else 0> \
 - Tmux mode requires the user to already be inside a tmux session. If the runner script rejects because $TMUX is not set, do NOT try to create a tmux session yourself. Tell the user: "Start tmux first, then retry."
 - Do NOT run the script in background (`&`, `run_in_background`). The script must run in foreground so panes remain visible to the user. The user needs to see Worker/Verifier panes in real-time.
 - Do NOT kill panes after completion. Panes stay alive for inspection. User cleans up with `/rlp-desk clean <slug> --kill-session`.
+- `--with-self-verification` is accepted in tmux mode but SV report generation is Agent-mode only (requires AI analysis). In tmux mode, the flag is recorded in session-config for post-hoc analysis. Use Agent mode for full SV report generation.
 
 #### Agent Mode (`--mode agent` or default)
 
@@ -183,6 +193,10 @@ DEBUG=<1 if --debug, else 0> \
 3. Clean previous `done-claim.json`, `verify-verdict.json`.
 4. **Always**: write baseline log entry to `.claude/ralph-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
 5. If `--debug`: also create/clear `logs/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> .claude/ralph-desk/logs/<slug>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.
+   - **4-category log system**: all debug_log entries use exactly one of: `[GOV]` (governance checks: IL enforcement, CB triggers, scope lock, verdict evaluation), `[DECIDE]` (leader decisions: model selection, fix contracts, escalation), `[OPTION]` (configuration snapshot at loop start: thresholds, modes, models), `[FLOW]` (execution progress: worker/verifier dispatch, signal reads, phase transitions)
+   - **Re-execution versioning**: If `debug.log` already exists at `--debug` start, rename it to `debug-v{N}.log` (N = next available integer ≥ 1) before creating a fresh `debug.log`.
+   - **baseline.log lifecycle**: baseline.log is deleted on re-execution (when `init --mode improve` or `init --mode fresh` is run).
+6. Capture baseline commit: `Bash("git rev-parse HEAD 2>/dev/null || echo none")` → store as `BASELINE_COMMIT`. Include in the first `status.json` write as `baseline_commit` field.
 
 ### Leader Loop
 
@@ -194,7 +208,10 @@ DEBUG=<1 if --debug, else 0> \
 - **After every step result, IMMEDIATELY start the next step's tool call in the SAME response.** For example, after reading the verdict (⑦c), report via Bash("echo") AND start ⑧'s tool calls in one response.
 - If you output "Iter 1 complete, moving to iter 2" as plain text without a tool call, the turn terminates and the loop breaks. This is a platform constraint, not a compliance issue — no amount of "DO NOT STOP" text can override it.
 
-If `--debug`, at loop start debug_log: `[PLAN] slug=<slug> max_iter=<N> worker_engine=<engine> worker_model=<model> verifier_engine=<engine> verifier_model=<model> verify_mode=<mode> consensus=<0|1> consensus_scope=<scope>`
+If `--debug`, at loop start debug_log the following (3 [OPTION] entries):
+- `[OPTION] slug=<slug> max_iter=<N> verify_mode=<mode> consensus=<0|1> consensus_scope=<scope>`
+- `[OPTION] cb_threshold=<N> effective_cb_threshold=<N>`
+- `[OPTION] worker_engine=<engine> worker_model=<model> verifier_engine=<engine> verifier_model=<model>`
 
 For each iteration (1 to max_iter):
 
@@ -213,13 +230,13 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 **② Read memory.md** → Stop Status, Next Iteration Contract
 - Also read **Completed Stories** → verified work so far
 - Also read **Key Decisions** → settled architectural choices
-- If `--debug`: debug_log `[EXEC] iter=N phase=read_memory stop_status=<status> contract="<summary>"`
+- If `--debug`: debug_log `[FLOW] iter=N phase=read_memory stop_status=<status> contract="<summary>"`
 
 **③ Decide model** (§4 of governance.md)
 - Previous iteration failed → upgrade model
 - Simple task → downgrade
 - User specified → use that
-- If `--debug`: debug_log `[EXEC] iter=N phase=model_select worker_model=<model> reason=<reason>`
+- If `--debug`: debug_log `[DECIDE] iter=N phase=model_select worker_model=<model> reason=<reason>`
 
 **④ Build worker prompt (Prompt Assembly Protocol)**
 1. Capture `WORKING_DIR` once: use `$PWD` from when `/rlp-desk run` was invoked. Store for all prompt construction.
@@ -232,11 +249,11 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 
 **④½ Contract review** (agent mode only)
 - Before dispatching Worker, spawn a lightweight review: "Is this iteration contract sufficient to achieve the US's AC? Any missing steps?"
-- If `--debug`: debug_log `[EXEC] iter=N phase=contract_review result=<ok|issues>`
-- In tmux mode: skip (shell leader cannot reason). Log: `[EXEC] iter=N phase=contract_review skipped=tmux_mode`
+- If `--debug`: debug_log `[GOV] iter=N phase=contract_review scope_lock=<us_id|null> ac_count=<N> result=<ok|issues>`
+- In tmux mode: skip (shell leader cannot reason). Log: `[FLOW] iter=N phase=contract_review skipped=tmux_mode`
 
 **⑤ Execute Worker**
-- If `--debug`: debug_log `[EXEC] iter=N phase=worker engine=<engine> model=<model> dispatched=true`
+- If `--debug`: debug_log `[FLOW] iter=N phase=worker engine=<engine> model=<model> dispatched=true`
 
 If `--worker-engine claude` (default):
 ```
@@ -258,14 +275,13 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
 - Codex runs as a subprocess via Bash(), not Agent().
 - Each Bash() call = fresh context for codex.
 
-- If `--debug`: debug_log `[EXEC] iter=N phase=worker_done engine=<engine>`
 
 **⑥ Read memory.md again** (Worker updated it)
 - `stop=continue` → go to ⑧
 - `stop=verify` → go to ⑦
 - `stop=blocked` → write BLOCKED sentinel, stop
 - Also read `iter-signal.json` for `us_id` field (which US was just completed)
-- If `--debug`: debug_log `[EXEC] iter=N phase=worker_signal status=<stop_status> us_id=<us_id>`
+- If `--debug`: debug_log `[FLOW] iter=N phase=worker_done_signal engine=<engine> status=<stop_status> us_id=<us_id>`
 
 **CRITICAL: Immediately proceed to ⑦. Do NOT pause, do NOT ask the user, do NOT wait for confirmation. The loop is autonomous.**
 
@@ -291,7 +307,7 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
 **⑦a Dispatch Verifier**
 - Note: Verifier ALWAYS records reasoning in verify-verdict.json per governance §1f. No flag needed.
 - **Prompt Assembly Protocol (same as ④)**: Read verifier prompt file verbatim. Prepend `## WORKING_DIR: {absolute path}`. Do NOT rewrite paths.
-- If `--debug`: debug_log `[EXEC] iter=N phase=verifier engine=<engine> model=<model> scope=<us_id> dispatched=true`
+- If `--debug`: debug_log `[FLOW] iter=N phase=verifier engine=<engine> model=<model> scope=<us_id> dispatched=true`
 
 If `--verifier-engine claude` (default):
 ```
@@ -316,7 +332,7 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
 - Both produce `verify-verdict.json` (Leader renames to `verify-verdict-claude.json` and `verify-verdict-codex.json`)
 - **Both pass** → proceed (next US or COMPLETE)
 - **Either fails** → combine issues from both verdicts into a single fix contract → Worker retry
-- Max 3 consensus rounds per US. After 3 rounds → BLOCKED.
+- Max 6 consensus rounds per US. After 6 rounds → BLOCKED.
 
 **NO ENGINE PRIORITY (ABSOLUTE):** There is no primary or secondary engine. Claude and Codex have EQUAL weight. If one passes and the other fails, the verdict is FAIL — always. The Leader MUST NOT override, prioritize, or dismiss either engine's verdict. "Claude priority", "primary engine override", "infrastructure failure" (when a valid verdict file exists), or any similar rationalization = governance violation. Infrastructure failure means ONLY: CLI crash (exit ≠ 0), timeout, or verdict file not generated.
 
@@ -330,22 +346,26 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
     3. Include `fix_hint` values labeled `(suggestion, non-authoritative)` if present
     4. Include impacted tests from test-spec (so Worker can run them before and after the fix)
     5. Increment `consecutive_failures` in `status.json`
-    6. If `consecutive_failures >= 3` for same US → **Architecture Escalation** (governance §7¾): stop fixing, report to user
+    6. If `consecutive_failures >= cb_threshold` for same US → **Architecture Escalation** (governance §7¾): stop fixing, report to user
+       - If `--debug`: debug_log `[GOV] iter=N phase=CB_trigger consecutive_failures=<N> us_id=<us_id> action=architecture_escalation`
     7. Go to ⑧ with fix contract as next Worker contract
   - `request_info` → Leader reads Verifier's questions, decides outcome (or relays to Worker in next contract) → go to ⑧
   - `blocked` → write BLOCKED sentinel, stop
-- If `--debug`: debug_log `[EXEC] iter=N phase=verdict engine=<engine> verdict=<pass|fail|request_info> us_id=<us_id>`
-- If `--debug`: debug_log `[EXEC] iter=N phase=layer_check L1=<status> L2=<status> L3=<status> L4=<status>`
-- If `--debug`: debug_log `[EXEC] iter=N phase=sufficiency test_count=<N> ac_count=<N> ratio=<N> verdict=<pass|fail>`
-- If `--debug`: debug_log `[EXEC] iter=N phase=checkpoint level=<1|2> evidence=<summary>`
-- If `--debug` and consensus: debug_log `[EXEC] iter=N phase=consensus claude=<verdict> codex=<verdict> round=<N>`
+- If `--debug`: debug_log `[GOV] iter=N phase=verdict engine=<engine> verdict=<pass|fail|request_info> us_id=<us_id> L1=<status> L2=<status> L3=<status> L4=<status>`
+- If `--debug`: debug_log `[GOV] iter=N phase=sufficiency test_count=<N> ac_count=<N> ratio=<N> verdict=<pass|fail>`
+
+**⑦d Archive iteration artifacts** (always — independent of --debug)
+After reading the verdict, archive to `logs/<slug>/`:
+- `iter-NNN-done-claim.json` ← copy from `memos/<slug>-done-claim.json`
+- `iter-NNN-verify-verdict.json` ← copy from `memos/<slug>-verify-verdict.json`
+(Preserved across clean; data source for campaign report generation and SV analysis.)
 
 **CRITICAL: Immediately proceed to ⑧. Do NOT pause, do NOT ask the user. Continue the loop.**
 
 **⑧ Write result log and report to user, continue loop**
 - Write `logs/<slug>/iter-NNN.result.md`:
   - Result status `[leader-measured]`
-  - Files changed via `git diff --stat HEAD~1 HEAD` `[git-measured]`
+  - Files changed: cumulative working tree state via `git diff --stat HEAD` `[git-measured]` (note: cumulative in tmux mode, not per-iteration delta)
   - Verifier verdict `[leader-measured]`
 - **Record cost & performance per iteration**:
   - Agent mode: record `total_tokens` and `duration_ms` from Agent() return metadata for both Worker and Verifier
@@ -354,10 +374,10 @@ After the primary verifier runs, run a second verifier with the OTHER engine:
 - Write `status.json`
 - Report via tool call: `Bash("echo 'Iter N | US-NNN | verdict | model | next_action'")` — NEVER plain text. This keeps the turn alive for the next iteration.
 - **Always**: append to baseline.log: `[timestamp] iter=N verdict=<pass|fail|continue> us=<us_id> model=<worker_model>`
-- If `--debug`: debug_log `[EXEC] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
+- If `--debug`: debug_log `[FLOW] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
 
 At loop end (COMPLETE, BLOCKED, or TIMEOUT):
-- If `--debug`: debug_log `[VALIDATE] result=<COMPLETE|BLOCKED|TIMEOUT> iterations=<N> verified_us=<list>`
+- If `--debug`: debug_log `[FLOW] result=<COMPLETE|BLOCKED|TIMEOUT> iterations=<N> verified_us=<list>`
 
 **⑨ Campaign Self-Verification** (when `--with-self-verification` is enabled):
 
@@ -421,6 +441,23 @@ PRD, and test-spec. Information from source code inspection that is not in these
 or explicitly marked as "[source-inspection]" with justification.
 ```
 
+**⑩ Campaign Report** (always — independent of `--debug` and `--with-self-verification`)
+
+After the loop ends (COMPLETE, BLOCKED, or TIMEOUT), generate `logs/<slug>/campaign-report.md`:
+
+1. If `campaign-report.md` already exists, rename it to `campaign-report-v{N}.md` (N = next available integer ≥ 1) before writing new.
+2. Generate report with 8 required sections:
+   - **Objective**: From PRD
+   - **Execution Summary**: Iterations run, terminal state (COMPLETE/BLOCKED/TIMEOUT), elapsed time
+   - **US Status**: Each US with final verified/failed/pending status (from `status.json`)
+   - **Verification Results**: Per-US and final verify outcomes (from archived iter artifacts)
+   - **Issues Encountered**: Fix contracts and failure verdicts from campaign
+   - **Cost & Performance**: Per-iter token/duration data from `status.json`
+   - **SV Summary**: If `--with-self-verification` ran, pointer to SV report file; otherwise "N/A — --with-self-verification not enabled"
+   - **Files Changed**: `git diff --stat <baseline_commit>` (working tree vs baseline, includes uncommitted changes and untracked files). Note: may include pre-existing uncommitted changes if the campaign started in a dirty worktree.
+3. Data sources: `status.json` (baseline_commit, per-iter data), archived `iter-NNN-done-claim.json` / `iter-NNN-verify-verdict.json`, PRD, git diff.
+4. If `--with-self-verification` was enabled: ⑨ SV report runs first, then ⑩ Campaign Report (which includes the SV Summary section pointing to the SV report file).
+
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
 - Same acceptance criterion fails 2 consecutive iterations → upgrade model, retry once, then BLOCKED
@@ -441,6 +478,7 @@ When `--verify-consensus` is enabled, also track in `status.json`:
 - YOU track iteration count
 - Write `status.json` after each iteration
 - Worker claim ≠ complete. Only YOU write COMPLETE sentinel after verifier pass.
+- **NEVER modify rlp-desk infrastructure files** (`~/.claude/ralph-desk/*`, `~/.claude/commands/rlp-desk.md`). If you or a Worker/Verifier discovers a bug in rlp-desk itself, write BLOCKED sentinel with reason `"rlp-desk bug: <description>"` and STOP. Do NOT attempt to fix rlp-desk — report the bug to the user.
 
 ---
 
@@ -463,7 +501,7 @@ Remove:
 - `.claude/ralph-desk/logs/<slug>/worker-heartbeat.json`
 - `.claude/ralph-desk/logs/<slug>/verifier-heartbeat.json`
 - `.claude/ralph-desk/memos/<slug>-escalation.md`
-Note: `logs/<slug>/self-verification-data.json` and `self-verification-report-NNN.md` are intentionally preserved across clean for historical comparison.
+Note: `logs/<slug>/self-verification-data.json`, `self-verification-report-NNN.md`, `campaign-report.md`, `campaign-report-v{N}.md`, `iter-NNN-done-claim.json`, and `iter-NNN-verify-verdict.json` are intentionally preserved across clean for historical comparison.
 
 If `--kill-session` is passed, clean up ALL tmux artifacts:
 ```bash
@@ -503,6 +541,8 @@ Run options:
   --verify-mode per-us|batch Verification strategy (default: per-us)
   --verify-consensus         Cross-engine consensus verification
   --consensus-scope SCOPE    When consensus runs: all|final-only (default: all)
+  --cb-threshold N           CB threshold: consecutive failures before BLOCKED (default: 3)
+  --iter-timeout N           Per-iteration timeout in seconds, tmux mode only (default: 600)
   --debug                    Debug logging (logs/<slug>/debug.log)
   --with-self-verification   Campaign self-verification analysis (post-loop report)
 ```
