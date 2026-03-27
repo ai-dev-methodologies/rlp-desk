@@ -8,21 +8,149 @@ set -euo pipefail
 # Creates project-local scaffold in: .claude/ralph-desk/
 #
 # Usage:
-#   ~/.claude/ralph-desk/init_ralph_desk.zsh <slug> [objective]
+#   ~/.claude/ralph-desk/init_ralph_desk.zsh <slug> [objective] [--mode fresh|improve]
 # =============================================================================
 
-SLUG="${1:?Usage: $0 <slug> [objective]}"
-OBJECTIVE="${2:-TBD - fill in the objective}"
+SLUG="${1:?Usage: $0 <slug> [objective] [--mode fresh|improve]}"
+MODE=""
+OBJECTIVE="TBD - fill in the objective"
+
+# Parse remaining arguments: --mode fresh|improve + optional positional objective
+shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode)
+      MODE="${2:?--mode requires an argument: fresh|improve}"
+      shift 2
+      ;;
+    --mode=*)
+      MODE="${1#--mode=}"
+      shift
+      ;;
+    *)
+      OBJECTIVE="$1"
+      shift
+      ;;
+  esac
+done
+
 ROOT="${ROOT:-$PWD}"
 DESK="$ROOT/.claude/ralph-desk"
 RUNNER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# --- Re-execution versioning helpers ---
+# Handles ONLY debug.log and campaign-report.md versioning.
+# SV reports use their own -NNN auto-increment pattern and are NOT handled here.
+
+detect_next_version() {
+  local file_path="$1"
+  local dir base ext n=1
+  dir="$(dirname "$file_path")"
+  base="$(basename "$file_path")"
+  if [[ "$base" == *.* ]]; then
+    ext=".${base##*.}"
+    base="${base%.*}"
+  else
+    ext=""
+  fi
+  while [[ -f "$dir/${base}-v${n}${ext}" ]]; do
+    (( n++ ))
+  done
+  echo "$n"
+}
+
+version_file() {
+  local file_path="$1"
+  if [[ -f "$file_path" ]]; then
+    local n dir base ext
+    n="$(detect_next_version "$file_path")"
+    dir="$(dirname "$file_path")"
+    base="$(basename "$file_path")"
+    if [[ "$base" == *.* ]]; then
+      ext=".${base##*.}"
+      base="${base%.*}"
+    else
+      ext=""
+    fi
+    mv "$file_path" "$dir/${base}-v${n}${ext}"
+    echo "  Versioned: $(basename "$file_path") → ${base}-v${n}${ext}"
+  fi
+  # Non-existent files silently skipped (no error)
+}
+
 echo "Initializing Ralph Desk: $SLUG"
 echo "  Root: $ROOT"
 echo "  Desk: $DESK"
+[[ -n "$MODE" ]] && echo "  Mode: $MODE"
 echo ""
 
 mkdir -p "$DESK/prompts" "$DESK/context" "$DESK/memos" "$DESK/plans" "$DESK/logs/$SLUG"
+
+# --- Re-execution lifecycle (--mode handling) ---
+PRD_FILE="$DESK/plans/prd-$SLUG.md"
+LOGS_DIR="$DESK/logs/$SLUG"
+
+if [[ -n "$MODE" ]] && [[ -f "$PRD_FILE" ]]; then
+  echo "Re-execution mode: --mode $MODE"
+  echo ""
+
+  DELETED_COUNT=0
+
+  # Version debug.log and campaign-report.md (NOT self-verification-report — uses -NNN)
+  version_file "$LOGS_DIR/debug.log"
+  version_file "$LOGS_DIR/campaign-report.md"
+
+  # Delete iter-* artifacts (archived done-claims, verdicts, prompt logs, results)
+  for f in "$LOGS_DIR"/iter-*(N); do
+    [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
+  done
+
+  # Delete runtime memos
+  for f in \
+    "$DESK/memos/$SLUG-done-claim.json" \
+    "$DESK/memos/$SLUG-iter-signal.json" \
+    "$DESK/memos/$SLUG-verify-verdict.json" \
+    "$DESK/memos/$SLUG-complete.md" \
+    "$DESK/memos/$SLUG-blocked.md"; do
+    [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
+  done
+
+  # Delete status.json, baseline.log, cost-log.jsonl
+  for f in "$LOGS_DIR/status.json" "$LOGS_DIR/baseline.log" "$LOGS_DIR/cost-log.jsonl"; do
+    [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
+  done
+
+  # Delete test-spec and current slug's prompts (will be regenerated below)
+  for f in \
+    "$DESK/plans/test-spec-$SLUG.md" \
+    "$DESK/prompts/$SLUG.worker.prompt.md" \
+    "$DESK/prompts/$SLUG.verifier.prompt.md"; do
+    [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
+  done
+
+  # Reset memory and context to fresh templates (rm here; scaffold below regenerates them)
+  rm -f "$DESK/memos/$SLUG-memory.md" "$DESK/context/$SLUG-latest.md"
+
+  # PRD handling: --mode fresh deletes PRD; --mode improve preserves PRD in-place
+  if [[ "$MODE" == "fresh" ]]; then
+    [[ -f "$PRD_FILE" ]] && { rm "$PRD_FILE"; (( ++DELETED_COUNT )); echo "  Deleted: prd-$SLUG.md (--mode fresh: PRD deleted for fresh start)"; }
+  fi
+
+  # Re-execution summary
+  echo "  Re-execution summary:"
+  if [[ "$MODE" == "improve" ]]; then
+    echo "  Preserved: prd-$SLUG.md (--mode improve: PRD kept in-place)"
+  fi
+  echo "  Deleted:   $DELETED_COUNT runtime artifacts"
+  echo "  Reset:     memory.md + context.md (regenerating from templates)"
+  echo ""
+
+elif [[ -n "$MODE" ]] && [[ ! -f "$PRD_FILE" ]]; then
+  # Note: --mode provided but no PRD found for this slug — treating as first run
+  echo "  Note: --mode $MODE provided but no PRD found for '$SLUG' — treating as first run."
+  echo ""
+  MODE=""
+fi
 
 # --- Worker Prompt ---
 F="$DESK/prompts/$SLUG.worker.prompt.md"
@@ -64,6 +192,7 @@ Read these files in order:
 - Do not say "I'm confident" — confidence is not evidence.
 - Do not say "existing code has no tests" — you are improving it, add tests.
 - Do not write code before tests — if you did, delete it and start with tests.
+- **NEVER modify rlp-desk infrastructure files** (~/.claude/ralph-desk/*, ~/.claude/commands/rlp-desk.md). If you discover a bug in rlp-desk itself, report it in done-claim.json with {"status": "blocked", "reason": "rlp-desk bug: <description>"} and signal blocked. Do NOT attempt to fix rlp-desk — it is the orchestration tool, not your project code.
 
 ## Iteration rules
 - Use fresh context only; do NOT depend on prior chat history.
@@ -169,6 +298,11 @@ Check the iter-signal.json "us_id" field:
    - Test-specific logic: no environment-detection patterns
    - "Code inspection" claims: Worker must run actual commands
    - Tautological tests: expected values that mirror implementation logic
+10½. **Worker Process Audit**:
+   - Test-first compliance: done-claim execution_steps must show write_test step before implement step for each AC
+   - RED phase evidence: at least one verify_red step with exit_code=1 per AC (proves tests were written before passing)
+   - Forbidden shortcuts: check done-claim claims and summary for forbidden phrases ("code inspection", "I'm confident", "too simple", "already manually tested", "partial check")
+   - Step completeness: each AC should have write_test → verify_red → implement → verify_green sequence in execution_steps
 11. **Reproducibility check**: verify lock file committed, clean install succeeds, security scan passes, env vars documented (per test-spec Reproducibility Gate). Skip if test-spec says "N/A."
 12. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
 
@@ -185,7 +319,8 @@ Verdict JSON:
     {"check": "IL-1 Evidence Gate", "decision": "pass|fail", "basis": "what command was run, what output confirmed the decision"},
     {"check": "Layer Enforcement", "decision": "pass|fail", "basis": "which layers checked, any TODO found"},
     {"check": "Test Sufficiency", "decision": "pass|fail", "basis": "test count per AC, category coverage"},
-    {"check": "Anti-Gaming", "decision": "pass|fail", "basis": "what was checked, any suspicious patterns"}
+    {"check": "Anti-Gaming", "decision": "pass|fail", "basis": "what was checked, any suspicious patterns"},
+    {"check": "Worker Process Audit", "decision": "pass|fail", "basis": "test-first followed: verify_red present per AC, no forbidden shortcuts in claims, execution_steps complete"}
   ],
   "layer_status": {"L1":"pass|fail|todo|na","L2":"pass|fail|todo|na","L3":"pass|fail|todo|na","L4":"pass|fail|todo|na"},
   "test_quality": {"test_count":0,"ac_count":0,"sufficiency":"pass|fail","anti_patterns_found":[]},

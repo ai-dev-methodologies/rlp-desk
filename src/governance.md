@@ -373,28 +373,34 @@ Characteristics:
 ```
 .claude/ralph-desk/
 ├── prompts/
-│   ├── <slug>.worker.prompt.md      # Worker base prompt
-│   └── <slug>.verifier.prompt.md    # Verifier base prompt
+│   ├── <slug>.worker.prompt.md      # Worker base prompt (regenerated on re-execution)
+│   └── <slug>.verifier.prompt.md    # Verifier base prompt (regenerated on re-execution)
 ├── context/
-│   └── <slug>-latest.md             # Current frontier (Worker updates)
+│   └── <slug>-latest.md             # Current frontier; Worker updates (reset to template on re-execution)
 ├── memos/
-│   ├── <slug>-memory.md             # Campaign memory (Worker updates)
-│   ├── <slug>-done-claim.json       # Worker's completion claim (runtime)
-│   ├── <slug>-iter-signal.json      # Worker's iteration signal (runtime)
-│   ├── <slug>-verify-verdict.json   # Verifier's verdict (runtime)
-│   ├── <slug>-escalation.md          # Architecture escalation report (tmux mode, §7¾)
-│   ├── <slug>-complete.md           # SENTINEL (Leader only)
-│   └── <slug>-blocked.md            # SENTINEL (Leader only)
+│   ├── <slug>-memory.md             # Campaign memory; Worker updates (reset to template on re-execution)
+│   ├── <slug>-done-claim.json       # Worker's completion claim (runtime; deleted on re-execution)
+│   ├── <slug>-iter-signal.json      # Worker's iteration signal (runtime; deleted on re-execution)
+│   ├── <slug>-verify-verdict.json   # Verifier's verdict (runtime; deleted on re-execution)
+│   ├── <slug>-escalation.md         # Architecture escalation report (tmux mode, §7¾; deleted on re-execution)
+│   ├── <slug>-complete.md           # SENTINEL (Leader only; deleted on re-execution)
+│   └── <slug>-blocked.md            # SENTINEL (Leader only; deleted on re-execution)
 ├── plans/
-│   ├── prd-<slug>.md                # PRD (shared contract)
-│   └── test-spec-<slug>.md          # Verification criteria
+│   ├── prd-<slug>.md                # PRD (in-place: --mode improve | deleted: --mode fresh)
+│   └── test-spec-<slug>.md          # Verification criteria (regenerated on re-execution)
 └── logs/<slug>/
-    ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy
-    ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy
-    ├── iter-NNN.result.md           # Iteration result (leader-measured + git-measured)
-    ├── self-verification-data.json              # Cumulative campaign data (--with-self-verification)
-    ├── self-verification-report-NNN.md          # Versioned campaign analysis report (--with-self-verification)
-    └── status.json                  # Leader's loop state
+    ├── debug.log                    # Debug output (versioned: debug-v{N}.log on re-execution)
+    ├── campaign-report.md           # Campaign summary (versioned: campaign-report-v{N}.md on re-execution)
+    ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy (deleted on re-execution)
+    ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy (deleted on re-execution)
+    ├── iter-NNN.result.md           # Iteration result (deleted on re-execution)
+    ├── iter-NNN-done-claim.json     # Archived done-claim per iteration (deleted on re-execution)
+    ├── iter-NNN-verify-verdict.json # Archived verdict per iteration (deleted on re-execution)
+    ├── self-verification-data.json  # Cumulative SV data (--with-self-verification; deleted on re-execution)
+    ├── self-verification-report-NNN.md  # Versioned SV report (-NNN auto-increment; NOT versioned via version_file)
+    ├── status.json                  # Leader's loop state (deleted on re-execution)
+    ├── baseline.log                 # Baseline capture (deleted on re-execution)
+    └── cost-log.jsonl               # Per-iteration cost log (deleted on re-execution)
 ```
 
 ## 7. Leader Loop Protocol
@@ -443,8 +449,19 @@ for iteration in 1..max_iter:
        • fail + continue → go to ⑧
        • blocked → write BLOCKED sentinel, stop
 
+  ⑦d Archive iteration artifacts (after verdict read, before next prep)
+     - Archive done-claim.json → logs/<slug>/iter-NNN-done-claim.json
+     - Archive verify-verdict.json → logs/<slug>/iter-NNN-verify-verdict.json
+     (Preserved across clean; data source for Campaign Report and SV analysis)
+
   ⑧ Write iter-NNN.result.md to logs/<slug>/ (result status + git diff --stat)
      Update status.json, report to user, continue to next iteration
+
+After loop end (COMPLETE, BLOCKED, TIMEOUT):
+  ⑧½ Campaign Report (always — independent of --debug)
+     - Generate logs/<slug>/campaign-report.md with 8 sections
+     - Version existing report to campaign-report-v{N}.md before writing new
+     - Data: status.json (baseline_commit, per-iter), archived iter artifacts, PRD, git diff
 ```
 
 ## 7a. Per-US Verification
@@ -480,7 +497,7 @@ Worker completes US → signal verify
   → Codex Verifier runs (checks AC)
   → Both pass → proceed (next US or COMPLETE)
   → Either fails → combined issues → fix contract → Worker retry
-  → Max 3 consensus rounds per US → BLOCKED if still disagreeing
+  → Max 6 consensus rounds per US → BLOCKED if still disagreeing
 
 **NO ENGINE PRIORITY:** Claude and Codex have equal weight. If one passes and the other fails, the verdict is FAIL. No engine may be prioritized or dismissed. Infrastructure failure = CLI crash, timeout, or verdict file not generated — NOT a valid verdict with verdict=fail.
 ```
@@ -518,12 +535,12 @@ Every change must be justified by the issue it addresses.
 
 ## 7¾. Architecture Escalation
 
-Note: Circuit Breaker (§8) fires first at 2 consecutive failures (model upgrade + retry). If the retry also fails (3rd consecutive failure), Architecture Escalation applies. The CB retry counts toward the consecutive_failures counter.
+Note: Circuit Breaker (§8) fires first at 2 consecutive failures (model upgrade + retry — Path A: Agent-mode only; in tmux mode the shell CB triggers directly without model upgrade). If the retry also fails (`cb_threshold` reached), Architecture Escalation applies. The CB retry counts toward the consecutive_failures counter.
 
-If 3+ consecutive fix attempts fail for the same US:
+If `cb_threshold` or more consecutive fix attempts fail for the same US:
 
 1. **STOP fixing symptoms** — the problem is likely architectural, not a bug.
-2. **Leader reports to user**: "3 consecutive fix attempts failed for US-{id}. This suggests an architectural issue, not a simple bug."
+2. **Leader reports to user**: "`cb_threshold` consecutive fix attempts failed for US-{id}. This suggests an architectural issue, not a simple bug."
 3. **Include in report**:
    - What was attempted in each fix
    - What specifically kept failing

@@ -55,6 +55,7 @@ HEARTBEAT_STALE_THRESHOLD="${HEARTBEAT_STALE_THRESHOLD:-120}"
 MAX_RESTARTS="${MAX_RESTARTS:-3}"
 IDLE_NUDGE_THRESHOLD="${IDLE_NUDGE_THRESHOLD:-30}"
 MAX_NUDGES="${MAX_NUDGES:-3}"
+WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 
 # --- Engine Selection ---
 WORKER_ENGINE="${WORKER_ENGINE:-claude}"    # claude|codex
@@ -69,6 +70,13 @@ CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 VERIFY_MODE="${VERIFY_MODE:-per-us}"        # per-us|batch
 VERIFY_CONSENSUS="${VERIFY_CONSENSUS:-0}"   # 0|1
 CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-all}"   # all|final-only
+CB_THRESHOLD="${CB_THRESHOLD:-3}"           # consecutive failures before BLOCKED (default: 3)
+# Effective CB threshold: doubled when consensus mode active (AC2 auto-double)
+if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
+  EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD * 2 ))
+else
+  EFFECTIVE_CB_THRESHOLD=$CB_THRESHOLD
+fi
 
 # --- Derived Paths ---
 DESK="$ROOT/.claude/ralph-desk"
@@ -89,6 +97,7 @@ STATUS_FILE="$LOGS_DIR/status.json"
 SESSION_CONFIG="$LOGS_DIR/session-config.json"
 WORKER_HEARTBEAT="$LOGS_DIR/worker-heartbeat.json"
 VERIFIER_HEARTBEAT="$LOGS_DIR/verifier-heartbeat.json"
+COST_LOG="$LOGS_DIR/cost-log.jsonl"
 
 # --- Session Naming ---
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -105,6 +114,8 @@ CONSECUTIVE_FAILURES=0
 PREV_CONTEXT_HASH=""
 ITERATION=0
 START_TIME=$(date +%s)
+BASELINE_COMMIT=""       # git HEAD at campaign start (captured before loop)
+CAMPAIGN_REPORT_GENERATED=0  # guard against double-generation in cleanup trap
 VERIFIED_US=""           # comma-separated list of verified US IDs (per-us mode)
 CONSENSUS_ROUND=0        # current consensus round for current US
 US_LIST=""               # comma-separated US IDs from PRD (per-us mode)
@@ -148,12 +159,28 @@ replace_worker_pane() {
   log "  Replacing dead $role pane $old_pane..."
   tmux kill-pane -t "$old_pane" 2>/dev/null
 
-  # Create fresh pane via split-window off leader (omc-teams kill-and-replace pattern)
+  # Create fresh pane maintaining original layout: worker(top-right) / verifier(bottom-right)
   local new_pane
-  new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+  if [[ "$role" == "verifier" ]]; then
+    # Verifier goes below worker: split vertically from worker pane
+    if tmux display-message -t "$WORKER_PANE" -p '#{pane_id}' &>/dev/null; then
+      new_pane=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    else
+      # Fallback: worker pane also dead, split horizontally from leader
+      new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    fi
+  else
+    # Worker goes above verifier: split vertically before verifier pane
+    if tmux display-message -t "$VERIFIER_PANE" -p '#{pane_id}' &>/dev/null; then
+      new_pane=$(tmux split-window -v -b -d -t "$VERIFIER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    else
+      # Fallback: verifier pane also dead, split horizontally from leader
+      new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    fi
+  fi
 
   log "  New $role pane: $new_pane (replaced $old_pane)"
-  log_debug "[EXEC] iter=$ITERATION pane_replaced=${role} old=$old_pane new=$new_pane"
+  log_debug "[FLOW] iter=$ITERATION pane_replaced=${role} old=$old_pane new=$new_pane"
 
   # Update session-config.json with new pane ID
   if [[ -f "$SESSION_CONFIG" ]]; then
@@ -300,15 +327,42 @@ create_session() {
 
   fi
 
+  # Set pane titles and enable border labels for visual distinction
+  local worker_label="Worker ($WORKER_ENGINE:$WORKER_MODEL)"
+  local verifier_label="Verifier ($VERIFIER_ENGINE:$VERIFIER_MODEL)"
+  [[ "$VERIFY_CONSENSUS" = "1" ]] && verifier_label="Verifier ($VERIFIER_ENGINE:$VERIFIER_MODEL + codex:$VERIFIER_CODEX_MODEL)"
+  tmux select-pane -t "$LEADER_PANE" -T "Leader" 2>/dev/null
+  tmux select-pane -t "$WORKER_PANE" -T "$worker_label" 2>/dev/null
+  tmux select-pane -t "$VERIFIER_PANE" -T "$verifier_label" 2>/dev/null
+  # Color-coded pane borders: green=leader, blue=worker, yellow=verifier
+  tmux set-option -p -t "$LEADER_PANE" pane-border-style "fg=green" 2>/dev/null
+  tmux set-option -p -t "$WORKER_PANE" pane-border-style "fg=blue" 2>/dev/null
+  tmux set-option -p -t "$VERIFIER_PANE" pane-border-style "fg=yellow" 2>/dev/null
+  # Show pane titles in border
+  tmux set-option pane-border-status top 2>/dev/null
+  tmux set-option pane-border-format "#{?pane_active,#[fg=white bold],#[fg=grey]} #{pane_title} " 2>/dev/null
+
   log "  Leader pane:   $LEADER_PANE"
   log "  Worker pane:   $WORKER_PANE"
   log "  Verifier pane: $VERIFIER_PANE"
+
+  # AC12: Capture baseline commit before writing session config
+  BASELINE_COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "none")
+
+  # Truncate cost-log for fresh run (previous data in versioned campaign reports)
+  > "$COST_LOG"
+
+  # SV flag warning for tmux mode
+  if (( WITH_SELF_VERIFICATION )); then
+    log "  NOTE: --with-self-verification recorded but SV report generation is Agent-mode only"
+  fi
 
   # Write session config (atomic write)
   echo '{
   "session_name": "'"$SESSION_NAME"'",
   "slug": "'"$SLUG"'",
   "created_at": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+  "baseline_commit": "'"$BASELINE_COMMIT"'",
   "panes": {
     "leader": "'"$LEADER_PANE"'",
     "worker": "'"$WORKER_PANE"'",
@@ -340,7 +394,10 @@ create_session() {
     "heartbeat_stale_threshold": '"$HEARTBEAT_STALE_THRESHOLD"',
     "max_restarts": '"$MAX_RESTARTS"',
     "idle_nudge_threshold": '"$IDLE_NUDGE_THRESHOLD"',
-    "max_nudges": '"$MAX_NUDGES"'
+    "max_nudges": '"$MAX_NUDGES"',
+    "cb_threshold": '"$CB_THRESHOLD"',
+    "effective_cb_threshold": '"$EFFECTIVE_CB_THRESHOLD"',
+    "with_self_verification": '"$WITH_SELF_VERIFICATION"'
   }
 }' | atomic_write "$SESSION_CONFIG"
 
@@ -704,11 +761,15 @@ write_worker_trigger() {
       if [[ -n "$next_us" ]]; then
         echo ""
         echo "---"
-        echo "## PER-US SCOPE LOCK (this iteration)"
+        echo "## PER-US SCOPE LOCK (this iteration) — OVERRIDES memory contract"
+        echo "**IGNORE the 'Next Iteration Contract' from memory if it references a different story.**"
+        echo "The Leader has determined that **${next_us}** is the next unverified story."
         echo "You MUST implement ONLY **${next_us}** in this iteration."
         echo "Do NOT implement any other user stories."
         echo "When done, signal verify with us_id=\"${next_us}\" (not \"ALL\")."
         echo "Signal format: {\"iteration\": N, \"status\": \"verify\", \"us_id\": \"${next_us}\", ...}"
+        echo ""
+        echo "**Update the campaign memory's 'Next Iteration Contract' to reflect ${next_us}.**"
       elif [[ -n "$VERIFIED_US" ]]; then
         # All individual US verified — this is the final full verify iteration
         echo ""
@@ -895,6 +956,7 @@ update_status() {
 
   echo '{
   "slug": "'"$SLUG"'",
+  "baseline_commit": "'"${BASELINE_COMMIT:-none}"'",
   "iteration": '"$ITERATION"',
   "max_iter": '"$MAX_ITER"',
   "phase": "'"$phase"'",
@@ -922,7 +984,20 @@ write_result_log() {
   local result_file="$LOGS_DIR/iter-$(printf '%03d' $iter).result.md"
 
   local git_diff=""
-  git_diff=$(git diff --stat HEAD~1 HEAD 2>/dev/null || echo "(no git diff available)")
+  if git -C "$ROOT" rev-parse HEAD &>/dev/null; then
+    git_diff=$(git -C "$ROOT" diff --stat HEAD 2>/dev/null || echo "(no git diff available)")
+  else
+    git_diff="(no commits in repo — cannot diff)"
+  fi
+  # Include untracked new files in result log
+  local result_untracked
+  result_untracked=$(git -C "$ROOT" ls-files --others --exclude-standard 2>/dev/null | head -20)
+  if [[ -n "$result_untracked" ]]; then
+    git_diff="${git_diff}
+
+Untracked new files:
+${result_untracked}"
+  fi
 
   {
     echo "# Iteration $iter Result"
@@ -939,6 +1014,168 @@ write_result_log() {
     echo "## Timestamp"
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } | atomic_write "$result_file"
+}
+
+# --- step 7d: Archive iteration artifacts (done-claim + verdict) to logs/ ---
+archive_iter_artifacts() {
+  local iter="$1"
+  local iter_padded
+  iter_padded=$(printf '%03d' "$iter")
+  if [[ -f "$DONE_CLAIM_FILE" ]]; then
+    cp "$DONE_CLAIM_FILE" "$LOGS_DIR/iter-${iter_padded}-done-claim.json" 2>/dev/null
+  fi
+  if [[ -f "$VERDICT_FILE" ]]; then
+    cp "$VERDICT_FILE" "$LOGS_DIR/iter-${iter_padded}-verify-verdict.json" 2>/dev/null
+  fi
+}
+
+# --- AC5: Write per-iteration cost estimate to cost-log.jsonl ---
+write_cost_log() {
+  local iter="$1"
+  local iter_padded
+  iter_padded=$(printf '%03d' "$iter")
+
+  local prompt_bytes=0 claim_bytes=0 verdict_bytes=0
+  local worker_prompt_file="$LOGS_DIR/iter-${iter_padded}.worker-prompt.md"
+  [[ -f "$worker_prompt_file" ]] && prompt_bytes=$(wc -c < "$worker_prompt_file" 2>/dev/null || echo 0)
+  [[ -f "$DONE_CLAIM_FILE" ]]   && claim_bytes=$(wc -c < "$DONE_CLAIM_FILE" 2>/dev/null || echo 0)
+  [[ -f "$VERDICT_FILE" ]]      && verdict_bytes=$(wc -c < "$VERDICT_FILE" 2>/dev/null || echo 0)
+
+  local estimated_tokens=$(( (prompt_bytes + claim_bytes + verdict_bytes) / 4 ))
+
+  echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$COST_LOG"
+}
+
+# --- AC4: Generate campaign-report.md on all terminal states ---
+generate_campaign_report() {
+  # Guard: idempotent — only generate once per campaign run
+  if (( CAMPAIGN_REPORT_GENERATED )); then return 0; fi
+  CAMPAIGN_REPORT_GENERATED=1
+
+  local final_status="UNKNOWN"
+  if [[ -f "$COMPLETE_SENTINEL" ]]; then final_status="COMPLETE"
+  elif [[ -f "$BLOCKED_SENTINEL" ]]; then final_status="BLOCKED"
+  else final_status="TIMEOUT"; fi
+
+  local report_file="$LOGS_DIR/campaign-report.md"
+
+  # AC9: Version existing report before writing new one
+  if [[ -f "$report_file" ]]; then
+    local v=1
+    while [[ -f "${report_file%.md}-v${v}.md" ]]; do (( v++ )); done
+    mv "$report_file" "${report_file%.md}-v${v}.md"
+  fi
+
+  local end_time
+  end_time=$(date +%s)
+  local elapsed=$(( end_time - START_TIME ))
+
+  local baseline_commit_val="${BASELINE_COMMIT:-none}"
+  local files_changed=""
+  if [[ "$baseline_commit_val" != "none" ]]; then
+    files_changed=$(git -C "$ROOT" diff --stat "${baseline_commit_val}" 2>/dev/null || echo "(git diff unavailable)")
+  elif git -C "$ROOT" rev-parse HEAD &>/dev/null; then
+    files_changed=$(git -C "$ROOT" diff --stat HEAD 2>/dev/null || echo "(git diff unavailable)")
+  else
+    files_changed="(no commits in repo — cannot diff)"
+  fi
+  # Include untracked new files
+  local untracked
+  untracked=$(git -C "$ROOT" ls-files --others --exclude-standard 2>/dev/null | head -20)
+  if [[ -n "$untracked" ]]; then
+    files_changed="${files_changed}
+
+Untracked new files:
+${untracked}"
+  fi
+
+  local sv_summary=""
+  if (( WITH_SELF_VERIFICATION )); then
+    local sv_report
+    sv_report=$(ls -t "$LOGS_DIR"/self-verification-report-*.md 2>/dev/null | head -1)
+    if [[ -n "$sv_report" ]]; then
+      sv_summary="See: $(basename "$sv_report")"
+    else
+      sv_summary="SV report generation requires Agent mode. Flag recorded in session-config."
+    fi
+  else
+    sv_summary="N/A — --with-self-verification not enabled"
+  fi
+
+  {
+    echo "# Campaign Report: $SLUG"
+    echo ""
+    echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ) | Status: $final_status | Iterations: $ITERATION"
+    echo ""
+    echo "## Objective"
+    local prd_file="$DESK/plans/prd-$SLUG.md"
+    if [[ -f "$prd_file" ]]; then
+      grep '^## Objective' -A3 "$prd_file" 2>/dev/null | tail -n +2 | head -3
+    else
+      echo "(PRD not found)"
+    fi
+    echo ""
+    echo "## Execution Summary"
+    echo "- Terminal state: $final_status"
+    echo "- Iterations run: $ITERATION / $MAX_ITER"
+    echo "- Elapsed: ${elapsed}s"
+    echo "- Worker model: $WORKER_MODEL ($WORKER_ENGINE)"
+    echo "- Verifier model: $VERIFIER_MODEL ($VERIFIER_ENGINE)"
+    echo ""
+    echo "## US Status"
+    echo "- Verified: ${VERIFIED_US:-none}"
+    echo "- Consecutive failures at end: $CONSECUTIVE_FAILURES"
+    echo ""
+    echo "## Verification Results"
+    local ri=1
+    while (( ri <= ITERATION )); do
+      local iter_dc="$LOGS_DIR/iter-$(printf '%03d' $ri)-done-claim.json"
+      if [[ -f "$iter_dc" ]]; then
+        local us_id
+        us_id=$(jq -r '.us_id // "unknown"' "$iter_dc" 2>/dev/null)
+        echo "- $(basename "$iter_dc"): us_id=$us_id"
+      fi
+      (( ri++ ))
+    done
+    echo ""
+    echo "## Issues Encountered"
+    local fi_found=0
+    local fi_i=1
+    while (( fi_i <= ITERATION )); do
+      local fix_f="$LOGS_DIR/iter-$(printf '%03d' $fi_i).fix-contract.md"
+      if [[ -f "$fix_f" ]]; then
+        echo "- $(basename "$fix_f")"
+        fi_found=1
+      fi
+      (( fi_i++ ))
+    done
+    (( fi_found == 0 )) && echo "- None"
+    echo ""
+    echo "## Cost & Performance"
+    if [[ -f "$COST_LOG" ]]; then
+      local total_tokens=0
+      while IFS= read -r line; do
+        local t
+        t=$(echo "$line" | jq -r '.estimated_tokens // 0' 2>/dev/null || echo 0)
+        total_tokens=$(( total_tokens + t ))
+      done < "$COST_LOG"
+      echo "- Total estimated tokens: $total_tokens (source: estimated, tmux mode)"
+      echo "- See: cost-log.jsonl for per-iteration breakdown"
+    else
+      echo "- No cost data available"
+    fi
+    echo ""
+    echo "## SV Summary"
+    echo "$sv_summary"
+    echo ""
+    echo "## Files Changed"
+    echo '```'
+    echo "$files_changed"
+    echo '```'
+    echo "Note: Files Changed may include pre-existing uncommitted changes if the campaign started in a dirty worktree."
+  } | atomic_write "$report_file"
+
+  log "Campaign report written: $report_file"
 }
 
 # =============================================================================
@@ -1002,6 +1239,9 @@ cleanup() {
   setopt local_options nonomatch 2>/dev/null
   rm -f "$LOGS_DIR"/*.tmp.* "$MEMOS_DIR"/*.tmp.* 2>/dev/null
 
+  # AC4: Generate campaign report on all terminal states (always-on)
+  generate_campaign_report
+
   # Print summary
   local end_time
   end_time=$(date +%s)
@@ -1018,13 +1258,13 @@ cleanup() {
     local end_ts=$(date +%s)
     local elapsed=$((end_ts - START_TIME))
 
-    log_debug "[EXEC] final status=$final_status iterations=$ITERATION elapsed=${elapsed}s"
+    log_debug "[FLOW] final status=$final_status iterations=$ITERATION elapsed=${elapsed}s"
 
     # --- Validation ---
-    log_debug "[VALIDATE] === Execution Validation ==="
+    log_debug "[FLOW] === Execution Validation ==="
 
     # 1. Did the correct verify mode run?
-    log_debug "[VALIDATE] verify_mode=$VERIFY_MODE configured=true"
+    log_debug "[FLOW] verify_mode=$VERIFY_MODE configured=true"
 
     # 2. Per-US: were all US individually verified?
     if [[ "$VERIFY_MODE" = "per-us" ]]; then
@@ -1038,39 +1278,39 @@ cleanup() {
 
       if [[ "$final_status" = "COMPLETE" ]]; then
         if (( verified_count >= expected_count )); then
-          log_debug "[VALIDATE] per_us_coverage=PASS verified=$verified_count/$expected_count us=$VERIFIED_US"
+          log_debug "[FLOW] per_us_coverage=PASS verified=$verified_count/$expected_count us=$VERIFIED_US"
         else
-          log_debug "[VALIDATE] per_us_coverage=FAIL verified=$verified_count/$expected_count expected=$expected_us got=$VERIFIED_US"
+          log_debug "[FLOW] per_us_coverage=FAIL verified=$verified_count/$expected_count expected=$expected_us got=$VERIFIED_US"
         fi
       else
-        log_debug "[VALIDATE] per_us_coverage=INCOMPLETE verified=$verified_count/$expected_count status=$final_status"
+        log_debug "[FLOW] per_us_coverage=INCOMPLETE verified=$verified_count/$expected_count status=$final_status"
       fi
     fi
 
     # 3. Consensus: were both engines used?
     if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
       if [[ -n "${CLAUDE_VERDICT:-}" && -n "${CODEX_VERDICT:-}" ]]; then
-        log_debug "[VALIDATE] consensus=USED claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT rounds=$CONSENSUS_ROUND"
+        log_debug "[FLOW] consensus=USED claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT rounds=$CONSENSUS_ROUND"
       else
-        log_debug "[VALIDATE] consensus=NOT_TRIGGERED claude=${CLAUDE_VERDICT:-none} codex=${CODEX_VERDICT:-none}"
+        log_debug "[FLOW] consensus=NOT_TRIGGERED claude=${CLAUDE_VERDICT:-none} codex=${CODEX_VERDICT:-none}"
       fi
     fi
 
     # 4. Engine match: did the configured engines actually run?
-    local worker_dispatches=$(grep -c '\[EXEC\].*phase=worker.*dispatched=true' "$DEBUG_LOG" 2>/dev/null || echo 0)
-    local verifier_dispatches=$(grep -c '\[EXEC\].*phase=verifier.*dispatched=true' "$DEBUG_LOG" 2>/dev/null || echo 0)
-    log_debug "[VALIDATE] dispatches worker=$worker_dispatches verifier=$verifier_dispatches"
+    local worker_dispatches=$(grep -c '\[FLOW\].*phase=worker.*dispatched=true' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    local verifier_dispatches=$(grep -c '\[FLOW\].*phase=verifier.*dispatched=true' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    log_debug "[FLOW] dispatches worker=$worker_dispatches verifier=$verifier_dispatches"
 
     # 5. Fix loops: how many fix contracts were generated?
-    local fix_count=$(grep -c '\[EXEC\].*phase=fix_loop' "$DEBUG_LOG" 2>/dev/null || echo 0)
-    log_debug "[VALIDATE] fix_loops=$fix_count consecutive_failures=$CONSECUTIVE_FAILURES"
+    local fix_count=$(grep -c '\[DECIDE\].*phase=fix_loop' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    log_debug "[FLOW] fix_loops=$fix_count consecutive_failures=$CONSECUTIVE_FAILURES"
 
     # 6. Circuit breakers: any triggered?
-    local cb_count=$(grep -c '\[EXEC\].*circuit_breaker=' "$DEBUG_LOG" 2>/dev/null || echo 0)
-    log_debug "[VALIDATE] circuit_breakers_triggered=$cb_count"
+    local cb_count=$(grep -c '\[GOV\].*circuit_breaker=' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    log_debug "[FLOW] circuit_breakers_triggered=$cb_count"
 
     # 7. Overall result
-    log_debug "[VALIDATE] result=$final_status iterations=$ITERATION elapsed=${elapsed}s verified_us=$VERIFIED_US"
+    log_debug "[FLOW] result=$final_status iterations=$ITERATION elapsed=${elapsed}s verified_us=$VERIFIED_US"
   fi
 
   echo ""
@@ -1163,7 +1403,7 @@ poll_for_signal() {
         (( HEARTBEAT_STALE_COUNT++ ))
         # Circuit breaker: 3 consecutive heartbeat stale events
         if (( HEARTBEAT_STALE_COUNT >= 3 )); then
-          log_debug "[EXEC] iter=$ITERATION circuit_breaker=heartbeat_stale detail=\"3 consecutive heartbeat stale events\""
+          log_debug "[GOV] iter=$ITERATION circuit_breaker=heartbeat_stale detail=\"3 consecutive heartbeat stale events\""
           log_error "Circuit breaker: 3 consecutive heartbeat stale events"
           return 1
         fi
@@ -1186,7 +1426,7 @@ poll_for_signal() {
     poll_capture=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
     if echo "$poll_capture" | grep -q "Do you want to" 2>/dev/null; then
       log "  Permission prompt detected during poll, auto-approving..."
-      log_debug "[EXEC] iter=$ITERATION permission_prompt_auto_approved=true"
+      log_debug "[FLOW] iter=$ITERATION permission_prompt_auto_approved=true"
       tmux send-keys -t "$pane_id" Enter
       sleep 0.5
     fi
@@ -1362,9 +1602,9 @@ run_consensus_verification() {
   CLAUDE_VERDICT=""
   CODEX_VERDICT=""
 
-  while (( CONSENSUS_ROUND < 3 )); do
+  while (( CONSENSUS_ROUND < 6 )); do
     (( CONSENSUS_ROUND++ ))
-    log "  Consensus round $CONSENSUS_ROUND/3..."
+    log "  Consensus round $CONSENSUS_ROUND/6..."
 
     # Run claude verifier first
     if ! run_single_verifier "$iter" "claude" "$VERIFIER_MODEL" "-claude" "$claude_verdict_file"; then
@@ -1372,7 +1612,7 @@ run_consensus_verification() {
       return 1
     fi
     CLAUDE_VERDICT=$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)
-    log_debug "[EXEC] iter=$iter phase=consensus_claude verdict=$CLAUDE_VERDICT model=$VERIFIER_MODEL"
+    log_debug "[GOV] iter=$iter phase=consensus_claude verdict=$CLAUDE_VERDICT model=$VERIFIER_MODEL"
 
     # Run codex verifier second
     if ! run_single_verifier "$iter" "codex" "$VERIFIER_CODEX_MODEL" "-codex" "$codex_verdict_file"; then
@@ -1380,14 +1620,14 @@ run_consensus_verification() {
       return 1
     fi
     CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
-    log_debug "[EXEC] iter=$iter phase=consensus_codex verdict=$CODEX_VERDICT model=$VERIFIER_CODEX_MODEL reasoning=$VERIFIER_CODEX_REASONING"
+    log_debug "[GOV] iter=$iter phase=consensus_codex verdict=$CODEX_VERDICT model=$VERIFIER_CODEX_MODEL reasoning=$VERIFIER_CODEX_REASONING"
 
     log "  Consensus: claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT"
     local _combined_action="retry"
     if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then _combined_action="pass"
-    elif (( CONSENSUS_ROUND >= 3 )); then _combined_action="blocked"
+    elif (( CONSENSUS_ROUND >= 6 )); then _combined_action="blocked"
     fi
-    log_debug "[EXEC] iter=$iter phase=consensus round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT combined_action=$_combined_action"
+    log_debug "[GOV] iter=$iter phase=consensus round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT combined_action=$_combined_action"
 
     # Both pass → success
     if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then
@@ -1409,7 +1649,7 @@ run_consensus_verification() {
     fi
 
     # Consensus disagreement
-    log_debug "[EXEC] iter=$iter phase=consensus_disagreement round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT action=fix_contract"
+    log_debug "[GOV] iter=$iter phase=consensus_disagreement round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT action=fix_contract"
 
     # NOTE: pre_existing_failure heuristic was removed (v0.3.5).
     # It used unreliable grep-in-description string matching to classify
@@ -1442,14 +1682,19 @@ run_consensus_verification() {
 
     # If this is not the last round, the caller will dispatch the Worker with the fix contract
     # For now, write a fail verdict so the main loop can handle the fix loop
-    if (( CONSENSUS_ROUND < 3 )); then
-      # Create a merged fail verdict for the main loop
+    if (( CONSENSUS_ROUND < 6 )); then
+      # Create a merged fail verdict for the main loop — include issues from BOTH verdicts
+      local merged_issues="[]"
+      local claude_issues codex_issues
+      claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
+      codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
+      merged_issues=$(echo "$claude_issues $codex_issues" | jq -s 'add // []')
       {
         echo '{'
         echo '  "verdict": "fail",'
         echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-        echo '  "summary": "Consensus disagreement (round '"$CONSENSUS_ROUND"'/3): claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
-        echo '  "issues": [],'
+        echo '  "summary": "Consensus disagreement (round '"$CONSENSUS_ROUND"'/6): claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
+        echo '  "issues": '"$merged_issues"','
         echo '  "recommended_state_transition": "continue",'
         echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": '"$CONSENSUS_ROUND"' }'
         echo '}'
@@ -1458,16 +1703,20 @@ run_consensus_verification() {
     fi
   done
 
-  # Max consensus rounds exceeded
-  log_error "Consensus failed after 3 rounds"
+  # Max consensus rounds exceeded — include issues from both verdicts
+  log_error "Consensus failed after 6 rounds"
+  local final_claude_issues final_codex_issues final_merged_issues
+  final_claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
+  final_codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
+  final_merged_issues=$(echo "$final_claude_issues $final_codex_issues" | jq -s 'add // []')
   {
     echo '{'
     echo '  "verdict": "fail",'
     echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-    echo '  "summary": "Consensus failed after 3 rounds: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
-    echo '  "issues": [],'
+    echo '  "summary": "Consensus failed after 6 rounds: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
+    echo '  "issues": '"$final_merged_issues"','
     echo '  "recommended_state_transition": "blocked",'
-    echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": 3 }'
+    echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": 6 }'
     echo '}'
   } | atomic_write "$VERDICT_FILE"
   return 1
@@ -1509,6 +1758,15 @@ main() {
   fi
   mkdir -p "$LOGS_DIR" 2>/dev/null
 
+  # --- AC7: debug.log versioning: rename existing debug.log before fresh run ---
+  if (( DEBUG )) && [[ -f "$DEBUG_LOG" ]]; then
+    local dbg_n=1
+    while [[ -f "${DEBUG_LOG%.log}-v${dbg_n}.log" ]]; do
+      (( dbg_n++ ))
+    done
+    mv "$DEBUG_LOG" "${DEBUG_LOG%.log}-v${dbg_n}.log"
+  fi
+
   # --- Startup ---
   log "Ralph Desk Tmux Runner starting..."
   log "  Slug:            $SLUG"
@@ -1531,10 +1789,11 @@ main() {
     fi
     local us_count=$(echo "$us_list" | tr ',' '\n' | grep -c 'US-')
 
-    log_debug "[PLAN] slug=$SLUG us_count=$us_count us_list=$us_list"
-    log_debug "[PLAN] worker_engine=$WORKER_ENGINE worker_model=$WORKER_MODEL"
-    log_debug "[PLAN] verifier_engine=$VERIFIER_ENGINE verifier_model=$VERIFIER_MODEL"
-    log_debug "[PLAN] verify_mode=$VERIFY_MODE consensus=$VERIFY_CONSENSUS consensus_scope=$CONSENSUS_SCOPE max_iter=$MAX_ITER"
+    log_debug "[OPTION] slug=$SLUG us_count=$us_count us_list=$us_list"
+    log_debug "[OPTION] worker_engine=$WORKER_ENGINE worker_model=$WORKER_MODEL"
+    log_debug "[OPTION] verifier_engine=$VERIFIER_ENGINE verifier_model=$VERIFIER_MODEL"
+    log_debug "[OPTION] verify_mode=$VERIFY_MODE consensus=$VERIFY_CONSENSUS consensus_scope=$CONSENSUS_SCOPE max_iter=$MAX_ITER"
+    log_debug "[OPTION] cb_threshold=$CB_THRESHOLD effective_cb_threshold=$EFFECTIVE_CB_THRESHOLD iter_timeout=$ITER_TIMEOUT with_self_verification=$WITH_SELF_VERIFICATION debug=$DEBUG"
 
     if [[ "$VERIFY_MODE" = "per-us" ]]; then
       # Build expected flow
@@ -1543,13 +1802,13 @@ main() {
         expected_flow="${expected_flow}worker->verify($us)->"
       done
       expected_flow="${expected_flow}verify(ALL)->COMPLETE"
-      log_debug "[PLAN] expected_flow=$expected_flow"
+      log_debug "[OPTION] expected_flow=$expected_flow"
     else
-      log_debug "[PLAN] expected_flow=worker(all)->verify(ALL)->COMPLETE"
+      log_debug "[OPTION] expected_flow=worker(all)->verify(ALL)->COMPLETE"
     fi
 
     if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
-      log_debug "[PLAN] consensus_flow=each_verify_runs_claude+codex_both_must_pass"
+      log_debug "[OPTION] consensus_flow=each_verify_runs_claude+codex_both_must_pass"
     fi
   fi
 
@@ -1558,6 +1817,18 @@ main() {
     local prd_file="$DESK/plans/prd-$SLUG.md"
     if [[ -f "$prd_file" ]]; then
       US_LIST=$(grep -oE 'US-[0-9]+' "$prd_file" | sort -u | tr '\n' ',' | sed 's/,$//')
+    fi
+
+    # Initialize VERIFIED_US from memory's Completed Stories (carry over previous runs)
+    local memory_file="$DESK/memos/${SLUG}-memory.md"
+    if [[ -f "$memory_file" ]]; then
+      local completed_us
+      completed_us=$(sed -n '/^## Completed Stories$/,/^## /p' "$memory_file" 2>/dev/null | grep '^- US-' | sed 's/^- \(US-[0-9]*\):.*/\1/' | sort -u | tr '\n' ',' | sed 's/,$//')
+      if [[ -n "$completed_us" ]]; then
+        VERIFIED_US="$completed_us"
+        log "  Loaded completed stories from memory: $VERIFIED_US"
+        log_debug "[FLOW] loaded_verified_us_from_memory=$VERIFIED_US"
+      fi
     fi
   fi
 
@@ -1592,7 +1863,7 @@ main() {
     ITER_START_TIME=$(date +%s)
     local _iter_contract=""
     _iter_contract=$(sed -n '/^## Next Iteration Contract$/,/^## /{ /^## Next/d; /^## [^N]/d; p; }' "$MEMORY_FILE" 2>/dev/null | head -1 | tr '\n' ' ')
-    log_debug "[EXEC] iter=$ITERATION start contract=\"${_iter_contract:-none}\""
+    log_debug "[FLOW] iter=$ITERATION start contract=\"${_iter_contract:-none}\""
 
     # --- governance.md s7 step 1: Check sentinels ---
     if [[ -f "$COMPLETE_SENTINEL" ]]; then
@@ -1644,7 +1915,7 @@ main() {
     fi
     tmux send-keys -t "$WORKER_PANE" -l -- "$worker_launch"
     tmux send-keys -t "$WORKER_PANE" Enter
-    log_debug "[EXEC] iter=$ITERATION phase=worker engine=$WORKER_ENGINE model=$WORKER_MODEL dispatched=true"
+    log_debug "[FLOW] iter=$ITERATION phase=worker engine=$WORKER_ENGINE model=$WORKER_MODEL dispatched=true"
 
     # Step 5b: Wait for claude TUI to be ready (tmux pattern)
     if ! wait_for_pane_ready "$WORKER_PANE" 30; then
@@ -1669,7 +1940,7 @@ main() {
       pane_check=$(tmux capture-pane -t "$WORKER_PANE" -p 2>/dev/null)
       if echo "$pane_check" | grep -qi "esc to interrupt\|thinking\|working\|kneading\|crunching\|clauding\|billowing\|brewing\|tinkering\|burrowing\|saut\|Exploring\|Running\|exec\|Explored" 2>/dev/null; then
         log_debug "Worker started working after $((submit_attempts + 1)) submit checks"
-        log_debug "[EXEC] iter=$ITERATION worker_submit_check=OK attempts=$((submit_attempts + 1))"
+        log_debug "[FLOW] iter=$ITERATION worker_submit_check=OK attempts=$((submit_attempts + 1))"
         break
       fi
       # After 8 failed attempts, try C-u clear + re-type (omc-teams adaptive retry)
@@ -1687,7 +1958,7 @@ main() {
     done
     if (( submit_attempts >= 15 )); then
       log "  WARNING: Could not confirm Worker started working after 15 attempts"
-      log_debug "[EXEC] iter=$ITERATION worker_submit_check=FAILED attempts=15"
+      log_debug "[FLOW] iter=$ITERATION worker_submit_check=FAILED attempts=15"
     fi
 
     # --- governance.md s7 step 5+6: Poll for Worker completion ---
@@ -1696,7 +1967,7 @@ main() {
     while (( ! worker_poll_done )); do
       if poll_for_signal "$SIGNAL_FILE" "$WORKER_HEARTBEAT" "$WORKER_PANE" "$worker_launch" "Worker"; then
         worker_poll_done=1
-        log_debug "[EXEC] iter=$ITERATION poll_signal_received=true"
+        log_debug "[FLOW] iter=$ITERATION poll_signal_received=true"
       else
         # Check if Worker is still actively running (not stuck)
         local worker_cmd
@@ -1706,41 +1977,41 @@ main() {
           local iter_elapsed=$(( $(date +%s) - ITER_START_TIME ))
           if (( iter_elapsed >= HARD_CEILING )); then
             log_error "Worker hit hard ceiling (${HARD_CEILING}s = 3x iter_timeout). Killing iteration."
-            log_debug "[EXEC] iter=$ITERATION hard_ceiling_hit=true elapsed=${iter_elapsed}s ceiling=${HARD_CEILING}s process=$worker_cmd"
+            log_debug "[GOV] iter=$ITERATION hard_ceiling_hit=true elapsed=${iter_elapsed}s ceiling=${HARD_CEILING}s process=$worker_cmd"
             tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
             sleep 1
-            WORKER_PANE=$(replace_worker_pane "$WORKER_PANE" "worker")
-            update_status "worker" "hard_timeout"
-            worker_poll_done=1
-            break
+            write_blocked_sentinel "Worker hit hard ceiling (${HARD_CEILING}s). Pane preserved for inspection."
+            update_status "blocked" "hard_timeout"
+            return 1
           fi
           log "  Worker timed out but still active ($worker_cmd). Extending poll... (${iter_elapsed}s/${HARD_CEILING}s)"
-          log_debug "[EXEC] iter=$ITERATION timeout_active=true process=$worker_cmd elapsed=${iter_elapsed}s ceiling=${HARD_CEILING}s"
-          log_debug "[EXEC] iter=$ITERATION poll_extended=true worker_cmd=$worker_cmd"
+          log_debug "[GOV] iter=$ITERATION timeout_active=true process=$worker_cmd elapsed=${iter_elapsed}s ceiling=${HARD_CEILING}s"
+          log_debug "[FLOW] iter=$ITERATION poll_extended=true worker_cmd=$worker_cmd"
           update_status "worker" "slow"
           # Loop continues — re-poll same iteration
         else
           # Worker is truly dead/stuck
           (( MONITOR_FAILURE_COUNT++ ))
-          log_debug "[EXEC] iter=$ITERATION monitor_failure=$MONITOR_FAILURE_COUNT/3"
+          log_debug "[GOV] iter=$ITERATION monitor_failure=$MONITOR_FAILURE_COUNT/3"
           if (( MONITOR_FAILURE_COUNT >= 3 )); then
-            log_debug "[EXEC] iter=$ITERATION circuit_breaker=monitor_failures detail=\"3 consecutive monitor failures\""
+            log_debug "[GOV] iter=$ITERATION circuit_breaker=monitor_failures detail=\"3 consecutive monitor failures\""
             write_blocked_sentinel "3 consecutive monitor failures (worker not active)"
             update_status "blocked" "monitor_failures"
             return 1
           fi
           log "  WARNING: Worker poll failed (monitor failure $MONITOR_FAILURE_COUNT/3)"
           update_status "worker" "poll_failed"
-          worker_poll_done=1  # exit poll loop, continue to next iteration
-          log_debug "[EXEC] iter=$ITERATION poll_worker_dead=true worker_cmd=$worker_cmd"
-          # Worker is truly dead/stuck — kill and replace pane (omc-teams pattern)
-          WORKER_PANE=$(replace_worker_pane "$WORKER_PANE" "worker")
+          log_debug "[FLOW] iter=$ITERATION poll_worker_dead=true worker_cmd=$worker_cmd"
+          # Worker is truly dead/stuck — BLOCK and let user decide
+          write_blocked_sentinel "Worker process dead/stuck (poll failed). Pane preserved for inspection."
+          update_status "blocked" "worker_dead"
+          return 1
         fi
       fi
     done
 
     if [[ ! -f "$SIGNAL_FILE" ]]; then
-      log_debug "[EXEC] iter=$ITERATION no_signal_after_poll=true continuing"
+      log_debug "[FLOW] iter=$ITERATION no_signal_after_poll=true continuing"
       # No signal — monitor failure, go to next iteration
       continue
     fi
@@ -1759,7 +2030,7 @@ main() {
     # Read us_id early for EXEC logging (also used later in verify branch)
     local signal_us_id_early=""
     signal_us_id_early=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
-    log_debug "[EXEC] iter=$ITERATION phase=worker_signal status=$signal_status us_id=${signal_us_id_early:-none} summary=\"$signal_summary\""
+    log_debug "[FLOW] iter=$ITERATION phase=worker_signal status=$signal_status us_id=${signal_us_id_early:-none} summary=\"$signal_summary\""
 
     case "$signal_status" in
       continue)
@@ -1827,7 +2098,7 @@ main() {
           fi
           tmux send-keys -t "$VERIFIER_PANE" -l -- "$verifier_launch"
           tmux send-keys -t "$VERIFIER_PANE" Enter
-          log_debug "[EXEC] iter=$ITERATION phase=verifier engine=$VERIFIER_ENGINE model=$VERIFIER_MODEL scope=${signal_us_id:-all} dispatched=true"
+          log_debug "[FLOW] iter=$ITERATION phase=verifier engine=$VERIFIER_ENGINE model=$VERIFIER_MODEL scope=${signal_us_id:-all} dispatched=true"
 
           # Step 7b: Wait for TUI to be ready
           if ! wait_for_pane_ready "$VERIFIER_PANE" 30; then
@@ -1871,10 +2142,10 @@ main() {
           log "  Polling for verify-verdict.json..."
           if ! poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier"; then
             log_error "Verifier poll failed"
-            update_status "verifier" "poll_failed"
-            # Verifier is dead/stuck — kill and replace pane (omc-teams pattern)
-            VERIFIER_PANE=$(replace_worker_pane "$VERIFIER_PANE" "verifier")
-            continue
+            # Verifier is dead/stuck — BLOCK and let user decide
+            write_blocked_sentinel "Verifier process dead/stuck (poll failed). Pane preserved for inspection."
+            update_status "blocked" "verifier_dead"
+            return 1
           fi
         fi
 
@@ -1889,7 +2160,7 @@ main() {
         log "  Verifier: verdict=$verdict recommended=$recommended"
         log "  Verifier summary: \"$verdict_summary\""
         local _issues_count=$(jq '.issues | length' "$VERDICT_FILE" 2>/dev/null || echo 0)
-        log_debug "[EXEC] iter=$ITERATION phase=verdict engine=$VERIFIER_ENGINE verdict=$verdict recommended=$recommended us_id=${signal_us_id:-all} issues=$_issues_count"
+        log_debug "[GOV] iter=$ITERATION phase=verdict engine=$VERIFIER_ENGINE verdict=$verdict recommended=$recommended us_id=${signal_us_id:-all} issues=$_issues_count"
 
         case "$verdict" in
           pass)
@@ -1905,7 +2176,7 @@ main() {
                 VERIFIED_US="$signal_us_id"
               fi
               log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
-              log_debug "[EXEC] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
+              log_debug "[FLOW] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
               update_status "verifier" "pass_us"
               # Worker will do next US on next iteration
             elif [[ "$recommended" == "complete" || "$signal_us_id" == "ALL" ]]; then
@@ -1940,13 +2211,13 @@ main() {
               jq -r '.next_iteration_contract // "Fix the issues listed above."' "$VERDICT_FILE" 2>/dev/null
             } | atomic_write "$fix_contract"
             log "  Fix contract: $fix_contract"
-            log_debug "[EXEC] iter=$ITERATION phase=fix_loop trigger=$verdict consecutive_failures=$CONSECUTIVE_FAILURES fix_contract=$fix_contract"
+            log_debug "[DECIDE] iter=$ITERATION phase=fix_loop trigger=$verdict consecutive_failures=$CONSECUTIVE_FAILURES fix_contract=$fix_contract"
 
             # Circuit breaker: consecutive failures
-            if (( CONSECUTIVE_FAILURES >= 3 )); then
-              log_debug "[EXEC] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"3 consecutive verification failures\""
-              log_error "Circuit breaker: 3 consecutive verification failures"
-              write_blocked_sentinel "3 consecutive verification failures"
+            if (( CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD )); then
+              log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"${EFFECTIVE_CB_THRESHOLD} consecutive verification failures\""
+              log_error "Circuit breaker: ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
+              write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
               update_status "blocked" "consecutive_failures"
               return 1
             fi
@@ -1985,12 +2256,18 @@ main() {
         ;;
     esac
 
+    # --- step 7d: Archive iteration artifacts before cleanup ---
+    archive_iter_artifacts "$ITERATION"
+
+    # --- AC5: Write per-iteration cost estimate ---
+    write_cost_log "$ITERATION"
+
     # --- governance.md s7 step 8: Write result log ---
     write_result_log "$ITERATION" "$signal_status"
 
     # --- governance.md s7 step 8: Circuit breaker - stale context check ---
     if ! check_stale_context; then
-      log_debug "[EXEC] iter=$ITERATION circuit_breaker=stale_context detail=\"context unchanged for 3 consecutive iterations\""
+      log_debug "[GOV] iter=$ITERATION circuit_breaker=stale_context detail=\"context unchanged for 3 consecutive iterations\""
       write_blocked_sentinel "Context unchanged for 3 consecutive iterations (stale)"
       update_status "blocked" "stale_context"
       return 1
@@ -2002,6 +2279,7 @@ main() {
 
   # Max iterations reached
   log "Max iterations ($MAX_ITER) reached."
+  generate_campaign_report  # AC4: TIMEOUT terminal path
   update_status "timeout" "max_iter"
   return 1
 }
