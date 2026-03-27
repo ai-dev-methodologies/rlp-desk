@@ -327,6 +327,21 @@ create_session() {
 
   fi
 
+  # Set pane titles and enable border labels for visual distinction
+  local worker_label="Worker ($WORKER_ENGINE:$WORKER_MODEL)"
+  local verifier_label="Verifier ($VERIFIER_ENGINE:$VERIFIER_MODEL)"
+  [[ "$VERIFY_CONSENSUS" = "1" ]] && verifier_label="Verifier ($VERIFIER_ENGINE:$VERIFIER_MODEL + codex:$VERIFIER_CODEX_MODEL)"
+  tmux select-pane -t "$LEADER_PANE" -T "Leader" 2>/dev/null
+  tmux select-pane -t "$WORKER_PANE" -T "$worker_label" 2>/dev/null
+  tmux select-pane -t "$VERIFIER_PANE" -T "$verifier_label" 2>/dev/null
+  # Color-coded pane borders: green=leader, blue=worker, yellow=verifier
+  tmux set-option -p -t "$LEADER_PANE" pane-border-style "fg=green" 2>/dev/null
+  tmux set-option -p -t "$WORKER_PANE" pane-border-style "fg=blue" 2>/dev/null
+  tmux set-option -p -t "$VERIFIER_PANE" pane-border-style "fg=yellow" 2>/dev/null
+  # Show pane titles in border
+  tmux set-option pane-border-status top 2>/dev/null
+  tmux set-option pane-border-format "#{?pane_active,#[fg=white bold],#[fg=grey]} #{pane_title} " 2>/dev/null
+
   log "  Leader pane:   $LEADER_PANE"
   log "  Worker pane:   $WORKER_PANE"
   log "  Verifier pane: $VERIFIER_PANE"
@@ -1778,6 +1793,7 @@ main() {
     log_debug "[OPTION] worker_engine=$WORKER_ENGINE worker_model=$WORKER_MODEL"
     log_debug "[OPTION] verifier_engine=$VERIFIER_ENGINE verifier_model=$VERIFIER_MODEL"
     log_debug "[OPTION] verify_mode=$VERIFY_MODE consensus=$VERIFY_CONSENSUS consensus_scope=$CONSENSUS_SCOPE max_iter=$MAX_ITER"
+    log_debug "[OPTION] cb_threshold=$CB_THRESHOLD effective_cb_threshold=$EFFECTIVE_CB_THRESHOLD iter_timeout=$ITER_TIMEOUT with_self_verification=$WITH_SELF_VERIFICATION debug=$DEBUG"
 
     if [[ "$VERIFY_MODE" = "per-us" ]]; then
       # Build expected flow
