@@ -99,6 +99,22 @@ for iteration in 1..max_iter:
   8. Update status, report to user, continue or stop
 ```
 
+### Live PRD Update
+
+The Leader computes a hash for `prd-<slug>.md` at startup and again at each iteration using `md5`.
+
+When the hash changes, it:
+
+- Logs `prd_changed=true` with `prd_hash`, previous/new US counts, and `new_us`
+- Splits the PRD into per-US files (`prd-<slug>-US-<id>.md`)
+- Splits the test-spec into per-US files (`test-spec-<slug>-US-<id>.md`)
+- Updates the in-memory PRD US list used for per-US dispatch
+- Adds `NOTE: PRD was updated since last iteration. New/changed US may exist.` to the Worker prompt
+
+If the PRD hash is unchanged, `prd_changed=false` is logged and no re-split is triggered.
+
+If the PRD file is missing, the process degrades gracefully and continues without failing the campaign loop.
+
 ### Verification Policy (v0.3.0)
 
 RLP Desk enforces a comprehensive verification policy defined in `governance.md`:
@@ -133,15 +149,67 @@ RLP Desk enforces a comprehensive verification policy defined in `governance.md`
 | 3 consecutive failures | Architecture Escalation (§7¾) → report to user |
 | Max iterations reached | TIMEOUT |
 
-### Model Routing
+### Verification Strategy (v0.5)
 
-| Scenario | Model |
-|----------|-------|
-| Simple, single-file changes | `haiku` |
-| Standard work (default) | `sonnet` |
-| Architecture changes, multi-file, prior failure | `opus` |
-| Verification (default) | `opus` |
-| Lightweight verification | `sonnet` |
+**Core principle: Worker and Verifier use different AI engines whenever possible.**
+
+- Per-US: lightweight verification after each user story (catches issues early)
+- Final: top-tier consensus gate before COMPLETE (quality guarantee)
+- Progressive upgrade: auto-upgrade models on consecutive failure (2-attempt windows)
+- Verifier minimum: claude sonnet (haiku cannot verify)
+
+#### 1. Claude-only (codex not installed)
+
+Verifier is always +1 tier above Worker. Same-engine shares blind spots — install codex for improved detection.
+
+| Risk | Worker | Per-US Verifier | Worker upgrade path | Verifier upgrade path |
+|------|--------|-----------------|--------------------|-----------------------|
+| LOW | haiku | sonnet | sonnet → opus | sonnet → opus |
+| MEDIUM | sonnet | sonnet | opus | sonnet → opus |
+| HIGH | sonnet | opus | opus | opus (ceiling) |
+| CRITICAL | opus | opus ⚠ | (ceiling) | (ceiling) |
+
+Final: **opus solo** ⚠ same-engine warning displayed
+
+#### 2. Cross-engine: GPT Pro (spark + 5.4)
+
+Spark is speed-optimized for coding. Use as Worker for LOW-HIGH; 5.4 for CRITICAL.
+
+| Risk | Worker (codex) | Per-US Verifier (claude) | Worker upgrade path | Verifier upgrade path |
+|------|---------------|--------------------------|--------------------|-----------------------|
+| LOW | spark medium | sonnet | spark high → xhigh | sonnet → opus |
+| MEDIUM | spark high | sonnet | spark xhigh → 5.4 medium | sonnet → opus |
+| HIGH | spark xhigh | opus | 5.4 high → 5.4 xhigh | opus (ceiling) |
+| CRITICAL | 5.4 high | opus | 5.4 xhigh | opus (ceiling) |
+
+Final: **opus + 5.4 high** (both must PASS)
+
+#### 3. Cross-engine: Non-Pro (5.4 only)
+
+| Risk | Worker (codex) | Per-US Verifier (claude) | Worker upgrade path | Verifier upgrade path |
+|------|---------------|--------------------------|--------------------|-----------------------|
+| LOW | 5.4 low | sonnet | 5.4 medium → high | sonnet → opus |
+| MEDIUM | 5.4 medium | sonnet | 5.4 high → xhigh | sonnet → opus |
+| HIGH | 5.4 high | opus | 5.4 xhigh | opus (ceiling) |
+| CRITICAL | 5.4 xhigh | opus | (ceiling) | opus (ceiling) |
+
+Final: **opus + 5.4 high** (both must PASS)
+
+#### Final Verify
+
+| Environment | Engine 1 | Engine 2 | Rule |
+|-------------|----------|----------|------|
+| Claude-only | opus | — | Solo ⚠ |
+| Cross-engine | opus | 5.4 high | Both must PASS → COMPLETE |
+
+#### Progressive Upgrade
+
+```
+fail 1-2: keep current models
+fail 3-4: Worker + Verifier each upgrade 1 step
+fail 5-6: each upgrade 2 steps
+ceiling + still failing → BLOCKED
+```
 
 ## Commands
 
@@ -159,15 +227,15 @@ RLP Desk enforces a comprehensive verification policy defined in `governance.md`
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--max-iter N` | 100 | Maximum iterations before timeout |
-| `--worker-model MODEL` | sonnet | Worker model (haiku/sonnet/opus) |
-| `--verifier-model MODEL` | opus | Verifier model (haiku/sonnet/opus) |
 | `--mode agent\|tmux` | agent | Execution mode (see below) |
-| `--worker-engine claude\|codex` | claude | Engine for Worker (claude uses Agent(), codex uses Bash CLI) |
-| `--verifier-engine claude\|codex` | claude | Engine for Verifier |
-| `--codex-model MODEL` | gpt-5.4 | Model passed to the Codex CLI (when engine=codex) |
-| `--codex-reasoning low\|medium\|high` | high | Reasoning effort for Codex |
+| `--worker-model MODEL` | haiku | Claude worker model (haiku/sonnet/opus) |
+| `--worker-engine claude\|codex` | claude | Worker engine |
+| `--verifier-model MODEL` | auto | Auto-selected: +1 tier (same-engine) or cross-engine |
+| `--verifier-engine claude\|codex` | auto | Opposite of worker engine if codex available |
+| `--codex-model MODEL` | gpt-5.4 | Codex model (spark requires GPT Pro) |
+| `--codex-reasoning LEVEL` | medium | low/medium/high/xhigh |
 | `--verify-mode per-us\|batch` | per-us | Verification strategy (see below) |
-| `--verify-consensus` | off | Cross-engine consensus verification (see below) |
+| `--lock-worker-model` | off | Disable progressive model upgrade on failure |
 | `--debug` | off | Debug logging to `logs/<slug>/debug.log` |
 | `--with-self-verification` | off | Campaign-level post-loop analysis report |
 
@@ -277,28 +345,18 @@ Uses the `codex` CLI via `Bash()` (agent mode) or as an interactive TUI (tmux mo
 
 ## Verification Modes
 
-RLP Desk supports two verification strategies. **Per-US is the default.**
-
 ### Per-US Verification (default)
 
-```
-/rlp-desk run calculator
-/rlp-desk run calculator --verify-mode per-us
-```
-
-Each user story is verified independently after completion, then a final full verification runs after all stories pass:
+Each user story is verified independently, then a final full verification runs:
 
 ```
-Worker: US-001 → Verifier: US-001 AC only → pass
-Worker: US-002 → Verifier: US-002 AC only → pass
-Worker: US-003 → Verifier: US-003 AC only → pass
-Final full verify: ALL AC → pass → COMPLETE
+Worker: US-001 → Verifier(per-US): US-001 only → pass
+Worker: US-002 → Verifier(per-US): US-002 only → pass
+...
+Final Verify: opus + 5.4 high → both pass → COMPLETE
 ```
 
-Benefits:
-- Catch issues early, before later stories build on broken foundations
-- Smaller verification scope = faster, more accurate checks
-- Failed verification retries only the specific US
+Per-US catches issues early before later stories build on broken foundations.
 
 ### Batch Verification
 
@@ -306,30 +364,7 @@ Benefits:
 /rlp-desk run calculator --verify-mode batch
 ```
 
-Legacy behavior: Worker completes all stories, then a single verification checks all acceptance criteria at once.
-
-### Cross-Engine Consensus Verification
-
-```
-/rlp-desk run calculator --verify-consensus
-```
-
-When enabled, **both claude and codex verify independently**. Both must pass for verification to succeed.
-
-```
-Worker completes US → Claude verifies → Codex verifies
-  Both pass → proceed
-  Either fails → combined fix contract → Worker retry
-  3 rounds without consensus → BLOCKED
-```
-
-Consensus can be combined with per-US mode for maximum rigor:
-
-```
-/rlp-desk run calculator --verify-mode per-us --verify-consensus
-```
-
-Prerequisites: Both `claude` and `codex` CLIs must be installed.
+Worker completes all stories, then a single verification checks all AC at once. Final verify still applies.
 
 ## Project Structure
 
@@ -337,20 +372,42 @@ After `init`, your project gets this scaffold:
 
 ```
 your-project/
-└── .claude/ralph-desk/
-    ├── prompts/
-    │   ├── <slug>.worker.prompt.md
-    │   └── <slug>.verifier.prompt.md
-    ├── context/
-    │   └── <slug>-latest.md
-    ├── memos/
-    │   └── <slug>-memory.md
-    ├── plans/
-    │   ├── prd-<slug>.md
-    │   └── test-spec-<slug>.md
-    └── logs/<slug>/
-        └── status.json
+├── .claude/
+│   ├── settings.local.json          # rlp-desk permissions (auto-added by init)
+│   └── ralph-desk/
+│       ├── prompts/
+│       │   ├── <slug>.worker.prompt.md
+│       │   └── <slug>.verifier.prompt.md
+│       ├── context/
+│       │   └── <slug>-latest.md
+│       ├── memos/
+│       │   └── <slug>-memory.md
+│       ├── plans/
+│       │   ├── prd-<slug>.md
+│       │   └── test-spec-<slug>.md
+│       └── logs/<slug>/
+│           └── status.json
 ```
+
+### Local Settings
+
+`init` automatically adds the following permissions to `.claude/settings.local.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Read(.claude/ralph-desk/**)",
+      "Edit(.claude/ralph-desk/**)",
+      "Write(.claude/ralph-desk/**)"
+    ]
+  }
+}
+```
+
+**Why:** Claude Code treats `.claude/` files as sensitive and prompts for confirmation on each access, even with `--dangerously-skip-permissions`. Without these permissions, Worker and Verifier agents are blocked by interactive prompts during automated loop execution.
+
+**Note:** `settings.local.json` is local to your machine and is not committed to git. If the file already exists, permissions are merged without overwriting your existing settings.
 
 ## Example: Calculator
 

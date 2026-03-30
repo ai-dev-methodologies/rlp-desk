@@ -199,14 +199,27 @@ This is the default behavior, not an optional flag. Without it, IL-1 (Evidence M
 ### Worker: execution_steps in done-claim.json
 Worker records what was done, in what order, with command evidence in `done-claim.json`:
 - Each step includes: what action, which AC, command executed, exit code, summary
-- Step types: `write_test`, `verify_red`, `implement`, `verify_green`, `refactor`, `commit`, `verify`
+- Step types: `write_test`, `verify_red`, `implement`, `verify_green`, `refactor`, `commit`, `verify`, `verify_existing`
 - This proves the Worker followed test-first approach and did not skip steps
+- **Existing implementation rule**: When code already exists from a prior iteration/campaign, Worker MAY use `verify_existing` instead of `write_test → verify_red → implement → verify_green`. `verify_existing` requires: run all existing tests, record exit codes, confirm all AC are covered by passing tests. Worker MUST NOT skip recording evidence — `verify_existing` is evidence that existing code satisfies AC, not a shortcut to skip verification.
 
 ### Verifier: reasoning in verify-verdict.json
 Verifier records WHY each judgment was made in `verify-verdict.json`:
 - Each check includes: what was checked, decision (pass/fail), and the specific evidence basis
-- Checks include: IL-1 Evidence Gate, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit
+- Checks include: IL-1 Evidence Gate, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit, Test Coverage Audit
 - This proves the Verifier actually performed each check rather than rubber-stamping
+- **Test Coverage Audit (mandatory)**: Verifier MUST check that tests cover ALL code paths, not just happy paths. Specifically:
+  - Every branch in `case` statements must have a test (e.g., all model types in get_next_model)
+  - Every engine/model combination must be tested (claude, codex 5.4, spark — not just 1-2)
+  - Every ceiling/boundary must be tested (not just "opus ceiling" — also spark ceiling, 5.4 ceiling)
+  - If Worker's tests cover only 2 of 3 engine paths, verdict MUST be fail with "test coverage gap" issue
+  - "Tests pass" is NOT sufficient — "tests cover all code paths" is required
+- **Integration Test (mandatory when functions call other functions)**: Verifier MUST check that function call chains produce correct end-to-end results, not just that each function works in isolation. Specifically:
+  - If function A's output is function B's input, there MUST be a test that runs A→B together and verifies the result
+  - Example: `get_model_string()` returns "gpt-5.3-codex-spark:medium" — `get_next_model()` must accept that exact value and return the correct upgrade. A test must verify this chain.
+  - Unit tests (extract_fn + isolated run) are necessary but NOT sufficient for refactored code
+  - Structural tests (grep for function existence) are necessary but NOT sufficient
+  - "All unit tests pass" does NOT prove the system works — integration tests prove it
 
 ### Why This Is Default (Not Optional)
 - IL-1 says "no claims without evidence" — this applies to Worker AND Verifier
@@ -388,19 +401,23 @@ Characteristics:
 ├── plans/
 │   ├── prd-<slug>.md                # PRD (in-place: --mode improve | deleted: --mode fresh)
 │   └── test-spec-<slug>.md          # Verification criteria (regenerated on re-execution)
-└── logs/<slug>/
-    ├── debug.log                    # Debug output (versioned: debug-v{N}.log on re-execution)
+└── logs/<slug>/                          # Project-level operational data
     ├── campaign-report.md           # Campaign summary (versioned: campaign-report-v{N}.md on re-execution)
     ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy (deleted on re-execution)
     ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy (deleted on re-execution)
     ├── iter-NNN.result.md           # Iteration result (deleted on re-execution)
     ├── iter-NNN-done-claim.json     # Archived done-claim per iteration (deleted on re-execution)
     ├── iter-NNN-verify-verdict.json # Archived verdict per iteration (deleted on re-execution)
-    ├── self-verification-data.json  # Cumulative SV data (--with-self-verification; deleted on re-execution)
-    ├── self-verification-report-NNN.md  # Versioned SV report (-NNN auto-increment; NOT versioned via version_file)
     ├── status.json                  # Leader's loop state (deleted on re-execution)
     ├── baseline.log                 # Baseline capture (deleted on re-execution)
     └── cost-log.jsonl               # Per-iteration cost log (deleted on re-execution)
+
+~/.claude/ralph-desk/analytics/<slug>--<root_hash>/  # User-level cross-project analytics
+    ├── metadata.json                # Campaign metadata (slug, project_root, status, times)
+    ├── debug.log                    # Debug output (versioned: debug-v{N}.log on re-execution)
+    ├── campaign.jsonl               # Per-iteration structured data (versioned: campaign-v{N}.jsonl)
+    ├── self-verification-data.json  # Cumulative SV data (agent-mode only, --with-self-verification)
+    └── self-verification-report-NNN.md  # Versioned SV report (--with-self-verification; NNN auto-increment)
 ```
 
 ## 7. Leader Loop Protocol
@@ -555,14 +572,14 @@ In tmux mode: Leader writes `<slug>-escalation.md` with the report and sets BLOC
 | Condition | Verdict |
 |-----------|---------|
 | context-latest.md unchanged for 3 consecutive iterations | BLOCKED |
-| Same acceptance criterion fails 2 consecutive iterations | Upgrade model, retry once; if still failing → Architecture Escalation (§7¾) → BLOCKED |
-| 3 consecutive **fail** verdicts on 3 unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED |
+| Same acceptance criterion fails 2 consecutive iterations | Upgrade model, retry once (Agent mode only; tmux: same model retry); if still failing → Architecture Escalation (§7¾) → BLOCKED |
+| `cb_threshold` consecutive **fail** verdicts on `cb_threshold` unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED (adjustable via `--cb-threshold`) |
 | max_iter reached | TIMEOUT (report to user) |
 
 The Leader tracks `consecutive_failures` in `status.json`:
 - Increments on `fail`, resets on `pass`, **unchanged by `request_info`**.
 - "Same error" = same acceptance criterion ID in two consecutive **fail** verdicts (`request_info` does not break or contribute to this chain).
-- "Diverse failures" = 3 most recent `fail` verdicts each have a unique criterion ID.
+- "Diverse failures" = `cb_threshold` most recent `fail` verdicts each have a unique criterion ID.
 
 ## 9. Change Policy
 

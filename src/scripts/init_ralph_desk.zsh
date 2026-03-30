@@ -78,6 +78,138 @@ version_file() {
   # Non-existent files silently skipped (no error)
 }
 
+# --- PRD/test-spec per-US splitting helpers ---
+
+split_prd_by_us() {
+  local prd_file="$1"
+  local slug="$2"
+  local plans_dir
+  plans_dir="$(dirname "$prd_file")"
+
+  [[ -f "$prd_file" ]] || return 0
+
+  local us_count
+  us_count=$(grep -c "^### US-" "$prd_file" 2>/dev/null) || us_count=0
+  if [[ "$us_count" -eq 0 ]]; then
+    echo "  WARNING: No US markers (### US-NNN:) found in PRD — falling back to full PRD injection" >&2
+    # Clean up any stale per-US split files from previous runs to prevent stale artifacts
+    local stale_count=0
+    for stale in "$plans_dir"/prd-"$slug"-US-*.md(N); do
+      rm "$stale"; stale_count=$(( stale_count + 1 ))
+    done
+    [[ $stale_count -gt 0 ]] && echo "  Cleaned $stale_count stale prd per-US file(s)"
+    return 0
+  fi
+
+  awk -v dir="$plans_dir" -v slug="$slug" '
+    /^### US-[0-9]+:/ {
+      if (out != "") close(out)
+      match($0, /US-[0-9]+/)
+      us_id = substr($0, RSTART, RLENGTH)
+      out = dir "/prd-" slug "-" us_id ".md"
+    }
+    out != "" { print > out }
+  ' "$prd_file"
+
+  local count
+  count=$(ls "$plans_dir"/prd-"$slug"-US-*.md 2>/dev/null | wc -l | tr -d ' ')
+  echo "  Split PRD: $count per-US files"
+}
+
+split_test_spec_by_us() {
+  local ts_file="$1"
+  local slug="$2"
+  local plans_dir
+  plans_dir="$(dirname "$ts_file")"
+
+  [[ -f "$ts_file" ]] || return 0
+
+  local us_count
+  us_count=$(grep -c "^## US-" "$ts_file" 2>/dev/null) || us_count=0
+  if [[ "$us_count" -eq 0 ]]; then
+    echo "  WARNING: No US section markers (## US-NNN:) in test-spec — skipping split" >&2
+    # Clean up any stale per-US test-spec files from previous runs
+    for stale in "$plans_dir"/test-spec-"$slug"-US-*.md(N); do
+      rm "$stale"
+    done
+    return 0
+  fi
+
+  # Extract global header (everything before first ## US- section, e.g. Verification Commands)
+  local header_tmp="${plans_dir}/test-spec-${slug}-header.tmp.$$"
+  awk '/^## US-[0-9]+:/{exit} {print}' "$ts_file" > "$header_tmp"
+
+  awk -v dir="$plans_dir" -v slug="$slug" '
+    /^## US-[0-9]+:/ {
+      if (out != "") close(out)
+      match($0, /US-[0-9]+/)
+      us_id = substr($0, RSTART, RLENGTH)
+      out = dir "/test-spec-" slug "-" us_id ".md"
+    }
+    out != "" { print > out }
+  ' "$ts_file"
+
+  # Prepend global header (Verification Commands etc.) to each split file
+  for split_file in "$plans_dir"/test-spec-"$slug"-US-*.md; do
+    [[ -f "$split_file" ]] || continue
+    local tmp="${split_file}.tmp.$$"
+    cat "$header_tmp" "$split_file" > "$tmp" && mv "$tmp" "$split_file"
+  done
+  rm -f "$header_tmp"
+
+  local count
+  count=$(ls "$plans_dir"/test-spec-"$slug"-US-*.md 2>/dev/null | wc -l | tr -d ' ')
+  echo "  Split test-spec: $count per-US files (with global header)"
+}
+
+# --- Run command presets ---
+# Detects codex CLI availability and shows appropriate run command presets.
+# AC1: codex installed → cross-engine preset first, spark Pro, claude-only, basic
+# AC2: codex not installed → tmux + claude-only first, install recommendation
+# AC3: full options reference with defaults always shown
+print_run_presets() {
+  local slug="$1"
+  local codex_available=0
+  command -v codex &>/dev/null && codex_available=1
+
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "Available run commands (copy the one you want):"
+  echo ""
+  if [[ $codex_available -eq 1 ]]; then
+    echo "# Recommended: cross-engine + final-consensus (cost savings + blind-spot coverage):"
+    echo "/rlp-desk run $slug --worker-model gpt-5.4:high --final-consensus --debug"
+    echo ""
+    echo "# Spark Pro preset (fast codex worker, lower cost):"
+    echo "/rlp-desk run $slug --worker-model gpt-5.3-codex-spark:high --debug"
+    echo ""
+    echo "# Claude-only:"
+    echo "/rlp-desk run $slug --debug"
+    echo ""
+    echo "# Basic agent:"
+    echo "/rlp-desk run $slug"
+  else
+    echo "# Recommended: tmux mode + claude-only (real-time visibility):"
+    echo "/rlp-desk run $slug --mode tmux --debug"
+    echo ""
+    echo "# Agent mode:"
+    echo "/rlp-desk run $slug --debug"
+    echo ""
+    echo "# Install codex for cost savings + cross-engine blind-spot coverage:"
+    echo "npm install -g @openai/codex"
+  fi
+  echo ""
+  echo "# Full options reference:"
+  echo "#   --mode agent|tmux                (default: agent)"
+  echo "#   --worker-model MODEL             haiku|sonnet|opus or gpt-5.4:low|medium|high (default: sonnet)"
+  echo "#   --verifier-model MODEL           haiku|sonnet|opus (default: opus)"
+  echo "#   --verify-consensus               both claude+codex must pass"
+  echo "#   --verify-mode per-us|batch       (default: per-us)"
+  echo "#   --max-iter N                     (default: 100)"
+  echo "#   --debug                          enable debug logging"
+  echo "#   --with-self-verification         post-campaign analysis report"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+}
+
 echo "Initializing Ralph Desk: $SLUG"
 echo "  Root: $ROOT"
 echo "  Desk: $DESK"
@@ -90,7 +222,7 @@ mkdir -p "$DESK/prompts" "$DESK/context" "$DESK/memos" "$DESK/plans" "$DESK/logs
 PRD_FILE="$DESK/plans/prd-$SLUG.md"
 LOGS_DIR="$DESK/logs/$SLUG"
 
-if [[ -n "$MODE" ]] && [[ -f "$PRD_FILE" ]]; then
+if [[ -n "$MODE" ]]; then
   echo "Re-execution mode: --mode $MODE"
   echo ""
 
@@ -120,12 +252,16 @@ if [[ -n "$MODE" ]] && [[ -f "$PRD_FILE" ]]; then
     [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
   done
 
-  # Delete test-spec and current slug's prompts (will be regenerated below)
+  # Delete test-spec only for fresh re-execution mode; improve preserves custom edits
+  # and reruns split logic on the existing file.
   for f in \
     "$DESK/plans/test-spec-$SLUG.md" \
     "$DESK/prompts/$SLUG.worker.prompt.md" \
     "$DESK/prompts/$SLUG.verifier.prompt.md"; do
-    [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
+    [[ -f "$f" ]] &&
+      if [[ "$MODE" == "fresh" ]] || [[ "$f" != "$DESK/plans/test-spec-$SLUG.md" ]]; then
+        rm "$f"; (( ++DELETED_COUNT ));
+      fi
   done
 
   # Reset memory and context to fresh templates (rm here; scaffold below regenerates them)
@@ -144,12 +280,6 @@ if [[ -n "$MODE" ]] && [[ -f "$PRD_FILE" ]]; then
   echo "  Deleted:   $DELETED_COUNT runtime artifacts"
   echo "  Reset:     memory.md + context.md (regenerating from templates)"
   echo ""
-
-elif [[ -n "$MODE" ]] && [[ ! -f "$PRD_FILE" ]]; then
-  # Note: --mode provided but no PRD found for this slug — treating as first run
-  echo "  Note: --mode $MODE provided but no PRD found for '$SLUG' — treating as first run."
-  echo ""
-  MODE=""
 fi
 
 # --- Worker Prompt ---
@@ -298,6 +428,10 @@ Check the iter-signal.json "us_id" field:
    - Test-specific logic: no environment-detection patterns
    - "Code inspection" claims: Worker must run actual commands
    - Tautological tests: expected values that mirror implementation logic
+10¼. **Anti-Rubber-Stamp Self-Check**:
+   - If your verdict history shows a 100% pass rate, re-examine your last verdict with increased scrutiny — a 100% pass rate is a red flag for insufficient rigor
+   - When issuing PASS with explicit warning: note any concerning patterns (e.g., low test diversity, marginal coverage) even if technically passing
+   - Never issue a silent PASS — every pass verdict must cite specific evidence for each AC checked
 10½. **Worker Process Audit**:
    - Test-first compliance: done-claim execution_steps must show write_test step before implement step for each AC
    - RED phase evidence: at least one verify_red step with exit_code=1 per AC (proves tests were written before passing)
@@ -432,6 +566,9 @@ $OBJECTIVE
 EOF
   echo "  + $F"
 else echo "  · $F"; fi
+
+# Split PRD into per-US files (no-op with warning if no US markers)
+split_prd_by_us "$DESK/plans/prd-$SLUG.md" "$SLUG"
 
 # --- Test Spec ---
 F="$DESK/plans/test-spec-$SLUG.md"
@@ -586,6 +723,9 @@ EOF
   echo "  + $F"
 else echo "  · $F"; fi
 
+# Split test-spec into per-US files (no-op with warning if no US section markers)
+split_test_spec_by_us "$DESK/plans/test-spec-$SLUG.md" "$SLUG"
+
 # --- .gitignore for runtime artifacts ---
 GITIGNORE="$ROOT/.gitignore"
 MARKER="# RLP Desk runtime artifacts"
@@ -606,6 +746,53 @@ else
 .claude/ralph-desk/
 GIEOF
   echo "  + .gitignore (created with rlp-desk rules)"
+fi
+
+# --- Claude Code sensitive-file permissions for .claude/ralph-desk/ ---
+# Worker/Verifier need Read/Edit/Write access to .claude/ralph-desk/ files.
+# --dangerously-skip-permissions does NOT cover "sensitive file" access for .claude/ paths.
+# Without these, every file operation triggers an interactive permission prompt that blocks automation.
+SETTINGS_FILE="$ROOT/.claude/settings.local.json"
+PERM_MARKER="Read(.claude/ralph-desk/**)"
+
+if [[ -f "$SETTINGS_FILE" ]] && grep -qF "$PERM_MARKER" "$SETTINGS_FILE" 2>/dev/null; then
+  echo "  · .claude/settings.local.json (rlp-desk permissions already present)"
+else
+  PERMS='["Read(.claude/ralph-desk/**)", "Edit(.claude/ralph-desk/**)", "Write(.claude/ralph-desk/**)"]'
+
+  if [[ -f "$SETTINGS_FILE" ]]; then
+    if command -v jq &>/dev/null; then
+      jq --argjson perms "$PERMS" '
+        .permissions //= {} |
+        .permissions.allow //= [] |
+        .permissions.allow += ($perms - .permissions.allow)
+      ' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+      echo "  + .claude/settings.local.json (rlp-desk permissions merged)"
+    else
+      echo "  ⚠ jq not found. Add to .claude/settings.local.json manually:"
+      echo "    permissions.allow: Read/Edit/Write(.claude/ralph-desk/**)"
+    fi
+  else
+    mkdir -p "$(dirname "$SETTINGS_FILE")"
+    cat > "$SETTINGS_FILE" <<'SETEOF'
+{
+  "permissions": {
+    "allow": [
+      "Read(.claude/ralph-desk/**)",
+      "Edit(.claude/ralph-desk/**)",
+      "Write(.claude/ralph-desk/**)"
+    ]
+  }
+}
+SETEOF
+    echo "  + .claude/settings.local.json (created with rlp-desk permissions)"
+  fi
+  echo ""
+  echo "  NOTE: Added Read/Edit/Write permissions for .claude/ralph-desk/ to"
+  echo "        .claude/settings.local.json (local, not committed to git)."
+  echo "        This prevents Worker/Verifier from being blocked by Claude Code's"
+  echo "        sensitive-file prompts during automated loop execution."
+  echo "        See: https://github.com/ai-dev-methodologies/rlp-desk#project-structure"
 fi
 
 # --- Post-init validation gate ---
@@ -636,13 +823,6 @@ echo ""
 echo "Next:"
 echo "  1. Edit PRD:       $DESK/plans/prd-$SLUG.md"
 echo "  2. Edit test spec: $DESK/plans/test-spec-$SLUG.md"
-echo "  3. Run:"
+echo "  3. Run (copy a command below):"
 echo ""
-echo "  LOOP_NAME=$SLUG \\"
-echo "  PROMPT_FILE=$DESK/prompts/$SLUG.worker.prompt.md \\"
-echo "  VERIFIER_PROMPT_FILE=$DESK/prompts/$SLUG.verifier.prompt.md \\"
-echo "  CONTEXT_FILE=$DESK/context/$SLUG-latest.md \\"
-echo "  EXTRA_REQUIRED_FILES=$DESK/plans/prd-$SLUG.md:$DESK/plans/test-spec-$SLUG.md:$DESK/memos/$SLUG-memory.md \\"
-echo "  MAX_ITER=20 \\"
-echo "  $RUNNER_DIR/run_ralph_desk.zsh"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_run_presets "$SLUG"

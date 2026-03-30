@@ -41,13 +41,44 @@ Ask about these items one by one (or in small groups):
    - Default recommendation: one US per iteration for 3+ stories.
 5. **Verification Commands** — build, test, lint commands
 6. **Completion / Blocked Criteria**
-7. **Worker / Verifier Model** — haiku, sonnet, opus. Suggest defaults (worker: sonnet, verifier: opus), ask if OK.
+7. **Worker / Verifier Model** — Evaluate PRD complexity using 5 factors (overall = highest factor), then recommend model.
+
+   **Complexity Evaluation Table**:
+
+   | Factor | LOW | MEDIUM | HIGH | CRITICAL |
+   |--------|-----|--------|------|----------|
+   | US count | 1-2 | 3-5 | 6-10 | 10+ |
+   | File change scope | single | 2-5 files | 6+ files | cross-repo |
+   | Logic complexity | simple | conditionals | algorithms | security |
+   | External dependencies | none | 1-2 | 3+ | distributed |
+   | Existing code impact | new only | modify | refactor | architecture |
+
+   **Model mapping** (Worker / Verifier):
+   - LOW → haiku / sonnet
+   - MEDIUM → sonnet / opus
+   - HIGH → opus / opus
+   - CRITICAL → opus / opus + require human review
+
+   Present complexity score with evidence to the user, e.g.: "I rate this MEDIUM because: US count=4 (MEDIUM), file scope=2 (MEDIUM), logic=conditionals (MEDIUM), deps=none (LOW), impact=modify (MEDIUM). Highest=MEDIUM → I suggest Worker: sonnet, Verifier: opus."
+
 8. **Engine & Model** — For each role (Worker, Verifier):
    - Engine: claude (default) or codex
    - If claude: suggest model (haiku/sonnet/opus) based on task complexity
    - If codex: suggest model (default: gpt-5.4) and reasoning effort (low/medium/high)
-   - AI should recommend: "For this task complexity, I suggest Worker: sonnet, Verifier: opus"
-   - If codex selected: "For codex Worker, I suggest gpt-5.4 with high reasoning"
+
+   **Codex Detection** — check if codex CLI is installed (`command -v codex`):
+
+   **If codex IS installed** — recommend cross-engine Worker:
+   - Suggest: `--worker-model gpt-5.4:high --verify-consensus` (cross-engine + consensus)
+   - Alternative: `--worker-model gpt-5.3-codex-spark:high` (spark preset — note: 100k output token limit per request, best for smaller scope PRDs)
+   - Say: "Codex is installed. I recommend it as Worker for cost savings (codex tokens are cheaper than claude tokens for bulk iteration) and cross-engine blind-spot coverage (claude Verifier catches issues codex Worker misses)."
+
+   **If codex is NOT installed** — recommend claude-only + install suggestion:
+   - Defaulting to claude-only Worker (sonnet).
+   - Say: "Codex is not installed. Defaulting to claude-only Worker. Note: without a second engine, your Verifier shares the same perspective as the Worker — there is a risk of blind spots where both Worker and Verifier miss the same issue. To unlock cross-engine coverage: `npm install -g @openai/codex`"
+
+   AI should recommend: "For this task complexity, I suggest Worker: sonnet, Verifier: opus"
+   If codex selected: "For codex Worker, I suggest gpt-5.4 with high reasoning"
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
 10. **Verify Consensus** — Ask: "Use cross-engine consensus verification? (Both claude and codex verify independently, both must pass.) Requires codex CLI." Default: no.
 11. **Consensus Scope** — If consensus enabled, ask: "Consensus on every verify (all, default) or only on final verify (final-only)?" Default: all.
@@ -83,33 +114,63 @@ If brainstorm was done, auto-fill PRD and test-spec with the results.
 Tell the user:
 1. The scaffold has been created — list the generated files
 2. Ask them to review/edit the PRD and test-spec if needed
-3. Present run options with explanations and ONE recommendation. The user MUST copy and paste the command themselves:
+3. Present run options with explanations and ONE recommendation. The user MUST copy and paste the command themselves.
 
-```
-Available run commands (copy the one you want):
+   Check if codex CLI is installed: run `command -v codex` in shell or check if the binary exists.
 
-# Recommended for most cases — agent mode, per-US verification, debug logging:
-/rlp-desk run <slug> --debug
+   **If codex IS installed** — show cross-engine presets first:
 
-# With self-verification campaign report (recommended for MEDIUM+ risk):
-/rlp-desk run <slug> --debug --with-self-verification
+   ```
+   Available run commands (copy the one you want):
 
-# Tmux mode for long campaigns with real-time visibility:
-/rlp-desk run <slug> --mode tmux --debug
+   # Recommended: cross-engine + final-consensus (cost savings + blind-spot coverage):
+   /rlp-desk run <actual-slug> --worker-model gpt-5.4:high --final-consensus --debug
 
-# Cross-engine consensus (requires codex CLI installed):
-/rlp-desk run <slug> --debug --verify-consensus
+   # Spark Pro preset (fast codex worker, lower cost):
+   /rlp-desk run <actual-slug> --worker-model gpt-5.3-codex-spark:high --debug
 
-# Full options reference:
-#   --mode agent|tmux          Agent mode (default) or tmux shell leader
-#   --debug                    Always-on detailed logging (recommended)
-#   --with-self-verification   Post-campaign analysis report
-#   --verify-mode per-us|batch Per-US (default) or batch verification
-#   --verify-consensus         Both claude+codex must pass
-#   --worker-model MODEL       haiku/sonnet/opus (default: sonnet)
-#   --verifier-model MODEL     haiku/sonnet/opus (default: opus)
-#   --max-iter N               Max iterations (default: 100)
-```
+   # Claude-only:
+   /rlp-desk run <actual-slug> --debug
+
+   # Basic agent:
+   /rlp-desk run <actual-slug>
+
+   # Full options reference:
+   #   --mode agent|tmux                (default: agent)
+   #   --worker-model MODEL             haiku|sonnet|opus or gpt-5.4:low|medium|high (default: sonnet)
+   #   --verifier-model MODEL           haiku|sonnet|opus (default: opus)
+   #   --verify-consensus               both claude+codex must pass
+   #   --verify-mode per-us|batch       (default: per-us)
+   #   --max-iter N                     (default: 100)
+   #   --debug                          enable debug logging
+   #   --with-self-verification         post-campaign analysis report
+   ```
+
+   **If codex is NOT installed** — show claude-only presets + install recommendation:
+
+   ```
+   Available run commands (copy the one you want):
+
+   # Recommended: tmux mode + claude-only (real-time visibility):
+   /rlp-desk run <actual-slug> --mode tmux --debug
+
+   # Agent mode:
+   /rlp-desk run <actual-slug> --debug
+
+   # Install codex for cost savings + cross-engine blind-spot coverage:
+   npm install -g @openai/codex
+
+   # Full options reference:
+   #   --mode agent|tmux                (default: agent)
+   #   --worker-model MODEL             haiku|sonnet|opus (default: sonnet)
+   #   --verifier-model MODEL           haiku|sonnet|opus (default: opus)
+   #   --verify-mode per-us|batch       (default: per-us)
+   #   --max-iter N                     (default: 100)
+   #   --debug                          enable debug logging
+   #   --with-self-verification         post-campaign analysis report
+   ```
+
+   Replace `<actual-slug>` with the real slug from this init (e.g. `auth-refactor`).
 
 **CRITICAL: Do NOT offer to run for the user. Do NOT ask "shall I run?" or offer to execute. The user MUST type the run command themselves. Just present the options, recommend one, and STOP.**
 
@@ -139,8 +200,18 @@ Options (parse from `$ARGUMENTS`):
   - `final-only`: consensus only on final ALL verify
 - `--cb-threshold N` — circuit breaker threshold: consecutive failures before BLOCKED (default: 3). When `--verify-consensus` is active, effective threshold is automatically doubled (e.g., default becomes 6).
 - `--iter-timeout N` — per-iteration timeout in seconds (default: 600). Enforced in tmux mode only. Agent mode: not enforced (Agent() has no timeout API).
-- `--debug` — enable debug logging (writes to logs/<slug>/debug.log)
+- `--debug` — enable debug logging (writes to ~/.claude/ralph-desk/analytics/<slug>/debug.log)
 - `--with-self-verification` — enable campaign-level self-verification analysis. After COMPLETE, Leader analyzes all iteration records (done-claims + verdicts) and generates a campaign self-verification summary with patterns and recommendations for next planning cycle. (Note: execution_steps and reasoning are ALWAYS recorded per governance §1f — this flag adds post-campaign analysis.)
+
+### Analytics Directory (`~/.claude/ralph-desk/analytics/<slug>/`)
+When `--debug` or `--with-self-verification` is active, analytics data is written to a user-level directory for cross-project aggregation. Contents:
+- `metadata.json` — campaign metadata: slug, project_root, campaign_status, start_time, end_time
+- `debug.log` — debug output (versioned: `debug-v{N}.log` on re-execution)
+- `campaign.jsonl` — per-iteration structured data (versioned: `campaign-v{N}.jsonl` on re-execution). Schema: iter, us_id, worker_model, worker_engine, verifier_engine, claude_verdict, codex_verdict, consensus, duration_worker_s, duration_verifier_s, project_root, slug, timestamp
+- `self-verification-data.json` — cumulative SV records (agent-mode only, when `--with-self-verification`)
+- `self-verification-report-NNN.md` — versioned SV reports (when `--with-self-verification`)
+
+Cross-project aggregation: scan `~/.claude/ralph-desk/analytics/` and read each slug's `metadata.json` to discover project_root, campaign_status, and timestamps. Slug directories use `<slug>--<root_hash>` format to prevent collision across projects.
 
 ### Mode Selection
 
@@ -181,22 +252,31 @@ WITH_SELF_VERIFICATION=<1 if --with-self-verification, else 0> \
 
 **IMPORTANT RULES:**
 - Tmux mode requires the user to already be inside a tmux session. If the runner script rejects because $TMUX is not set, do NOT try to create a tmux session yourself. Tell the user: "Start tmux first, then retry."
-- Do NOT run the script in background (`&`, `run_in_background`). The script must run in foreground so panes remain visible to the user. The user needs to see Worker/Verifier panes in real-time.
+- MUST launch the runner with `run_in_background: true` so `/rlp-desk` returns control immediately while preserving live tmux visibility.
+- Run-in-background is used so the shell can keep the command visible and keep the pane layout stable for status checks and completion flow.
 - Do NOT kill panes after completion. Panes stay alive for inspection. User cleans up with `/rlp-desk clean <slug> --kill-session`.
-- `--with-self-verification` is accepted in tmux mode but SV report generation is Agent-mode only (requires AI analysis). In tmux mode, the flag is recorded in session-config for post-hoc analysis. Use Agent mode for full SV report generation.
+- `--with-self-verification` is accepted in tmux mode. After campaign completion, `run_ralph_desk.zsh` spawns `claude CLI` to generate the SV report from campaign artifacts (done-claims, verify-verdicts, campaign-report). SV reports are written to `~/.claude/ralph-desk/analytics/<slug>/`. Requires `claude` CLI available in PATH; if not found, an error is appended to the campaign report.
+
+**tmux UX model (5 items):**
+- The session returns immediately after launch (`run_in_background: true`) so the command returns control to the parent CLI.
+- Worker/Verifier panes remain visible to the user during execution.
+- Users check progress with the **status command**: `/rlp-desk status <slug>`.
+- On completion, the command returns a completion notification before the loop ends.
+- Agent mode remains unchanged, and no tmux-specific behavior is mixed into Agent mode.
 
 #### Agent Mode (`--mode agent` or default)
 
 ### Preparation
 1. Validate scaffold: `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
-2. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
-3. Clean previous `done-claim.json`, `verify-verdict.json`.
-4. **Always**: write baseline log entry to `.claude/ralph-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
-5. If `--debug`: also create/clear `logs/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> .claude/ralph-desk/logs/<slug>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.
+2. **Codex CLI pre-validation**: If `--verify-consensus` is enabled OR `--worker-engine codex` / `--verifier-engine codex` is set, check that `codex` CLI exists in PATH. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
+3. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
+4. Clean previous `done-claim.json`, `verify-verdict.json`.
+5. **Always**: write baseline log entry to `.claude/ralph-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
+6. If `--debug`: also create/clear `~/.claude/ralph-desk/analytics/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> ~/.claude/ralph-desk/analytics/<slug>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.
    - **4-category log system**: all debug_log entries use exactly one of: `[GOV]` (governance checks: IL enforcement, CB triggers, scope lock, verdict evaluation), `[DECIDE]` (leader decisions: model selection, fix contracts, escalation), `[OPTION]` (configuration snapshot at loop start: thresholds, modes, models), `[FLOW]` (execution progress: worker/verifier dispatch, signal reads, phase transitions)
    - **Re-execution versioning**: If `debug.log` already exists at `--debug` start, rename it to `debug-v{N}.log` (N = next available integer ≥ 1) before creating a fresh `debug.log`.
    - **baseline.log lifecycle**: baseline.log is deleted on re-execution (when `init --mode improve` or `init --mode fresh` is run).
-6. Capture baseline commit: `Bash("git rev-parse HEAD 2>/dev/null || echo none")` → store as `BASELINE_COMMIT`. Include in the first `status.json` write as `baseline_commit` field.
+7. Capture baseline commit: `Bash("git rev-parse HEAD 2>/dev/null || echo none")` → store as `BASELINE_COMMIT`. Include in the first `status.json` write as `baseline_commit` field.
 
 ### Leader Loop
 
@@ -241,6 +321,11 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 **④ Build worker prompt (Prompt Assembly Protocol)**
 1. Capture `WORKING_DIR` once: use `$PWD` from when `/rlp-desk run` was invoked. Store for all prompt construction.
 2. Read `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` — use its content **verbatim**. Do NOT rewrite, paraphrase, or regenerate paths. The prompt file contains correct absolute paths from init.
+2a. **Per-US PRD injection** (when targeting a specific `us_id`, not "ALL"):
+   - Check if `.claude/ralph-desk/plans/prd-<slug>-{us_id}.md` exists (created by init split)
+   - If yes: in the assembled prompt text, replace the full PRD reference (`prd-<slug>.md`) with the per-US file path (`prd-<slug>-{us_id}.md`) — so Worker reads only the relevant US section
+   - If no per-US file: fall back to full PRD (`prd-<slug>.md`) with no change needed
+   - Note: this absolute-path substitution is permitted — only absolute→relative rewrites are forbidden.
 3. Prepend meta comment: `## WORKING_DIR: {absolute path}` — Worker must use this as its working directory.
 4. Append iteration number + memory contract.
 5. Write to `.claude/ralph-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail).
@@ -384,8 +469,8 @@ At loop end (COMPLETE, BLOCKED, or TIMEOUT):
 After the loop ends, the Leader performs post-campaign analysis:
 
 1. **Collect data**: Read all archived `iter-NNN.result.md`, done-claim.json (with execution_steps), and verify-verdict.json (with reasoning) from `logs/<slug>/`
-2. **Write cumulative data**: `logs/<slug>/self-verification-data.json` — normalized iteration records
-3. **Generate versioned report**: `logs/<slug>/self-verification-report-NNN.md` (NNN = auto-increment from existing reports)
+2. **Write cumulative data**: `~/.claude/ralph-desk/analytics/<slug>/self-verification-data.json` — normalized iteration records (agent-mode only artifact)
+3. **Generate versioned report**: `~/.claude/ralph-desk/analytics/<slug>/self-verification-report-NNN.md` (NNN = auto-increment from existing reports)
 4. **Report to user**: Display the full report content
 
 Report template (10 sections):
@@ -501,22 +586,34 @@ Remove:
 - `.claude/ralph-desk/logs/<slug>/worker-heartbeat.json`
 - `.claude/ralph-desk/logs/<slug>/verifier-heartbeat.json`
 - `.claude/ralph-desk/memos/<slug>-escalation.md`
-Note: `logs/<slug>/self-verification-data.json`, `self-verification-report-NNN.md`, `campaign-report.md`, `campaign-report-v{N}.md`, `iter-NNN-done-claim.json`, and `iter-NNN-verify-verdict.json` are intentionally preserved across clean for historical comparison.
+Note: `campaign-report.md`, `campaign-report-v{N}.md`, `iter-NNN-done-claim.json`, and `iter-NNN-verify-verdict.json` are intentionally preserved across clean for historical comparison. Analytics files (`debug.log`, `campaign.jsonl`, `self-verification-data.json`, `self-verification-report-NNN.md`) at `~/.claude/ralph-desk/analytics/<slug>/` are NOT affected by project-level clean.
 
-If `--kill-session` is passed, clean up ALL tmux artifacts:
+If `--kill-session` is passed, clean up Worker/Verifier tmux panes using session-config.json:
 ```bash
-# Kill rlp-desk tmux sessions
-tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^rlp-desk-<slug>-" | while read s; do tmux kill-session -t "$s"; done
+# Read pane IDs from session-config.json (safe — targets only Worker/Verifier panes)
+SESSION_CONFIG=".claude/ralph-desk/logs/<slug>/session-config.json"
+if [ -f "$SESSION_CONFIG" ] && command -v jq &>/dev/null; then
+  WORKER_PANE=$(jq -r '.panes.worker // empty' "$SESSION_CONFIG")
+  VERIFIER_PANE=$(jq -r '.panes.verifier // empty' "$SESSION_CONFIG")
 
-# Kill split panes in current window (Worker/Verifier panes from --mode tmux)
-# Find panes running claude/codex for this slug and kill them
-for pane_id in $(tmux list-panes -F '#{pane_id}:#{pane_current_command}' 2>/dev/null | grep -i 'claude\|codex' | cut -d: -f1); do
-  tmux kill-pane -t "$pane_id" 2>/dev/null
-done
-
-# Kill any remaining claude/codex processes for this campaign
-ps aux | grep -E "claude.*<slug>|codex.*<slug>" | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null
+  for pane_id in "$WORKER_PANE" "$VERIFIER_PANE"; do
+    if [ -n "$pane_id" ]; then
+      tmux send-keys -t "$pane_id" C-c 2>/dev/null
+      tmux send-keys -t "$pane_id" "/exit" Enter 2>/dev/null
+    fi
+  done
+  sleep 2
+  for pane_id in "$WORKER_PANE" "$VERIFIER_PANE"; do
+    if [ -n "$pane_id" ]; then
+      tmux kill-pane -t "$pane_id" 2>/dev/null
+    fi
+  done
+else
+  echo "WARNING: session-config.json not found or jq not installed."
+  echo "Cannot safely identify Worker/Verifier panes. Kill them manually."
+fi
 ```
+**CRITICAL: NEVER use `grep -i 'claude\|codex'` to find panes to kill.** The user's own Claude Code session matches those patterns. Always use the specific pane IDs from session-config.json.
 
 ## No args or `help`
 ```
@@ -543,7 +640,7 @@ Run options:
   --consensus-scope SCOPE    When consensus runs: all|final-only (default: all)
   --cb-threshold N           CB threshold: consecutive failures before BLOCKED (default: 3)
   --iter-timeout N           Per-iteration timeout in seconds, tmux mode only (default: 600)
-  --debug                    Debug logging (logs/<slug>/debug.log)
+  --debug                    Debug logging (~/.claude/ralph-desk/analytics/<slug>/debug.log)
   --with-self-verification   Campaign self-verification analysis (post-loop report)
 ```
 
