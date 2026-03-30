@@ -47,8 +47,9 @@ set -uo pipefail
 SLUG="${LOOP_NAME:?ERROR: LOOP_NAME is required. Set it to the campaign slug.}"
 ROOT="${ROOT:-$PWD}"
 MAX_ITER="${MAX_ITER:-20}"
-WORKER_MODEL="${WORKER_MODEL:-sonnet}"
-VERIFIER_MODEL="${VERIFIER_MODEL:-opus}"
+WORKER_MODEL="${WORKER_MODEL:-haiku}"
+VERIFIER_MODEL="${VERIFIER_MODEL:-sonnet}"
+FINAL_VERIFIER_MODEL="${FINAL_VERIFIER_MODEL:-opus}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 ITER_TIMEOUT="${ITER_TIMEOUT:-600}"
 HEARTBEAT_STALE_THRESHOLD="${HEARTBEAT_STALE_THRESHOLD:-120}"
@@ -60,6 +61,7 @@ WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 # --- Engine Selection ---
 WORKER_ENGINE="${WORKER_ENGINE:-claude}"    # claude|codex
 VERIFIER_ENGINE="${VERIFIER_ENGINE:-claude}"  # claude|codex
+FINAL_VERIFIER_ENGINE="${FINAL_VERIFIER_ENGINE:-claude}"  # claude|codex (derived from FINAL_VERIFIER_MODEL)
 WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.4}"
 WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high
 VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.4}"
@@ -68,13 +70,19 @@ CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 
 # --- Verify Mode ---
 VERIFY_MODE="${VERIFY_MODE:-per-us}"        # per-us|batch
-VERIFY_CONSENSUS="${VERIFY_CONSENSUS:-0}"   # 0|1
-FINAL_CONSENSUS="${FINAL_CONSENSUS:-0}"     # 0|1 — consensus for final ALL verify only (independent of VERIFY_CONSENSUS)
-CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-all}"   # all|final-only
-CONSENSUS_FAIL_FAST="${CONSENSUS_FAIL_FAST:-0}" # 0|1 — skip second verifier if first fails
-CB_THRESHOLD="${CB_THRESHOLD:-6}"           # consecutive failures before BLOCKED (default: 6)
-# Effective CB threshold: doubled when consensus mode active (AC2 auto-double)
+# Consensus: off|all|final-only (replaces VERIFY_CONSENSUS + FINAL_CONSENSUS + CONSENSUS_SCOPE)
+CONSENSUS_MODE="${CONSENSUS_MODE:-off}"     # off|all|final-only
+CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.4:medium}"       # per-US cross-verifier (lighter)
+FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.4:high}"  # final cross-verifier (stricter)
+# Legacy compat: map old flags to CONSENSUS_MODE
 if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
+  CONSENSUS_MODE="${CONSENSUS_SCOPE:-all}"
+elif [[ "${FINAL_CONSENSUS:-0}" = "1" ]]; then
+  CONSENSUS_MODE="final-only"
+fi
+CB_THRESHOLD="${CB_THRESHOLD:-6}"           # consecutive failures before BLOCKED (default: 6)
+# Effective CB threshold: doubled when consensus mode active
+if [[ "$CONSENSUS_MODE" != "off" ]]; then
   EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD * 2 ))
 else
   EFFECTIVE_CB_THRESHOLD=$CB_THRESHOLD
@@ -456,7 +464,7 @@ check_dependencies() {
   fi
 
   # Codex binary required only when engine=codex or consensus verification is enabled
-  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" || "$VERIFY_CONSENSUS" = "1" || "$FINAL_CONSENSUS" = "1" ]]; then
+  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" || "$CONSENSUS_MODE" != "off" ]]; then
     if ! command -v codex >/dev/null 2>&1; then
       log_error "codex CLI not found. Install: npm install -g @openai/codex"
       missing=1
@@ -474,7 +482,7 @@ check_dependencies() {
   fi
 
   # Resolve codex binary if needed
-  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" || "$VERIFY_CONSENSUS" = "1" || "$FINAL_CONSENSUS" = "1" ]]; then
+  if [[ "$WORKER_ENGINE" = "codex" || "$VERIFIER_ENGINE" = "codex" || "$CONSENSUS_MODE" != "off" ]]; then
     CODEX_BIN=$(command -v codex 2>/dev/null || echo "codex")
     log "  Codex binary:  $CODEX_BIN"
   fi
@@ -532,7 +540,7 @@ create_session() {
   # Set pane titles and enable border labels for visual distinction
   local worker_label="Worker ($WORKER_ENGINE:$WORKER_MODEL)"
   local verifier_label="Verifier ($VERIFIER_ENGINE:$VERIFIER_MODEL)"
-  [[ "$VERIFY_CONSENSUS" = "1" ]] && verifier_label="Verifier ($VERIFIER_ENGINE:$VERIFIER_MODEL + codex:$VERIFIER_CODEX_MODEL)"
+  [[ "$CONSENSUS_MODE" != "off" ]] && verifier_label="Verifier ($VERIFIER_ENGINE:$VERIFIER_MODEL + consensus)"
   tmux select-pane -t "$LEADER_PANE" -T "Leader" 2>/dev/null
   tmux select-pane -t "$WORKER_PANE" -T "$worker_label" 2>/dev/null
   tmux select-pane -t "$VERIFIER_PANE" -T "$verifier_label" 2>/dev/null
@@ -586,8 +594,7 @@ create_session() {
   },
   "verification": {
     "verify_mode": "'"$VERIFY_MODE"'",
-    "verify_consensus": '"$VERIFY_CONSENSUS"',
-    "consensus_scope": "'"$CONSENSUS_SCOPE"'"
+    "consensus_mode": "'"$CONSENSUS_MODE"'"
   },
   "config": {
     "max_iter": '"$MAX_ITER"',
@@ -1285,11 +1292,11 @@ cleanup() {
     fi
 
     # 3. Consensus: were both engines used?
-    if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+    if [[ "$CONSENSUS_MODE" != "off" ]]; then
       if [[ -n "${CLAUDE_VERDICT:-}" && -n "${CODEX_VERDICT:-}" ]]; then
-        log_debug "[FLOW] consensus=USED claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT rounds=$CONSENSUS_ROUND"
+        log_debug "[FLOW] consensus=USED mode=$CONSENSUS_MODE claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT rounds=$CONSENSUS_ROUND"
       else
-        log_debug "[FLOW] consensus=NOT_TRIGGERED claude=${CLAUDE_VERDICT:-none} codex=${CODEX_VERDICT:-none}"
+        log_debug "[FLOW] consensus=NOT_TRIGGERED mode=$CONSENSUS_MODE claude=${CLAUDE_VERDICT:-none} codex=${CODEX_VERDICT:-none}"
       fi
     fi
 
@@ -1690,20 +1697,14 @@ run_sequential_final_verify() {
 
 # --- US-005: Determine whether consensus verification should run for this signal ---
 # Returns 0 (use consensus) or 1 (single engine).
-# VERIFY_CONSENSUS + CONSENSUS_SCOPE handles per-US consensus.
-# FINAL_CONSENSUS independently enables consensus for the final ALL verify only.
+# Uses unified CONSENSUS_MODE: off|all|final-only
 _should_use_consensus() {
   local signal_us_id="${1:-}"
-  if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
-    case "$CONSENSUS_SCOPE" in
-      all) return 0 ;;
-      final-only) [[ "$signal_us_id" == "ALL" ]] && return 0 ;;
-    esac
-  fi
-  if [[ "$FINAL_CONSENSUS" = "1" && "$signal_us_id" == "ALL" ]]; then
-    return 0
-  fi
-  return 1
+  case "$CONSENSUS_MODE" in
+    all) return 0 ;;
+    final-only) [[ "$signal_us_id" == "ALL" ]] && return 0 ;;
+    off|*) return 1 ;;
+  esac
 }
 
 # --- US-004: Run consensus verification (claude + codex sequentially) ---
@@ -1745,13 +1746,7 @@ run_consensus_verification() {
     fi
     log_debug "[GOV] iter=$iter phase=consensus_claude verdict=$CLAUDE_VERDICT model=$VERIFIER_MODEL"
 
-    # F8: --consensus-fail-fast — skip second verifier if first fails
-    if [[ "$CONSENSUS_FAIL_FAST" = "1" && "$CLAUDE_VERDICT" = "fail" ]]; then
-      log "  Consensus fail-fast: claude=fail, skipping codex verifier"
-      log_debug "[GOV] iter=$iter phase=consensus_fail_fast claude=fail codex=skipped"
-      CODEX_VERDICT="skipped"
-      return 2  # disagreement/fail signal
-    fi
+    # consensus-fail-fast removed (complexity vs value too low)
 
     # Run codex verifier second
     local _codex_t0=$(date +%s)
@@ -1931,11 +1926,10 @@ main() {
   log "  Root:            $ROOT"
   log "  Max iterations:  $MAX_ITER"
   log "  Worker model:    $WORKER_MODEL"
-  log "  Verifier model:  $VERIFIER_MODEL"
+  log "  Verifier model:  $VERIFIER_MODEL (per-US) / $FINAL_VERIFIER_MODEL (final)"
   log "  Verify mode:     $VERIFY_MODE"
-  log "  Verify consensus:$VERIFY_CONSENSUS"
-  log "  Final consensus: $FINAL_CONSENSUS"
-  log "  Consensus scope: $CONSENSUS_SCOPE"
+  log "  Consensus mode:  $CONSENSUS_MODE"
+  log "  Consensus model: $CONSENSUS_MODEL (per-US) / $FINAL_CONSENSUS_MODEL (final)"
   log "  Poll interval:   ${POLL_INTERVAL}s"
   log "  Iter timeout:    ${ITER_TIMEOUT}s"
   # --- Debug: Log execution plan ---
@@ -1951,7 +1945,7 @@ main() {
     log_debug "[OPTION] slug=$SLUG us_count=$us_count us_list=$us_list"
     log_debug "[OPTION] worker_engine=$WORKER_ENGINE worker_model=$WORKER_MODEL"
     log_debug "[OPTION] verifier_engine=$VERIFIER_ENGINE verifier_model=$VERIFIER_MODEL"
-    log_debug "[OPTION] verify_mode=$VERIFY_MODE consensus=$VERIFY_CONSENSUS consensus_scope=$CONSENSUS_SCOPE max_iter=$MAX_ITER"
+    log_debug "[OPTION] verify_mode=$VERIFY_MODE consensus_mode=$CONSENSUS_MODE max_iter=$MAX_ITER"
     log_debug "[OPTION] cb_threshold=$CB_THRESHOLD effective_cb_threshold=$EFFECTIVE_CB_THRESHOLD iter_timeout=$ITER_TIMEOUT with_self_verification=$WITH_SELF_VERIFICATION debug=$DEBUG"
 
     if [[ "$VERIFY_MODE" = "per-us" ]]; then
@@ -2218,7 +2212,7 @@ main() {
           fi
         fi
 
-        # --- Consensus scope check (US-005: _should_use_consensus handles VERIFY_CONSENSUS + FINAL_CONSENSUS) ---
+        # --- Consensus scope check (US-005: _should_use_consensus handles CONSENSUS_MODE) ---
         local use_consensus=0
         _should_use_consensus "$signal_us_id" && use_consensus=1
 
@@ -2501,8 +2495,36 @@ while (( _cli_i <= $# )); do
     --lock-worker-model)
       LOCK_WORKER_MODEL=1
       ;;
+    --final-verifier-model)
+      (( _cli_i++ ))
+      _cli_parsed=$(parse_model_flag "${@[$_cli_i]:-}" "final-verifier") || exit 1
+      FINAL_VERIFIER_ENGINE="${_cli_parsed%% *}"
+      _cli_rest="${_cli_parsed#* }"
+      FINAL_VERIFIER_MODEL="${_cli_rest%% *}"
+      if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
+        FINAL_VERIFIER_CODEX_MODEL="$FINAL_VERIFIER_MODEL"
+        FINAL_VERIFIER_CODEX_REASONING="${_cli_rest##* }"
+      fi
+      ;;
+    --consensus)
+      (( _cli_i++ ))
+      CONSENSUS_MODE="${@[$_cli_i]:-off}"
+      ;;
+    --consensus-model)
+      (( _cli_i++ ))
+      CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.4:medium}"
+      ;;
+    --final-consensus-model)
+      (( _cli_i++ ))
+      FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.4:high}"
+      ;;
     --final-consensus)
-      FINAL_CONSENSUS=1
+      # Legacy: map to new --consensus final-only
+      CONSENSUS_MODE="final-only"
+      ;;
+    --verify-consensus)
+      # Legacy: map to new --consensus all
+      CONSENSUS_MODE="all"
       ;;
   esac
   (( _cli_i++ ))

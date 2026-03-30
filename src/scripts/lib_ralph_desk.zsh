@@ -95,12 +95,7 @@ get_next_model() {
     gpt-5.3-codex-spark:medium) echo "gpt-5.3-codex-spark:high"   ;;
     gpt-5.3-codex-spark:high)   echo "gpt-5.3-codex-spark:xhigh"  ;;
     gpt-5.3-codex-spark:xhigh)  echo ""                           ;;  # spark ceiling (full name)
-    # Codex standard (gpt-5.3-codex) upgrade path
-    gpt-5.3-codex:low)    echo "gpt-5.3-codex:medium" ;;
-    gpt-5.3-codex:medium) echo "gpt-5.3-codex:high"   ;;
-    gpt-5.3-codex:high)   echo "gpt-5.3-codex:xhigh"  ;;
-    gpt-5.3-codex:xhigh)  echo ""                     ;;  # codex ceiling
-    # Codex Non-Pro / upper path
+    # Codex Non-Pro upgrade path
     gpt-5.4:low)    echo "gpt-5.4:medium" ;;
     gpt-5.4:medium) echo "gpt-5.4:high"   ;;
     gpt-5.4:high)   echo "gpt-5.4:xhigh"  ;;
@@ -249,7 +244,7 @@ update_status() {
 
   # Build consensus fields
   local consensus_json=""
-  if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+  if [[ "$CONSENSUS_MODE" != "off" ]]; then
     consensus_json=',
   "consensus_scope": "'"$CONSENSUS_SCOPE"'",
   "consensus_round": '"$CONSENSUS_ROUND"',
@@ -272,7 +267,7 @@ update_status() {
   "verifier_codex_model": "'"$VERIFIER_CODEX_MODEL"'",
   "verifier_codex_reasoning": "'"$VERIFIER_CODEX_REASONING"'",
   "verify_mode": "'"$VERIFY_MODE"'",
-  "verify_consensus": '"$VERIFY_CONSENSUS"',
+  "consensus_mode": "'"$CONSENSUS_MODE"'",
   "last_result": "'"$last_result"'",
   "consecutive_failures": '"$CONSECUTIVE_FAILURES"',
   "verified_us": '"$verified_us_json"''"$consensus_json"',
@@ -408,7 +403,7 @@ write_campaign_jsonl() {
     --arg verifier_engine "$VERIFIER_ENGINE" \
     --arg claude_verdict "${CLAUDE_VERDICT:-$verdict}" \
     --arg codex_verdict "${CODEX_VERDICT:-N/A}" \
-    --argjson consensus "$VERIFY_CONSENSUS" \
+    --arg consensus_mode "$CONSENSUS_MODE" \
     --argjson consecutive_failures "$CONSECUTIVE_FAILURES" \
     --argjson model_upgraded "${_MODEL_UPGRADED:-0}" \
     --argjson us_fail_history "$us_fail_history_json" \
@@ -417,7 +412,7 @@ write_campaign_jsonl() {
     --arg project_root "$ROOT" \
     --arg slug "$SLUG" \
     --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus: $consensus, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, us_fail_history: $us_fail_history, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp}' \
+    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus_mode: $consensus_mode, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, us_fail_history: $us_fail_history, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp}' \
     >> "$CAMPAIGN_JSONL"
 }
 
@@ -496,7 +491,7 @@ ${untracked}"
     echo "- Elapsed: ${elapsed}s"
     echo "- Worker model: $WORKER_MODEL ($WORKER_ENGINE)"
     echo "- Verifier model: $VERIFIER_MODEL ($VERIFIER_ENGINE)"
-    echo "- Consensus: verify_consensus=$VERIFY_CONSENSUS consensus_scope=$CONSENSUS_SCOPE final_consensus=$FINAL_CONSENSUS"
+    echo "- Consensus: mode=$CONSENSUS_MODE model=$CONSENSUS_MODEL final_model=$FINAL_CONSENSUS_MODEL"
     echo ""
     echo "## US Status"
     echo "- Verified: ${VERIFIED_US:-none}"

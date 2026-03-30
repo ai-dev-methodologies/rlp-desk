@@ -54,36 +54,43 @@ Ask about these items one by one (or in small groups):
    | External dependencies | none | 1-2 | 3+ | distributed |
    | Existing code impact | new only | modify | refactor | architecture |
 
-   **Model mapping** (Worker / Verifier):
-   - LOW → haiku / sonnet
-   - MEDIUM → sonnet / opus
-   - HIGH → opus / opus
-   - CRITICAL → opus / opus + require human review
+   **Codex Detection** — check if codex CLI is installed (`command -v codex`).
 
-   Present complexity score with evidence to the user, e.g.: "I rate this MEDIUM because: US count=4 (MEDIUM), file scope=2 (MEDIUM), logic=conditionals (MEDIUM), deps=none (LOW), impact=modify (MEDIUM). Highest=MEDIUM → I suggest Worker: sonnet, Verifier: opus."
+   **Model mapping — Claude-only** (codex not installed):
 
-8. **Engine & Model** — For each role (Worker, Verifier):
-   - Engine: claude (default) or codex
-   - If claude: suggest model (haiku/sonnet/opus) based on task complexity
-   - If codex: suggest model (default: gpt-5.4) and reasoning effort (low/medium/high)
+   | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
+   |------------|--------|-----------------|----------------|-----------|
+   | LOW | haiku | sonnet | opus | off |
+   | MEDIUM | sonnet | opus | opus | off |
+   | HIGH | opus | opus | opus | off |
+   | CRITICAL | opus | opus | opus + human | off |
 
-   **Codex Detection** — check if codex CLI is installed (`command -v codex`):
+   **Model mapping — Cross-engine** (codex installed, recommended):
 
-   **If codex IS installed** — recommend cross-engine Worker:
-   - Suggest: `--worker-model gpt-5.4:high --verify-consensus` (cross-engine + consensus)
-   - Alternative: `--worker-model gpt-5.3-codex-spark:high` (spark preset — note: 100k output token limit per request, best for smaller scope PRDs)
-   - Say: "Codex is installed. I recommend it as Worker for cost savings (codex tokens are cheaper than claude tokens for bulk iteration) and cross-engine blind-spot coverage (claude Verifier catches issues codex Worker misses)."
+   | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
+   |------------|--------|-----------------|----------------|-----------|
+   | LOW | spark:high | sonnet | opus | final-only |
+   | MEDIUM | spark:high | opus | opus | final-only |
+   | HIGH | gpt-5.4:high | opus | opus | all |
+   | CRITICAL | gpt-5.4:high | opus | opus + human | all |
 
-   **If codex is NOT installed** — recommend claude-only + install suggestion:
-   - Defaulting to claude-only Worker (sonnet).
-   - Say: "Codex is not installed. Defaulting to claude-only Worker. Note: without a second engine, your Verifier shares the same perspective as the Worker — there is a risk of blind spots where both Worker and Verifier miss the same issue. To unlock cross-engine coverage: `npm install -g @openai/codex`"
+   **Worker model selection** (cross-engine):
+   - **spark:high** — default recommendation (Pro token pool = cost savings). PRD AC count <= 15
+   - **gpt-5.4:high** — fallback when spark 100k output limit exceeded. PRD AC count > 15
 
-   AI should recommend: "For this task complexity, I suggest Worker: sonnet, Verifier: opus"
-   If codex selected: "For codex Worker, I suggest gpt-5.4 with high reasoning"
+   Present complexity score with evidence to the user, e.g.: "I rate this MEDIUM because: US count=4 (MEDIUM), file scope=2 (MEDIUM), logic=conditionals (MEDIUM), deps=none (LOW), impact=modify (MEDIUM). Highest=MEDIUM."
+
+   **If codex IS installed** — say: "Codex is installed. I recommend cross-engine Worker for cost savings (Pro token pool separation) and cross-engine blind-spot coverage (claude Verifier catches issues codex Worker misses)."
+
+   **If codex is NOT installed** — say: "Codex is not installed. Defaulting to claude-only Worker. Note: without a second engine, your Verifier shares the same perspective as the Worker — there is a risk of blind spots where both Worker and Verifier miss the same issue. To unlock cross-engine coverage: `npm install -g @openai/codex`"
+
+8. **Batch Capacity Check** — when verify-mode is batch and PRD is large:
+   - batch + spark + AC > 10 → warn "spark 100k output limit — consider wave split or switch to gpt-5.4"
+   - batch + gpt-5.4 + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
+   - per-us → no warning (US-level processing, no limit concern)
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
-10. **Verify Consensus** — Ask: "Use cross-engine consensus verification? (Both claude and codex verify independently, both must pass.) Requires codex CLI." Default: no.
-11. **Consensus Scope** — If consensus enabled, ask: "Consensus on every verify (all, default) or only on final verify (final-only)?" Default: all.
-12. **Max Iterations** — suggest based on story count, ask if OK.
+10. **Consensus** — Ask: "Use cross-engine consensus? off (single engine), final-only (cross-engine on final verify only), or all (cross-engine on every verify). Requires codex CLI." Default: off. Recommended: final-only when codex is installed.
+11. **Max Iterations** — suggest based on story count, ask if OK.
 
 After all items are confirmed:
 
@@ -125,27 +132,33 @@ Tell the user:
    ```
    Available run commands (copy the one you want):
 
-   # Recommended: cross-engine + final-consensus (cost savings + blind-spot coverage):
-   /rlp-desk run <actual-slug> --worker-model gpt-5.4:high --final-consensus --debug
+   # ★ Recommended: cross-engine + final-consensus (cost savings + blind-spot coverage):
+   /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
 
-   # Spark Pro preset (fast codex worker, lower cost):
-   /rlp-desk run <actual-slug> --worker-model gpt-5.3-codex-spark:high --debug
+   # Large PRD (AC > 15, exceeds spark 100k limit):
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.4:high --consensus final-only --debug
+
+   # Critical (full consensus on every verify):
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.4:high --consensus all --debug
 
    # Claude-only:
    /rlp-desk run <actual-slug> --debug
 
-   # Basic agent:
-   /rlp-desk run <actual-slug>
-
    # Full options reference:
-   #   --mode agent|tmux                (default: agent)
-   #   --worker-model MODEL             haiku|sonnet|opus or gpt-5.4:low|medium|high (default: sonnet)
-   #   --verifier-model MODEL           haiku|sonnet|opus (default: opus)
-   #   --verify-consensus               both claude+codex must pass
-   #   --verify-mode per-us|batch       (default: per-us)
-   #   --max-iter N                     (default: 100)
-   #   --debug                          enable debug logging
-   #   --with-self-verification         post-campaign analysis report
+   #   --mode agent|tmux                      (default: agent)
+   #   --worker-model MODEL                   haiku|sonnet|opus or spark:high|gpt-5.4:high (default: haiku)
+   #   --lock-worker-model                    disable auto model upgrade
+   #   --verifier-model MODEL                 per-US verifier (default: sonnet)
+   #   --final-verifier-model MODEL           final ALL verifier (default: opus)
+   #   --consensus off|all|final-only         cross-engine consensus (default: off)
+   #   --consensus-model MODEL                per-US cross-verifier (default: gpt-5.4:medium)
+   #   --final-consensus-model MODEL          final cross-verifier (default: gpt-5.4:high)
+   #   --verify-mode per-us|batch             (default: per-us)
+   #   --cb-threshold N                       (default: 6)
+   #   --max-iter N                           (default: 100)
+   #   --iter-timeout N                       tmux only (default: 600)
+   #   --debug                                debug logging
+   #   --with-self-verification               post-campaign SV report
    ```
 
    **If codex is NOT installed** — show claude-only presets + install recommendation:
@@ -153,7 +166,7 @@ Tell the user:
    ```
    Available run commands (copy the one you want):
 
-   # Recommended: tmux mode + claude-only (real-time visibility):
+   # ★ Recommended: tmux mode + claude-only (real-time visibility):
    /rlp-desk run <actual-slug> --mode tmux --debug
 
    # Agent mode:
@@ -163,13 +176,17 @@ Tell the user:
    npm install -g @openai/codex
 
    # Full options reference:
-   #   --mode agent|tmux                (default: agent)
-   #   --worker-model MODEL             haiku|sonnet|opus (default: sonnet)
-   #   --verifier-model MODEL           haiku|sonnet|opus (default: opus)
-   #   --verify-mode per-us|batch       (default: per-us)
-   #   --max-iter N                     (default: 100)
-   #   --debug                          enable debug logging
-   #   --with-self-verification         post-campaign analysis report
+   #   --mode agent|tmux                      (default: agent)
+   #   --worker-model MODEL                   haiku|sonnet|opus (default: haiku)
+   #   --lock-worker-model                    disable auto model upgrade
+   #   --verifier-model MODEL                 per-US verifier (default: sonnet)
+   #   --final-verifier-model MODEL           final ALL verifier (default: opus)
+   #   --verify-mode per-us|batch             (default: per-us)
+   #   --cb-threshold N                       (default: 6)
+   #   --max-iter N                           (default: 100)
+   #   --iter-timeout N                       tmux only (default: 600)
+   #   --debug                                debug logging
+   #   --with-self-verification               post-campaign SV report
    ```
 
    Replace `<actual-slug>` with the real slug from this init (e.g. `auth-refactor`).
@@ -184,24 +201,21 @@ Tell the user:
 
 Options (parse from `$ARGUMENTS`):
 - `--mode agent|tmux` (default: `agent`) — execution mode
-- `--max-iter N` (default: 100)
-- `--worker-model MODEL` (default: sonnet)
-- `--verifier-model MODEL` (default: opus)
-- `--worker-engine claude|codex` (default: `claude`) — engine for Worker
-- `--verifier-engine claude|codex` (default: `claude`) — engine for Verifier
-- `--worker-codex-model MODEL` (default: `gpt-5.4`) — codex model for Worker
-- `--worker-codex-reasoning low|medium|high` (default: `high`) — reasoning for Worker
-- `--verifier-codex-model MODEL` (default: `gpt-5.4`) — codex model for Verifier
-- `--verifier-codex-reasoning low|medium|high` (default: `high`) — reasoning for Verifier
+- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.4:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
+- `--lock-worker-model` — disable automatic model upgrade on failure (check_model_upgrade). Worker stays on the specified model regardless of consecutive failures.
+- `--verifier-model MODEL` (default: `sonnet`) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier.
+- `--final-verifier-model MODEL` (default: `opus`) — final ALL verification model. Independent from per-US verifier. Used only for the final full-AC verify pass.
+- `--consensus off|all|final-only` (default: `off`) — cross-engine consensus verification mode.
+  - `off`: single-engine verification only
+  - `all`: cross-engine consensus on every verify (per-US and final)
+  - `final-only`: cross-engine consensus only on the final ALL verify
+- `--consensus-model MODEL` (default: `gpt-5.4:medium`) — per-US cross-verifier model. Lighter weight for cost efficiency.
+- `--final-consensus-model MODEL` (default: `gpt-5.4:high`) — final cross-verifier model. Stricter. Note: spark is not allowed here (100k output limit).
 - `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
   - `per-us`: verify after each US, then final full verify of all AC
   - `batch`: verify only after all US done (legacy behavior)
-- `--verify-consensus` — enable cross-engine consensus verification (both claude and codex verify independently; both must pass)
-- `--consensus-scope all|final-only` — when consensus runs (default: `all`)
-  - `all`: consensus runs on every verify (current behavior)
-  - `final-only`: consensus only on final ALL verify
-- `--cb-threshold N` — circuit breaker threshold: consecutive failures before BLOCKED (default: 3). When `--verify-consensus` is active, effective threshold is automatically doubled (e.g., default becomes 6).
-- `--consensus-fail-fast` — skip second verifier if first verifier fails (saves time/tokens in consensus mode)
+- `--cb-threshold N` — circuit breaker threshold: consecutive failures before BLOCKED (default: 6). When `--consensus` is not `off`, effective threshold is automatically doubled (e.g., default becomes 12).
+- `--max-iter N` (default: 100)
 - `--iter-timeout N` — per-iteration timeout in seconds (default: 600). Enforced in tmux mode only. Agent mode: not enforced (Agent() has no timeout API).
 - `--debug` — enable debug logging (writes to ~/.claude/ralph-desk/analytics/<slug>/debug.log)
 - `--with-self-verification` — enable campaign-level self-verification analysis. After COMPLETE, Leader analyzes all iteration records (done-claims + verdicts) and generates a campaign self-verification summary with patterns and recommendations for next planning cycle. (Note: execution_steps and reasoning are ALWAYS recorded per governance §1f — this flag adds post-campaign analysis.)
@@ -210,7 +224,7 @@ Options (parse from `$ARGUMENTS`):
 When `--debug` or `--with-self-verification` is active, analytics data is written to a user-level directory for cross-project aggregation. Contents:
 - `metadata.json` — campaign metadata: slug, project_root, campaign_status, start_time, end_time
 - `debug.log` — debug output (versioned: `debug-v{N}.log` on re-execution)
-- `campaign.jsonl` — per-iteration structured data (versioned: `campaign-v{N}.jsonl` on re-execution). Schema: iter, us_id, worker_model, worker_engine, verifier_engine, claude_verdict, codex_verdict, consensus, duration_worker_s, duration_verifier_s, project_root, slug, timestamp
+- `campaign.jsonl` — per-iteration structured data (versioned: `campaign-v{N}.jsonl` on re-execution). Schema: iter, us_id, worker_model, worker_engine, verifier_model, verifier_engine, consensus_mode, claude_verdict, codex_verdict, duration_worker_s, duration_verifier_s, project_root, slug, timestamp
 - `self-verification-data.json` — cumulative SV records (agent-mode only, when `--with-self-verification`)
 - `self-verification-report-NNN.md` — versioned SV reports (when `--with-self-verification`)
 
@@ -234,17 +248,14 @@ LOOP_NAME="<slug>" \
 ROOT="$PWD" \
 MAX_ITER=<--max-iter value> \
 WORKER_MODEL=<--worker-model value> \
-VERIFIER_MODEL=<--verifier-model value> \
-WORKER_ENGINE=<--worker-engine value, default: claude> \
-VERIFIER_ENGINE=<--verifier-engine value, default: claude> \
-WORKER_CODEX_MODEL=<--worker-codex-model value, default: gpt-5.4> \
-WORKER_CODEX_REASONING=<--worker-codex-reasoning value, default: high> \
-VERIFIER_CODEX_MODEL=<--verifier-codex-model value, default: gpt-5.4> \
-VERIFIER_CODEX_REASONING=<--verifier-codex-reasoning value, default: high> \
+LOCK_WORKER_MODEL=<1 if --lock-worker-model, else 0> \
+VERIFIER_MODEL=<--verifier-model value, default: sonnet> \
+FINAL_VERIFIER_MODEL=<--final-verifier-model value, default: opus> \
 VERIFY_MODE=<--verify-mode value, default: per-us> \
-VERIFY_CONSENSUS=<1 if --verify-consensus, else 0> \
-CONSENSUS_SCOPE=<--consensus-scope value, default: all> \
-CB_THRESHOLD=<--cb-threshold value, default: 3> \
+CONSENSUS_MODE=<--consensus value, default: off> \
+CONSENSUS_MODEL=<--consensus-model value, default: gpt-5.4:medium> \
+FINAL_CONSENSUS_MODEL=<--final-consensus-model value, default: gpt-5.4:high> \
+CB_THRESHOLD=<--cb-threshold value, default: 6> \
 ITER_TIMEOUT=<--iter-timeout value, default: 600> \
 DEBUG=<1 if --debug, else 0> \
 WITH_SELF_VERIFICATION=<1 if --with-self-verification, else 0> \
@@ -271,7 +282,7 @@ WITH_SELF_VERIFICATION=<1 if --with-self-verification, else 0> \
 
 ### Preparation
 1. Validate scaffold: `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
-2. **Codex CLI pre-validation**: If `--verify-consensus` is enabled OR `--worker-engine codex` / `--verifier-engine codex` is set, check that `codex` CLI exists in PATH. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
+2. **Codex CLI pre-validation**: If `--consensus` is not `off` OR `--worker-model` uses codex format (contains `:`) OR `--verifier-model` / `--final-verifier-model` / `--consensus-model` / `--final-consensus-model` uses codex format, check that `codex` CLI exists in PATH. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
 3. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
 4. Clean previous `done-claim.json`, `verify-verdict.json`.
 5. **Always**: write baseline log entry to `.claude/ralph-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
@@ -292,9 +303,9 @@ WITH_SELF_VERIFICATION=<1 if --with-self-verification, else 0> \
 - If you output "Iter 1 complete, moving to iter 2" as plain text without a tool call, the turn terminates and the loop breaks. This is a platform constraint, not a compliance issue — no amount of "DO NOT STOP" text can override it.
 
 If `--debug`, at loop start debug_log the following (3 [OPTION] entries):
-- `[OPTION] slug=<slug> max_iter=<N> verify_mode=<mode> consensus=<0|1> consensus_scope=<scope>`
-- `[OPTION] cb_threshold=<N> effective_cb_threshold=<N>`
-- `[OPTION] worker_engine=<engine> worker_model=<model> verifier_engine=<engine> verifier_model=<model>`
+- `[OPTION] slug=<slug> max_iter=<N> verify_mode=<mode> consensus_mode=<off|all|final-only>`
+- `[OPTION] cb_threshold=<N> effective_cb_threshold=<N> lock_worker_model=<0|1>`
+- `[OPTION] worker_model=<model> verifier_model=<model> final_verifier_model=<model> consensus_model=<model> final_consensus_model=<model>`
 
 For each iteration (1 to max_iter):
 
@@ -343,7 +354,9 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 **⑤ Execute Worker**
 - If `--debug`: debug_log `[FLOW] iter=N phase=worker engine=<engine> model=<model> dispatched=true`
 
-If `--worker-engine claude` (default):
+Determine engine from `--worker-model` format: plain name (e.g., `haiku`) = claude engine, `model:reasoning` format (e.g., `spark:high`) = codex engine. Use `parse_model_flag()` to split.
+
+If claude engine (default):
 ```
 Agent(
   description="rlp-desk worker iter-NNN",
@@ -356,9 +369,9 @@ Agent(
 - Agent returns synchronously. No polling needed.
 - Each Agent() = fresh context. Guaranteed.
 
-If `--worker-engine codex`:
+If codex engine:
 ```
-Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_reasoning> <full worker prompt text>")
+Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full worker prompt text>")
 ```
 - Codex runs as a subprocess via Bash(), not Agent().
 - Each Bash() call = fresh context for codex.
@@ -398,26 +411,35 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
 - **Prompt Assembly Protocol (same as ④)**: Read verifier prompt file verbatim. Prepend `## WORKING_DIR: {absolute path}`. Do NOT rewrite paths.
 - If `--debug`: debug_log `[FLOW] iter=N phase=verifier engine=<engine> model=<model> scope=<us_id> dispatched=true`
 
-If `--verifier-engine claude` (default):
+Determine which verifier model to use based on scope:
+- If `us_id` is a specific story (per-US verify) → use `--verifier-model` (default: sonnet)
+- If `us_id` is "ALL" (final verify) → use `--final-verifier-model` (default: opus)
+
+Determine engine from the selected verifier model format (same as Worker): plain name = claude, `model:reasoning` = codex.
+
+If claude engine (default):
 ```
 Agent(
   description="rlp-desk verifier iter-NNN (us_id)",
   subagent_type="executor",
-  model=<verifier_model>,
+  model=<selected_verifier_model>,
   mode="bypassPermissions",
   prompt=<full verifier prompt text with US scope>
 )
 ```
 
-If `--verifier-engine codex`:
+If codex engine:
 ```
-Bash("codex exec --model <verifier_codex_model> --reasoning-effort <verifier_codex_reasoning> <full verifier prompt text>")
+Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full verifier prompt text>")
 ```
 
-**⑦b Consensus Verification** (when `--verify-consensus` is enabled):
-After the primary verifier runs, run a second verifier with the OTHER engine:
-- If primary engine is claude → run codex verifier
-- If primary engine is codex → run claude verifier
+**⑦b Consensus Verification** (when `--consensus` is `all`, or `final-only` and scope is ALL):
+After the primary verifier runs, run a cross-engine second verifier:
+- Determine cross-verifier model based on scope:
+  - per-US verify → use `--consensus-model` (default: gpt-5.4:medium)
+  - final ALL verify → use `--final-consensus-model` (default: gpt-5.4:high)
+- If primary engine is claude → cross-verifier uses codex (the consensus model)
+- If primary engine is codex → cross-verifier uses claude `opus` (fixed)
 - Both produce `verify-verdict.json` (Leader renames to `verify-verdict-claude.json` and `verify-verdict-codex.json`)
 - **Both pass** → proceed (next US or COMPLETE)
 - **Either fails** → combine issues from both verdicts into a single fix contract → Worker retry
@@ -463,7 +485,7 @@ After reading the verdict, archive to `logs/<slug>/`:
 - Write `status.json`
 - Report via tool call: `Bash("echo 'Iter N | US-NNN | verdict | model | next_action'")` — NEVER plain text. This keeps the turn alive for the next iteration.
 - **Always**: append to baseline.log: `[timestamp] iter=N verdict=<pass|fail|continue> us=<us_id> model=<worker_model>`
-- **Always**: append JSONL to `~/.claude/ralph-desk/analytics/<slug>/campaign.jsonl`: `{"iter":N,"us_id":"US-NNN","verdict":"pass|fail","worker_model":"...","worker_engine":"...","verifier_model":"...","verifier_engine":"...","duration_worker_s":N,"duration_verifier_s":N,"timestamp":"ISO8601"}`
+- **Always**: append JSONL to `~/.claude/ralph-desk/analytics/<slug>/campaign.jsonl`: `{"iter":N,"us_id":"US-NNN","verdict":"pass|fail","worker_model":"...","worker_engine":"...","verifier_model":"...","verifier_engine":"...","consensus_mode":"off|all|final-only","duration_worker_s":N,"duration_verifier_s":N,"timestamp":"ISO8601"}`
 - If `--debug`: debug_log `[FLOW] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
 
 At loop end (COMPLETE, BLOCKED, or TIMEOUT):
@@ -558,7 +580,7 @@ Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pa
 
 Track `verified_us` (array of US IDs that passed verification) in `status.json` when using `--verify-mode per-us`.
 
-When `--verify-consensus` is enabled, also track in `status.json`:
+When `--consensus` is not `off`, also track in `status.json`:
 - `consensus_round`: current consensus round for this US (resets per US)
 - `claude_verdict`: latest claude verifier verdict for this US
 - `codex_verdict`: latest codex verifier verdict for this US
@@ -579,8 +601,8 @@ Read `.claude/ralph-desk/logs/<slug>/runtime/status.json` and display a detailed
 Campaign: <slug>
 Iteration: <iteration> / <max_iter>
 Phase: <phase> | Last Result: <last_result>
-Worker Model: <worker_model> (<worker_engine>) | Verifier Model: <verifier_model> (<verifier_engine>)
-Verify Mode: <verify_mode> | Consensus: <verify_consensus>
+Worker Model: <worker_model> | Verifier: <verifier_model> (per-US) / <final_verifier_model> (final)
+Verify Mode: <verify_mode> | Consensus: <consensus_mode>
 Consecutive Failures: <consecutive_failures>
 Verified US: <verified_us array, comma-separated>
 Updated: <updated_at_utc> (elapsed: now - updated_at)
@@ -654,7 +676,7 @@ Resume a previously interrupted campaign. Equivalent to `run <slug>` but explici
 1. Read `.claude/ralph-desk/logs/<slug>/runtime/status.json` for `verified_us`, `iteration`, `consecutive_failures`
 2. Read `.claude/ralph-desk/memos/<slug>-memory.md` for completed stories and next iteration contract
 3. Check for sentinels (`complete.md`, `blocked.md`) — if present, inform user and stop
-4. If no sentinels, invoke `run <slug>` with the same options from the previous session (stored in status.json fields: `worker_model`, `verifier_model`, `verify_mode`, `verify_consensus`)
+4. If no sentinels, invoke `run <slug>` with the same options from the previous session (stored in status.json fields: `worker_model`, `verifier_model`, `final_verifier_model`, `verify_mode`, `consensus_mode`)
 5. The runner automatically restores `verified_us` from memory or status.json on startup
 
 Example:
@@ -672,23 +694,20 @@ Example:
 /rlp-desk clean <slug> [--kill-session]     Reset for re-run (--kill-session kills tmux)
 
 Run options:
-  --mode agent|tmux          Execution mode (default: agent)
-  --max-iter N               Max iterations (default: 100)
-  --worker-model MODEL       Worker model (default: sonnet)
-  --verifier-model MODEL     Verifier model (default: opus)
-  --worker-engine claude|codex   Worker engine (default: claude)
-  --verifier-engine claude|codex Verifier engine (default: claude)
-  --worker-codex-model MODEL          Worker codex model (default: gpt-5.4)
-  --worker-codex-reasoning LEVEL      Worker codex reasoning (default: high)
-  --verifier-codex-model MODEL        Verifier codex model (default: gpt-5.4)
-  --verifier-codex-reasoning LEVEL    Verifier codex reasoning (default: high)
-  --verify-mode per-us|batch Verification strategy (default: per-us)
-  --verify-consensus         Cross-engine consensus verification
-  --consensus-scope SCOPE    When consensus runs: all|final-only (default: all)
-  --cb-threshold N           CB threshold: consecutive failures before BLOCKED (default: 3)
-  --iter-timeout N           Per-iteration timeout in seconds, tmux mode only (default: 600)
-  --debug                    Debug logging (~/.claude/ralph-desk/analytics/<slug>/debug.log)
-  --with-self-verification   Campaign self-verification analysis (post-loop report)
+  --mode agent|tmux                    Execution mode (default: agent)
+  --worker-model MODEL                 Worker model: haiku|sonnet|opus or spark:high|gpt-5.4:high (default: haiku)
+  --lock-worker-model                  Disable auto model upgrade on failure
+  --verifier-model MODEL               per-US verifier (default: sonnet)
+  --final-verifier-model MODEL         Final ALL verifier (default: opus)
+  --consensus off|all|final-only       Cross-engine consensus (default: off)
+  --consensus-model MODEL              per-US cross-verifier (default: gpt-5.4:medium)
+  --final-consensus-model MODEL        Final cross-verifier (default: gpt-5.4:high)
+  --verify-mode per-us|batch           Verification strategy (default: per-us)
+  --cb-threshold N                     Consecutive failures before BLOCKED (default: 6)
+  --max-iter N                         Max iterations (default: 100)
+  --iter-timeout N                     Per-iteration timeout, tmux only (default: 600)
+  --debug                              Debug logging (~/.claude/ralph-desk/analytics/<slug>/debug.log)
+  --with-self-verification             Campaign self-verification analysis (post-loop report)
 ```
 
 ## Architecture
