@@ -199,6 +199,7 @@ Options (parse from `$ARGUMENTS`):
   - `all`: consensus runs on every verify (current behavior)
   - `final-only`: consensus only on final ALL verify
 - `--cb-threshold N` — circuit breaker threshold: consecutive failures before BLOCKED (default: 3). When `--verify-consensus` is active, effective threshold is automatically doubled (e.g., default becomes 6).
+- `--consensus-fail-fast` — skip second verifier if first verifier fails (saves time/tokens in consensus mode)
 - `--iter-timeout N` — per-iteration timeout in seconds (default: 600). Enforced in tmux mode only. Agent mode: not enforced (Agent() has no timeout API).
 - `--debug` — enable debug logging (writes to ~/.claude/ralph-desk/analytics/<slug>/debug.log)
 - `--with-self-verification` — enable campaign-level self-verification analysis. After COMPLETE, Leader analyzes all iteration records (done-claims + verdicts) and generates a campaign self-verification summary with patterns and recommendations for next planning cycle. (Note: execution_steps and reasoning are ALWAYS recorded per governance §1f — this flag adds post-campaign analysis.)
@@ -460,6 +461,7 @@ After reading the verdict, archive to `logs/<slug>/`:
 - Write `status.json`
 - Report via tool call: `Bash("echo 'Iter N | US-NNN | verdict | model | next_action'")` — NEVER plain text. This keeps the turn alive for the next iteration.
 - **Always**: append to baseline.log: `[timestamp] iter=N verdict=<pass|fail|continue> us=<us_id> model=<worker_model>`
+- **Always**: append JSONL to `~/.claude/ralph-desk/analytics/<slug>/campaign.jsonl`: `{"iter":N,"us_id":"US-NNN","verdict":"pass|fail","worker_model":"...","worker_engine":"...","verifier_model":"...","verifier_engine":"...","duration_worker_s":N,"duration_verifier_s":N,"timestamp":"ISO8601"}`
 - If `--debug`: debug_log `[FLOW] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
 
 At loop end (COMPLETE, BLOCKED, or TIMEOUT):
@@ -569,7 +571,22 @@ When `--verify-consensus` is enabled, also track in `status.json`:
 ---
 
 ## `status <slug>`
-Read `.claude/ralph-desk/logs/<slug>/status.json` and display.
+Read `.claude/ralph-desk/logs/<slug>/status.json` and display a detailed report:
+
+```
+Campaign: <slug>
+Iteration: <iteration> / <max_iter>
+Phase: <phase> | Last Result: <last_result>
+Worker Model: <worker_model> (<worker_engine>) | Verifier Model: <verifier_model> (<verifier_engine>)
+Verify Mode: <verify_mode> | Consensus: <verify_consensus>
+Consecutive Failures: <consecutive_failures>
+Verified US: <verified_us array, comma-separated>
+Updated: <updated_at_utc> (elapsed: now - updated_at)
+```
+
+If `status.json` does not exist, display "No active campaign for <slug>."
+If the campaign has a `complete` or `blocked` sentinel, show that status prominently.
+Read the last `verify-verdict.json` to show the most recent verdict summary and any failure issues.
 
 ## `logs <slug> [N]`
 - No N: show latest `iter-*.worker-prompt.md` summary
@@ -615,6 +632,33 @@ else
 fi
 ```
 **CRITICAL: NEVER use `grep -i 'claude\|codex'` to find panes to kill.** The user's own Claude Code session matches those patterns. Always use the specific pane IDs from session-config.json.
+
+## `analytics [slug]`
+
+Cross-project analytics dashboard. Scans `~/.claude/ralph-desk/analytics/` for all campaign data.
+
+- No slug: show summary across all projects (total campaigns, pass/fail rate, average iterations, total cost)
+- With slug: show detailed analytics for that project (per-US pass rate, model upgrade frequency, iteration distribution, cost per US)
+
+Data sources:
+- `campaign.jsonl` — per-iteration structured records
+- `metadata.json` — project root, campaign status, timestamps
+- `self-verification-data.json` — campaign-level quality metrics
+
+## `resume <slug>`
+
+Resume a previously interrupted campaign. Equivalent to `run <slug>` but explicitly restores state:
+
+1. Read `.claude/ralph-desk/logs/<slug>/status.json` for `verified_us`, `iteration`, `consecutive_failures`
+2. Read `.claude/ralph-desk/memos/<slug>-memory.md` for completed stories and next iteration contract
+3. Check for sentinels (`complete.md`, `blocked.md`) — if present, inform user and stop
+4. If no sentinels, invoke `run <slug>` with the same options from the previous session (stored in status.json fields: `worker_model`, `verifier_model`, `verify_mode`, `verify_consensus`)
+5. The runner automatically restores `verified_us` from memory or status.json on startup
+
+Example:
+```
+/rlp-desk resume my-feature
+```
 
 ## No args or `help`
 ```

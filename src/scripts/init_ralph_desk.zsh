@@ -323,6 +323,7 @@ Read these files in order:
 - Do not say "existing code has no tests" — you are improving it, add tests.
 - Do not write code before tests — if you did, delete it and start with tests.
 - **NEVER modify rlp-desk infrastructure files** (~/.claude/ralph-desk/*, ~/.claude/commands/rlp-desk.md). If you discover a bug in rlp-desk itself, report it in done-claim.json with {"status": "blocked", "reason": "rlp-desk bug: <description>"} and signal blocked. Do NOT attempt to fix rlp-desk — it is the orchestration tool, not your project code.
+- **NEVER modify Claude Code settings** (~/.claude/settings.json, .claude/settings.local.json, or any settings files). Do NOT add permissions, change models, or alter configuration. If a permission prompt blocks you, report it as blocked — do NOT try to edit settings to bypass it.
 
 ## Iteration rules
 - Use fresh context only; do NOT depend on prior chat history.

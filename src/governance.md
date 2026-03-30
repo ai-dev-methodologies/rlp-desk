@@ -11,6 +11,7 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 - **Filesystem = memory**: State exists only on the filesystem (PRD, memory, context, memos).
 - **Worker claim ≠ complete**: A Worker's DONE is merely a claim. The Verifier must independently verify before it's confirmed.
 - **Worker scope is bounded**: Worker implements only the contracted US per iteration (Scope Lock). Out-of-scope changes are flagged by the Verifier.
+- **Worker must NEVER modify Claude Code settings** (settings.json, settings.local.json). Permission prompts must be reported as blocked, not bypassed by editing settings.
 - **Verifier is independent**: The Verifier judges based on evidence alone, without knowledge of the Worker's reasoning process.
 - **Sentinels are Leader-owned**: Only the Leader writes COMPLETE/BLOCKED sentinels.
 - **Supported engines**: claude (default; models: haiku, sonnet, opus) and codex (opt-in via `--worker-engine codex` / `--verifier-engine codex`).

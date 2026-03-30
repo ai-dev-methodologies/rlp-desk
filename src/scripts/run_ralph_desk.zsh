@@ -71,6 +71,7 @@ VERIFY_MODE="${VERIFY_MODE:-per-us}"        # per-us|batch
 VERIFY_CONSENSUS="${VERIFY_CONSENSUS:-0}"   # 0|1
 FINAL_CONSENSUS="${FINAL_CONSENSUS:-0}"     # 0|1 — consensus for final ALL verify only (independent of VERIFY_CONSENSUS)
 CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-all}"   # all|final-only
+CONSENSUS_FAIL_FAST="${CONSENSUS_FAIL_FAST:-0}" # 0|1 — skip second verifier if first fails
 CB_THRESHOLD="${CB_THRESHOLD:-3}"           # consecutive failures before BLOCKED (default: 3)
 # Effective CB threshold: doubled when consensus mode active (AC2 auto-double)
 if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
@@ -152,6 +153,13 @@ DEBUG_LOG="$ANALYTICS_DIR/debug.log"
 # Source shared business logic
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$LIB_DIR/lib_ralph_desk.zsh"
+
+# A16: Warn if running in foreground (may conflict with Claude Code pane)
+if [[ -z "${RLP_BACKGROUND:-}" ]]; then
+  echo "⚠ WARNING: Running in foreground. This may conflict with Claude Code's pane." >&2
+  echo "  Recommended: launch via Bash tool with run_in_background: true" >&2
+  echo "  Set RLP_BACKGROUND=1 to suppress this warning." >&2
+fi
 
 # check_dead_pane() — determine if pane command indicates a dead/exited process
 # Engine-aware: bash is normal for codex workers (trigger runs in bash),
@@ -1008,6 +1016,13 @@ write_worker_trigger() {
         echo "The Leader has determined that **${next_us}** is the next unverified story."
         echo "You MUST implement ONLY **${next_us}** in this iteration."
         echo "Do NOT implement any other user stories."
+        # Per-US test-spec injection: point Worker to scoped test-spec if available
+        local per_us_test_spec="$DESK/plans/test-spec-${SLUG}-${next_us}.md"
+        if [[ -f "$per_us_test_spec" ]]; then
+          echo "- **Test Spec**: Read ONLY \`$per_us_test_spec\` (scoped to ${next_us})"
+        else
+          echo "- **Test Spec**: Read \`$DESK/plans/test-spec-${SLUG}.md\` (full — find ${next_us} section)"
+        fi
         echo "When done, signal verify with us_id=\"${next_us}\" (not \"ALL\")."
         echo "Signal format: {\"iteration\": N, \"status\": \"verify\", \"us_id\": \"${next_us}\", ...}"
         echo ""
@@ -1389,6 +1404,14 @@ poll_for_signal() {
         write_blocked_sentinel "API unavailable after ${_API_MAX_RETRIES} retries"
         return 2
       fi
+      # A5: If pane shows "queued messages" or rate-limit corruption, restart pane
+      if echo "$pane_output_for_retry" | grep -qi 'queued messages'; then
+        log "  A5: Rate-limited pane shows 'queued messages' — restarting $role pane"
+        log_debug "[GOV] iter=$ITERATION phase=rate_limit_pane_restart role=$role reason=queued_messages"
+        tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
+        tmux send-keys -t "$pane_id" "/exit" Enter 2>/dev/null; sleep 2
+        wait_for_pane_ready "$pane_id" 10 2>/dev/null || true
+      fi
       sleep "$_API_RETRY_INTERVAL_S"
       continue
     else
@@ -1720,6 +1743,14 @@ run_consensus_verification() {
     fi
     log_debug "[GOV] iter=$iter phase=consensus_claude verdict=$CLAUDE_VERDICT model=$VERIFIER_MODEL"
 
+    # F8: --consensus-fail-fast — skip second verifier if first fails
+    if [[ "$CONSENSUS_FAIL_FAST" = "1" && "$CLAUDE_VERDICT" = "fail" ]]; then
+      log "  Consensus fail-fast: claude=fail, skipping codex verifier"
+      log_debug "[GOV] iter=$iter phase=consensus_fail_fast claude=fail codex=skipped"
+      CODEX_VERDICT="skipped"
+      return 2  # disagreement/fail signal
+    fi
+
     # Run codex verifier second
     local _codex_t0=$(date +%s)
     if ! run_single_verifier "$iter" "codex" "$VERIFIER_CODEX_MODEL" "-codex" "$codex_verdict_file"; then
@@ -1959,6 +1990,17 @@ main() {
         VERIFIED_US="$completed_us"
         log "  Loaded completed stories from memory: $VERIFIED_US"
         log_debug "[FLOW] loaded_verified_us_from_memory=$VERIFIED_US"
+      fi
+    fi
+
+    # D1: Fallback — restore verified_us from status.json if memory had none
+    if [[ -z "$VERIFIED_US" && -f "$STATUS_FILE" ]]; then
+      local status_verified
+      status_verified=$(jq -r '.verified_us // [] | join(",")' "$STATUS_FILE" 2>/dev/null)
+      if [[ -n "$status_verified" ]]; then
+        VERIFIED_US="$status_verified"
+        log "  Restored verified_us from status.json: $VERIFIED_US"
+        log_debug "[FLOW] restored_verified_us_from_status=$VERIFIED_US"
       fi
     fi
   fi
