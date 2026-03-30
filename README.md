@@ -49,8 +49,12 @@ You'll be asked to confirm each item:
 
 ### 3. Run
 
-```
-/rlp-desk run calculator
+```bash
+# Recommended (cross-engine + final consensus):
+/rlp-desk run <slug> --mode tmux --worker-model spark:high --consensus final-only --debug
+
+# Claude-only:
+/rlp-desk run <slug> --debug
 ```
 
 The leader loop runs autonomously — spawning workers, verifying results, and tracking progress until completion or a circuit breaker triggers.
@@ -232,28 +236,39 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 
 ### Run Options
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--max-iter N` | 100 | Maximum iterations before timeout |
-| `--mode agent\|tmux` | agent | Execution mode (see below) |
-| `--worker-model MODEL` | sonnet | Claude worker model (haiku/sonnet/opus) |
-| `--worker-engine claude\|codex` | claude | Worker engine |
-| `--verifier-model MODEL` | auto | Auto-selected: +1 tier (same-engine) or cross-engine |
-| `--verifier-engine claude\|codex` | auto | Opposite of worker engine if codex available |
-| `--codex-model MODEL` | gpt-5.4 | Codex model (spark requires GPT Pro) |
-| `--codex-reasoning LEVEL` | medium | low/medium/high/xhigh |
-| `--verify-mode per-us\|batch` | per-us | Verification strategy (see below) |
-| `--lock-worker-model` | off | Disable progressive model upgrade on failure |
-| `--debug` | off | Debug logging to `logs/<slug>/debug.log` |
-| `--with-self-verification` | off | Campaign-level post-loop analysis report |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--mode agent\|tmux` | agent | agent=LLM Leader, tmux=shell Leader |
+| `--worker-model MODEL` | haiku | Worker model. `name`=claude, `name:reasoning`=codex |
+| `--lock-worker-model` | off | Disable auto model upgrade on failure |
+| `--verifier-model MODEL` | sonnet | per-US verification model (lighter) |
+| `--final-verifier-model MODEL` | opus | final ALL verification model (stricter) |
+| `--consensus off\|all\|final-only` | off | Cross-engine consensus scope |
+| `--consensus-model MODEL` | gpt-5.4:medium | per-US cross-verifier (lighter) |
+| `--final-consensus-model MODEL` | gpt-5.4:high | final cross-verifier (stricter) |
+| `--verify-mode per-us\|batch` | per-us | per-us: verify each US → final ALL |
+| `--cb-threshold N` | 6 | Consecutive failures → BLOCKED |
+| `--max-iter N` | 100 | Max iterations → TIMEOUT |
+| `--iter-timeout N` | 600 | Per-iteration timeout seconds (tmux only) |
+| `--debug` | off | Debug logging |
+| `--with-self-verification` | off | Post-campaign SV report |
+
+#### Per-US vs Final Verification
+
+RLP Desk runs two distinct verification passes:
+
+- **Per-US** (`--verifier-model`, default: sonnet) — runs after each user story completes. Lightweight and fast, catches issues early before later stories build on broken foundations.
+- **Final ALL** (`--final-verifier-model`, default: opus) — runs once after all user stories pass individually. Stricter and more thorough, catches cross-US integration issues and anything per-US missed.
+
+When `--consensus` is enabled, a second cross-engine verifier runs alongside each pass: `--consensus-model` for per-US and `--final-consensus-model` for the final ALL gate. Both engines must pass.
 
 ### Init Presets
 
 After `brainstorm`, `init` detects your environment and presents run command presets:
 
-- **Codex detected** → recommends cross-engine mode (`--worker-model gpt-5.4:high --verify-consensus`)
-- **GPT Pro (spark)** → offers spark preset (`--worker-model gpt-5.3-codex-spark:high`)
-- **Claude-only** → defaults to `--worker-model sonnet` with opus verifier
+- **Codex detected (GPT Pro / spark)** → recommends cross-engine mode (`--worker-model spark:high --consensus final-only`)
+- **Codex detected (large PRD, AC > 15)** → offers gpt-5.4 preset (`--worker-model gpt-5.4:high --consensus final-only`)
+- **Claude-only** → defaults to `--debug` with haiku worker and opus final verifier
 - **Basic** → minimal flags for quick iteration
 
 The brainstorm phase evaluates complexity (US count, file scope, logic, dependencies, code impact) and recommends a starting model. You can override any recommendation.
@@ -332,9 +347,8 @@ RLP Desk supports two execution engines for Worker and Verifier. **Claude is the
 
 ### Claude (default)
 
-```
+```bash
 /rlp-desk run calculator
-/rlp-desk run calculator --worker-engine claude --verifier-engine claude
 ```
 
 Uses Claude Code's `Agent()` tool (agent mode) or `claude -p` CLI (tmux mode). Supports dynamic model routing (haiku/sonnet/opus).
@@ -345,17 +359,17 @@ Uses Claude Code's `Agent()` tool (agent mode) or `claude -p` CLI (tmux mode). S
 # Install codex CLI first
 npm install -g @openai/codex
 
-# Run with codex worker
-/rlp-desk run calculator --worker-engine codex
+# Run with codex worker (spark requires GPT Pro)
+/rlp-desk run calculator --worker-model spark:high
 
 # Customize model and reasoning effort
-/rlp-desk run calculator --worker-engine codex --codex-model gpt-5.4 --codex-reasoning high
+/rlp-desk run calculator --worker-model gpt-5.4:high
 
-# Mix engines: codex worker, claude verifier
-/rlp-desk run calculator --worker-engine codex --verifier-engine claude
+# Cross-engine: codex worker, claude verifier (recommended)
+/rlp-desk run calculator --worker-model spark:high --consensus final-only --debug
 ```
 
-Uses the `codex` CLI via `Bash()` (agent mode) or as an interactive TUI (tmux mode). The `codex` binary is only required when an engine is set to `codex`.
+The engine is inferred automatically from the `--worker-model` value: a plain model name (e.g. `haiku`) routes to Claude, while `name:reasoning` format (e.g. `spark:high`) routes to Codex. The `codex` binary is only required when a codex model is specified.
 
 | Engine | Agent Mode | Tmux Mode | Dynamic Routing |
 |--------|-----------|-----------|-----------------|

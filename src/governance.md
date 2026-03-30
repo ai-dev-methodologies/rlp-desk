@@ -14,7 +14,7 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 - **Worker must NEVER modify Claude Code settings** (settings.json, settings.local.json). Permission prompts must be reported as blocked, not bypassed by editing settings.
 - **Verifier is independent**: The Verifier judges based on evidence alone, without knowledge of the Worker's reasoning process.
 - **Sentinels are Leader-owned**: Only the Leader writes COMPLETE/BLOCKED sentinels.
-- **Supported engines**: claude (default; models: haiku, sonnet, opus) and codex (opt-in via `--worker-engine codex` / `--verifier-engine codex`).
+- **Supported engines**: claude (default; models: haiku, sonnet, opus) and codex (opt-in via `--worker-model spark:high` or `--worker-model gpt-5.4:high`).
 
 ## 1a. Iron Laws
 
@@ -283,25 +283,30 @@ RUNNING → DONE_CLAIMED → VERIFYING → COMPLETE | CONTINUE | BLOCKED
 
 | Role | Default Model | Override Criteria |
 |------|---------------|-------------------|
-| Worker (simple) | haiku | Single file, clear change |
-| Worker (standard) | sonnet | Most tasks (default) |
-| Worker (complex) | opus | Architecture changes, multi-file, prior iteration failure |
-| Verifier | opus | Independent verification requires thoroughness |
-| Verifier (lightweight) | sonnet | Simple, well-defined checks only |
+| Worker | haiku | Default; auto-upgrades on failure (sonnet → opus) |
+| Worker (locked) | haiku | `--lock-worker-model` disables auto-upgrade |
+| Verifier (per-US) | sonnet | Lightweight; campaign-fixed (no progressive upgrade) |
+| Verifier (final) | opus | Full rigor; independent of per-US model |
+
+**Worker auto-upgrade**: When a Worker fails, the Leader upgrades the model for the retry (haiku → sonnet → opus). This upgrade is Worker-only. Verifier model is campaign-fixed — it does not upgrade on failure.
+
+**Verifier model is campaign-fixed**: `--verifier-model` applies to all per-US verifications throughout the campaign. `--final-verifier-model` applies to the final ALL verification. Neither upgrades automatically.
 
 The Leader decides each iteration. Decision criteria:
-- Previous iteration failed → upgrade model
-- Simple repetitive task → downgrade model
+- Previous iteration failed → upgrade Worker model (unless `--lock-worker-model`)
+- Simple repetitive task → keep current Worker model
 - User explicitly specified → use as given
 
 ### Codex (opt-in engine)
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--codex-model` | `gpt-5.4` | Model passed to the `codex` CLI |
-| `--codex-reasoning` | `high` | Reasoning effort: `low`, `medium`, or `high` |
+Model routing uses `--worker-model` and `--verifier-model` with codex format: `spark:high` or `gpt-5.4:high`.
 
-Model routing is static when using codex: the same model and reasoning effort apply to both Worker and Verifier. There is no dynamic upgrade path. Claude is the default engine; codex is explicitly opt-in.
+```
+--worker-model spark:high        # codex worker, spark model, high reasoning
+--verifier-model gpt-5.4:high    # codex verifier, gpt-5.4, high reasoning
+```
+
+`parse_model_flag()` auto-detects engine from the model name: plain names (haiku, sonnet, opus) = claude; `name:reasoning` format = codex. Claude is the default engine; codex is explicitly opt-in.
 
 ## 5a. Execution: Agent() Approach (default) — "Smart Mode"
 
@@ -325,7 +330,7 @@ Agent(
 )
 ```
 
-If `--worker-engine codex` or `--verifier-engine codex` (opt-in):
+If `--worker-model` or `--verifier-model` uses codex format (e.g., `spark:high`, `gpt-5.4:high`) (opt-in):
 ```
 # Worker or Verifier (codex engine)
 Bash("codex -m <codex_model> -c model_reasoning_effort=<codex_reasoning> --dangerously-bypass-approvals-and-sandbox <prompt>")
@@ -480,7 +485,7 @@ for iteration in 1..max_iter:
   ⑦ Execute Verifier (see §7a for per-US and §7b for consensus details)
      - Build prompt (scoped to us_id if per-us mode) → log
      - Agent(subagent_type="executor", model=selected, prompt=prompt)
-     - If --verify-consensus: run second verifier with alternate engine (see §7b)
+     - If --consensus is not off: run second verifier with alternate engine (see §7b)
      - Read verify-verdict.json:
        • pass + specific US → add to verified_us, Worker does next US
        • pass + us_id=ALL or complete → write COMPLETE sentinel, stop
@@ -527,18 +532,36 @@ Worker completes US-001 → signal verify (us_id: "US-001")
 
 ## 7b. Cross-Engine Consensus Verification
 
-When `--verify-consensus` is enabled, after the primary verifier runs, a second verifier runs with the alternate engine:
+Controlled by `--consensus off|all|final-only` (default: `off`).
+
+- `off`: single engine verification only
+- `all`: cross-engine consensus on every per-US verify and final ALL verify
+- `final-only`: cross-engine consensus only on final ALL verify
+
+When consensus is active, after the primary verifier runs, a second verifier runs with the alternate engine:
 
 ```
 Worker completes US → signal verify
-  → Claude Verifier runs (checks AC)
-  → Codex Verifier runs (checks AC)
+  → Primary Verifier runs (checks AC)
+  → Cross Verifier runs (checks AC)
   → Both pass → proceed (next US or COMPLETE)
   → Either fails → combined issues → fix contract → Worker retry
   → Max 6 consensus rounds per US → BLOCKED if still disagreeing
-
-**NO ENGINE PRIORITY:** Claude and Codex have equal weight. If one passes and the other fails, the verdict is FAIL. No engine may be prioritized or dismissed. Infrastructure failure = CLI crash, timeout, or verdict file not generated — NOT a valid verdict with verdict=fail.
 ```
+
+**NO ENGINE PRIORITY:** Both verifiers have equal weight. If one passes and the other fails, the verdict is FAIL. No engine may be prioritized or dismissed. Infrastructure failure = CLI crash, timeout, or verdict file not generated — NOT a valid verdict with verdict=fail.
+
+### Consensus Model Routing
+
+| Scenario | Primary verifier | Cross verifier |
+|----------|-----------------|----------------|
+| per-US, primary=claude | `--verifier-model` (sonnet) | `--consensus-model` (gpt-5.4:medium) |
+| per-US, primary=codex | `--verifier-model` | claude opus (fixed) |
+| final, primary=claude | `--final-verifier-model` (opus) | `--final-consensus-model` (gpt-5.4:high) |
+| final, primary=codex | `--final-verifier-model` | claude opus (fixed) |
+
+- Both must pass. No engine priority.
+- spark is not allowed as a consensus cross verifier (100k output limit).
 
 **Key rules:**
 - Both claude and codex CLI must be installed
@@ -546,7 +569,7 @@ Worker completes US → signal verify
 - Verdicts are saved as `verify-verdict-claude.json` and `verify-verdict-codex.json`
 - Combined fix contracts include issues from both engines
 - `status.json` includes `consensus_round`, `claude_verdict`, and `codex_verdict` fields
-- Consensus can be combined with per-US verification (each US gets consensus-verified)
+- Consensus can be combined with per-US verification (`--consensus all`: each US gets consensus-verified)
 
 ## 7½. Fix Loop Protocol
 
@@ -594,7 +617,7 @@ In tmux mode: Leader writes `<slug>-escalation.md` with the report and sets BLOC
 |-----------|---------|
 | context-latest.md unchanged for 3 consecutive iterations | BLOCKED |
 | Same acceptance criterion fails 2 consecutive iterations | Upgrade model, retry once (Agent mode only; tmux: same model retry); if still failing → Architecture Escalation (§7¾) → BLOCKED |
-| `cb_threshold` (default: 6) consecutive **fail** verdicts on `cb_threshold` unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED (adjustable via `--cb-threshold`) |
+| `cb_threshold` (default: 6) consecutive **fail** verdicts on `cb_threshold` unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED (adjustable via `--cb-threshold`; when `--consensus` is not `off`, effective threshold doubles automatically: default 6 → 12) |
 | max_iter reached | TIMEOUT (report to user) |
 
 The Leader tracks `consecutive_failures` in `status.json`:
