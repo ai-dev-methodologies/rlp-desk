@@ -160,8 +160,29 @@ check_model_upgrade() {
     fi
 
     log "  Worker model upgraded: ${_ORIGINAL_WORKER_MODEL} → ${WORKER_MODEL} (same-US consecutive fail threshold)"
+    log "  [WARN] Same AC failing repeatedly — consider IL-2 re-assessment of AC quality (spec quality check)"
     log_debug "[DECIDE] iter=${ITERATION:-0} phase=model_select model_upgrade=true reason=consecutive_same_ac_fail from=${_ORIGINAL_WORKER_MODEL} to=${WORKER_MODEL}"
     _SAME_US_FAIL_COUNT=0  # Reset counter after upgrade
+  fi
+
+  return 0
+}
+
+# record_us_failure() — track per-US cumulative failure count (dual counter, Option D)
+# Unlike CONSECUTIVE_FAILURES which resets on pass, US_FAIL_HISTORY persists across phases.
+# This enables prior-failure warnings when a US that struggled in per-US mode fails again in final verify.
+# Usage: record_us_failure <us_id>
+record_us_failure() {
+  local us_id="$1"
+  [[ -z "$us_id" || "$us_id" = "unknown" ]] && return 0
+
+  local prev_count="${US_FAIL_HISTORY[$us_id]:-0}"
+  US_FAIL_HISTORY[$us_id]=$(( prev_count + 1 ))
+
+  # Prior-failure warning: if this US has failed before, it's showing fragility
+  if (( prev_count > 0 )); then
+    log "  [WARN] US $us_id has prior failure history (${US_FAIL_HISTORY[$us_id]} total failures) — consider IL-2 AC quality re-assessment"
+    log_debug "[GOV] iter=${ITERATION:-0} us_prior_failures=$us_id count=${US_FAIL_HISTORY[$us_id]}"
   fi
 
   return 0
@@ -366,6 +387,19 @@ write_campaign_jsonl() {
     verifier_duration_s=$(( ${ITER_VERIFIER_END:-$(date +%s)} - ITER_VERIFIER_START ))
   fi
 
+  # Build us_fail_history JSON object from associative array
+  local us_fail_history_json="{}"
+  if (( ${#US_FAIL_HISTORY[@]} > 0 )); then
+    us_fail_history_json="{"
+    local first=1
+    for key in "${(@k)US_FAIL_HISTORY}"; do
+      (( first )) || us_fail_history_json+=","
+      us_fail_history_json+="\"$key\":${US_FAIL_HISTORY[$key]}"
+      first=0
+    done
+    us_fail_history_json+="}"
+  fi
+
   jq -nc \
     --argjson iter "$iter" \
     --arg us_id "$us_id" \
@@ -377,12 +411,13 @@ write_campaign_jsonl() {
     --argjson consensus "$VERIFY_CONSENSUS" \
     --argjson consecutive_failures "$CONSECUTIVE_FAILURES" \
     --argjson model_upgraded "${_MODEL_UPGRADED:-0}" \
+    --argjson us_fail_history "$us_fail_history_json" \
     --argjson duration_worker_s "$worker_duration_s" \
     --argjson duration_verifier_s "$verifier_duration_s" \
     --arg project_root "$ROOT" \
     --arg slug "$SLUG" \
     --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus: $consensus, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp}' \
+    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus: $consensus, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, us_fail_history: $us_fail_history, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp}' \
     >> "$CAMPAIGN_JSONL"
 }
 

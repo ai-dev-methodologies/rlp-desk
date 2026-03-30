@@ -117,7 +117,21 @@ Skipping any step = invalid verification (IL-1 violation).
 - "Code inspection" as substitute for automated command execution
 - Citing cached/prior results instead of fresh execution
 
-## 1c. Risk Classification
+## 1c. Task Sizing Principle
+
+Tasks must be sized within the assigned Worker's comfortable zone — not at its ceiling.
+A task that pushes a Worker to its maximum capability will frequently fail in fresh-context execution,
+because context budget must also cover PRD reading, test writing, and evidence collection.
+
+Rules:
+- Each US: max 3-4 ACs, max 2 changed files, completable in 1-2 iterations.
+- If a task is at the edge of a Worker's capability, either split the task or upgrade the Worker model.
+- Leader model selection: choose a model that can succeed comfortably, not the minimum viable model.
+- During brainstorm: when proposing US splits, target "smaller than what the Worker can handle" not "as much as the Worker can handle."
+
+This aligns with the original Ralph Loop principle: small tasks succeed most of the time.
+
+## 1c½. Risk Classification
 
 Each US is classified by risk level during brainstorm. Higher risk = more verification layers.
 
@@ -207,6 +221,12 @@ Worker records what was done, in what order, with command evidence in `done-clai
 ### Verifier: reasoning in verify-verdict.json
 Verifier records WHY each judgment was made in `verify-verdict.json`:
 - Each check includes: what was checked, decision (pass/fail), and the specific evidence basis
+- **failure_category** (required on fail verdicts): Verifier classifies each issue's root cause as one of:
+  - `spec` — AC is ambiguous, contradictory, or untestable (suggests IL-2 re-assessment, not model upgrade)
+  - `implementation` — code logic error, missing case, wrong algorithm (model upgrade may help)
+  - `integration` — individual pieces work but interaction fails (suggests task split or architecture review)
+  - `flaky` — non-deterministic failure, timing, environment (suggests retry, not escalation)
+  Leader uses failure_category to decide between model upgrade, spec refinement, or architecture escalation.
 - Checks include: IL-1 Evidence Gate, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit, Test Coverage Audit
 - This proves the Verifier actually performed each check rather than rubber-stamping
 - **Test Coverage Audit (mandatory)**: Verifier MUST check that tests cover ALL code paths, not just happy paths. Specifically:
@@ -581,6 +601,14 @@ The Leader tracks `consecutive_failures` in `status.json`:
 - Increments on `fail`, resets on `pass`, **unchanged by `request_info`**.
 - "Same error" = same acceptance criterion ID in two consecutive **fail** verdicts (`request_info` does not break or contribute to this chain).
 - "Diverse failures" = `cb_threshold` most recent `fail` verdicts each have a unique criterion ID.
+
+## 8½. Self-Verification Feedback Loop
+
+When `--with-self-verification` is enabled, the SV report feeds back into the next brainstorm cycle:
+- SV report identifies patterns: which US types fail most, which AC quality issues recur, which model tiers underperform.
+- Next brainstorm SHOULD reference the prior campaign's SV report (if available) to inform US sizing, model selection, and AC quality standards.
+- This creates an iterative improvement loop: campaign → SV report → next brainstorm → better campaign.
+- The loop operates whether the reviewer is human or system — readiness to iterate is what matters.
 
 ## 9. Change Policy
 

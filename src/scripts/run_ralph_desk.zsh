@@ -120,6 +120,7 @@ SESSION_NAME="rlp-desk-${SLUG}-${TIMESTAMP}"
 typeset -A LAST_PANE_CONTENT
 typeset -A PANE_IDLE_SINCE
 typeset -A WORKER_RESTARTS
+typeset -A US_FAIL_HISTORY
 STALE_CONTEXT_COUNT=0
 HEARTBEAT_STALE_COUNT=0
 MONITOR_FAILURE_COUNT=0
@@ -2357,7 +2358,14 @@ main() {
           fail)
             # --- governance.md s7½: Fix Loop (adapted for tmux lean mode) ---
             (( CONSECUTIVE_FAILURES++ ))
+            record_us_failure "${signal_us_id:-unknown}"
             check_model_upgrade "${signal_us_id:-unknown}"
+
+            # Mid-CB warning: alert at halfway point (governance §8 early warning)
+            if (( CONSECUTIVE_FAILURES == EFFECTIVE_CB_THRESHOLD / 2 )); then
+              log "  [WARN] Mid-CB: $CONSECUTIVE_FAILURES/${EFFECTIVE_CB_THRESHOLD} consecutive failures — consider reviewing AC quality"
+              log_debug "[GOV] iter=$ITERATION mid_cb_warning=true consecutive_failures=$CONSECUTIVE_FAILURES threshold=$EFFECTIVE_CB_THRESHOLD"
+            fi
             local verdict_summary_fail
             verdict_summary_fail=$(jq -r '.summary // "no summary"' "$VERDICT_FILE" 2>/dev/null)
             log "  Verifier FAILED (consecutive: $CONSECUTIVE_FAILURES). Building fix contract..."

@@ -25,6 +25,7 @@ Ask about these items one by one (or in small groups):
 2. **Objective** — what the loop achieves
 3. **User Stories** — discrete units with testable acceptance criteria. Propose a breakdown, ask the user to confirm/modify.
    - Apply INVEST criteria: each US must be Independent, Negotiable, Valuable, Estimable, Small, Testable.
+   - **Task Sizing (governance §1c)**: Size each US within the Worker's comfortable zone — smaller than what the Worker can handle, not at its ceiling. Max 3-4 ACs, max 2 files. If a US feels "just barely doable" for the target model, split it further.
    - Each AC MUST use Given/When/Then format with **domain language only** (no class names, API paths, DB tables):
      ```
      Given [precondition in domain language]
@@ -86,6 +87,7 @@ Ask about these items one by one (or in small groups):
 
 After all items are confirmed:
 
+0. **SV Report Feedback** — If a prior campaign's self-verification report exists for this project (`~/.claude/ralph-desk/analytics/*/self-verification-report-*.md`), reference it to inform this brainstorm: which US types failed most, which model tiers underperformed, which AC patterns caused issues. Present relevant findings to the user. (governance §8½)
 1. **Ambiguity Gate (IL-2)** — score each AC per governance §1a IL-2 (6 dimensions, 0-12 points).
    If ANY AC scores below 6: **REJECT** — refine that AC before proceeding.
    If all ACs score 6-9: **WARN** — proceed with logged warning, show low-scoring dimensions.
