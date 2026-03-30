@@ -4,10 +4,13 @@
 # Integration tests verifying US-001~007 implementations work together as a system
 # AC2-AC5: behavior-driven runtime harnesses (iter-22 fix: shift from source-inspection to runtime)
 
-RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
-INIT="${INIT:-src/scripts/init_ralph_desk.zsh}"
-CMD="${CMD:-src/commands/rlp-desk.md}"
-GOV="${GOV:-src/governance.md}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUN="${RUN:-$REPO_ROOT/src/scripts/run_ralph_desk.zsh}"
+LIB="${LIB:-$REPO_ROOT/src/scripts/lib_ralph_desk.zsh}"
+INIT="${INIT:-$REPO_ROOT/src/scripts/init_ralph_desk.zsh}"
+CMD="${CMD:-$REPO_ROOT/src/commands/rlp-desk.md}"
+GOV="${GOV:-$REPO_ROOT/src/governance.md}"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
@@ -20,9 +23,9 @@ echo ""
 # --- Helpers ---
 
 # Extract function body by name from a zsh script
-extract_fn() {
-  local fn_name="$1"
-  local src="${2:-$RUN}"
+# Falls back to LIB when function not found in primary source
+_extract_fn_from() {
+  local fn_name="$1" src="$2"
   awk '
     /^'"$fn_name"'\(\) \{/ { in_fn=1; depth=0 }
     in_fn {
@@ -33,7 +36,17 @@ extract_fn() {
       }
       print
     }
-  ' "$src"
+  ' "$src" 2>/dev/null
+}
+extract_fn() {
+  local fn_name="$1"
+  local src="${2:-$RUN}"
+  local body
+  body="$(_extract_fn_from "$fn_name" "$src")"
+  if [[ -z "$body" && "$src" == "$RUN" ]]; then
+    body="$(_extract_fn_from "$fn_name" "$LIB")"
+  fi
+  printf '%s\n' "$body"
 }
 
 # Extract §8 Circuit Breaker section from governance.md
@@ -546,19 +559,24 @@ test_ac8_happy() {
 }
 
 test_ac8_negative() {
-  # Exactly 1 call site (in cleanup) — no call in TIMEOUT path or elsewhere
-  local call_count
-  call_count=$(grep 'generate_campaign_report' "$RUN" | grep -v '()' | grep -v '^[[:space:]]*#' | wc -l | tr -d ' ')
+  # Exactly 1 call site (in cleanup in RUN) — definition is in LIB (excluded via grep -v '()')
+  # Count calls in RUN (cleanup call) + calls in LIB (none expected outside definition)
+  local run_calls lib_calls
+  run_calls=$(grep 'generate_campaign_report' "$RUN" 2>/dev/null | grep -v '()' | grep -v '^[[:space:]]*#' | wc -l | tr -d ' ')
+  # In LIB: the definition line has () so is excluded; no call sites should exist
+  lib_calls=$(grep 'generate_campaign_report' "$LIB" 2>/dev/null | grep -v '()' | grep -v '^[[:space:]]*#' | wc -l | tr -d ' ')
+  local call_count=$(( run_calls + lib_calls ))
   if (( call_count == 1 )); then
     pass "AC8-negative: exactly 1 generate_campaign_report call site"
   else
-    fail "AC8-negative: expected 1 call site, found $call_count"
+    fail "AC8-negative: expected 1 call site, found $call_count (run=$run_calls lib=$lib_calls)"
   fi
 }
 
 test_ac8_boundary() {
   local has_init has_guard
-  has_init=$(grep -c 'CAMPAIGN_REPORT_GENERATED=0' "$RUN")
+  # CAMPAIGN_REPORT_GENERATED=0 init is inside generate_campaign_report() which is now in LIB
+  has_init=$(( $(grep -c 'CAMPAIGN_REPORT_GENERATED=0' "$RUN" 2>/dev/null || echo 0) + $(grep -c 'CAMPAIGN_REPORT_GENERATED=0' "$LIB" 2>/dev/null || echo 0) ))
   has_guard=$(extract_fn generate_campaign_report | grep -c 'CAMPAIGN_REPORT_GENERATED.*return 0')
   if (( has_init >= 1 && has_guard >= 1 )); then
     pass "AC8-boundary: guard initialized ($has_init) and checked ($has_guard)"

@@ -4,13 +4,19 @@
 set -uo pipefail
 
 RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
+LIB="${LIB:-src/scripts/lib_ralph_desk.zsh}"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
 fail() { echo "  FAIL: $1"; (( FAIL++ )); }
 
 extract_fn() {
-  awk -v fn="$1" '$0 ~ "^"fn"\\(\\)" { p=1 } p { print } p && /^}/ { p=0 }' "$RUN"
+  local result
+  result=$(awk -v fn="$1" '$0 ~ "^"fn"\\(\\)" { p=1 } p { print } p && /^}/ { p=0 }' "$RUN")
+  if [[ -z "$result" && -f "$LIB" ]]; then
+    result=$(awk -v fn="$1" '$0 ~ "^"fn"\\(\\)" { p=1 } p { print } p && /^}/ { p=0 }' "$LIB")
+  fi
+  echo "$result"
 }
 
 run_harness() {
@@ -198,7 +204,7 @@ else
 fi
 
 # T2-6: check_model_upgrade uses get_model_string
-count=$(grep -c 'get_model_string' "$RUN" 2>/dev/null) || count=0
+local c1 c2; c1=$(grep -c 'get_model_string' "$RUN" 2>/dev/null) || c1=0; c2=$(grep -c 'get_model_string' "$LIB" 2>/dev/null) || c2=0; count=$((c1 + c2))
 if (( count >= 2 )); then
   pass "T2-6: get_model_string referenced $count times (>=2)"
 else

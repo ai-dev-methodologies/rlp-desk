@@ -5,6 +5,7 @@
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/src/scripts/run_ralph_desk.zsh"
+LIB="$ROOT/src/scripts/lib_ralph_desk.zsh"
 TMPBASE="$(mktemp -d)"
 trap 'rm -rf "$TMPBASE"' EXIT
 
@@ -18,21 +19,28 @@ fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 # ---------------------------------------------------------------------------
 # Extract generate_sv_report() using awk brace-depth tracking
 # ---------------------------------------------------------------------------
-FUNC_BODY="$(awk '
-  /^generate_sv_report\(\) \{/ { in_fn=1; depth=0 }
-  in_fn {
-    line = $0
-    for (i=1; i<=length(line); i++) {
-      c = substr(line, i, 1)
-      if (c == "{") depth++
-      else if (c == "}") {
-        depth--
-        if (depth == 0) { print; in_fn=0; next }
+_extract_generate_sv_report() {
+  local src="$1"
+  awk '
+    /^generate_sv_report\(\) \{/ { in_fn=1; depth=0 }
+    in_fn {
+      line = $0
+      for (i=1; i<=length(line); i++) {
+        c = substr(line, i, 1)
+        if (c == "{") depth++
+        else if (c == "}") {
+          depth--
+          if (depth == 0) { print; in_fn=0; next }
+        }
       }
+      print
     }
-    print
-  }
-' "$RUN")"
+  ' "$src"
+}
+FUNC_BODY="$(_extract_generate_sv_report "$RUN")"
+if [[ -z "$FUNC_BODY" ]]; then
+  FUNC_BODY="$(_extract_generate_sv_report "$LIB")"
+fi
 
 if [[ -z "$FUNC_BODY" ]]; then
   echo "FATAL: could not extract generate_sv_report() from $RUN"

@@ -4,8 +4,11 @@
 # RED tests (fail before impl): AC1-*, AC2-*, AC3-*, AC4-*, E2E-upgrade, E2E-restore
 # Regression tests (pass before and after): AC5-happy, AC5-boundary, E2E-syntax
 
-RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
-CMD="${CMD:-src/commands/rlp-desk.md}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUN="${RUN:-$REPO_ROOT/src/scripts/run_ralph_desk.zsh}"
+LIB="${LIB:-$REPO_ROOT/src/scripts/lib_ralph_desk.zsh}"
+CMD="${CMD:-$REPO_ROOT/src/commands/rlp-desk.md}"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
@@ -16,9 +19,9 @@ echo "Target: $RUN"
 echo ""
 
 # Helper: extract function body by name from source
-extract_fn() {
-  local fn_name="$1"
-  local src="${2:-$RUN}"
+# Falls back to LIB when function not found in primary source
+_extract_fn_from() {
+  local fn_name="$1" src="$2"
   awk -v fn="$fn_name" '
     $0 ~ fn"\\(\\) \\{" { in_fn=1; depth=0 }
     in_fn {
@@ -29,7 +32,17 @@ extract_fn() {
       }
       print
     }
-  ' "$src"
+  ' "$src" 2>/dev/null
+}
+extract_fn() {
+  local fn_name="$1"
+  local src="${2:-$RUN}"
+  local body
+  body="$(_extract_fn_from "$fn_name" "$src")"
+  if [[ -z "$body" && "$src" == "$RUN" ]]; then
+    body="$(_extract_fn_from "$fn_name" "$LIB")"
+  fi
+  printf '%s\n' "$body"
 }
 
 # ============================================================
@@ -37,9 +50,9 @@ extract_fn() {
 # ============================================================
 echo "--- AC1: Auto-upgrade trigger ---"
 
-# AC1-happy: check_model_upgrade() function exists
+# AC1-happy: check_model_upgrade() function exists (now in LIB)
 test_ac1_happy() {
-  if grep -qF 'check_model_upgrade()' "$RUN"; then
+  if grep -qF 'check_model_upgrade()' "$RUN" 2>/dev/null || grep -qF 'check_model_upgrade()' "$LIB" 2>/dev/null; then
     pass "AC1-happy: check_model_upgrade() function exists"
   else
     fail "AC1-happy: check_model_upgrade() function missing"
@@ -64,9 +77,14 @@ test_ac1_negative() {
   fi
 }
 
-# AC1-boundary: [DECIDE] model_upgrade=true log format in source
+# AC1-boundary: [DECIDE] model_upgrade=true log format in source (now in LIB)
 test_ac1_boundary() {
-  if grep -qF 'model_upgrade=true' "$RUN" && grep -qF 'reason=consecutive_same_ac_fail' "$RUN"; then
+  local _f _found_upgrade=0 _found_reason=0
+  for _f in "$RUN" "$LIB"; do
+    grep -qF 'model_upgrade=true' "$_f" 2>/dev/null && _found_upgrade=1
+    grep -qF 'reason=consecutive_same_ac_fail' "$_f" 2>/dev/null && _found_reason=1
+  done
+  if (( _found_upgrade && _found_reason )); then
     pass "AC1-boundary: [DECIDE] model_upgrade=true log format present"
   else
     fail "AC1-boundary: [DECIDE] model_upgrade=true log format missing"
@@ -83,10 +101,14 @@ test_ac1_boundary
 echo ""
 echo "--- AC2: Restore after pass ---"
 
-# AC2-happy: pass verdict path has model restore logic
+# AC2-happy: pass verdict path has model restore logic (now in LIB/RUN)
 test_ac2_happy() {
-  # In the pass) case block, _MODEL_UPGRADED should be checked
-  if grep -qF '_MODEL_UPGRADED' "$RUN" && grep -qF '_ORIGINAL_WORKER_MODEL' "$RUN"; then
+  local _f _found_upgraded=0 _found_original=0
+  for _f in "$RUN" "$LIB"; do
+    grep -qF '_MODEL_UPGRADED' "$_f" 2>/dev/null && _found_upgraded=1
+    grep -qF '_ORIGINAL_WORKER_MODEL' "$_f" 2>/dev/null && _found_original=1
+  done
+  if (( _found_upgraded && _found_original )); then
     pass "AC2-happy: model restore logic present (_MODEL_UPGRADED + _ORIGINAL_WORKER_MODEL)"
   else
     fail "AC2-happy: model restore logic missing"
@@ -108,9 +130,9 @@ test_ac2_negative() {
   fi
 }
 
-# AC2-boundary: model_restore debug log exists
+# AC2-boundary: model_restore debug log exists (now in LIB or RUN)
 test_ac2_boundary() {
-  if grep -qF 'model_restore=true' "$RUN"; then
+  if grep -qF 'model_restore=true' "$RUN" 2>/dev/null || grep -qF 'model_restore=true' "$LIB" 2>/dev/null; then
     pass "AC2-boundary: [DECIDE] model_restore=true log present"
   else
     fail "AC2-boundary: [DECIDE] model_restore=true log missing"
@@ -127,18 +149,20 @@ test_ac2_boundary
 echo ""
 echo "--- AC3: Escalation on upgraded-model fail ---"
 
-# AC3-happy: Architecture Escalation triggered when upgraded model fails
+# AC3-happy: Architecture Escalation triggered when upgraded model fails (in RUN or LIB)
 test_ac3_happy() {
-  if grep -qE 'architecture.escalation|model_upgrade.*escalat|upgraded.*retry.*fail' "$RUN" -i; then
+  if grep -qEi 'architecture.escalation|model_upgrade.*escalat|upgraded.*retry.*fail' "$RUN" 2>/dev/null || \
+     grep -qEi 'architecture.escalation|model_upgrade.*escalat|upgraded.*retry.*fail' "$LIB" 2>/dev/null; then
     pass "AC3-happy: Architecture Escalation reference in upgrade context"
   else
     fail "AC3-happy: Architecture Escalation missing in upgrade fail path"
   fi
 }
 
-# AC3-negative: write_blocked_sentinel called with escalation reason
+# AC3-negative: write_blocked_sentinel called with escalation reason (in RUN or LIB)
 test_ac3_negative() {
-  if grep -qE 'write_blocked_sentinel.*([Uu]pgrade|[Ee]scalat)' "$RUN"; then
+  if grep -qE 'write_blocked_sentinel.*([Uu]pgrade|[Ee]scalat)' "$RUN" 2>/dev/null || \
+     grep -qE 'write_blocked_sentinel.*([Uu]pgrade|[Ee]scalat)' "$LIB" 2>/dev/null; then
     pass "AC3-negative: write_blocked_sentinel with upgrade/escalation context"
   else
     fail "AC3-negative: write_blocked_sentinel missing escalation context"
@@ -187,18 +211,23 @@ test_ac4_happy() {
   fi
 }
 
-# AC4-negative: [DECIDE] model_upgrade=false reason=already_max log format
+# AC4-negative: [DECIDE] model_upgrade=false reason=already_max log format (in RUN or LIB)
 test_ac4_negative() {
-  if grep -qF 'model_upgrade=false' "$RUN" && grep -qF 'reason=already_max' "$RUN"; then
+  local _f _found_false=0 _found_max=0
+  for _f in "$RUN" "$LIB"; do
+    grep -qF 'model_upgrade=false' "$_f" 2>/dev/null && _found_false=1
+    grep -qF 'reason=already_max' "$_f" 2>/dev/null && _found_max=1
+  done
+  if (( _found_false && _found_max )); then
     pass "AC4-negative: [DECIDE] model_upgrade=false reason=already_max present"
   else
     fail "AC4-negative: already_max log format missing"
   fi
 }
 
-# AC4-boundary: get_next_model returns empty/no-upgrade for opus
+# AC4-boundary: get_next_model returns empty/no-upgrade for opus (now in LIB)
 test_ac4_boundary() {
-  if grep -qF 'get_next_model()' "$RUN"; then
+  if grep -qF 'get_next_model()' "$RUN" 2>/dev/null || grep -qF 'get_next_model()' "$LIB" 2>/dev/null; then
     local body
     body=$(extract_fn "get_next_model")
     # opus case should return empty string or have no upgrade path

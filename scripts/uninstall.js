@@ -18,6 +18,7 @@ const files = [
   path.join(commandsDir, "rlp-desk.md"),
   path.join(deskDir, "init_ralph_desk.zsh"),
   path.join(deskDir, "run_ralph_desk.zsh"),
+  path.join(deskDir, "lib_ralph_desk.zsh"),
   path.join(deskDir, "governance.md"),
 ];
 

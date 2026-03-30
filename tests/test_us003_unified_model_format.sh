@@ -5,6 +5,7 @@
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT_DIR/src/scripts/run_ralph_desk.zsh"
+LIB="$ROOT_DIR/src/scripts/lib_ralph_desk.zsh"
 
 PASS=0
 FAIL=0
@@ -24,11 +25,14 @@ PARSE_STDOUT=""
 PARSE_STDERR=""
 PARSE_EXIT=0
 
-# Helper: extract parse_model_flag from run_ralph_desk.zsh and invoke it in a zsh subshell
+# Helper: extract parse_model_flag from run_ralph_desk.zsh or lib_ralph_desk.zsh and invoke it in a zsh subshell
 _run_parse() {
   local value="$1" role="${2:-worker}"
   local func_body
   func_body=$(sed -n '/^parse_model_flag() {$/,/^}$/p' "$RUN" 2>/dev/null)
+  if [[ -z "$func_body" ]]; then
+    func_body=$(sed -n '/^parse_model_flag() {$/,/^}$/p' "$LIB" 2>/dev/null)
+  fi
   if [[ -z "$func_body" ]]; then
     PARSE_STDOUT=""
     PARSE_STDERR="ERROR: parse_model_flag not found in $RUN"

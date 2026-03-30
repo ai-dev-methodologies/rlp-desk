@@ -202,14 +202,22 @@ Final: **opus + 5.4 high** (both must PASS)
 | Claude-only | opus | — | Solo ⚠ |
 | Cross-engine | opus | 5.4 high | Both must PASS → COMPLETE |
 
-#### Progressive Upgrade
+#### Progressive Upgrade (Worker Only)
+
+Worker auto-upgrades on consecutive same-US failure. Verifier is fixed at campaign start. CB default: 6.
 
 ```
-fail 1-2: keep current models
-fail 3-4: Worker + Verifier each upgrade 1 step
-fail 5-6: each upgrade 2 steps
-ceiling + still failing → BLOCKED
+fail 1-2: keep current model (2-attempt window)
+fail 3-4: upgrade 1 step (e.g., haiku → sonnet)
+fail 5-6: upgrade 2 steps (e.g., haiku → opus)
+fail 7+:  ceiling reached → BLOCKED
 ```
+
+See `src/model-upgrade-table.md` for full upgrade paths per engine and complexity level.
+
+#### Sequential Final Verify
+
+When all US pass individually, the final ALL verify runs **sequentially per-US** instead of one big check. This prevents verifier timeout on large PRDs. After all per-US checks pass, the project's test suite runs once as a cross-US integration check.
 
 ## Commands
 
@@ -228,7 +236,7 @@ ceiling + still failing → BLOCKED
 |------|---------|-------------|
 | `--max-iter N` | 100 | Maximum iterations before timeout |
 | `--mode agent\|tmux` | agent | Execution mode (see below) |
-| `--worker-model MODEL` | haiku | Claude worker model (haiku/sonnet/opus) |
+| `--worker-model MODEL` | sonnet | Claude worker model (haiku/sonnet/opus) |
 | `--worker-engine claude\|codex` | claude | Worker engine |
 | `--verifier-model MODEL` | auto | Auto-selected: +1 tier (same-engine) or cross-engine |
 | `--verifier-engine claude\|codex` | auto | Opposite of worker engine if codex available |
@@ -238,6 +246,17 @@ ceiling + still failing → BLOCKED
 | `--lock-worker-model` | off | Disable progressive model upgrade on failure |
 | `--debug` | off | Debug logging to `logs/<slug>/debug.log` |
 | `--with-self-verification` | off | Campaign-level post-loop analysis report |
+
+### Init Presets
+
+After `brainstorm`, `init` detects your environment and presents run command presets:
+
+- **Codex detected** → recommends cross-engine mode (`--worker-model gpt-5.4:high --verify-consensus`)
+- **GPT Pro (spark)** → offers spark preset (`--worker-model gpt-5.3-codex-spark:high`)
+- **Claude-only** → defaults to `--worker-model sonnet` with opus verifier
+- **Basic** → minimal flags for quick iteration
+
+The brainstorm phase evaluates complexity (US count, file scope, logic, dependencies, code impact) and recommends a starting model. You can override any recommendation.
 
 ## Execution Modes
 

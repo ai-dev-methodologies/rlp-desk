@@ -40,6 +40,11 @@ echo "  Downloading tmux runner script..."
 curl -sSL "$REPO_URL/src/scripts/run_ralph_desk.zsh" -o "$DESK_DIR/run_ralph_desk.zsh"
 chmod +x "$DESK_DIR/run_ralph_desk.zsh"
 
+# Download shared business logic library
+echo "  Downloading shared library..."
+curl -sSL "$REPO_URL/src/scripts/lib_ralph_desk.zsh" -o "$DESK_DIR/lib_ralph_desk.zsh"
+chmod +x "$DESK_DIR/lib_ralph_desk.zsh"
+
 # Download governance protocol
 echo "  Downloading governance protocol..."
 curl -sSL "$REPO_URL/src/governance.md" -o "$DESK_DIR/governance.md"

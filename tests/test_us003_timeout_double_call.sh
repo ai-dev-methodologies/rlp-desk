@@ -4,7 +4,10 @@
 # RED tests (fail before change): AC1-happy, AC1-boundary, AC2-sole-path
 # Regression tests (pass before and after): AC1-negative, AC2-happy, AC2-negative, AC2-boundary
 
-RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUN="${RUN:-$REPO_ROOT/src/scripts/run_ralph_desk.zsh}"
+LIB="${LIB:-$REPO_ROOT/src/scripts/lib_ralph_desk.zsh}"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
@@ -28,7 +31,7 @@ test_ac1_happy() {
 
 # AC1-negative: CAMPAIGN_REPORT_GENERATED guard must still be present (must not be deleted)
 test_ac1_negative() {
-  if grep -qF 'CAMPAIGN_REPORT_GENERATED=0' "$RUN"; then
+  if grep -qF 'CAMPAIGN_REPORT_GENERATED=0' "$RUN" 2>/dev/null || grep -qF 'CAMPAIGN_REPORT_GENERATED=0' "$LIB" 2>/dev/null; then
     pass "AC1-negative: CAMPAIGN_REPORT_GENERATED=0 guard still present"
   else
     fail "AC1-negative: CAMPAIGN_REPORT_GENERATED=0 guard was removed (MUST NOT)"
@@ -73,19 +76,25 @@ test_ac2_happy() {
 }
 
 # AC2-negative: write_complete_sentinel and write_blocked_sentinel must NOT directly call generate_campaign_report
+# These functions are now in LIB; search both files
 test_ac2_negative() {
-  local complete_hit
-  complete_hit=$(awk '
-    /^write_complete_sentinel\(\)/ { in_fn=1 }
-    in_fn && !/generate_campaign_report\(\)/ && /generate_campaign_report/ { print; exit }
-    in_fn && /^}/ { in_fn=0 }
-  ' "$RUN")
-  local blocked_hit
-  blocked_hit=$(awk '
-    /^write_blocked_sentinel\(\)/ { in_fn=1 }
-    in_fn && !/generate_campaign_report\(\)/ && /generate_campaign_report/ { print; exit }
-    in_fn && /^}/ { in_fn=0 }
-  ' "$RUN")
+  local _search_file
+  local complete_hit blocked_hit
+  for _search_file in "$RUN" "$LIB"; do
+    local _hit
+    _hit=$(awk '
+      /^write_complete_sentinel\(\)/ { in_fn=1 }
+      in_fn && !/generate_campaign_report\(\)/ && /generate_campaign_report/ { print; exit }
+      in_fn && /^}/ { in_fn=0 }
+    ' "$_search_file" 2>/dev/null)
+    [[ -n "$_hit" ]] && complete_hit="$_hit"
+    _hit=$(awk '
+      /^write_blocked_sentinel\(\)/ { in_fn=1 }
+      in_fn && !/generate_campaign_report\(\)/ && /generate_campaign_report/ { print; exit }
+      in_fn && /^}/ { in_fn=0 }
+    ' "$_search_file" 2>/dev/null)
+    [[ -n "$_hit" ]] && blocked_hit="$_hit"
+  done
   if [[ -n "$complete_hit" || -n "$blocked_hit" ]]; then
     fail "AC2-negative: COMPLETE/BLOCKED sentinel functions directly call generate_campaign_report"
   else
@@ -94,13 +103,21 @@ test_ac2_negative() {
 }
 
 # AC2-boundary: CAMPAIGN_REPORT_GENERATED guard inside generate_campaign_report() must be intact
+# generate_campaign_report() is now in LIB; fall back to LIB when not found in RUN
 test_ac2_boundary() {
   local hit
   hit=$(awk '
     /^generate_campaign_report\(\)/ { in_fn=1; next }
     in_fn && /CAMPAIGN_REPORT_GENERATED/ { print; exit }
     in_fn && /^}/ { in_fn=0 }
-  ' "$RUN")
+  ' "$RUN" 2>/dev/null)
+  if [[ -z "$hit" ]]; then
+    hit=$(awk '
+      /^generate_campaign_report\(\)/ { in_fn=1; next }
+      in_fn && /CAMPAIGN_REPORT_GENERATED/ { print; exit }
+      in_fn && /^}/ { in_fn=0 }
+    ' "$LIB" 2>/dev/null)
+  fi
   if [[ -n "$hit" ]]; then
     pass "AC2-boundary: CAMPAIGN_REPORT_GENERATED guard inside generate_campaign_report() intact"
   else
@@ -109,20 +126,33 @@ test_ac2_boundary() {
 }
 
 # AC2-sole-path: generate_campaign_report must ONLY be called from cleanup()
-# This detects any direct call outside cleanup() (e.g., TIMEOUT path direct call).
-# RED: fails when TIMEOUT-path direct call is present; GREEN: passes after removal.
+# cleanup() is in RUN; generate_campaign_report() definition is in LIB.
+# Scan RUN for calls outside cleanup(), and scan LIB excluding any definition line.
 test_ac2_sole_path() {
-  local outside
-  outside=$(awk '
+  local outside_run outside_lib
+  outside_run=$(awk '
     /^cleanup\(\)/ { in_cleanup=1 }
     in_cleanup && /^\}/ { in_cleanup=0; next }
     /^generate_campaign_report\(\)[ \t]*\{/ { next }
     !in_cleanup && /generate_campaign_report[^(]/ { print NR": "$0 }
-  ' "$RUN")
-  if [[ -z "$outside" ]]; then
+  ' "$RUN" 2>/dev/null)
+  # In LIB, only the definition should exist — any call lines outside the definition are a violation
+  outside_lib=$(awk '
+    /^generate_campaign_report\(\)[ \t]*\{/ { in_def=1; depth=0 }
+    in_def {
+      for (i=1; i<=length($0); i++) {
+        c = substr($0, i, 1)
+        if (c == "{") depth++
+        else if (c == "}") { depth--; if (depth == 0) { in_def=0; next } }
+      }
+      next
+    }
+    /generate_campaign_report[^(]/ { print NR": "$0 }
+  ' "$LIB" 2>/dev/null)
+  if [[ -z "$outside_run" && -z "$outside_lib" ]]; then
     pass "AC2-sole-path: generate_campaign_report only called from cleanup()"
   else
-    fail "AC2-sole-path: generate_campaign_report called outside cleanup(): $outside"
+    fail "AC2-sole-path: generate_campaign_report called outside cleanup(): run=${outside_run} lib=${outside_lib}"
   fi
 }
 
@@ -143,21 +173,28 @@ test_ac2_sole_path
 echo ""
 echo "--- E2E: AC1 runtime double-call protection (TIMEOUT-path singleton proof) ---"
 
-GCRF_BODY="$(awk '
-  /^generate_campaign_report\(\) \{/ { in_fn=1; depth=0 }
-  in_fn {
-    line = $0
-    for (i=1; i<=length(line); i++) {
-      c = substr(line, i, 1)
-      if (c == "{") depth++
-      else if (c == "}") {
-        depth--
-        if (depth == 0) { print; in_fn=0; next }
+_extract_gcrf_body() {
+  local _f="$1"
+  awk '
+    /^generate_campaign_report\(\) \{/ { in_fn=1; depth=0 }
+    in_fn {
+      line = $0
+      for (i=1; i<=length(line); i++) {
+        c = substr(line, i, 1)
+        if (c == "{") depth++
+        else if (c == "}") {
+          depth--
+          if (depth == 0) { print; in_fn=0; next }
+        }
       }
+      print
     }
-    print
-  }
-' "$RUN")"
+  ' "$_f" 2>/dev/null
+}
+GCRF_BODY="$(_extract_gcrf_body "$RUN")"
+if [[ -z "$GCRF_BODY" ]]; then
+  GCRF_BODY="$(_extract_gcrf_body "$LIB")"
+fi
 
 if [[ -z "$GCRF_BODY" ]]; then
   fail "E2E-extract: could not extract generate_campaign_report() from $RUN"

@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # Test suite: US-003 — API Retry Guard
 
-RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUN="${RUN:-$REPO_ROOT/src/scripts/run_ralph_desk.zsh}"
+LIB="${LIB:-$REPO_ROOT/src/scripts/lib_ralph_desk.zsh}"
 PASS=0
 FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
 fail() { echo "  FAIL: $1"; (( FAIL++ )); }
 
-extract_fn() {
-  local fn_name="$1"
+_extract_fn_from() {
+  local fn_name="$1" src="$2"
   awk -v fn="$fn_name" '
-    $0 ~ fn"\\(\\) \{" { in_fn=1; depth=0 }
+    $0 ~ fn"\\(\\) \\{" { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c = substr($0, i, 1)
@@ -27,7 +30,16 @@ extract_fn() {
       }
       print
     }
-  ' "$RUN"
+  ' "$src" 2>/dev/null
+}
+extract_fn() {
+  local fn_name="$1"
+  local body
+  body="$(_extract_fn_from "$fn_name" "$RUN")"
+  if [[ -z "$body" ]]; then
+    body="$(_extract_fn_from "$fn_name" "$LIB")"
+  fi
+  printf '%s\n' "$body"
 }
 
 run_is_api_error() {
@@ -177,7 +189,12 @@ test_ac1_boundary_overloaded_casefold() {
 
 # ---- AC2 ----
 test_ac2_happy_defaults() {
-  if [[ -f "$RUN" ]] && grep -q '_API_MAX_RETRIES="${_API_MAX_RETRIES:-5}"' "$RUN" && grep -q '_API_RETRY_INTERVAL_S="${_API_RETRY_INTERVAL_S:-30}"' "$RUN"; then
+  local _found_retries=0 _found_interval=0
+  for _f in "$RUN" "$LIB"; do
+    grep -q '_API_MAX_RETRIES="${_API_MAX_RETRIES:-5}"' "$_f" 2>/dev/null && _found_retries=1
+    grep -q '_API_RETRY_INTERVAL_S="${_API_RETRY_INTERVAL_S:-30}"' "$_f" 2>/dev/null && _found_interval=1
+  done
+  if (( _found_retries && _found_interval )); then
     pass "AC2-happy: default retries/interval are 5 and 30"
   else
     fail "AC2-happy: default retry settings are not 5/30"

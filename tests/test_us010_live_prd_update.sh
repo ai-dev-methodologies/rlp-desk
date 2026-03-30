@@ -4,8 +4,11 @@
 # RED tests (fail before impl): AC1-*, AC2-*, AC3-*, AC4-*, AC5-*, E2E-detect, E2E-unchanged
 # Regression tests (pass before and after): E2E-syntax
 
-RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
-README="${README:-README.md}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUN="${RUN:-$REPO_ROOT/src/scripts/run_ralph_desk.zsh}"
+LIB="${LIB:-$REPO_ROOT/src/scripts/lib_ralph_desk.zsh}"
+README="${README:-$REPO_ROOT/README.md}"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
@@ -16,9 +19,9 @@ echo "Target: $RUN"
 echo ""
 
 # Helper: extract function body by name from source
-extract_fn() {
-  local fn_name="$1"
-  local src="${2:-$RUN}"
+# Falls back to LIB when function not found in primary source
+_extract_fn_from() {
+  local fn_name="$1" src="$2"
   awk -v fn="$fn_name" '
     $0 ~ fn"\\(\\) \\{" { in_fn=1; depth=0 }
     in_fn {
@@ -29,7 +32,17 @@ extract_fn() {
       }
       print
     }
-  ' "$src"
+  ' "$src" 2>/dev/null
+}
+extract_fn() {
+  local fn_name="$1"
+  local src="${2:-$RUN}"
+  local body
+  body="$(_extract_fn_from "$fn_name" "$src")"
+  if [[ -z "$body" && "$src" == "$RUN" ]]; then
+    body="$(_extract_fn_from "$fn_name" "$LIB")"
+  fi
+  printf '%s\n' "$body"
 }
 
 # ============================================================
@@ -37,9 +50,9 @@ extract_fn() {
 # ============================================================
 echo "--- AC1: PRD change detection ---"
 
-# AC1-happy: compute_prd_hash() function exists
+# AC1-happy: compute_prd_hash() function exists (now in LIB)
 test_ac1_happy() {
-  if grep -qF 'compute_prd_hash()' "$RUN"; then
+  if grep -qF 'compute_prd_hash()' "$RUN" 2>/dev/null || grep -qF 'compute_prd_hash()' "$LIB" 2>/dev/null; then
     pass "AC1-happy: compute_prd_hash() function exists"
   else
     fail "AC1-happy: compute_prd_hash() function missing"
@@ -195,8 +208,9 @@ test_ac4_negative() {
 }
 
 # AC4-boundary: PREV_PRD_HASH initialized before loop (first iteration won't false-trigger)
+# This initialization line is in RUN (main loop setup)
 test_ac4_boundary() {
-  if grep -q 'PREV_PRD_HASH=.*compute_prd_hash' "$RUN"; then
+  if grep -q 'PREV_PRD_HASH=.*compute_prd_hash' "$RUN" 2>/dev/null || grep -q 'PREV_PRD_HASH=.*compute_prd_hash' "$LIB" 2>/dev/null; then
     pass "AC4-boundary: PREV_PRD_HASH initialized before loop"
   else
     fail "AC4-boundary: PREV_PRD_HASH not initialized before loop"

@@ -19,17 +19,24 @@ run_test() {
   fi
 }
 
-count_grep() {
-  local result
-  result=$(grep -c "$1" "$2" 2>/dev/null) || result=0
-  echo "$result"
-}
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN="$REPO_ROOT/src/scripts/run_ralph_desk.zsh"
+LIB="$REPO_ROOT/src/scripts/lib_ralph_desk.zsh"
 CMD="$REPO_ROOT/src/commands/rlp-desk.md"
 GOV="$REPO_ROOT/src/governance.md"
+
+count_grep() {
+  local pattern="$1" file="$2"
+  local result
+  result=$(grep -c "$pattern" "$file" 2>/dev/null) || result=0
+  if [[ "$file" == "$RUN" ]]; then
+    local lib_result
+    lib_result=$(grep -c "$pattern" "$LIB" 2>/dev/null) || lib_result=0
+    result=$(( result + lib_result ))
+  fi
+  echo "$result"
+}
 
 echo "=== US-003: Mandatory Campaign Report ==="
 echo ""
@@ -91,7 +98,7 @@ count=$(count_grep 'generate_campaign_report' "$RUN")
 run_test "AC4-happy: generate_campaign_report in run_ralph_desk.zsh >= 2 refs" "$(( count >= 2 ))" "1"
 
 # AC4-negative: function definition exists
-count=$(grep -c '^generate_campaign_report()' "$RUN" 2>/dev/null) || count=0
+count=$(( $(grep -c '^generate_campaign_report()' "$RUN" 2>/dev/null || echo 0) + $(grep -c '^generate_campaign_report()' "$LIB" 2>/dev/null || echo 0) ))
 run_test "AC4-negative: generate_campaign_report() function defined" "$(( count >= 1 ))" "1"
 
 # AC4-boundary: called >= 3 times (definition + multiple call sites)
@@ -252,7 +259,7 @@ count=$(count_grep 'PROJECT_DIR' "$RUN")
 run_test "AC14-happy: no PROJECT_DIR in run_ralph_desk.zsh (uses ROOT)" "$count" "0"
 
 # AC14-negative: no LOG_DIR (only LOGS_DIR)
-count=$(grep -c '\bLOG_DIR\b' "$RUN" 2>/dev/null) || count=0
+count=$(( $(grep -c '\bLOG_DIR\b' "$RUN" 2>/dev/null || echo 0) + $(grep -c '\bLOG_DIR\b' "$LIB" 2>/dev/null || echo 0) ))
 run_test "AC14-negative: no bare LOG_DIR in run_ralph_desk.zsh (uses LOGS_DIR)" "$count" "0"
 
 # AC14-boundary: DONE_CLAIM_FILE and VERDICT_FILE used in archival code

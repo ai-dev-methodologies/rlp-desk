@@ -4,7 +4,10 @@
 # RED tests (fail before impl): AC1-*, AC2-*, AC3-negative, AC3-boundary, E2E-*
 # Regression tests (pass before and after): AC3-happy
 
-RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUN="${RUN:-$REPO_ROOT/src/scripts/run_ralph_desk.zsh}"
+LIB="${LIB:-$REPO_ROOT/src/scripts/lib_ralph_desk.zsh}"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
@@ -15,7 +18,8 @@ echo "Target: $RUN"
 echo ""
 
 # Extract generate_campaign_report function body for analysis
-extract_gcr_body() {
+# generate_campaign_report() is now in LIB; fall back to LIB when not found in RUN
+_extract_gcr_from() {
   awk '
     /^generate_campaign_report\(\) \{/ { in_fn=1; depth=0 }
     in_fn {
@@ -26,7 +30,15 @@ extract_gcr_body() {
       }
       print
     }
-  ' "$RUN"
+  ' "$1" 2>/dev/null
+}
+extract_gcr_body() {
+  local _body
+  _body="$(_extract_gcr_from "$RUN")"
+  if [[ -z "$_body" ]]; then
+    _body="$(_extract_gcr_from "$LIB")"
+  fi
+  printf '%s\n' "$_body"
 }
 
 # Extract lines AFTER "## Suggested Next Actions" header from function body
@@ -197,24 +209,10 @@ test_ac3_boundary
 echo ""
 echo "--- E2E: Runtime campaign report with Suggested Next Actions ---"
 
-GCR_BODY="$(awk '
-  /^generate_campaign_report\(\) \{/ { in_fn=1; depth=0 }
-  in_fn {
-    line = $0
-    for (i=1; i<=length(line); i++) {
-      c = substr(line, i, 1)
-      if (c == "{") depth++
-      else if (c == "}") {
-        depth--
-        if (depth == 0) { print; in_fn=0; next }
-      }
-    }
-    print
-  }
-' "$RUN")"
+GCR_BODY="$(extract_gcr_body)"
 
 if [[ -z "$GCR_BODY" ]]; then
-  fail "E2E-extract: could not extract generate_campaign_report() from $RUN"
+  fail "E2E-extract: could not extract generate_campaign_report() from $RUN or $LIB"
   fail "E2E-complete: skipped (extract failed)"
   fail "E2E-blocked: skipped (extract failed)"
   fail "E2E-timeout: skipped (extract failed)"

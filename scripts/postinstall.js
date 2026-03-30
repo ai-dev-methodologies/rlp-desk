@@ -33,6 +33,10 @@ const copies = [
     "src/scripts/run_ralph_desk.zsh",
     path.join(deskDir, "run_ralph_desk.zsh"),
   ],
+  [
+    "src/scripts/lib_ralph_desk.zsh",
+    path.join(deskDir, "lib_ralph_desk.zsh"),
+  ],
   ["src/governance.md", path.join(deskDir, "governance.md")],
 ];
 
@@ -45,6 +49,7 @@ for (const [src, dest] of copies) {
 try {
   fs.chmodSync(path.join(deskDir, "init_ralph_desk.zsh"), 0o755);
   fs.chmodSync(path.join(deskDir, "run_ralph_desk.zsh"), 0o755);
+  fs.chmodSync(path.join(deskDir, "lib_ralph_desk.zsh"), 0o755);
 } catch (_) {
   // chmod may fail on Windows — not critical
 }

@@ -7,6 +7,7 @@
 # GREEN phase: tests pass with US-004 implementation
 
 RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
+LIB="${LIB:-src/scripts/lib_ralph_desk.zsh}"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
@@ -17,21 +18,28 @@ echo "Target: $RUN"
 echo ""
 
 # --- Shared: extract write_cost_log() body for runtime execution ---
-WCL_BODY="$(awk '
-  /^write_cost_log\(\) \{/ { in_fn=1; depth=0 }
-  in_fn {
-    line = $0
-    for (i=1; i<=length(line); i++) {
-      c = substr(line, i, 1)
-      if (c == "{") depth++
-      else if (c == "}") {
-        depth--
-        if (depth == 0) { print; in_fn=0; next }
+_extract_write_cost_log() {
+  local src="$1"
+  awk '
+    /^write_cost_log\(\) \{/ { in_fn=1; depth=0 }
+    in_fn {
+      line = $0
+      for (i=1; i<=length(line); i++) {
+        c = substr(line, i, 1)
+        if (c == "{") depth++
+        else if (c == "}") {
+          depth--
+          if (depth == 0) { print; in_fn=0; next }
+        }
       }
+      print
     }
-    print
-  }
-' "$RUN")"
+  ' "$src"
+}
+WCL_BODY="$(_extract_write_cost_log "$RUN")"
+if [[ -z "$WCL_BODY" ]]; then
+  WCL_BODY="$(_extract_write_cost_log "$LIB")"
+fi
 
 if [[ -z "$WCL_BODY" ]]; then
   echo "FATAL: could not extract write_cost_log() from $RUN"
@@ -380,7 +388,7 @@ test_reg1_static_reset() {
   # The per-iteration reset section must clear ITER_VERIFIER_START
   # to prevent stale verifier timestamps from carrying over to non-verify iterations
   local reset_count
-  reset_count=$(grep -c 'ITER_VERIFIER_START=""' "$RUN" || true)
+  reset_count=$(( $(grep -c 'ITER_VERIFIER_START=""' "$RUN" 2>/dev/null || echo 0) + $(grep -c 'ITER_VERIFIER_START=""' "$LIB" 2>/dev/null || echo 0) ))
   if [[ "$reset_count" -ge 1 ]]; then
     pass "Reg-1: ITER_VERIFIER_START reset found in source ($reset_count occurrences)"
   else
@@ -391,7 +399,7 @@ test_reg1_static_reset() {
 # Reg-2: Static — main loop resets ITER_VERIFIER_END at iteration start
 test_reg2_static_reset() {
   local reset_count
-  reset_count=$(grep -c 'ITER_VERIFIER_END=""' "$RUN" || true)
+  reset_count=$(( $(grep -c 'ITER_VERIFIER_END=""' "$RUN" 2>/dev/null || echo 0) + $(grep -c 'ITER_VERIFIER_END=""' "$LIB" 2>/dev/null || echo 0) ))
   if [[ "$reset_count" -ge 1 ]]; then
     pass "Reg-2: ITER_VERIFIER_END reset found in source ($reset_count occurrences)"
   else
@@ -472,7 +480,7 @@ echo "--- Timeout Path: hard-timeout cost-log recording ---"
 # Timeout-1: Static — hard-ceiling exceeded path is log-only with hard_ceiling_exceeded=true
 # After 88d9a75: ceiling no longer kills worker; logs hard_ceiling_exceeded=true + action=log_only_no_kill
 test_timeout_static_worker_end() {
-  if grep -q 'hard_ceiling_exceeded=true' "$RUN" && grep -q 'action=log_only_no_kill' "$RUN"; then
+  if (grep -q 'hard_ceiling_exceeded=true' "$RUN" || grep -q 'hard_ceiling_exceeded=true' "$LIB") && (grep -q 'action=log_only_no_kill' "$RUN" || grep -q 'action=log_only_no_kill' "$LIB"); then
     pass "Timeout-1: hard-ceiling exceeded path logs hard_ceiling_exceeded=true with action=log_only_no_kill"
   else
     fail "Timeout-1: hard-ceiling exceeded path missing hard_ceiling_exceeded=true or action=log_only_no_kill log"
@@ -488,13 +496,16 @@ test_timeout_static_worker_end() {
 # GREEN: HEAD ceiling block is log-only (no return 1) → loop always reaches write_cost_log
 test_timeout_static_cost_log() {
   local ceiling_ctx
-  ceiling_ctx=$(grep -A 15 'iter_elapsed >= HARD_CEILING' "$RUN")
+  ceiling_ctx=$(grep -A 15 'iter_elapsed >= HARD_CEILING' "$RUN" 2>/dev/null)
+  if [[ -z "$ceiling_ctx" ]]; then
+    ceiling_ctx=$(grep -A 15 'iter_elapsed >= HARD_CEILING' "$LIB" 2>/dev/null)
+  fi
 
   local has_return1=0
   echo "$ceiling_ctx" | grep -q 'return 1' && has_return1=1 || has_return1=0
 
   local wcl_in_loop
-  wcl_in_loop=$(grep -c 'write_cost_log "\$ITERATION"' "$RUN" || true)
+  wcl_in_loop=$(( $(grep -c 'write_cost_log "\$ITERATION"' "$RUN" 2>/dev/null || echo 0) + $(grep -c 'write_cost_log "\$ITERATION"' "$LIB" 2>/dev/null || echo 0) ))
 
   if [[ "$has_return1" -eq 0 && "$wcl_in_loop" -ge 1 ]]; then
     pass "Timeout-2: ceiling block has no return 1 (iteration continues) + write_cost_log at loop end ($wcl_in_loop) — PRD boundary: cost-log always written post-ceiling"

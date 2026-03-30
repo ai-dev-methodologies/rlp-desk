@@ -20,9 +20,16 @@ run_test() {
 }
 
 # count_grep PATTERN FILE — returns integer count, 0 on no match or missing file
+# When FILE is RUN, also searches LIB (lib_ralph_desk.zsh) and sums counts
 count_grep() {
+  local pattern="$1" file="$2"
   local result
-  result=$(grep -c "$1" "$2" 2>/dev/null) || result=0
+  result=$(grep -c "$pattern" "$file" 2>/dev/null) || result=0
+  if [[ "$file" == "$RUN" ]]; then
+    local lib_result
+    lib_result=$(grep -c "$pattern" "$LIB" 2>/dev/null) || lib_result=0
+    result=$(( result + lib_result ))
+  fi
   echo "$result"
 }
 
@@ -34,6 +41,7 @@ pipe_count() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN="$REPO_ROOT/src/scripts/run_ralph_desk.zsh"
+LIB="$REPO_ROOT/src/scripts/lib_ralph_desk.zsh"
 CMD="$REPO_ROOT/src/commands/rlp-desk.md"
 GOV="$REPO_ROOT/src/governance.md"
 
@@ -65,7 +73,9 @@ count=$(count_grep 'CB_THRESHOLD \* 2\|CB_THRESHOLD\*2' "$RUN")
 run_test "AC2-happy: CB_THRESHOLD * 2 auto-double logic in run_ralph_desk.zsh" "$(( count >= 1 ))" "1"
 
 # AC2-negative: EFFECTIVE_CB_THRESHOLD NOT referenced inside check_stale_context
-count=$(grep -A 25 '^check_stale_context()' "$RUN" 2>/dev/null | grep -c 'EFFECTIVE_CB_THRESHOLD') || count=0
+_csc_body=$(grep -A 25 '^check_stale_context()' "$RUN" 2>/dev/null)
+if [[ -z "$_csc_body" ]]; then _csc_body=$(grep -A 25 '^check_stale_context()' "$LIB" 2>/dev/null); fi
+count=$(echo "$_csc_body" | grep -c 'EFFECTIVE_CB_THRESHOLD') || count=0
 run_test "AC2-negative: check_stale_context does NOT use EFFECTIVE_CB_THRESHOLD" "$(( count == 0 ))" "1"
 
 # AC2-boundary: EFFECTIVE_CB_THRESHOLD appears >= 3 times in run_ralph_desk.zsh
@@ -135,7 +145,9 @@ count=$(count_grep 'STALE_CONTEXT_COUNT >= 3' "$RUN")
 run_test "AC6-happy: STALE_CONTEXT_COUNT >= 3 unchanged in run_ralph_desk.zsh" "$(( count == 1 ))" "1"
 
 # AC6-negative: check_stale_context function has zero EFFECTIVE_CB_THRESHOLD refs
-count=$(grep -A 25 '^check_stale_context()' "$RUN" 2>/dev/null | grep -c 'EFFECTIVE_CB_THRESHOLD') || count=0
+_csc_body2=$(grep -A 25 '^check_stale_context()' "$RUN" 2>/dev/null)
+if [[ -z "$_csc_body2" ]]; then _csc_body2=$(grep -A 25 '^check_stale_context()' "$LIB" 2>/dev/null); fi
+count=$(echo "$_csc_body2" | grep -c 'EFFECTIVE_CB_THRESHOLD') || count=0
 run_test "AC6-negative: check_stale_context has zero EFFECTIVE_CB_THRESHOLD references" "$(( count == 0 ))" "1"
 
 # AC6-boundary: STALE_CONTEXT_COUNT appears >= 3 times total (init + compare + reset + log)
@@ -167,7 +179,7 @@ count=$(count_grep 'ITER_TIMEOUT.*:-600' "$RUN")
 run_test "AC8-happy: ITER_TIMEOUT default 600 preserved in run_ralph_desk.zsh" "$(( count >= 1 ))" "1"
 
 # AC8-negative: no ITER_TIMEOUT default other than 600
-count=$(grep 'ITER_TIMEOUT:-' "$RUN" 2>/dev/null | grep -v 'ITER_TIMEOUT:-600' | wc -l | tr -d ' ')
+count=$(( $(grep 'ITER_TIMEOUT:-' "$RUN" 2>/dev/null | grep -v 'ITER_TIMEOUT:-600' | wc -l | tr -d ' ') + $(grep 'ITER_TIMEOUT:-' "$LIB" 2>/dev/null | grep -v 'ITER_TIMEOUT:-600' | wc -l | tr -d ' ') ))
 run_test "AC8-negative: no non-600 ITER_TIMEOUT default in run_ralph_desk.zsh" "$(( count == 0 ))" "1"
 
 # AC8-boundary: iter_timeout key still present in session-config.json write block

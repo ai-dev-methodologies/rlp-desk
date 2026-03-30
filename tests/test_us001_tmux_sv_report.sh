@@ -5,6 +5,7 @@
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/src/scripts/run_ralph_desk.zsh"
+LIB="$ROOT/src/scripts/lib_ralph_desk.zsh"
 
 PASS=0
 FAIL=0
@@ -13,8 +14,16 @@ pass() { PASS=$((PASS+1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 
 grep_count() {
+  local pattern="$1"
+  local file="${2:-$RUN}"
   local n
-  n=$(grep -c "$1" "$2" 2>/dev/null) || n=0
+  n=$(grep -c "$pattern" "$file" 2>/dev/null) || n=0
+  # If searching RUN (default), also add counts from LIB
+  if [[ "$file" == "$RUN" ]]; then
+    local n2
+    n2=$(grep -c "$pattern" "$LIB" 2>/dev/null) || n2=0
+    n=$(( n + n2 ))
+  fi
   echo "$n"
 }
 grep_exists() { grep -q "$1" "$2" 2>/dev/null && echo 1 || echo 0; }
@@ -99,17 +108,23 @@ assert_ge "$count" 2 "AC4-boundary: return 0 used for graceful failure (not exit
 # AC4-scoped: verify AC4 patterns exist WITHIN generate_sv_report() body
 # (prevents false-positive from other functions matching same patterns)
 # These tests FAIL when generate_sv_report() is absent — true AC4 RED evidence.
-_sv_fn_body="$(awk '
-  /^generate_sv_report\(\) \{/ { in_fn=1; depth=0 }
-  in_fn {
-    for (i=1; i<=length($0); i++) {
-      c = substr($0, i, 1)
-      if (c == "{") depth++
-      else if (c == "}") { depth--; if (depth == 0) { print; in_fn=0; next } }
+_extract_sv_fn() {
+  awk '
+    /^generate_sv_report\(\) \{/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c = substr($0, i, 1)
+        if (c == "{") depth++
+        else if (c == "}") { depth--; if (depth == 0) { print; in_fn=0; next } }
+      }
+      print
     }
-    print
-  }
-' "$RUN")"
+  ' "$1" 2>/dev/null
+}
+_sv_fn_body="$(_extract_sv_fn "$RUN")"
+if [[ -z "$_sv_fn_body" ]]; then
+  _sv_fn_body="$(_extract_sv_fn "$LIB")"
+fi
 
 count=$(echo "$_sv_fn_body" | grep -c 'command -v claude')
 assert_one "$count" "AC4-scoped-1: command -v claude within generate_sv_report body"

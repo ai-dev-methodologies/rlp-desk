@@ -383,7 +383,8 @@ Bash("codex exec --model <worker_codex_model> --reasoning-effort <worker_codex_r
   - Add that US to `verified_us` in status.json
   - If more US remain → Worker does next US → verify → ...
   - If all US individually passed → signal final full verify (us_id=ALL)
-  - After final full verify passes → COMPLETE
+  - **Sequential final verify** (timeout prevention): Instead of one big ALL verify, loop through each US individually with scoped verifier. After all per-US pass, run the project's test suite as a cross-US integration check. Only COMPLETE if both per-US checks and integration check pass.
+  - After sequential final verify passes → COMPLETE
 
 **Batch mode** (`--verify-mode batch`):
 - Legacy behavior: verify only when Worker signals all work is done

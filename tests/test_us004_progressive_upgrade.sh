@@ -6,6 +6,7 @@
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT_DIR/src/scripts/run_ralph_desk.zsh"
+LIB="$ROOT_DIR/src/scripts/lib_ralph_desk.zsh"
 
 PASS=0
 FAIL=0
@@ -13,10 +14,15 @@ FAIL=0
 pass() { PASS=$((PASS+1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 
-# Helper: extract function body from run_ralph_desk.zsh
+# Helper: extract function body from run_ralph_desk.zsh or lib_ralph_desk.zsh
 extract_fn() {
   local fn_name="$1"
-  sed -n "/^${fn_name}() {$/,/^}$/p" "$RUN" 2>/dev/null
+  local body
+  body=$(sed -n "/^${fn_name}() {$/,/^}$/p" "$RUN" 2>/dev/null)
+  if [[ -z "$body" ]]; then
+    body=$(sed -n "/^${fn_name}() {$/,/^}$/p" "$LIB" 2>/dev/null)
+  fi
+  echo "$body"
 }
 
 # Helper: run a zsh harness script in a tmpdir, return exit code
@@ -40,7 +46,7 @@ echo ""
 echo "--- AC1: Upgrade at 2-attempt window ---"
 
 # AC1-L1-1: check_model_upgrade() function exists
-if grep -qF 'check_model_upgrade()' "$RUN"; then
+if grep -qF 'check_model_upgrade()' "$RUN" || grep -qF 'check_model_upgrade()' "$LIB"; then
   pass "AC1-L1-1: check_model_upgrade() function exists"
 else
   fail "AC1-L1-1: check_model_upgrade() missing from run_ralph_desk.zsh"
@@ -72,7 +78,7 @@ else
 fi
 
 # AC1-L1-4: _SAME_US_FAIL_COUNT state var initialized in script
-if grep -qF '_SAME_US_FAIL_COUNT=0' "$RUN"; then
+if grep -qF '_SAME_US_FAIL_COUNT=0' "$RUN" || grep -qF '_SAME_US_FAIL_COUNT=0' "$LIB"; then
   pass "AC1-L1-4: _SAME_US_FAIL_COUNT initialized in state tracking"
 else
   fail "AC1-L1-4: _SAME_US_FAIL_COUNT=0 initialization missing"
@@ -181,7 +187,7 @@ r=\$(get_next_model 'gpt-5.3-codex-spark:xhigh')
 fi
 
 # AC2-L1-3: ceiling path logs reason=already_max
-if grep -qF 'reason=already_max' "$RUN"; then
+if grep -qF 'reason=already_max' "$RUN" || grep -qF 'reason=already_max' "$LIB"; then
   pass "AC2-L1-3: reason=already_max log present (ceiling detection)"
 else
   fail "AC2-L1-3: reason=already_max missing in ceiling path"
@@ -194,7 +200,7 @@ echo ""
 echo "--- AC3: --lock-worker-model prevents upgrade ---"
 
 # AC3-L1-1: LOCK_WORKER_MODEL variable initialized in script
-if grep -qE 'LOCK_WORKER_MODEL.*=.*0' "$RUN"; then
+if grep -qE 'LOCK_WORKER_MODEL.*=.*0' "$RUN" || grep -qE 'LOCK_WORKER_MODEL.*=.*0' "$LIB"; then
   pass "AC3-L1-1: LOCK_WORKER_MODEL variable initialized"
 else
   fail "AC3-L1-1: LOCK_WORKER_MODEL initialization missing"
@@ -250,7 +256,7 @@ echo ""
 echo "--- AC4: Pass resets counter ---"
 
 # AC4-L1-1: _SAME_US_FAIL_COUNT=0 appears at least twice (init + pass verdict reset)
-count=$(grep -c '_SAME_US_FAIL_COUNT=0' "$RUN" 2>/dev/null); count="${count:-0}"
+count=$(( $(grep -c '_SAME_US_FAIL_COUNT=0' "$RUN" 2>/dev/null || echo 0) + $(grep -c '_SAME_US_FAIL_COUNT=0' "$LIB" 2>/dev/null || echo 0) ))
 if (( count >= 2 )); then
   pass "AC4-L1-1: _SAME_US_FAIL_COUNT=0 reset present in both init and pass verdict path"
 else
@@ -353,7 +359,7 @@ fi
 # AC2-L1-5 (codex boundary): CB ceiling check uses full WORKER_CODEX_MODEL:WORKER_CODEX_REASONING
 # Before fix: only bare WORKER_MODEL passed to get_next_model in CB path (loses reasoning suffix)
 # After fix: _ceiling_model_str computed from WORKER_CODEX_MODEL:WORKER_CODEX_REASONING for codex
-if grep -q '_ceiling_model_str' "$RUN" && grep -q 'WORKER_CODEX_REASONING' "$RUN"; then
+if (grep -q '_ceiling_model_str' "$RUN" || grep -q '_ceiling_model_str' "$LIB") && (grep -q 'WORKER_CODEX_REASONING' "$RUN" || grep -q 'WORKER_CODEX_REASONING' "$LIB"); then
   pass "AC2-L1-5: CB ceiling check uses _ceiling_model_str with WORKER_CODEX_MODEL:WORKER_CODEX_REASONING for codex"
 else
   fail "AC2-L1-5: CB ceiling check must use full WORKER_CODEX_MODEL:WORKER_CODEX_REASONING for codex — bare WORKER_MODEL loses reasoning suffix after upgrade"
