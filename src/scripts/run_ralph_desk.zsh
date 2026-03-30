@@ -192,7 +192,7 @@ launch_worker_codex() {
 
   log "  Launching Worker codex via trigger script in pane $pane_id..."
   paste_to_pane "$pane_id" "bash $trigger_file"
-  tmux send-keys -t "$pane_id" Enter
+  tmux send-keys -t "$pane_id" C-m
   log_debug "Worker codex trigger sent: $trigger_file"
   sleep 3  # brief wait for codex to start
   return 0
@@ -211,7 +211,7 @@ launch_worker_claude() {
 
   log "  Launching Worker claude in pane $pane_id..."
   paste_to_pane "$pane_id" "$worker_launch"
-  tmux send-keys -t "$pane_id" Enter
+  tmux send-keys -t "$pane_id" C-m
 
   # Wait for claude TUI to be ready
   if ! wait_for_pane_ready "$pane_id" 30; then
@@ -223,7 +223,7 @@ launch_worker_claude() {
   sleep 3
   local worker_instruction="Read and execute the instructions in $prompt_file"
   paste_to_pane "$pane_id" "$worker_instruction"
-  tmux send-keys -t "$pane_id" Enter
+  tmux send-keys -t "$pane_id" C-m
   log_debug "Worker instruction sent directly (${#worker_instruction} chars)"
 
   # 15-iteration submit loop — verify claude started working
@@ -244,7 +244,7 @@ launch_worker_claude() {
       sleep 0.2
       paste_to_pane "$pane_id" "$worker_instruction"
       sleep 0.15
-      tmux send-keys -t "$pane_id" Enter
+      tmux send-keys -t "$pane_id" C-m
       sleep 1
     fi
     tmux send-keys -t "$pane_id" C-m 2>/dev/null
@@ -259,15 +259,15 @@ launch_worker_claude() {
     log_debug "[GOV] iter=$iter worker_instruction_failed=true attempts=15 action=restart_claude"
     tmux send-keys -t "$pane_id" C-c 2>/dev/null
     sleep 0.5
-    tmux send-keys -t "$pane_id" "/exit" Enter 2>/dev/null
+    tmux send-keys -t "$pane_id" "/exit" C-m 2>/dev/null
     sleep 2
     wait_for_pane_ready "$pane_id" 10 2>/dev/null || true
     paste_to_pane "$pane_id" "$worker_launch"
-    tmux send-keys -t "$pane_id" Enter
+    tmux send-keys -t "$pane_id" C-m
     if wait_for_pane_ready "$pane_id" 30; then
       sleep 3
       paste_to_pane "$pane_id" "$worker_instruction"
-      tmux send-keys -t "$pane_id" Enter
+      tmux send-keys -t "$pane_id" C-m
       log "  Worker restarted and instruction re-sent"
       log_debug "[FLOW] iter=$iter worker_restart_recovery=success"
     else
@@ -290,7 +290,7 @@ launch_verifier_codex() {
 
   log "  Launching Verifier codex in pane $pane_id..."
   paste_to_pane "$pane_id" "$verifier_launch"
-  tmux send-keys -t "$pane_id" Enter
+  tmux send-keys -t "$pane_id" C-m
   sleep 3
   return 0
 }
@@ -306,7 +306,7 @@ launch_verifier_claude() {
 
   log "  Launching Verifier claude in pane $pane_id..."
   paste_to_pane "$pane_id" "$verifier_launch"
-  tmux send-keys -t "$pane_id" Enter
+  tmux send-keys -t "$pane_id" C-m
 
   if ! wait_for_pane_ready "$pane_id" 30; then
     log_error "Verifier failed to start"
@@ -316,7 +316,7 @@ launch_verifier_claude() {
   sleep 3
   local verifier_instruction="Read and execute the instructions in $prompt_file"
   paste_to_pane "$pane_id" "$verifier_instruction"
-  tmux send-keys -t "$pane_id" Enter
+  tmux send-keys -t "$pane_id" C-m
   log_debug "Verifier instruction sent directly"
 
   # Submit loop — verify verifier started working
@@ -334,7 +334,7 @@ launch_verifier_claude() {
       tmux send-keys -t "$pane_id" C-u 2>/dev/null
       sleep 0.1
       paste_to_pane "$pane_id" "$verifier_instruction"
-      tmux send-keys -t "$pane_id" Enter
+      tmux send-keys -t "$pane_id" C-m
     fi
     tmux send-keys -t "$pane_id" C-m 2>/dev/null
     sleep 0.3
@@ -663,13 +663,13 @@ safe_send_keys() {
   # Auto-approve permission prompts ("Do you want to create/overwrite X?")
   if echo "$initial_capture" | grep -q "Do you want to" 2>/dev/null; then
     log_debug " Permission prompt detected, auto-approving"
-    tmux send-keys -t "$pane_id" Enter
+    tmux send-keys -t "$pane_id" C-m
     sleep 0.3
   fi
   # Auto-dismiss codex update prompt (select Skip)
   if echo "$initial_capture" | grep -qi "new version\|update.*codex\|codex.*update" 2>/dev/null; then
     log_debug " Codex update prompt detected, selecting Skip"
-    tmux send-keys -t "$pane_id" "2" Enter
+    tmux send-keys -t "$pane_id" "2" C-m
     sleep 0.2
   fi
   # Send text via buffer paste (reliable for long strings)
@@ -761,9 +761,9 @@ wait_for_pane_ready() {
     # Auto-dismiss trust prompt (tmux pattern: paneHasTrustPrompt)
     if echo "$captured" | grep -q "Do you trust" 2>/dev/null; then
       log "  Trust prompt detected, auto-dismissing..."
-      tmux send-keys -t "$pane_id" Enter
+      tmux send-keys -t "$pane_id" C-m
       sleep 0.12
-      tmux send-keys -t "$pane_id" Enter
+      tmux send-keys -t "$pane_id" C-m
       sleep 2
       continue
     fi
@@ -771,7 +771,7 @@ wait_for_pane_ready() {
     # Auto-approve permission prompts ("Do you want to create/overwrite X?")
     if echo "$captured" | grep -q "Do you want to" 2>/dev/null; then
       log "  Permission prompt detected, auto-approving..."
-      tmux send-keys -t "$pane_id" Enter
+      tmux send-keys -t "$pane_id" C-m
       sleep 0.5
       continue
     fi
@@ -779,7 +779,7 @@ wait_for_pane_ready() {
     # Auto-dismiss codex update prompt (select Skip = option 2)
     if echo "$captured" | grep -qi "new version\|update.*codex\|codex.*update" 2>/dev/null; then
       log "  Codex update prompt detected, selecting Skip..."
-      tmux send-keys -t "$pane_id" "2" Enter
+      tmux send-keys -t "$pane_id" "2" C-m
       sleep 0.5
       continue
     fi
@@ -917,7 +917,7 @@ restart_worker() {
 
   # Kill existing claude, wait for shell prompt
   tmux send-keys -t "$pane_id" C-c 2>/dev/null
-  tmux send-keys -t "$pane_id" "/exit" Enter 2>/dev/null
+  tmux send-keys -t "$pane_id" "/exit" C-m 2>/dev/null
   sleep 2
 
   # Re-launch worker (tmux interactive pattern)
@@ -1205,11 +1205,11 @@ cleanup() {
   log_debug "cleanup: WORKER_PANE=${WORKER_PANE:-unset} VERIFIER_PANE=${VERIFIER_PANE:-unset}"
   if [[ -n "${WORKER_PANE:-}" ]]; then
     tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
-    tmux send-keys -t "$WORKER_PANE" "/exit" Enter 2>/dev/null
+    tmux send-keys -t "$WORKER_PANE" "/exit" C-m 2>/dev/null
   fi
   if [[ -n "${VERIFIER_PANE:-}" ]]; then
     tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null
-    tmux send-keys -t "$VERIFIER_PANE" "/exit" Enter 2>/dev/null
+    tmux send-keys -t "$VERIFIER_PANE" "/exit" C-m 2>/dev/null
   fi
   sleep 2
   # Kill panes on completion
@@ -1410,7 +1410,7 @@ poll_for_signal() {
         log "  A5: Rate-limited pane shows 'queued messages' — restarting $role pane"
         log_debug "[GOV] iter=$ITERATION phase=rate_limit_pane_restart role=$role reason=queued_messages"
         tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
-        tmux send-keys -t "$pane_id" "/exit" Enter 2>/dev/null; sleep 2
+        tmux send-keys -t "$pane_id" "/exit" C-m 2>/dev/null; sleep 2
         wait_for_pane_ready "$pane_id" 10 2>/dev/null || true
       fi
       sleep "$_API_RETRY_INTERVAL_S"
@@ -1487,7 +1487,7 @@ poll_for_signal() {
     if echo "$poll_capture" | grep -q "Do you want to" 2>/dev/null; then
       log "  Permission prompt detected during poll, auto-approving..."
       log_debug "[FLOW] iter=$ITERATION permission_prompt_auto_approved=true"
-      tmux send-keys -t "$pane_id" Enter
+      tmux send-keys -t "$pane_id" C-m
       sleep 0.5
     fi
 
@@ -1529,12 +1529,12 @@ run_single_verifier() {
     log_debug "[GOV] iter=$iter pane_dead=true pane_id=$VERIFIER_PANE cmd=$verifier_cmd action=reset_shell"
     tmux send-keys -t "$VERIFIER_PANE" C-c C-u 2>/dev/null
     sleep 0.2
-    tmux send-keys -t "$VERIFIER_PANE" "clear" Enter 2>/dev/null
+    tmux send-keys -t "$VERIFIER_PANE" "clear" C-m 2>/dev/null
     sleep 0.3
   elif [[ "$verifier_cmd" == "node" || "$verifier_cmd" == "claude" || "$verifier_cmd" == "codex" ]]; then
     tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null
     sleep 0.5
-    tmux send-keys -t "$VERIFIER_PANE" "/exit" Enter 2>/dev/null
+    tmux send-keys -t "$VERIFIER_PANE" "/exit" C-m 2>/dev/null
     sleep 2
   fi
   # Always ensure clean shell state before launching new verifier
@@ -1628,7 +1628,7 @@ run_sequential_final_verify() {
     verifier_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null)
     if [[ "$verifier_cmd" == "node" || "$verifier_cmd" == "claude" || "$verifier_cmd" == "codex" ]]; then
       tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null; sleep 0.5
-      tmux send-keys -t "$VERIFIER_PANE" "/exit" Enter 2>/dev/null; sleep 2
+      tmux send-keys -t "$VERIFIER_PANE" "/exit" C-m 2>/dev/null; sleep 2
     fi
     wait_for_pane_ready "$VERIFIER_PANE" 10 2>/dev/null || true
 
@@ -2065,7 +2065,7 @@ main() {
       # Send C-c first (in case claude is mid-task), then /exit
       tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
       sleep 1
-      tmux send-keys -t "$WORKER_PANE" "/exit" Enter 2>/dev/null
+      tmux send-keys -t "$WORKER_PANE" "/exit" C-m 2>/dev/null
       sleep 2
       # Wait for shell prompt before proceeding
       wait_for_pane_ready "$WORKER_PANE" 10 2>/dev/null || true
@@ -2261,12 +2261,12 @@ main() {
             log_debug "[GOV] iter=$ITERATION pane_dead=true pane_id=$VERIFIER_PANE cmd=$verifier_cmd action=reset_shell"
             tmux send-keys -t "$VERIFIER_PANE" C-c C-u 2>/dev/null
             sleep 0.2
-            tmux send-keys -t "$VERIFIER_PANE" "clear" Enter 2>/dev/null
+            tmux send-keys -t "$VERIFIER_PANE" "clear" C-m 2>/dev/null
             sleep 0.3
           elif [[ "$verifier_cmd" == "node" || "$verifier_cmd" == "claude" || "$verifier_cmd" == "codex" ]]; then
             tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null
             sleep 0.5
-            tmux send-keys -t "$VERIFIER_PANE" "/exit" Enter 2>/dev/null
+            tmux send-keys -t "$VERIFIER_PANE" "/exit" C-m 2>/dev/null
             sleep 2
           fi
           wait_for_pane_ready "$VERIFIER_PANE" 10 2>/dev/null || true
