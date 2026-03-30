@@ -571,7 +571,7 @@ When `--verify-consensus` is enabled, also track in `status.json`:
 ---
 
 ## `status <slug>`
-Read `.claude/ralph-desk/logs/<slug>/status.json` and display a detailed report:
+Read `.claude/ralph-desk/logs/<slug>/runtime/status.json` and display a detailed report:
 
 ```
 Campaign: <slug>
@@ -600,16 +600,16 @@ Remove:
 - `.claude/ralph-desk/memos/<slug>-verify-verdict.json`
 - `.claude/ralph-desk/memos/<slug>-iter-signal.json`
 - `.claude/ralph-desk/logs/<slug>/circuit-breaker.json`
-- `.claude/ralph-desk/logs/<slug>/session-config.json`
-- `.claude/ralph-desk/logs/<slug>/worker-heartbeat.json`
-- `.claude/ralph-desk/logs/<slug>/verifier-heartbeat.json`
+- `.claude/ralph-desk/logs/<slug>/runtime/session-config.json`
+- `.claude/ralph-desk/logs/<slug>/runtime/worker-heartbeat.json`
+- `.claude/ralph-desk/logs/<slug>/runtime/verifier-heartbeat.json`
 - `.claude/ralph-desk/memos/<slug>-escalation.md`
 Note: `campaign-report.md`, `campaign-report-v{N}.md`, `iter-NNN-done-claim.json`, and `iter-NNN-verify-verdict.json` are intentionally preserved across clean for historical comparison. Analytics files (`debug.log`, `campaign.jsonl`, `self-verification-data.json`, `self-verification-report-NNN.md`) at `~/.claude/ralph-desk/analytics/<slug>/` are NOT affected by project-level clean.
 
 If `--kill-session` is passed, clean up Worker/Verifier tmux panes using session-config.json:
 ```bash
 # Read pane IDs from session-config.json (safe — targets only Worker/Verifier panes)
-SESSION_CONFIG=".claude/ralph-desk/logs/<slug>/session-config.json"
+SESSION_CONFIG=".claude/ralph-desk/logs/<slug>/runtime/session-config.json"
 if [ -f "$SESSION_CONFIG" ] && command -v jq &>/dev/null; then
   WORKER_PANE=$(jq -r '.panes.worker // empty' "$SESSION_CONFIG")
   VERIFIER_PANE=$(jq -r '.panes.verifier // empty' "$SESSION_CONFIG")
@@ -649,7 +649,7 @@ Data sources:
 
 Resume a previously interrupted campaign. Equivalent to `run <slug>` but explicitly restores state:
 
-1. Read `.claude/ralph-desk/logs/<slug>/status.json` for `verified_us`, `iteration`, `consecutive_failures`
+1. Read `.claude/ralph-desk/logs/<slug>/runtime/status.json` for `verified_us`, `iteration`, `consecutive_failures`
 2. Read `.claude/ralph-desk/memos/<slug>-memory.md` for completed stories and next iteration contract
 3. Check for sentinels (`complete.md`, `blocked.md`) — if present, inform user and stop
 4. If no sentinels, invoke `run <slug>` with the same options from the previous session (stored in status.json fields: `worker_model`, `verifier_model`, `verify_mode`, `verify_consensus`)

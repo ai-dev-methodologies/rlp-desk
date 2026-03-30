@@ -88,6 +88,7 @@ PROMPTS_DIR="$DESK/prompts"
 CONTEXT_DIR="$DESK/context"
 MEMOS_DIR="$DESK/memos"
 LOGS_DIR="$DESK/logs/$SLUG"
+RUNTIME_DIR="$LOGS_DIR/runtime"
 PRD_FILE="$DESK/plans/prd-$SLUG.md"
 TEST_SPEC_FILE="$DESK/plans/test-spec-$SLUG.md"
 # --- Analytics Directory (user-level, cross-project) ---
@@ -105,10 +106,10 @@ VERDICT_FILE="$MEMOS_DIR/${SLUG}-verify-verdict.json"
 COMPLETE_SENTINEL="$MEMOS_DIR/${SLUG}-complete.md"
 BLOCKED_SENTINEL="$MEMOS_DIR/${SLUG}-blocked.md"
 LOCKFILE_PATH="$DESK/logs/.rlp-desk-${SLUG}.lock"
-STATUS_FILE="$LOGS_DIR/status.json"
-SESSION_CONFIG="$LOGS_DIR/session-config.json"
-WORKER_HEARTBEAT="$LOGS_DIR/worker-heartbeat.json"
-VERIFIER_HEARTBEAT="$LOGS_DIR/verifier-heartbeat.json"
+STATUS_FILE="$RUNTIME_DIR/status.json"
+SESSION_CONFIG="$RUNTIME_DIR/session-config.json"
+WORKER_HEARTBEAT="$RUNTIME_DIR/worker-heartbeat.json"
+VERIFIER_HEARTBEAT="$RUNTIME_DIR/verifier-heartbeat.json"
 COST_LOG="$LOGS_DIR/cost-log.jsonl"
 
 # --- Session Naming ---
@@ -1884,7 +1885,7 @@ main() {
     LOCKFILE_ACQUIRED=1
   fi
   trap cleanup EXIT INT TERM
-  mkdir -p "$LOGS_DIR" 2>/dev/null
+  mkdir -p "$LOGS_DIR" "$RUNTIME_DIR" 2>/dev/null
 
   # --- Analytics directory: create only when --debug or --with-self-verification ---
   if (( DEBUG )) || (( WITH_SELF_VERIFICATION )); then

@@ -248,7 +248,7 @@ if [[ -n "$MODE" ]]; then
   done
 
   # Delete status.json, baseline.log, cost-log.jsonl
-  for f in "$LOGS_DIR/status.json" "$LOGS_DIR/baseline.log" "$LOGS_DIR/cost-log.jsonl"; do
+  for f in "$LOGS_DIR/runtime/status.json" "$LOGS_DIR/status.json" "$LOGS_DIR/baseline.log" "$LOGS_DIR/cost-log.jsonl"; do
     [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
   done
 
