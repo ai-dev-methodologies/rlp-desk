@@ -185,7 +185,7 @@ Verification occurs at two boundaries, not as a single final event.
 ### Checkpoint 2: Release Readiness (us_id=ALL)
 - Trigger: all individual US pass Checkpoint 1 → Worker signals verify with us_id = "ALL"
 - Scope: all AC + L2 integration (if applicable) + L3 E2E Simulation + L4 deploy (if applicable) + mutation score (if CRITICAL, when mutation testing tool is configured in test-spec)
-- On fail: fix loop; escalation to user if 3 consecutive failures
+- On fail: fix loop; escalation to user if 6 consecutive failures (default cb_threshold)
 
 ### Relationship to Existing Flow
 - Checkpoint 1 = existing per-US verify (§7a). No change.
@@ -574,7 +574,7 @@ In tmux mode: Leader writes `<slug>-escalation.md` with the report and sets BLOC
 |-----------|---------|
 | context-latest.md unchanged for 3 consecutive iterations | BLOCKED |
 | Same acceptance criterion fails 2 consecutive iterations | Upgrade model, retry once (Agent mode only; tmux: same model retry); if still failing → Architecture Escalation (§7¾) → BLOCKED |
-| `cb_threshold` consecutive **fail** verdicts on `cb_threshold` unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED (adjustable via `--cb-threshold`) |
+| `cb_threshold` (default: 6) consecutive **fail** verdicts on `cb_threshold` unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED (adjustable via `--cb-threshold`) |
 | max_iter reached | TIMEOUT (report to user) |
 
 The Leader tracks `consecutive_failures` in `status.json`:
