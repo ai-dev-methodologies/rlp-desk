@@ -351,9 +351,8 @@ write_cost_log() {
   echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"worker_start_time":"'"$worker_start_time"'","worker_end_time":"'"$worker_end_time"'","worker_duration_s":'"$worker_duration_s"',"verifier_start_time":"'"$verifier_start_time"'","verifier_end_time":"'"$verifier_end_time"'","verifier_duration_s":'"$verifier_duration_s"''"$consensus_fields"',"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$COST_LOG"
 }
 
-# --- Analytics: write per-iteration structured data to campaign.jsonl ---
+# --- Analytics: write per-iteration structured data to campaign.jsonl (always-on) ---
 write_campaign_jsonl() {
-  if (( ! DEBUG )) && (( ! WITH_SELF_VERIFICATION )); then return 0; fi
   local iter="$1"
   local us_id="${2:-unknown}"
   local verdict="${3:-unknown}"
@@ -376,12 +375,14 @@ write_campaign_jsonl() {
     --arg claude_verdict "${CLAUDE_VERDICT:-$verdict}" \
     --arg codex_verdict "${CODEX_VERDICT:-N/A}" \
     --argjson consensus "$VERIFY_CONSENSUS" \
+    --argjson consecutive_failures "$CONSECUTIVE_FAILURES" \
+    --argjson model_upgraded "${_MODEL_UPGRADED:-0}" \
     --argjson duration_worker_s "$worker_duration_s" \
     --argjson duration_verifier_s "$verifier_duration_s" \
     --arg project_root "$ROOT" \
     --arg slug "$SLUG" \
     --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus: $consensus, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp}' \
+    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus: $consensus, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp}' \
     >> "$CAMPAIGN_JSONL"
 }
 
@@ -431,7 +432,7 @@ ${untracked}"
   local sv_summary=""
   if (( WITH_SELF_VERIFICATION )); then
     local sv_report
-    sv_report=$(ls -t "$ANALYTICS_DIR"/self-verification-report-*.md 2>/dev/null | head -1)
+    sv_report=$(ls -t "$LOGS_DIR"/self-verification-report-*.md 2>/dev/null | head -1)
     if [[ -n "$sv_report" ]]; then
       sv_summary="See: $sv_report"
     else

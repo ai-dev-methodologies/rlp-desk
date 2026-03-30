@@ -72,7 +72,7 @@ VERIFY_CONSENSUS="${VERIFY_CONSENSUS:-0}"   # 0|1
 FINAL_CONSENSUS="${FINAL_CONSENSUS:-0}"     # 0|1 — consensus for final ALL verify only (independent of VERIFY_CONSENSUS)
 CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-all}"   # all|final-only
 CONSENSUS_FAIL_FAST="${CONSENSUS_FAIL_FAST:-0}" # 0|1 — skip second verifier if first fails
-CB_THRESHOLD="${CB_THRESHOLD:-3}"           # consecutive failures before BLOCKED (default: 3)
+CB_THRESHOLD="${CB_THRESHOLD:-6}"           # consecutive failures before BLOCKED (default: 6)
 # Effective CB threshold: doubled when consensus mode active (AC2 auto-double)
 if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
   EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD * 2 ))
@@ -1887,12 +1887,10 @@ main() {
   trap cleanup EXIT INT TERM
   mkdir -p "$LOGS_DIR" "$RUNTIME_DIR" 2>/dev/null
 
-  # --- Analytics directory: create only when --debug or --with-self-verification ---
-  if (( DEBUG )) || (( WITH_SELF_VERIFICATION )); then
-    mkdir -p "$ANALYTICS_DIR" 2>/dev/null
-  fi
+  # --- Analytics directory: always create (campaign.jsonl + metadata.json are always-on) ---
+  mkdir -p "$ANALYTICS_DIR" 2>/dev/null
 
-  # --- debug.log versioning (in analytics dir) ---
+  # --- debug.log versioning (in analytics dir, --debug only) ---
   if (( DEBUG )) && [[ -f "$DEBUG_LOG" ]]; then
     local dbg_n=1
     while [[ -f "${DEBUG_LOG%.log}-v${dbg_n}.log" ]]; do
@@ -1901,33 +1899,30 @@ main() {
     mv "$DEBUG_LOG" "${DEBUG_LOG%.log}-v${dbg_n}.log"
   fi
 
-  # --- campaign.jsonl versioning (in analytics dir, after mkdir) ---
-  if (( DEBUG )) || (( WITH_SELF_VERIFICATION )); then
-    if [[ -f "$CAMPAIGN_JSONL" ]]; then
-      local cj_n=1
-      while [[ -f "${CAMPAIGN_JSONL%.jsonl}-v${cj_n}.jsonl" ]]; do
-        (( cj_n++ ))
-      done
-      mv "$CAMPAIGN_JSONL" "${CAMPAIGN_JSONL%.jsonl}-v${cj_n}.jsonl"
-    fi
+  # --- campaign.jsonl versioning (always-on) ---
+  if [[ -f "$CAMPAIGN_JSONL" ]]; then
+    local cj_n=1
+    while [[ -f "${CAMPAIGN_JSONL%.jsonl}-v${cj_n}.jsonl" ]]; do
+      (( cj_n++ ))
+    done
+    mv "$CAMPAIGN_JSONL" "${CAMPAIGN_JSONL%.jsonl}-v${cj_n}.jsonl"
   fi
 
-  # --- metadata.json: write at campaign start ---
-  if (( DEBUG )) || (( WITH_SELF_VERIFICATION )); then
-    jq -n \
-      --arg slug "$SLUG" \
-      --arg project_root "$ROOT" \
-      --arg campaign_status "running" \
-      --arg start_time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      --arg end_time "" \
-      --arg worker_model "$WORKER_MODEL" \
-      --arg verifier_model "$VERIFIER_MODEL" \
-      --argjson debug "$DEBUG" \
-      --argjson with_sv "$WITH_SELF_VERIFICATION" \
-      --argjson consensus "$VERIFY_CONSENSUS" \
-      '{slug: $slug, project_root: $project_root, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, consensus: $consensus}' \
-      > "$METADATA_FILE"
-  fi
+  # --- metadata.json: always write at campaign start (cross-project identification) ---
+  jq -n \
+    --arg slug "$SLUG" \
+    --arg project_root "$ROOT" \
+    --arg project_name "$(basename "$ROOT")" \
+    --arg campaign_status "running" \
+    --arg start_time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg end_time "" \
+    --arg worker_model "$WORKER_MODEL" \
+    --arg verifier_model "$VERIFIER_MODEL" \
+    --argjson debug "$DEBUG" \
+    --argjson with_sv "$WITH_SELF_VERIFICATION" \
+    --argjson consensus "$VERIFY_CONSENSUS" \
+    '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, consensus: $consensus}' \
+    > "$METADATA_FILE"
 
   # --- Startup ---
   log "Ralph Desk Tmux Runner starting..."
