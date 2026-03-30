@@ -25,29 +25,30 @@ echo ""
 # Create directories
 mkdir -p "$COMMANDS_DIR"
 mkdir -p "$DESK_DIR"
+mkdir -p "$DESK_DIR/docs/internal"
+mkdir -p "$DESK_DIR/docs/blueprints"
 
-# Download slash command
-echo "  Downloading slash command..."
+# Runtime files
+echo "  Downloading runtime files..."
 curl -sSL "$REPO_URL/src/commands/rlp-desk.md" -o "$COMMANDS_DIR/rlp-desk.md"
-
-# Download init script
-echo "  Downloading init script..."
 curl -sSL "$REPO_URL/src/scripts/init_ralph_desk.zsh" -o "$DESK_DIR/init_ralph_desk.zsh"
-chmod +x "$DESK_DIR/init_ralph_desk.zsh"
-
-# Download tmux runner script
-echo "  Downloading tmux runner script..."
 curl -sSL "$REPO_URL/src/scripts/run_ralph_desk.zsh" -o "$DESK_DIR/run_ralph_desk.zsh"
-chmod +x "$DESK_DIR/run_ralph_desk.zsh"
-
-# Download shared business logic library
-echo "  Downloading shared library..."
 curl -sSL "$REPO_URL/src/scripts/lib_ralph_desk.zsh" -o "$DESK_DIR/lib_ralph_desk.zsh"
-chmod +x "$DESK_DIR/lib_ralph_desk.zsh"
-
-# Download governance protocol
-echo "  Downloading governance protocol..."
 curl -sSL "$REPO_URL/src/governance.md" -o "$DESK_DIR/governance.md"
+curl -sSL "$REPO_URL/src/model-upgrade-table.md" -o "$DESK_DIR/model-upgrade-table.md"
+chmod +x "$DESK_DIR/init_ralph_desk.zsh" "$DESK_DIR/run_ralph_desk.zsh" "$DESK_DIR/lib_ralph_desk.zsh"
+
+# Reference docs
+echo "  Downloading reference docs..."
+curl -sSL "$REPO_URL/README.md" -o "$DESK_DIR/README.md"
+curl -sSL "$REPO_URL/install.sh" -o "$DESK_DIR/install.sh"
+curl -sSL "$REPO_URL/docs/architecture.md" -o "$DESK_DIR/docs/architecture.md"
+curl -sSL "$REPO_URL/docs/getting-started.md" -o "$DESK_DIR/docs/getting-started.md"
+curl -sSL "$REPO_URL/docs/protocol-reference.md" -o "$DESK_DIR/docs/protocol-reference.md"
+curl -sSL "$REPO_URL/docs/TODO-verification-next.md" -o "$DESK_DIR/docs/TODO-verification-next.md"
+curl -sSL "$REPO_URL/docs/internal/verification-policy-gap-analysis.md" -o "$DESK_DIR/docs/internal/verification-policy-gap-analysis.md"
+curl -sSL "$REPO_URL/docs/internal/verification-strategy-research.md" -o "$DESK_DIR/docs/internal/verification-strategy-research.md"
+curl -sSL "$REPO_URL/docs/blueprints/blueprint-v0.4-evolution.md" -o "$DESK_DIR/docs/blueprints/blueprint-v0.4-evolution.md"
 
 # Check tmux availability
 if ! command -v tmux &>/dev/null; then
