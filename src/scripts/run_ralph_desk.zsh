@@ -66,7 +66,7 @@ _auto_detect_engine() {
   if [[ "$model_val" == *:* ]]; then
     local model_part="${model_val%%:*}"
     local reasoning_part="${model_val##*:}"
-    [[ "$model_part" == *spark* ]] && model_part="spark"
+    [[ "$model_part" == "spark" ]] && model_part="gpt-5.3-codex-spark"
     eval "$engine_var=codex"
     eval "$model_var=$model_part"
     [[ -n "$codex_model_var" ]] && eval "$codex_model_var=$model_part"
@@ -1936,7 +1936,7 @@ main() {
     --arg verifier_model "$VERIFIER_MODEL" \
     --argjson debug "$DEBUG" \
     --argjson with_sv "$WITH_SELF_VERIFICATION" \
-    --argjson consensus "$VERIFY_CONSENSUS" \
+    --argjson consensus "${VERIFY_CONSENSUS:-0}" \
     '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, consensus: $consensus}' \
     > "$METADATA_FILE"
 
@@ -1980,7 +1980,7 @@ main() {
       log_debug "[OPTION] expected_flow=worker(all)->verify(ALL)->COMPLETE"
     fi
 
-    if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+    if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
       log_debug "[OPTION] consensus_flow=each_verify_runs_claude+codex_both_must_pass"
     fi
   fi
