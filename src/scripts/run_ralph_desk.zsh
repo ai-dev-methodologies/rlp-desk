@@ -58,10 +58,30 @@ IDLE_NUDGE_THRESHOLD="${IDLE_NUDGE_THRESHOLD:-30}"
 MAX_NUDGES="${MAX_NUDGES:-3}"
 WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 
-# --- Engine Selection ---
-WORKER_ENGINE="${WORKER_ENGINE:-claude}"    # claude|codex
-VERIFIER_ENGINE="${VERIFIER_ENGINE:-claude}"  # claude|codex
-FINAL_VERIFIER_ENGINE="${FINAL_VERIFIER_ENGINE:-claude}"  # claude|codex (derived from FINAL_VERIFIER_MODEL)
+# --- Engine Selection (auto-detect from model format: name=claude, name:reasoning=codex) ---
+# If model contains ":", it's codex format — auto-set engine and split model/reasoning
+_auto_detect_engine() {
+  local model_var="$1" engine_var="$2" codex_model_var="$3" codex_reasoning_var="$4"
+  local model_val="${(P)model_var}"
+  if [[ "$model_val" == *:* ]]; then
+    local model_part="${model_val%%:*}"
+    local reasoning_part="${model_val##*:}"
+    [[ "$model_part" == *spark* ]] && model_part="spark"
+    eval "$engine_var=codex"
+    eval "$model_var=$model_part"
+    [[ -n "$codex_model_var" ]] && eval "$codex_model_var=$model_part"
+    [[ -n "$codex_reasoning_var" ]] && eval "$codex_reasoning_var=$reasoning_part"
+  fi
+}
+
+WORKER_ENGINE="${WORKER_ENGINE:-claude}"
+VERIFIER_ENGINE="${VERIFIER_ENGINE:-claude}"
+FINAL_VERIFIER_ENGINE="${FINAL_VERIFIER_ENGINE:-claude}"
+
+# Auto-detect engine from model format for env var path (CLI path uses parse_model_flag)
+_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING
+_auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING
+_auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE "" ""
 WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.4}"
 WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high
 VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.4}"
