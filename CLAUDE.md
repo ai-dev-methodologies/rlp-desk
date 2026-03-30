@@ -23,11 +23,41 @@
 - All 3 must PASS before commit is allowed. No exceptions, no "scaffold-only" verification.
 - If any scenario FAIL: fix the issue, re-run the failing scenario, then re-verify all 3.
 
-### Local File Sync
-- After every commit that changes `src/commands/rlp-desk.md`, `src/governance.md`, or `src/scripts/init_ralph_desk.zsh`, copy the updated files to local install:
-  - `src/commands/rlp-desk.md` → `~/.claude/commands/rlp-desk.md`
-  - `src/governance.md` → `~/.claude/ralph-desk/governance.md`
-  - `src/scripts/init_ralph_desk.zsh` → `~/.claude/ralph-desk/init_ralph_desk.zsh`
+### Local File Sync (ABSOLUTE — no exceptions)
+After every commit that changes ANY src/ file, sync ALL distributable files to local install. Not just the changed ones — ALL of them. Then verify with `diff -q`.
+
+**Runtime files (always sync):**
+```
+src/commands/rlp-desk.md        → ~/.claude/commands/rlp-desk.md
+src/governance.md               → ~/.claude/ralph-desk/governance.md
+src/model-upgrade-table.md      → ~/.claude/ralph-desk/model-upgrade-table.md
+src/scripts/init_ralph_desk.zsh → ~/.claude/ralph-desk/init_ralph_desk.zsh
+src/scripts/run_ralph_desk.zsh  → ~/.claude/ralph-desk/run_ralph_desk.zsh
+src/scripts/lib_ralph_desk.zsh  → ~/.claude/ralph-desk/lib_ralph_desk.zsh
+```
+
+**Reference docs (always sync):**
+```
+README.md                       → ~/.claude/ralph-desk/README.md
+install.sh                      → ~/.claude/ralph-desk/install.sh
+docs/architecture.md            → ~/.claude/ralph-desk/docs/architecture.md
+docs/getting-started.md         → ~/.claude/ralph-desk/docs/getting-started.md
+docs/protocol-reference.md      → ~/.claude/ralph-desk/docs/protocol-reference.md
+docs/TODO-verification-next.md  → ~/.claude/ralph-desk/docs/TODO-verification-next.md
+docs/internal/*                 → ~/.claude/ralph-desk/docs/internal/
+docs/blueprints/*               → ~/.claude/ralph-desk/docs/blueprints/
+```
+
+**Verification (mandatory after sync):**
+```bash
+diff -q src/commands/rlp-desk.md ~/.claude/commands/rlp-desk.md
+diff -q src/governance.md ~/.claude/ralph-desk/governance.md
+diff -q src/scripts/init_ralph_desk.zsh ~/.claude/ralph-desk/init_ralph_desk.zsh
+diff -q src/scripts/run_ralph_desk.zsh ~/.claude/ralph-desk/run_ralph_desk.zsh
+diff -q src/scripts/lib_ralph_desk.zsh ~/.claude/ralph-desk/lib_ralph_desk.zsh
+diff -q README.md ~/.claude/ralph-desk/README.md
+```
+All must show no output (identical). Any diff = sync incomplete.
 
 ### Release Notes Rule
 - Release notes MUST only contain **user-facing features and fixes**.
