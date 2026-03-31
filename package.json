@@ -1,6 +1,6 @@
 {
   "name": "@ai-dev-methodologies/rlp-desk",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "description": "Fresh-context iterative loops for Claude Code — autonomous task completion with independent verification",
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
