@@ -211,19 +211,55 @@ check_dead_pane() {
   return 1  # alive
 }
 
-# launch_worker_codex() — launch codex Worker via trigger script (non-interactive exec)
-# Args: $1=pane_id  $2=trigger_file  $3=iteration
-# Returns: 0 always (codex failures detected by poll_for_signal)
+# launch_worker_codex() — launch codex Worker TUI, send instruction, verify submission
+# Matches launch_worker_claude() pattern for consistent tmux-visible execution.
+# Args: $1=pane_id  $2=prompt_file  $3=iteration  $4=worker_launch_cmd
+# Returns: 0 on success, 1 on fatal failure
 launch_worker_codex() {
   local pane_id="$1"
-  local trigger_file="$2"
+  local prompt_file="$2"
   local iter="$3"
+  local worker_launch="$4"
 
-  log "  Launching Worker codex via trigger script in pane $pane_id..."
-  paste_to_pane "$pane_id" "bash $trigger_file"
+  log "  Launching Worker codex TUI in pane $pane_id..."
+  paste_to_pane "$pane_id" "$worker_launch"
   tmux send-keys -t "$pane_id" C-m
-  log_debug "Worker codex trigger sent: $trigger_file"
-  sleep 3  # brief wait for codex to start
+
+  # Wait for codex TUI to be ready
+  if ! wait_for_pane_ready "$pane_id" 30; then
+    log_error "Worker codex failed to start"
+    return 1
+  fi
+
+  # Send instruction to codex TUI
+  sleep 3
+  local worker_instruction="Read and execute the instructions in $prompt_file"
+  paste_to_pane "$pane_id" "$worker_instruction"
+  tmux send-keys -t "$pane_id" C-m
+  log_debug "Worker codex instruction sent (${#worker_instruction} chars)"
+
+  # Submit loop — verify codex started working
+  local submit_attempts=0
+  while (( submit_attempts < 15 )); do
+    sleep 2
+    local pane_check
+    pane_check=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
+    if echo "$pane_check" | grep -qi "working\|thinking\|Exploring\|Running\|reading\|searching\|editing\|writing" 2>/dev/null; then
+      log_debug "Worker codex started working after $((submit_attempts + 1)) checks"
+      break
+    fi
+    if (( submit_attempts == 8 )); then
+      log_debug "Adaptive instruction retry: clearing line and re-typing"
+      tmux send-keys -t "$pane_id" C-u 2>/dev/null
+      sleep 0.1
+      paste_to_pane "$pane_id" "$worker_instruction"
+      tmux send-keys -t "$pane_id" C-m
+    fi
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null
+    sleep 0.3
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null
+    (( submit_attempts++ ))
+  done
   return 0
 }
 
@@ -308,19 +344,53 @@ launch_worker_claude() {
   return 0
 }
 
-# launch_verifier_codex() — launch codex Verifier in pane (non-interactive)
+# launch_verifier_codex() — launch codex Verifier TUI, send instruction, verify submission
+# Matches launch_verifier_claude() pattern for consistent tmux-visible execution.
 # Args: $1=pane_id  $2=prompt_file  $3=iteration  $4=launch_cmd
-# Returns: 0 always
+# Returns: 0 on success
 launch_verifier_codex() {
   local pane_id="$1"
   local prompt_file="$2"
   local iter="$3"
   local verifier_launch="$4"
 
-  log "  Launching Verifier codex in pane $pane_id..."
+  log "  Launching Verifier codex TUI in pane $pane_id..."
   paste_to_pane "$pane_id" "$verifier_launch"
   tmux send-keys -t "$pane_id" C-m
+
+  if ! wait_for_pane_ready "$pane_id" 30; then
+    log_error "Verifier codex failed to start"
+    return 1
+  fi
+
   sleep 3
+  local verifier_instruction="Read and execute the instructions in $prompt_file"
+  paste_to_pane "$pane_id" "$verifier_instruction"
+  tmux send-keys -t "$pane_id" C-m
+  log_debug "Verifier codex instruction sent"
+
+  # Submit loop — verify codex started working
+  local submit_attempts=0
+  while (( submit_attempts < 15 )); do
+    sleep 2
+    local vs_check
+    vs_check=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
+    if echo "$vs_check" | grep -qi "working\|thinking\|Exploring\|Running\|reading\|searching\|editing\|writing" 2>/dev/null; then
+      log_debug "Verifier codex started working after $((submit_attempts + 1)) checks"
+      break
+    fi
+    if (( submit_attempts == 8 )); then
+      log_debug "Adaptive instruction retry: clearing line and re-typing"
+      tmux send-keys -t "$pane_id" C-u 2>/dev/null
+      sleep 0.1
+      paste_to_pane "$pane_id" "$verifier_instruction"
+      tmux send-keys -t "$pane_id" C-m
+    fi
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null
+    sleep 0.3
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null
+    (( submit_attempts++ ))
+  done
   return 0
 }
 
@@ -386,7 +456,7 @@ handle_worker_exit_codex() {
     local dc_us_id
     dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
     log "  Codex worker completed with done-claim (us_id=$dc_us_id). Auto-generating signal."
-    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exec exit","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exit","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
   else
     log "  WARNING: Codex worker exited without done-claim. Generating verify signal for current US."
     local current_us
@@ -394,7 +464,7 @@ handle_worker_exit_codex() {
     local mem_us
     mem_us=$(sed -n 's/.*Next.*US-\([0-9]*\).*/US-\1/p' "$DESK/memos/${SLUG}-memory.md" 2>/dev/null | head -1)
     [[ -n "$mem_us" ]] && current_us="$mem_us"
-    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$current_us"'","summary":"auto-generated after codex exec exit (no done-claim)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$current_us"'","summary":"auto-generated after codex exit (no done-claim)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
   fi
   return 0
 }
@@ -1079,12 +1149,12 @@ write_worker_trigger() {
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
   # Engine-specific launch command (expanded at write time)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
-    local engine_cmd="${CODEX_BIN:-codex} exec \\
+    local engine_cmd="${CODEX_BIN:-codex} \\
   -m $WORKER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" \\
   --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\""
-    local engine_comment="# Run codex exec with fresh context (no pipe — codex requires terminal)"
+    local engine_comment="# Run codex with fresh context (fallback trigger — TUI primary launch via launch_worker_codex)"
   else
     local engine_cmd="$CLAUDE_BIN -p \"\$(cat $prompt_file)\" \\
   --model $WORKER_MODEL \\
@@ -1577,9 +1647,9 @@ run_single_verifier() {
   # Launch verifier — dispatch to engine-specific function
   local verifier_launch
   if [[ "$engine" = "codex" ]]; then
-    verifier_launch="${CODEX_BIN:-codex} exec \"\$(cat $prompt_file)\" -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+    verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
     launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
-    log_debug "Verifier$suffix codex exec dispatched"
+    log_debug "Verifier$suffix codex TUI dispatched"
   else
     verifier_launch="$CLAUDE_BIN --model $model --dangerously-skip-permissions"
     if ! launch_verifier_claude "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"; then
@@ -1592,7 +1662,7 @@ run_single_verifier() {
   # Poll for verdict
   if [[ "$engine" = "codex" ]]; then
     # Codex exec: simple file poll (non-interactive, no heartbeat/nudge needed)
-    log "  Polling for verify-verdict.json ($suffix, codex exec)..."
+    log "  Polling for verify-verdict.json ($suffix, codex TUI)..."
     local codex_poll_start
     codex_poll_start=$(date +%s)
     while true; do
@@ -2104,9 +2174,12 @@ main() {
 
     local worker_launch
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
-      local worker_trigger="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-trigger.sh"
-      worker_launch="bash $worker_trigger"
-      launch_worker_codex "$WORKER_PANE" "$worker_trigger" "$ITERATION"
+      worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+      if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
+        write_blocked_sentinel "Worker codex failed to start in pane"
+        update_status "blocked" "worker_start_failed"
+        return 1
+      fi
     else
       worker_launch="$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
       if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
