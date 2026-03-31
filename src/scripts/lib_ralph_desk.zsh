@@ -31,7 +31,7 @@ log_error() {
 
 # parse_model_flag() — parse unified --worker-model / --verifier-model value
 # Colon format (model:reasoning) → codex engine; plain name → claude engine.
-# Spark alias: any model name containing "spark" is normalized to "spark".
+# Spark alias: bare "spark" is expanded to full model ID "gpt-5.3-codex-spark".
 # Usage:  parse_model_flag <value> <role>
 # Output (stdout): "engine model [reasoning]"  e.g. "codex gpt-5.4 medium" | "claude sonnet"
 # Returns: 0 on success, 1 on invalid format (error written to stderr)
@@ -47,8 +47,8 @@ parse_model_flag() {
   if (( colon_count == 1 )); then
     local model="${value%%:*}"
     local reasoning="${value##*:}"
-    if [[ "$model" == *"spark"* ]]; then
-      model="spark"
+    if [[ "$model" == "spark" ]]; then
+      model="gpt-5.3-codex-spark"
     fi
     echo "codex $model $reasoning"
   else
@@ -76,7 +76,7 @@ get_model_string() {
 # get_next_model() — return next model in Worker upgrade path, or empty at ceiling
 # Usage: get_next_model <model_str>
 #   claude: "haiku"|"sonnet"|"opus"
-#   codex:  "gpt-5.4:medium"|"gpt-5.4:high"|"gpt-5.4:xhigh"|"spark:medium"|...
+#   codex:  "gpt-5.4:medium"|"gpt-5.4:high"|"gpt-5.4:xhigh"|"gpt-5.3-codex-spark:medium"|...
 # Output: next model string, or empty string if at ceiling
 get_next_model() {
   local current="$1"
@@ -85,16 +85,11 @@ get_next_model() {
     haiku)          echo "sonnet"         ;;
     sonnet)         echo "opus"           ;;
     opus)           echo ""               ;;
-    # Codex GPT Pro upgrade path (short aliases)
-    spark:low)      echo "spark:medium"   ;;
-    spark:medium)   echo "spark:high"     ;;
-    spark:high)     echo "spark:xhigh"    ;;
-    spark:xhigh)    echo ""               ;;  # spark ceiling
-    # Codex GPT Pro upgrade path (full model names)
+    # Codex GPT Pro (spark) upgrade path
     gpt-5.3-codex-spark:low)    echo "gpt-5.3-codex-spark:medium" ;;
     gpt-5.3-codex-spark:medium) echo "gpt-5.3-codex-spark:high"   ;;
     gpt-5.3-codex-spark:high)   echo "gpt-5.3-codex-spark:xhigh"  ;;
-    gpt-5.3-codex-spark:xhigh)  echo ""                           ;;  # spark ceiling (full name)
+    gpt-5.3-codex-spark:xhigh)  echo ""                           ;;  # spark ceiling
     # Codex Non-Pro upgrade path
     gpt-5.4:low)    echo "gpt-5.4:medium" ;;
     gpt-5.4:medium) echo "gpt-5.4:high"   ;;

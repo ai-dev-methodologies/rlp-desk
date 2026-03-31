@@ -11,11 +11,14 @@ set -euo pipefail
 #   ~/.claude/ralph-desk/init_ralph_desk.zsh <slug> [objective] [--mode fresh|improve]
 # =============================================================================
 
-SLUG="${1:?Usage: $0 <slug> [objective] [--mode fresh|improve]}"
+SLUG="${1:?Usage: $0 <slug> [objective] [--mode fresh|improve] [--server-cmd CMD] [--server-port PORT] [--server-health URL]}"
 MODE=""
 OBJECTIVE="TBD - fill in the objective"
+SERVER_CMD=""
+SERVER_PORT=""
+SERVER_HEALTH=""
 
-# Parse remaining arguments: --mode fresh|improve + optional positional objective
+# Parse remaining arguments
 shift
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -25,6 +28,30 @@ while [[ $# -gt 0 ]]; do
       ;;
     --mode=*)
       MODE="${1#--mode=}"
+      shift
+      ;;
+    --server-cmd)
+      SERVER_CMD="${2:?--server-cmd requires a command}"
+      shift 2
+      ;;
+    --server-cmd=*)
+      SERVER_CMD="${1#--server-cmd=}"
+      shift
+      ;;
+    --server-port)
+      SERVER_PORT="${2:?--server-port requires a port number}"
+      shift 2
+      ;;
+    --server-port=*)
+      SERVER_PORT="${1#--server-port=}"
+      shift
+      ;;
+    --server-health)
+      SERVER_HEALTH="${2:?--server-health requires a URL}"
+      shift 2
+      ;;
+    --server-health=*)
+      SERVER_HEALTH="${1#--server-health=}"
       shift
       ;;
     *)
@@ -378,6 +405,24 @@ execution_steps MUST be a JSON array of objects (not a dict with string keys). E
 ## Objective
 $OBJECTIVE
 EOF
+
+  # Inject operational context if server options provided
+  if [[ -n "$SERVER_CMD" || -n "$SERVER_PORT" ]]; then
+    cat >> "$F" <<OPCTX
+
+## Operational Context
+$([ -n "$SERVER_CMD" ] && echo "- **Server Start Command**: \`$SERVER_CMD\`")
+$([ -n "$SERVER_PORT" ] && echo "- **Server Port**: $SERVER_PORT")
+$([ -n "$SERVER_HEALTH" ] && echo "- **Health Check URL**: $SERVER_HEALTH")
+
+### Operational Rules (always apply when server context is present)
+- After modifying server/application code, restart the server$([ -n "$SERVER_CMD" ] && echo ": \`$SERVER_CMD\`")
+- Before signaling done, verify the server responds$([ -n "$SERVER_HEALTH" ] && echo ": \`curl -sf $SERVER_HEALTH\`" || [ -n "$SERVER_PORT" ] && echo ": \`curl -sf http://localhost:$SERVER_PORT/\`")
+- Do NOT modify dependency files (package.json, requirements.txt, etc.) unless the AC explicitly requires it
+- Do NOT run package install commands (npm install, pip install, etc.) unless the AC explicitly requires it
+OPCTX
+  fi
+
   echo "  + $F"
 else echo "  · $F"; fi
 
@@ -447,6 +492,7 @@ Verdict JSON:
   "us_id": "US-NNN or ALL (matches the scope you verified)",
   "verified_at_utc": "ISO timestamp",
   "summary": "...",
+  "per_us_results": {"US-001": "pass|fail|not_started", "US-002": "pass|fail|not_started"},
   "criteria_results": [{"criterion":"...","met":true/false,"evidence":"..."}],
   "missing_evidence": [],
   "issues": [{"id":"...","severity":"critical|major|minor","description":"...","fix_hint":"(suggestion, non-authoritative)"}],
@@ -471,7 +517,20 @@ Rules:
 - Deterministic checks (type hints, linting, security) delegate to test-spec tools; focus on AC verification + semantic review + smoke test.
 - Do NOT modify code or write sentinel files.
 - If Worker claims "inspection" or "review" for an AC that requires an automated command, verdict = FAIL.
+- **ALWAYS include per_us_results** in verdict JSON — map each US to "pass", "fail", or "not_started". This is required for partial progress tracking in both batch and per-us modes.
 EOF
+
+  # Inject operational verification if server options provided
+  if [[ -n "$SERVER_CMD" || -n "$SERVER_PORT" ]]; then
+    cat >> "$F" <<OPVER
+
+## Operational Verification (server context present)
+- Before verifying ACs, check that the server is running$([ -n "$SERVER_PORT" ] && echo " on port $SERVER_PORT")$([ -n "$SERVER_HEALTH" ] && echo ": \`curl -sf $SERVER_HEALTH\`")
+- If the server is not running, verdict = FAIL with issue: "server not running on expected port"
+- If Worker modified server code but did not restart the server, verdict = FAIL with issue: "server not restarted after code change"
+OPVER
+  fi
+
   echo "  + $F"
 else echo "  · $F"; fi
 

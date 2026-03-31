@@ -66,7 +66,7 @@ _auto_detect_engine() {
   if [[ "$model_val" == *:* ]]; then
     local model_part="${model_val%%:*}"
     local reasoning_part="${model_val##*:}"
-    [[ "$model_part" == *spark* ]] && model_part="spark"
+    [[ "$model_part" == "spark" ]] && model_part="gpt-5.3-codex-spark"
     eval "$engine_var=codex"
     eval "$model_var=$model_part"
     [[ -n "$codex_model_var" ]] && eval "$codex_model_var=$model_part"
@@ -211,19 +211,55 @@ check_dead_pane() {
   return 1  # alive
 }
 
-# launch_worker_codex() — launch codex Worker via trigger script (non-interactive exec)
-# Args: $1=pane_id  $2=trigger_file  $3=iteration
-# Returns: 0 always (codex failures detected by poll_for_signal)
+# launch_worker_codex() — launch codex Worker TUI, send instruction, verify submission
+# Matches launch_worker_claude() pattern for consistent tmux-visible execution.
+# Args: $1=pane_id  $2=prompt_file  $3=iteration  $4=worker_launch_cmd
+# Returns: 0 on success, 1 on fatal failure
 launch_worker_codex() {
   local pane_id="$1"
-  local trigger_file="$2"
+  local prompt_file="$2"
   local iter="$3"
+  local worker_launch="$4"
 
-  log "  Launching Worker codex via trigger script in pane $pane_id..."
-  paste_to_pane "$pane_id" "bash $trigger_file"
+  log "  Launching Worker codex TUI in pane $pane_id..."
+  paste_to_pane "$pane_id" "$worker_launch"
   tmux send-keys -t "$pane_id" C-m
-  log_debug "Worker codex trigger sent: $trigger_file"
-  sleep 3  # brief wait for codex to start
+
+  # Wait for codex TUI to be ready
+  if ! wait_for_pane_ready "$pane_id" 30; then
+    log_error "Worker codex failed to start"
+    return 1
+  fi
+
+  # Send instruction to codex TUI
+  sleep 3
+  local worker_instruction="Read and execute the instructions in $prompt_file"
+  paste_to_pane "$pane_id" "$worker_instruction"
+  tmux send-keys -t "$pane_id" C-m
+  log_debug "Worker codex instruction sent (${#worker_instruction} chars)"
+
+  # Submit loop — verify codex started working
+  local submit_attempts=0
+  while (( submit_attempts < 15 )); do
+    sleep 2
+    local pane_check
+    pane_check=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
+    if echo "$pane_check" | grep -qi "working\|thinking\|Exploring\|Running\|reading\|searching\|editing\|writing" 2>/dev/null; then
+      log_debug "Worker codex started working after $((submit_attempts + 1)) checks"
+      break
+    fi
+    if (( submit_attempts == 8 )); then
+      log_debug "Adaptive instruction retry: clearing line and re-typing"
+      tmux send-keys -t "$pane_id" C-u 2>/dev/null
+      sleep 0.1
+      paste_to_pane "$pane_id" "$worker_instruction"
+      tmux send-keys -t "$pane_id" C-m
+    fi
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null
+    sleep 0.3
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null
+    (( submit_attempts++ ))
+  done
   return 0
 }
 
@@ -308,19 +344,53 @@ launch_worker_claude() {
   return 0
 }
 
-# launch_verifier_codex() — launch codex Verifier in pane (non-interactive)
+# launch_verifier_codex() — launch codex Verifier TUI, send instruction, verify submission
+# Matches launch_verifier_claude() pattern for consistent tmux-visible execution.
 # Args: $1=pane_id  $2=prompt_file  $3=iteration  $4=launch_cmd
-# Returns: 0 always
+# Returns: 0 on success
 launch_verifier_codex() {
   local pane_id="$1"
   local prompt_file="$2"
   local iter="$3"
   local verifier_launch="$4"
 
-  log "  Launching Verifier codex in pane $pane_id..."
+  log "  Launching Verifier codex TUI in pane $pane_id..."
   paste_to_pane "$pane_id" "$verifier_launch"
   tmux send-keys -t "$pane_id" C-m
+
+  if ! wait_for_pane_ready "$pane_id" 30; then
+    log_error "Verifier codex failed to start"
+    return 1
+  fi
+
   sleep 3
+  local verifier_instruction="Read and execute the instructions in $prompt_file"
+  paste_to_pane "$pane_id" "$verifier_instruction"
+  tmux send-keys -t "$pane_id" C-m
+  log_debug "Verifier codex instruction sent"
+
+  # Submit loop — verify codex started working
+  local submit_attempts=0
+  while (( submit_attempts < 15 )); do
+    sleep 2
+    local vs_check
+    vs_check=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
+    if echo "$vs_check" | grep -qi "working\|thinking\|Exploring\|Running\|reading\|searching\|editing\|writing" 2>/dev/null; then
+      log_debug "Verifier codex started working after $((submit_attempts + 1)) checks"
+      break
+    fi
+    if (( submit_attempts == 8 )); then
+      log_debug "Adaptive instruction retry: clearing line and re-typing"
+      tmux send-keys -t "$pane_id" C-u 2>/dev/null
+      sleep 0.1
+      paste_to_pane "$pane_id" "$verifier_instruction"
+      tmux send-keys -t "$pane_id" C-m
+    fi
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null
+    sleep 0.3
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null
+    (( submit_attempts++ ))
+  done
   return 0
 }
 
@@ -386,7 +456,7 @@ handle_worker_exit_codex() {
     local dc_us_id
     dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
     log "  Codex worker completed with done-claim (us_id=$dc_us_id). Auto-generating signal."
-    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exec exit","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exit","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
   else
     log "  WARNING: Codex worker exited without done-claim. Generating verify signal for current US."
     local current_us
@@ -394,7 +464,7 @@ handle_worker_exit_codex() {
     local mem_us
     mem_us=$(sed -n 's/.*Next.*US-\([0-9]*\).*/US-\1/p' "$DESK/memos/${SLUG}-memory.md" 2>/dev/null | head -1)
     [[ -n "$mem_us" ]] && current_us="$mem_us"
-    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$current_us"'","summary":"auto-generated after codex exec exit (no done-claim)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$current_us"'","summary":"auto-generated after codex exit (no done-claim)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
   fi
   return 0
 }
@@ -1068,23 +1138,31 @@ write_worker_trigger() {
     elif [[ "$VERIFY_MODE" = "batch" ]]; then
       echo ""
       echo "---"
-      echo "## BATCH MODE OVERRIDE"
-      echo "Ignore any per-US signal instructions above. In batch mode:"
-      echo "- Implement ALL user stories in this iteration"
-      echo '- Signal verify with us_id="ALL" only when ALL stories are complete'
-      echo "- Do NOT signal verify after individual stories"
+      if [[ -n "$VERIFIED_US" ]]; then
+        echo "## BATCH MODE — CONTINUE FROM PARTIAL PROGRESS"
+        echo "The following US have already been verified: **$VERIFIED_US**"
+        echo "- Do NOT re-implement these — they are done."
+        echo "- Focus ONLY on the remaining unverified user stories."
+        echo '- Signal verify with us_id="ALL" when the remaining stories are complete.'
+      else
+        echo "## BATCH MODE OVERRIDE"
+        echo "Ignore any per-US signal instructions above. In batch mode:"
+        echo "- Implement ALL user stories in this iteration"
+        echo '- Signal verify with us_id="ALL" only when ALL stories are complete'
+        echo "- Do NOT signal verify after individual stories"
+      fi
     fi
   } | atomic_write "$prompt_file"
 
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
   # Engine-specific launch command (expanded at write time)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
-    local engine_cmd="${CODEX_BIN:-codex} exec \\
+    local engine_cmd="${CODEX_BIN:-codex} \\
   -m $WORKER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" \\
   --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\""
-    local engine_comment="# Run codex exec with fresh context (no pipe — codex requires terminal)"
+    local engine_comment="# Run codex with fresh context (fallback trigger — TUI primary launch via launch_worker_codex)"
   else
     local engine_cmd="$CLAUDE_BIN -p \"\$(cat $prompt_file)\" \\
   --model $WORKER_MODEL \\
@@ -1152,13 +1230,15 @@ write_verifier_trigger() {
     echo "- **Iteration**: $iter"
     echo "- **Done Claim**: $DONE_CLAIM_FILE"
     echo "- **Verify Mode**: $VERIFY_MODE"
-    if [[ "$VERIFY_MODE" = "per-us" && -n "$us_id" ]]; then
+    if [[ -n "$us_id" ]]; then
       if [[ "$us_id" = "ALL" ]]; then
-        echo "- **Scope**: FINAL FULL VERIFY — check ALL acceptance criteria from the PRD"
-        echo "- **Previously verified US**: $VERIFIED_US"
+        echo "- **Scope**: FULL VERIFY — check ALL acceptance criteria from the PRD"
       else
         echo "- **Scope**: Verify ONLY the acceptance criteria for **${us_id}**"
+      fi
+      if [[ -n "$VERIFIED_US" ]]; then
         echo "- **Previously verified US**: $VERIFIED_US"
+        echo "- **Note**: Skip re-verifying the above US. Focus on unverified stories."
       fi
     fi
   } | atomic_write "$prompt_file"
@@ -1577,9 +1657,9 @@ run_single_verifier() {
   # Launch verifier — dispatch to engine-specific function
   local verifier_launch
   if [[ "$engine" = "codex" ]]; then
-    verifier_launch="${CODEX_BIN:-codex} exec \"\$(cat $prompt_file)\" -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+    verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
     launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
-    log_debug "Verifier$suffix codex exec dispatched"
+    log_debug "Verifier$suffix codex TUI dispatched"
   else
     verifier_launch="$CLAUDE_BIN --model $model --dangerously-skip-permissions"
     if ! launch_verifier_claude "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"; then
@@ -1592,7 +1672,7 @@ run_single_verifier() {
   # Poll for verdict
   if [[ "$engine" = "codex" ]]; then
     # Codex exec: simple file poll (non-interactive, no heartbeat/nudge needed)
-    log "  Polling for verify-verdict.json ($suffix, codex exec)..."
+    log "  Polling for verify-verdict.json ($suffix, codex TUI)..."
     local codex_poll_start
     codex_poll_start=$(date +%s)
     while true; do
@@ -1936,7 +2016,7 @@ main() {
     --arg verifier_model "$VERIFIER_MODEL" \
     --argjson debug "$DEBUG" \
     --argjson with_sv "$WITH_SELF_VERIFICATION" \
-    --argjson consensus "$VERIFY_CONSENSUS" \
+    --argjson consensus "${VERIFY_CONSENSUS:-0}" \
     '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, consensus: $consensus}' \
     > "$METADATA_FILE"
 
@@ -1980,7 +2060,7 @@ main() {
       log_debug "[OPTION] expected_flow=worker(all)->verify(ALL)->COMPLETE"
     fi
 
-    if [[ "$VERIFY_CONSENSUS" = "1" ]]; then
+    if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
       log_debug "[OPTION] consensus_flow=each_verify_runs_claude+codex_both_must_pass"
     fi
   fi
@@ -2104,9 +2184,12 @@ main() {
 
     local worker_launch
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
-      local worker_trigger="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-trigger.sh"
-      worker_launch="bash $worker_trigger"
-      launch_worker_codex "$WORKER_PANE" "$worker_trigger" "$ITERATION"
+      worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+      if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
+        write_blocked_sentinel "Worker codex failed to start in pane"
+        update_status "blocked" "worker_start_failed"
+        return 1
+      fi
     else
       worker_launch="$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
       if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
@@ -2346,8 +2429,8 @@ main() {
               _MODEL_UPGRADED=0
             fi
 
-            # --- Per-US tracking ---
-            if [[ "$VERIFY_MODE" = "per-us" && -n "$signal_us_id" && "$signal_us_id" != "ALL" ]]; then
+            # --- Verified US tracking (both per-us and batch modes) ---
+            if [[ -n "$signal_us_id" && "$signal_us_id" != "ALL" ]]; then
               # Add this US to verified list
               if [[ -n "$VERIFIED_US" ]]; then
                 VERIFIED_US="${VERIFIED_US},${signal_us_id}"
@@ -2371,6 +2454,32 @@ main() {
             ;;
           fail)
             # --- governance.md s7½: Fix Loop (adapted for tmux lean mode) ---
+
+            # Parse per_us_results from verdict to track partial progress (batch + per-us)
+            local _prev_verified="$VERIFIED_US"
+            if jq -e '.per_us_results' "$VERDICT_FILE" &>/dev/null; then
+              local _newly_passed
+              _newly_passed=$(jq -r '.per_us_results | to_entries[] | select(.value == "pass") | .key' "$VERDICT_FILE" 2>/dev/null)
+              for _pus in $(echo "$_newly_passed"); do
+                if ! echo ",$VERIFIED_US," | grep -q ",$_pus,"; then
+                  if [[ -n "$VERIFIED_US" ]]; then
+                    VERIFIED_US="${VERIFIED_US},${_pus}"
+                  else
+                    VERIFIED_US="$_pus"
+                  fi
+                  log "  Partial progress: $_pus passed (overall FAIL). Verified so far: $VERIFIED_US"
+                fi
+              done
+              log_debug "[FLOW] iter=$ITERATION partial_progress prev=$_prev_verified now=$VERIFIED_US"
+            fi
+
+            # Partial progress resets consecutive failures (progress was made)
+            if [[ "$VERIFIED_US" != "$_prev_verified" ]]; then
+              CONSECUTIVE_FAILURES=0
+              log "  Progress detected — consecutive_failures reset to 0"
+              log_debug "[GOV] iter=$ITERATION consecutive_failures_reset=partial_progress"
+            fi
+
             (( CONSECUTIVE_FAILURES++ ))
             record_us_failure "${signal_us_id:-unknown}"
             check_model_upgrade "${signal_us_id:-unknown}"
@@ -2389,6 +2498,13 @@ main() {
             {
               echo "# Fix Contract (from Verifier iteration $ITERATION)"
               echo ""
+              if [[ -n "$VERIFIED_US" ]]; then
+                echo "## Verified US (do NOT re-implement these)"
+                echo "$VERIFIED_US" | tr ',' '\n' | sed 's/^/- /'
+                echo ""
+                echo "**Focus ONLY on unverified user stories. The above are already verified.**"
+                echo ""
+              fi
               echo "## Summary"
               echo "$verdict_summary_fail"
               echo ""

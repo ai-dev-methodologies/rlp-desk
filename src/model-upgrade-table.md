@@ -9,23 +9,23 @@ CB default: 6. Override: `--cb-threshold N`. Worker only — Verifier fixed at c
 - CB < table columns → BLOCKED at that column
 - CB > 6 → repeat ceiling model beyond column 6
 
-## GPT Pro (spark — separate token limit)
+## GPT Pro (gpt-5.3-codex-spark — separate token limit)
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7+ |
 |------------|-----|-----|-----|-----|
-| LOW | spark:low | spark:medium | spark:high | BLOCKED |
-| MEDIUM | spark:medium | spark:high | spark:xhigh | BLOCKED |
-| HIGH | spark:high | spark:xhigh | spark:xhigh | BLOCKED |
-| CRITICAL | spark:xhigh | spark:xhigh | spark:xhigh | BLOCKED |
+| LOW | gpt-5.3-codex-spark:low | gpt-5.3-codex-spark:medium | gpt-5.3-codex-spark:high | BLOCKED |
+| MEDIUM | gpt-5.3-codex-spark:medium | gpt-5.3-codex-spark:high | gpt-5.3-codex-spark:xhigh | BLOCKED |
+| HIGH | gpt-5.3-codex-spark:high | gpt-5.3-codex-spark:xhigh | gpt-5.3-codex-spark:xhigh | BLOCKED |
+| CRITICAL | gpt-5.3-codex-spark:xhigh | gpt-5.3-codex-spark:xhigh | gpt-5.3-codex-spark:xhigh | BLOCKED |
 
 ## Non-Pro (gpt-5.4)
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7+ |
 |------------|-----|-----|-----|-----|
-| LOW | 5.4:low | 5.4:medium | 5.4:high | BLOCKED |
-| MEDIUM | 5.4:medium | 5.4:high | 5.4:xhigh | BLOCKED |
-| HIGH | 5.4:high | 5.4:xhigh | 5.4:xhigh | BLOCKED |
-| CRITICAL | 5.4:xhigh | 5.4:xhigh | 5.4:xhigh | BLOCKED |
+| LOW | gpt-5.4:low | gpt-5.4:medium | gpt-5.4:high | BLOCKED |
+| MEDIUM | gpt-5.4:medium | gpt-5.4:high | gpt-5.4:xhigh | BLOCKED |
+| HIGH | gpt-5.4:high | gpt-5.4:xhigh | gpt-5.4:xhigh | BLOCKED |
+| CRITICAL | gpt-5.4:xhigh | gpt-5.4:xhigh | gpt-5.4:xhigh | BLOCKED |
 
 ## Claude-only
 

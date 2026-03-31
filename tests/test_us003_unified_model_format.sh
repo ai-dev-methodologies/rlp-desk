@@ -94,9 +94,9 @@ if _func_or_fail "AC1-L1-4: gpt-5.3-codex-spark:high → engine=codex"; then
 fi
 
 _run_parse "gpt-5.3-codex-spark:high" "worker"
-if _func_or_fail "AC1-L1-5: gpt-5.3-codex-spark:high → model=spark (alias)"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "spark" \
-    "AC1-L1-5: gpt-5.3-codex-spark:high → model=spark (alias)"
+if _func_or_fail "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.3-codex-spark"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.3-codex-spark" \
+    "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.3-codex-spark"
 fi
 
 _run_parse "gpt-5.3-codex-spark:high" "worker"
