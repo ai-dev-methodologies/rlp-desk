@@ -91,6 +91,18 @@ Ask about these items one by one (or in small groups):
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
 10. **Consensus** — Ask: "Use cross-engine consensus? off (single engine), final-only (cross-engine on final verify only), or all (cross-engine on every verify). Requires codex CLI." Default: off. Recommended: final-only when codex is installed.
 11. **Max Iterations** — suggest based on story count, ask if OK.
+12. **Operational Context** — Auto-detect: scan project root for `package.json` (scripts.dev/start), `Makefile`, `docker-compose.yml`, `manage.py`. If detected, ask:
+   - "Does this project require a running server/service during development?" (y/n)
+   - If yes: "Server start command?" (pre-fill from detected scripts, e.g., `npm run dev`)
+   - "Server port?" (e.g., 7001)
+   - "Health check URL?" (e.g., `http://localhost:7001/health`) — optional
+   - Pass to init: `--server-cmd "CMD" --server-port PORT --server-health URL`
+   - If no server needed: skip. Init generates prompts without operational context.
+
+   **US generation guidance when server context is present:**
+   - Each US that modifies server/application code SHOULD include an AC or note:
+     "Given server is running, When code is modified, Then server is restarted and health check passes"
+   - Do NOT assume the Worker model will restart servers on its own — spell it out in the AC or rely on the operational rules injected by init.
 
 After all items are confirmed:
 

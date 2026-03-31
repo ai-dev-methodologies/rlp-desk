@@ -1138,11 +1138,19 @@ write_worker_trigger() {
     elif [[ "$VERIFY_MODE" = "batch" ]]; then
       echo ""
       echo "---"
-      echo "## BATCH MODE OVERRIDE"
-      echo "Ignore any per-US signal instructions above. In batch mode:"
-      echo "- Implement ALL user stories in this iteration"
-      echo '- Signal verify with us_id="ALL" only when ALL stories are complete'
-      echo "- Do NOT signal verify after individual stories"
+      if [[ -n "$VERIFIED_US" ]]; then
+        echo "## BATCH MODE — CONTINUE FROM PARTIAL PROGRESS"
+        echo "The following US have already been verified: **$VERIFIED_US**"
+        echo "- Do NOT re-implement these — they are done."
+        echo "- Focus ONLY on the remaining unverified user stories."
+        echo '- Signal verify with us_id="ALL" when the remaining stories are complete.'
+      else
+        echo "## BATCH MODE OVERRIDE"
+        echo "Ignore any per-US signal instructions above. In batch mode:"
+        echo "- Implement ALL user stories in this iteration"
+        echo '- Signal verify with us_id="ALL" only when ALL stories are complete'
+        echo "- Do NOT signal verify after individual stories"
+      fi
     fi
   } | atomic_write "$prompt_file"
 
@@ -1222,13 +1230,15 @@ write_verifier_trigger() {
     echo "- **Iteration**: $iter"
     echo "- **Done Claim**: $DONE_CLAIM_FILE"
     echo "- **Verify Mode**: $VERIFY_MODE"
-    if [[ "$VERIFY_MODE" = "per-us" && -n "$us_id" ]]; then
+    if [[ -n "$us_id" ]]; then
       if [[ "$us_id" = "ALL" ]]; then
-        echo "- **Scope**: FINAL FULL VERIFY — check ALL acceptance criteria from the PRD"
-        echo "- **Previously verified US**: $VERIFIED_US"
+        echo "- **Scope**: FULL VERIFY — check ALL acceptance criteria from the PRD"
       else
         echo "- **Scope**: Verify ONLY the acceptance criteria for **${us_id}**"
+      fi
+      if [[ -n "$VERIFIED_US" ]]; then
         echo "- **Previously verified US**: $VERIFIED_US"
+        echo "- **Note**: Skip re-verifying the above US. Focus on unverified stories."
       fi
     fi
   } | atomic_write "$prompt_file"
@@ -2419,8 +2429,8 @@ main() {
               _MODEL_UPGRADED=0
             fi
 
-            # --- Per-US tracking ---
-            if [[ "$VERIFY_MODE" = "per-us" && -n "$signal_us_id" && "$signal_us_id" != "ALL" ]]; then
+            # --- Verified US tracking (both per-us and batch modes) ---
+            if [[ -n "$signal_us_id" && "$signal_us_id" != "ALL" ]]; then
               # Add this US to verified list
               if [[ -n "$VERIFIED_US" ]]; then
                 VERIFIED_US="${VERIFIED_US},${signal_us_id}"
@@ -2444,6 +2454,32 @@ main() {
             ;;
           fail)
             # --- governance.md s7½: Fix Loop (adapted for tmux lean mode) ---
+
+            # Parse per_us_results from verdict to track partial progress (batch + per-us)
+            local _prev_verified="$VERIFIED_US"
+            if jq -e '.per_us_results' "$VERDICT_FILE" &>/dev/null; then
+              local _newly_passed
+              _newly_passed=$(jq -r '.per_us_results | to_entries[] | select(.value == "pass") | .key' "$VERDICT_FILE" 2>/dev/null)
+              for _pus in $(echo "$_newly_passed"); do
+                if ! echo ",$VERIFIED_US," | grep -q ",$_pus,"; then
+                  if [[ -n "$VERIFIED_US" ]]; then
+                    VERIFIED_US="${VERIFIED_US},${_pus}"
+                  else
+                    VERIFIED_US="$_pus"
+                  fi
+                  log "  Partial progress: $_pus passed (overall FAIL). Verified so far: $VERIFIED_US"
+                fi
+              done
+              log_debug "[FLOW] iter=$ITERATION partial_progress prev=$_prev_verified now=$VERIFIED_US"
+            fi
+
+            # Partial progress resets consecutive failures (progress was made)
+            if [[ "$VERIFIED_US" != "$_prev_verified" ]]; then
+              CONSECUTIVE_FAILURES=0
+              log "  Progress detected — consecutive_failures reset to 0"
+              log_debug "[GOV] iter=$ITERATION consecutive_failures_reset=partial_progress"
+            fi
+
             (( CONSECUTIVE_FAILURES++ ))
             record_us_failure "${signal_us_id:-unknown}"
             check_model_upgrade "${signal_us_id:-unknown}"
@@ -2462,6 +2498,13 @@ main() {
             {
               echo "# Fix Contract (from Verifier iteration $ITERATION)"
               echo ""
+              if [[ -n "$VERIFIED_US" ]]; then
+                echo "## Verified US (do NOT re-implement these)"
+                echo "$VERIFIED_US" | tr ',' '\n' | sed 's/^/- /'
+                echo ""
+                echo "**Focus ONLY on unverified user stories. The above are already verified.**"
+                echo ""
+              fi
               echo "## Summary"
               echo "$verdict_summary_fail"
               echo ""
