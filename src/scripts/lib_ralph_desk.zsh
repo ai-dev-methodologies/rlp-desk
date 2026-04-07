@@ -29,6 +29,33 @@ log_error() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2
 }
 
+# build_claude_cmd() — centralized claude CLI command builder
+# Single source of truth for all claude invocation flags (--no-mcp, DISABLE_OMC, etc.)
+# Inspired by codex-plugin-cc companion pattern: CLI abstraction in one place.
+# Args: $1=mode (tui|print)  $2=model  $3=prompt_file (print mode only)  $4=output_log (print mode only)
+# Output: complete command string on stdout
+# Globals read: CLAUDE_BIN
+build_claude_cmd() {
+  local mode="$1"
+  local model="$2"
+  local prompt_file="${3:-}"
+  local output_log="${4:-}"
+
+  local base="DISABLE_OMC=1 $CLAUDE_BIN --model $model --no-mcp --dangerously-skip-permissions"
+  case "$mode" in
+    tui)
+      echo "$base"
+      ;;
+    print)
+      echo "$base -p \"\$(cat $prompt_file)\" --output-format text 2>&1 | tee $output_log"
+      ;;
+    *)
+      echo "ERROR: build_claude_cmd unknown mode '$mode'" >&2
+      return 1
+      ;;
+  esac
+}
+
 # parse_model_flag() — parse unified --worker-model / --verifier-model value
 # Colon format (model:reasoning) → codex engine; plain name → claude engine.
 # Spark alias: bare "spark" is expanded to full model ID "gpt-5.3-codex-spark".

@@ -1022,7 +1022,7 @@ restart_worker() {
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
     safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
   else
-    safe_send_keys "$pane_id" "$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
+    safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL")"
   fi
   WORKER_RESTARTS[$iter]=$((restart_count + 1))
   return 0
@@ -1164,12 +1164,9 @@ write_worker_trigger() {
   \"\$(cat $prompt_file)\""
     local engine_comment="# Run codex with fresh context (fallback trigger — TUI primary launch via launch_worker_codex)"
   else
-    local engine_cmd="$CLAUDE_BIN -p \"\$(cat $prompt_file)\" \\
-  --model $WORKER_MODEL \\
-  --dangerously-skip-permissions \\
-  --output-format text \\
-  2>&1 | tee $output_log"
-    local engine_comment="# Run claude with fresh context (governance.md s7 step 5)"
+    local engine_cmd
+    engine_cmd=$(build_claude_cmd print "$WORKER_MODEL" "$prompt_file" "$output_log")
+    local engine_comment="# Run claude with fresh context, no MCP/skills (governance.md s7 step 5)"
   fi
 
   {
@@ -1253,12 +1250,9 @@ write_verifier_trigger() {
   2>&1 | tee $output_log"
     local engine_comment="# Run codex with fresh context (governance.md s7 step 7)"
   else
-    local engine_cmd="$CLAUDE_BIN -p \"\$(cat $prompt_file)\" \\
-  --model $verifier_model \\
-  --dangerously-skip-permissions \\
-  --output-format text \\
-  2>&1 | tee $output_log"
-    local engine_comment="# Run claude with fresh context (governance.md s7 step 7)"
+    local engine_cmd
+    engine_cmd=$(build_claude_cmd print "$verifier_model" "$prompt_file" "$output_log")
+    local engine_comment="# Run claude with fresh context, no MCP/skills (governance.md s7 step 7)"
   fi
 
   {
@@ -1661,7 +1655,7 @@ run_single_verifier() {
     launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
     log_debug "Verifier$suffix codex TUI dispatched"
   else
-    verifier_launch="$CLAUDE_BIN --model $model --dangerously-skip-permissions"
+    verifier_launch="$(build_claude_cmd tui "$model")"
     if ! launch_verifier_claude "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"; then
       log_error "Verifier$suffix failed to start"
       return 1
@@ -1746,7 +1740,7 @@ run_sequential_final_verify() {
       verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
       launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
     else
-      verifier_launch="$CLAUDE_BIN --model $VERIFIER_MODEL --dangerously-skip-permissions"
+      verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL")"
       launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
         log_error "Failed to launch verifier for $us"
         FAILED_US="$us"
@@ -2191,7 +2185,7 @@ main() {
         return 1
       fi
     else
-      worker_launch="$CLAUDE_BIN --model $WORKER_MODEL --dangerously-skip-permissions"
+      worker_launch="$(build_claude_cmd tui "$WORKER_MODEL")"
       if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
         write_blocked_sentinel "Worker claude failed to start in pane"
         update_status "blocked" "worker_start_failed"
@@ -2368,7 +2362,7 @@ main() {
           if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
             verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
           else
-            verifier_launch="$CLAUDE_BIN --model $VERIFIER_MODEL --dangerously-skip-permissions"
+            verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL")"
           fi
           log_debug "[FLOW] iter=$ITERATION phase=verifier engine=$VERIFIER_ENGINE model=$VERIFIER_MODEL scope=${signal_us_id:-all} dispatched=true"
 

@@ -69,14 +69,14 @@ Ask about these items one by one (or in small groups):
 
    | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
    |------------|--------|-----------------|----------------|-----------|
-   | LOW | spark:high | sonnet | opus | final-only |
-   | MEDIUM | spark:high | opus | opus | final-only |
+   | LOW | gpt-5.4:high | sonnet | opus | final-only |
+   | MEDIUM | gpt-5.4:high | opus | opus | final-only |
    | HIGH | gpt-5.4:high | opus | opus | all |
    | CRITICAL | gpt-5.4:high | opus | opus + human | all |
 
    **Worker model selection** (cross-engine):
-   - **spark:high** — default recommendation (Pro token pool = cost savings). PRD AC count <= 15
-   - **gpt-5.4:high** — fallback when spark 100k output limit exceeded. PRD AC count > 15
+   - **gpt-5.4:high** — default recommendation (full context window, reliable for all US sizes)
+   - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
 
    Present complexity score with evidence to the user, e.g.: "I rate this MEDIUM because: US count=4 (MEDIUM), file scope=2 (MEDIUM), logic=conditionals (MEDIUM), deps=none (LOW), impact=modify (MEDIUM). Highest=MEDIUM."
 
@@ -85,7 +85,7 @@ Ask about these items one by one (or in small groups):
    **If codex is NOT installed** — say: "Codex is not installed. Defaulting to claude-only Worker. Note: without a second engine, your Verifier shares the same perspective as the Worker — there is a risk of blind spots where both Worker and Verifier miss the same issue. To unlock cross-engine coverage: `npm install -g @openai/codex`"
 
 8. **Batch Capacity Check** — when verify-mode is batch and PRD is large:
-   - batch + spark + AC > 10 → warn "spark 100k output limit — consider wave split or switch to gpt-5.4"
+   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to gpt-5.4 or split smaller"
    - batch + gpt-5.4 + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
    - per-us → no warning (US-level processing, no limit concern)
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
@@ -144,11 +144,11 @@ Tell the user:
    ```
    Available run commands (copy the one you want):
 
-   # ★ Recommended: cross-engine + final-consensus (cost savings + blind-spot coverage):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
-
-   # Large PRD (AC > 15, exceeds spark 100k limit):
+   # ★ Recommended: cross-engine + final-consensus (full context + blind-spot coverage):
    /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.4:high --consensus final-only --debug
+
+   # Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):
+   /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
 
    # Critical (full consensus on every verify):
    /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.4:high --consensus all --debug
@@ -158,7 +158,7 @@ Tell the user:
 
    # Full options reference:
    #   --mode agent|tmux                      (default: agent)
-   #   --worker-model MODEL                   haiku|sonnet|opus or spark:high|gpt-5.4:high (default: haiku)
+   #   --worker-model MODEL                   haiku|sonnet|opus or gpt-5.4:high|spark:high (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
    #   --verifier-model MODEL                 per-US verifier (default: sonnet)
    #   --final-verifier-model MODEL           final ALL verifier (default: opus)
@@ -707,7 +707,7 @@ Example:
 
 Run options:
   --mode agent|tmux                    Execution mode (default: agent)
-  --worker-model MODEL                 Worker model: haiku|sonnet|opus or spark:high|gpt-5.4:high (default: haiku)
+  --worker-model MODEL                 Worker model: haiku|sonnet|opus or gpt-5.4:high|spark:high (default: haiku)
   --lock-worker-model                  Disable auto model upgrade on failure
   --verifier-model MODEL               per-US verifier (default: sonnet)
   --final-verifier-model MODEL         Final ALL verifier (default: opus)
