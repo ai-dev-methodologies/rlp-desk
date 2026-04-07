@@ -204,7 +204,7 @@ print_run_presets() {
   echo ""
   if [[ $codex_available -eq 1 ]]; then
     echo "# Recommended: cross-engine + final-consensus (full context + blind-spot coverage):"
-    echo "/rlp-desk run $slug --worker-model gpt-5.4:high --final-consensus --debug"
+    echo "/rlp-desk run $slug --worker-model gpt-5.4:medium --final-consensus --debug"
     echo ""
     echo "# Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):"
     echo "/rlp-desk run $slug --worker-model gpt-5.3-codex-spark:high --debug"

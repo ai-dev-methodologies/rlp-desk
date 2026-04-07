@@ -69,13 +69,13 @@ Ask about these items one by one (or in small groups):
 
    | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
    |------------|--------|-----------------|----------------|-----------|
-   | LOW | gpt-5.4:high | sonnet | opus | final-only |
-   | MEDIUM | gpt-5.4:high | opus | opus | final-only |
+   | LOW | gpt-5.4:medium | sonnet | opus | final-only |
+   | MEDIUM | gpt-5.4:medium | opus | opus | final-only |
    | HIGH | gpt-5.4:high | opus | opus | all |
    | CRITICAL | gpt-5.4:high | opus | opus + human | all |
 
    **Worker model selection** (cross-engine):
-   - **gpt-5.4:high** — default recommendation (full context window, reliable for all US sizes)
+   - **gpt-5.4:medium** — default recommendation (full context window, progressive upgrade handles harder US)
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
 
    Present complexity score with evidence to the user, e.g.: "I rate this MEDIUM because: US count=4 (MEDIUM), file scope=2 (MEDIUM), logic=conditionals (MEDIUM), deps=none (LOW), impact=modify (MEDIUM). Highest=MEDIUM."
@@ -145,7 +145,7 @@ Tell the user:
    Available run commands (copy the one you want):
 
    # ★ Recommended: cross-engine + final-consensus (full context + blind-spot coverage):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.4:high --consensus final-only --debug
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.4:medium --consensus final-only --debug
 
    # Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):
    /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
