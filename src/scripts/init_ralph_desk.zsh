@@ -203,10 +203,10 @@ print_run_presets() {
   echo "Available run commands (copy the one you want):"
   echo ""
   if [[ $codex_available -eq 1 ]]; then
-    echo "# Recommended: cross-engine + final-consensus (cost savings + blind-spot coverage):"
+    echo "# Recommended: cross-engine + final-consensus (full context + blind-spot coverage):"
     echo "/rlp-desk run $slug --worker-model gpt-5.4:high --final-consensus --debug"
     echo ""
-    echo "# Spark Pro preset (fast codex worker, lower cost):"
+    echo "# Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):"
     echo "/rlp-desk run $slug --worker-model gpt-5.3-codex-spark:high --debug"
     echo ""
     echo "# Claude-only:"
@@ -322,6 +322,11 @@ Read these files in order:
 3. Test Spec: $DESK/plans/test-spec-$SLUG.md → verification methods
 4. Latest Context: $DESK/context/$SLUG-latest.md → current state
 
+## TDD MANDATE (hard constraint — violation = automatic FAIL)
+> Write failing tests FIRST → confirm RED (exit_code=1) → implement minimum code → confirm GREEN.
+> Every NEW AC requires: write_test → verify_red → implement → verify_green in execution_steps.
+> No exceptions. Verifier rejects missing RED evidence. For already-passing ACs, use verify_existing.
+
 ## SCOPE LOCK (hard constraint — violation causes verification failure)
 - You MUST only implement the work described in the "Next Iteration Contract" from campaign memory.
 - If the contract says "implement US-001 only", do ONLY that. Do NOT touch other stories.
@@ -330,27 +335,18 @@ Read these files in order:
 - No file creation or modification outside the project root.
 - Do not modify this prompt file or any PRD/test-spec files.
 
-## Test-First Approach (read test-spec BEFORE coding)
-1. Read test-spec "Impacted Tests" — if TODO (first iteration), skip to step 2 and fill this section during your work. Otherwise, run these FIRST to confirm they pass before your changes.
-2. Read test-spec "Required New Tests" — write these. They SHOULD FAIL initially.
-3. Implement minimum code to make all tests pass.
-4. Run ALL tests (impacted + new) to confirm nothing is broken.
-
 ## Forbidden Shortcuts (Verifier will check these)
 - Do not mock external services when L2 integration test is required by test-spec.
 - Do not delete or weaken existing assertions to make tests pass.
-- Do not add test-specific logic (code that detects it is running in a test).
 - Do not skip boundary cases listed in the PRD.
-- Do not claim "code inspection" as verification — run the actual command.
-- Do not say "too simple to test" — simple code breaks. Test takes 30 seconds.
-- Do not say "I'll test after" — tests passing immediately prove nothing.
-- Do not say "already manually tested" — ad-hoc is not systematic, no record.
-- Do not say "partial check is enough" — partial proves nothing about the whole.
-- Do not say "I'm confident" — confidence is not evidence.
-- Do not say "existing code has no tests" — you are improving it, add tests.
 - Do not write code before tests — if you did, delete it and start with tests.
 - **NEVER modify rlp-desk infrastructure files** (~/.claude/ralph-desk/*, ~/.claude/commands/rlp-desk.md). If you discover a bug in rlp-desk itself, report it in done-claim.json with {"status": "blocked", "reason": "rlp-desk bug: <description>"} and signal blocked. Do NOT attempt to fix rlp-desk — it is the orchestration tool, not your project code.
 - **NEVER modify Claude Code settings** (~/.claude/settings.json, .claude/settings.local.json, or any settings files). Do NOT add permissions, change models, or alter configuration. If a permission prompt blocks you, report it as blocked — do NOT try to edit settings to bypass it.
+
+## When Stuck (do NOT guess-and-fix)
+> 1. STOP and READ the error. Trace the call stack. Identify the root cause before touching code.
+> 2. Write a minimal test that reproduces the failure, then fix the root cause only.
+> 3. If 3+ fixes fail on the same issue, signal "blocked" with your diagnosis.
 
 ## Iteration rules
 - Use fresh context only; do NOT depend on prior chat history.
@@ -478,10 +474,11 @@ Check the iter-signal.json "us_id" field:
    - If your verdict history shows a 100% pass rate, re-examine your last verdict with increased scrutiny — a 100% pass rate is a red flag for insufficient rigor
    - When issuing PASS with explicit warning: note any concerning patterns (e.g., low test diversity, marginal coverage) even if technically passing
    - Never issue a silent PASS — every pass verdict must cite specific evidence for each AC checked
+   - Rationalization red flags: "tests pass so it works" (passing ≠ correct), "Worker is confident" (confidence ≠ evidence), "changes are minimal" (scope ≠ correctness)
 10½. **Worker Process Audit**:
    - Test-first compliance: done-claim execution_steps must show write_test step before implement step for each AC
    - RED phase evidence: at least one verify_red step with exit_code=1 per AC (proves tests were written before passing)
-   - Forbidden shortcuts: check done-claim claims and summary for forbidden phrases ("code inspection", "I'm confident", "too simple", "already manually tested", "partial check")
+   - Forbidden shortcuts: check done-claim claims and summary for forbidden phrases ("code inspection", "I'm confident", "too simple", "I'll test after", "already manually tested", "partial check")
    - Step completeness: each AC should have write_test → verify_red → implement → verify_green sequence in execution_steps
 11. **Reproducibility check**: verify lock file committed, clean install succeeds, security scan passes, env vars documented (per test-spec Reproducibility Gate). Skip if test-spec says "N/A."
 12. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
