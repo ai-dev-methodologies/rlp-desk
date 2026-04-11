@@ -1666,20 +1666,37 @@ run_single_verifier() {
 
   # Poll for verdict
   if [[ "$engine" = "codex" ]]; then
-    # Codex exec: simple file poll (non-interactive, no heartbeat/nudge needed)
+    # Codex exec: file poll + wait for process exit to avoid reading partial results
     log "  Polling for verify-verdict.json ($suffix, codex TUI)..."
     local codex_poll_start
     codex_poll_start=$(date +%s)
+    local _verdict_detected=0
     while true; do
-      if [[ -f "$VERDICT_FILE" ]]; then
-        # Validate JSON
+      # Phase 1: wait for verdict file
+      if (( ! _verdict_detected )) && [[ -f "$VERDICT_FILE" ]]; then
         if jq . "$VERDICT_FILE" >/dev/null 2>&1; then
-          log "  Verdict file detected: $VERDICT_FILE"
-          break
+          log "  Verdict file detected, waiting for codex process to finish..."
+          _verdict_detected=1
+        fi
+      fi
+      # Phase 2: verdict exists, wait for codex to exit (pane returns to shell)
+      if (( _verdict_detected )); then
+        local _pane_cmd
+        _pane_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null || echo "")
+        if [[ "$_pane_cmd" = "zsh" || "$_pane_cmd" = "bash" || -z "$_pane_cmd" ]]; then
+          log "  Codex verifier$suffix process exited. Proceeding."
+          # Re-read verdict in case codex updated it before exiting
+          if jq . "$VERDICT_FILE" >/dev/null 2>&1; then
+            break
+          fi
         fi
       fi
       local codex_elapsed=$(( $(date +%s) - codex_poll_start ))
       if (( codex_elapsed >= ITER_TIMEOUT )); then
+        if (( _verdict_detected )); then
+          log "  Codex verifier$suffix timed out waiting for exit, but verdict exists. Proceeding."
+          break
+        fi
         log_error "Codex verifier$suffix timed out after ${ITER_TIMEOUT}s"
         return 1
       fi
