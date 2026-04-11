@@ -100,6 +100,7 @@ if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
 elif [[ "${FINAL_CONSENSUS:-0}" = "1" ]]; then
   CONSENSUS_MODE="final-only"
 fi
+CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-${CONSENSUS_MODE}}"
 CB_THRESHOLD="${CB_THRESHOLD:-6}"           # consecutive failures before BLOCKED (default: 6)
 # Effective CB threshold: doubled when consensus mode active
 if [[ "$CONSENSUS_MODE" != "off" ]]; then
