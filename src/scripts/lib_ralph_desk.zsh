@@ -41,7 +41,7 @@ build_claude_cmd() {
   local prompt_file="${3:-}"
   local output_log="${4:-}"
 
-  local base="DISABLE_OMC=1 $CLAUDE_BIN --model $model --no-mcp --dangerously-skip-permissions"
+  local base="DISABLE_OMC=1 $CLAUDE_BIN --model $model --mcp-config '{}' --dangerously-skip-permissions"
   case "$mode" in
     tui)
       echo "$base"
