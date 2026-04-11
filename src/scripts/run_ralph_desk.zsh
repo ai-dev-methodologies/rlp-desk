@@ -1021,7 +1021,7 @@ restart_worker() {
 
   # Re-launch worker (tmux interactive pattern)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
-    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
   else
     safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL")"
   fi
@@ -1161,7 +1161,7 @@ write_worker_trigger() {
     local engine_cmd="${CODEX_BIN:-codex} \\
   -m $WORKER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" \\
-  --dangerously-bypass-approvals-and-sandbox \\
+  --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\""
     local engine_comment="# Run codex with fresh context (fallback trigger — TUI primary launch via launch_worker_codex)"
   else
@@ -1246,7 +1246,7 @@ write_verifier_trigger() {
   if [[ "$verifier_engine" = "codex" ]]; then
     local engine_cmd="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" \\
-  --dangerously-bypass-approvals-and-sandbox \\
+  --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\" \\
   2>&1 | tee $output_log"
     local engine_comment="# Run codex with fresh context (governance.md s7 step 7)"
@@ -1652,7 +1652,7 @@ run_single_verifier() {
   # Launch verifier — dispatch to engine-specific function
   local verifier_launch
   if [[ "$engine" = "codex" ]]; then
-    verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+    verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
     launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
     log_debug "Verifier$suffix codex TUI dispatched"
   else
@@ -1738,7 +1738,7 @@ run_sequential_final_verify() {
     # Launch verifier
     local verifier_launch
     if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
-      verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+      verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
       launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
     else
       verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL")"
@@ -2179,7 +2179,7 @@ main() {
 
     local worker_launch
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
-      worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+      worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
       if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
         write_blocked_sentinel "Worker codex failed to start in pane"
         update_status "blocked" "worker_start_failed"
@@ -2361,7 +2361,7 @@ main() {
 
           local verifier_launch
           if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
-            verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --dangerously-bypass-approvals-and-sandbox"
+            verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
           else
             verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL")"
           fi
