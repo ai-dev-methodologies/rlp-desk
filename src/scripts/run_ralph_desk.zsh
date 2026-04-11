@@ -1248,8 +1248,8 @@ write_verifier_trigger() {
   -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\" \\
-  2>&1 | tee $output_log"
-    local engine_comment="# Run codex with fresh context (governance.md s7 step 7)"
+  > >(tee $output_log) 2>&1"
+    local engine_comment="# Run codex with fresh context (governance.md s7 step 7) — process substitution preserves tty"
   else
     local engine_cmd
     engine_cmd=$(build_claude_cmd print "$verifier_model" "$prompt_file" "$output_log")
