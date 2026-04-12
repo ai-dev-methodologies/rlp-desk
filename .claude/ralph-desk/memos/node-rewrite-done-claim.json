@@ -71,9 +71,9 @@
     {
       "step": "commit",
       "ac_id": "AC1-AC2",
-      "command": null,
-      "exit_code": null,
-      "summary": "Pending commit."
+      "command": "git commit -m \"iter-002 US-00 verifier repair\"",
+      "exit_code": 0,
+      "summary": "Committed substantive US-00 verifier-repair changes in 1918b5c."
     }
   ]
 }
