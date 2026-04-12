@@ -276,7 +276,9 @@ if [[ -n "$MODE" ]]; then
     "$DESK/memos/$SLUG-iter-signal.json" \
     "$DESK/memos/$SLUG-verify-verdict.json" \
     "$DESK/memos/$SLUG-complete.md" \
-    "$DESK/memos/$SLUG-blocked.md"; do
+    "$DESK/memos/$SLUG-blocked.md" \
+    "$DESK/memos/$SLUG-flywheel-signal.json" \
+    "$DESK/memos/$SLUG-flywheel-review.md"; do
     [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
   done
 
@@ -290,7 +292,8 @@ if [[ -n "$MODE" ]]; then
   for f in \
     "$DESK/plans/test-spec-$SLUG.md" \
     "$DESK/prompts/$SLUG.worker.prompt.md" \
-    "$DESK/prompts/$SLUG.verifier.prompt.md"; do
+    "$DESK/prompts/$SLUG.verifier.prompt.md" \
+    "$DESK/prompts/$SLUG.flywheel.prompt.md"; do
     [[ -f "$f" ]] &&
       if [[ "$MODE" == "fresh" ]] || [[ "$f" != "$DESK/plans/test-spec-$SLUG.md" ]]; then
         rm "$f"; (( ++DELETED_COUNT ));
@@ -596,6 +599,90 @@ EOF
 - If Worker modified server code but did not restart the server, verdict = FAIL with issue: "server not restarted after code change"
 OPVER
   fi
+
+  echo "  + $F"
+else echo "  · $F"; fi
+
+# --- Flywheel Prompt ---
+F="$DESK/prompts/$SLUG.flywheel.prompt.md"
+if [[ ! -f "$F" ]]; then
+  cat > "$F" <<'FLYWHEEL_EOF'
+# Flywheel Direction Review
+
+You are an independent direction reviewer with fresh context. After a Worker iteration failed verification, you decide whether the current approach should continue, pivot, or change scope.
+
+## Context Files
+Read these in order:
+1. Campaign Memory: {DESK}/memos/{SLUG}-memory.md — especially Next Iteration Contract, Key Decisions, Rejected Directions
+2. PRD: {DESK}/plans/prd-{SLUG}.md — acceptance criteria
+3. Done Claim: {DESK}/memos/{SLUG}-done-claim.json — what Worker actually did
+4. Verify Verdict: {DESK}/memos/{SLUG}-verify-verdict.json — why Verifier failed it
+5. Latest Context: {DESK}/context/{SLUG}-latest.md — current state
+
+## CEO Cognitive Patterns (apply throughout your review)
+1. First-principles — ignore convention, start from the problem itself
+2. 10x check — can 2x effort yield 10x better result?
+3. Inversion — what must be true for this approach to fail?
+4. Simplicity bias — prefer simple over complex solutions
+5. User-back — reason backwards from end-user experience
+6. Time-value — does this direction change save 3+ iterations?
+7. Sunk cost immunity — ignore what was already invested
+8. Blast radius — assess impact scope of direction change
+9. Reversibility — prefer easily reversible decisions
+10. Evidence > opinion — judge only by this iteration's actual results
+
+## Review Process
+
+### Step 0A: Premise Challenge
+List every assumption the current approach depends on.
+For each assumption, state whether THIS iteration's evidence supports or contradicts it.
+- Supported: "Assumption X — SUPPORTED: [evidence from done-claim/verdict]"
+- Contradicted: "Assumption X — BROKEN: [evidence]. This means [implication]."
+If any premise is broken, PIVOT or REDUCE is likely the right call.
+
+### Step 0B: Existing Code Leverage
+- Did the Worker miss reusable code that already exists in the project?
+- Would a different approach align better with existing patterns?
+- Check: are there utilities, helpers, or patterns the Worker could have used?
+
+### Step 0C: Ideal State Mapping
+Describe what this US looks like when perfectly implemented (2-3 sentences).
+How far is the current approach from this ideal? What is the gap?
+
+### Step 0D: Implementation Alternatives (MANDATORY)
+Propose at least 2 alternative approaches. For each:
+- Summary (1-2 sentences)
+- Effort: S (< 1 iteration) / M (1-2 iterations) / L (3+ iterations)
+- Risk: low / medium / high
+- Key tradeoff vs current approach
+
+Do NOT skip this step. Even if the current approach seems correct, articulate alternatives.
+
+### Step 0E: Scope Decision
+Choose ONE. Justify with evidence from this iteration only:
+- **HOLD**: Premises valid, current approach correct. Refine the contract with specific fixes: "[fix 1], [fix 2]"
+- **PIVOT**: Premise [X] broken. Switch to Alternative [A]. Reason: [evidence]
+- **REDUCE**: AC [N] too complex at current scope. Split into [parts] or simplify to [simpler version]
+- **EXPAND**: Missing prerequisite [Y] discovered. Add to contract: [what to add]
+
+### Step 0F: Contract Rewrite
+Based on your decision, update campaign memory:
+1. Rewrite "Next Iteration Contract" with the new direction
+2. Append your decision and reasoning to "Key Decisions"
+3. If rejecting an approach, append to "Rejected Directions" section:
+   "DO NOT retry: [approach description]. Reason: [why it failed]. Evidence: [from iteration N]."
+   The next Worker MUST read Rejected Directions before starting.
+
+## Output Files
+
+1. Write analysis to: {DESK}/memos/{SLUG}-flywheel-review.md
+2. Update campaign memory: {DESK}/memos/{SLUG}-memory.md
+3. Write signal: {DESK}/memos/{SLUG}-flywheel-signal.json
+   Format: {"iteration": N, "decision": "hold|pivot|reduce|expand", "summary": "one line", "rejected_directions": ["approach X because Y"], "contract_updated": true, "timestamp": "ISO"}
+FLYWHEEL_EOF
+
+  # Replace placeholders with actual paths
+  sed -i '' "s|{DESK}|$DESK|g; s|{SLUG}|$SLUG|g" "$F"
 
   echo "  + $F"
 else echo "  · $F"; fi
