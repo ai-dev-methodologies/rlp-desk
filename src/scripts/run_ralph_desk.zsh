@@ -1787,7 +1787,7 @@ run_sequential_final_verify() {
     # Poll for verdict
     rm -f "$VERDICT_FILE"
     local poll_rc=0
-    poll_for_signal "$VERDICT_FILE" "$ITER_TIMEOUT" "verdict" || poll_rc=$?
+    poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
     if (( poll_rc != 0 )); then
       log_error "Verifier poll failed for $us (rc=$poll_rc)"
       FAILED_US="$us"
