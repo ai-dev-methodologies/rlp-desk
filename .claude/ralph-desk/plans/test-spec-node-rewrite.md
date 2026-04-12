@@ -9,11 +9,11 @@
 ## Verification Commands
 ### Build
 ```bash
-node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs');"
+node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs');"
 ```
 ### Test
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs
 ```
 ### Lint
 ```bash
@@ -29,12 +29,14 @@ What behavior does this project change or introduce?
 - Introduce the initial Node rewrite bootstrap primitives needed by later stories: safe project-root path resolution and atomic file writes under `src/node/shared/`.
 - Introduce a Node-native tmux pane manager under `src/node/tmux/` that can create panes, send commands, and wait for interactive pane processes to return to the shell.
 - Introduce Node-native CLI command builders and unified model-flag parsing under `src/node/cli/` so later runner stories can reuse the zsh-compatible launch strings.
+- Introduce a Node-native signal and verdict poller under `src/node/polling/` that waits for valid JSON artifacts, enforces timeouts, and applies Codex-specific two-phase pane-exit polling.
 
 ### Impacted Tests
 Existing tests that may break due to this change:
 - None identified. This iteration adds the first Node-native tests alongside the existing zsh test suites.
 - No existing Node tmux tests existed. US-001 adds a new real-`tmux` test file.
 - No existing Node command-builder tests existed. US-002 adds a new unit-only command-builder test file.
+- No existing Node poller tests existed. US-003 adds a mixed unit/L3 real-file polling test file.
 
 ### Required New Tests
 Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
@@ -52,6 +54,11 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 - AC2.3: `parseModelFlag` claude parsing happy + boundary + negative
 - AC2.4: `parseModelFlag` codex parsing happy + boundary + negative
 - AC2.5: `parseModelFlag` invalid-format rejection happy + boundary + negative
+- `tests/node/us003-signal-poller.test.mjs`
+- AC3.1: `pollForSignal` file-appearance polling happy + boundary + negative
+- AC3.2: `pollForSignal` codex two-phase polling happy + boundary + negative
+- AC3.3: `pollForSignal` timeout handling happy + boundary + negative
+- AC3.4: `pollForSignal` invalid-JSON retry happy + boundary + negative
 
 ### Forbidden Shortcuts (see Worker prompt for full list)
 - Do not mock external services when L2 integration test is required
@@ -78,7 +85,7 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 
 ### L1: Unit Test (REQUIRED)
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs
 ```
 
 ### L2: Integration (required if external services exist, otherwise "N/A — reason")
@@ -122,6 +129,24 @@ node --test --test-name-pattern "negative" tests/node/us001-tmux-pane-manager.te
 - **US-002 L3 status**:
 ```bash
 N/A — PRD marks US-002 as L1-only unit coverage
+```
+- **US-003 happy path input**: poll a missing signal file, then write a valid JSON verdict before timeout
+- **US-003 happy path expected output**: parsed JSON object resolves after the file appears
+- **US-003 happy path command**:
+```bash
+node --test --test-name-pattern "US-003 AC3.1 boundary|US-003 AC3.4 boundary" tests/node/us003-signal-poller.test.mjs
+```
+- **US-003 boundary input**: codex mode sees a valid verdict file while the pane is still running, or a partially written JSON file that becomes valid later
+- **US-003 boundary expected**: codex mode waits for the pane to return to shell; partial JSON is ignored until valid JSON lands
+- **US-003 boundary command**:
+```bash
+node --test --test-name-pattern "US-003 AC3.2 boundary|US-003 AC3.4 boundary" tests/node/us003-signal-poller.test.mjs
+```
+- **US-003 error path input**: no valid JSON appears before timeout, or codex never returns to shell after the file appears
+- **US-003 error path expected**: `TimeoutError` is thrown without hanging indefinitely
+- **US-003 error path command**:
+```bash
+node --test --test-name-pattern "US-003 AC3.3" tests/node/us003-signal-poller.test.mjs
 ```
 
 ### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
@@ -189,6 +214,18 @@ N/A — not CRITICAL risk
 | US-002 | AC2.5 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.5 happy: parseModelFlag rejects values with more than one colon | L1 | node --test --test-name-pattern "US-002 AC2.5 happy" tests/node/us002-cli-command-builder.test.mjs | complete |
 | US-002 | AC2.5 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.5 boundary: parseModelFlag rejects an empty triple-colon format | L1 | node --test --test-name-pattern "US-002 AC2.5 boundary" tests/node/us002-cli-command-builder.test.mjs | complete |
 | US-002 | AC2.5 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.5 negative: parseModelFlag rejects extra segments for spark aliases | L1 | node --test --test-name-pattern "US-002 AC2.5 negative" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-003 | AC3.1 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.1 happy: pollForSignal waits until a missing signal file appears with valid JSON | L1 | node --test --test-name-pattern "US-003 AC3.1 happy" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.1 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.1 boundary: pollForSignal resolves when a real signal file is written before timeout | L3 | node --test --test-name-pattern "US-003 AC3.1 boundary" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.1 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.1 negative: pollForSignal surfaces non-ENOENT file read failures | L1 | node --test --test-name-pattern "US-003 AC3.1 negative" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.2 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.2 happy: pollForSignal in codex mode waits for valid JSON and pane exit before resolving | L1 | node --test --test-name-pattern "US-003 AC3.2 happy" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.2 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.2 boundary: pollForSignal in codex mode resolves immediately when the pane is already back at the shell | L1 | node --test --test-name-pattern "US-003 AC3.2 boundary" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.2 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.2 negative: pollForSignal tolerates transient pane-read errors while waiting for codex exit | L1 | node --test --test-name-pattern "US-003 AC3.2 negative" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.3 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.3 happy: pollForSignal rejects with TimeoutError when no signal file appears before timeout | L1 | node --test --test-name-pattern "US-003 AC3.3 happy" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.3 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.3 boundary: pollForSignal times out on invalid JSON without hanging indefinitely | L3 | node --test --test-name-pattern "US-003 AC3.3 boundary" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.3 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.3 negative: pollForSignal in codex mode times out when the pane never exits | L1 | node --test --test-name-pattern "US-003 AC3.3 negative" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.4 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.4 happy: pollForSignal ignores invalid JSON and resolves once a later poll returns valid JSON | L1 | node --test --test-name-pattern "US-003 AC3.4 happy" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.4 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.4 boundary: pollForSignal handles a real partially written file before the final JSON lands | L3 | node --test --test-name-pattern "US-003 AC3.4 boundary" tests/node/us003-signal-poller.test.mjs | complete |
+| US-003 | AC3.4 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.4 negative: pollForSignal does not start codex exit checks until the signal file contains valid JSON | L1 | node --test --test-name-pattern "US-003 AC3.4 negative" tests/node/us003-signal-poller.test.mjs | complete |
 
 ---
 
@@ -235,3 +272,11 @@ N/A — not CRITICAL risk
 | US-002 | AC2.1-AC2.5 | L1 | node:test boundary subset | node --test --test-name-pattern "boundary" tests/node/us002-cli-command-builder.test.mjs | 5 tests pass | exit 0 + all boundary command-builder tests pass |
 | US-002 | AC2.1-AC2.5 | L1 | node:test error-path subset | node --test --test-name-pattern "negative" tests/node/us002-cli-command-builder.test.mjs | 5 tests pass | exit 0 + all error-path command-builder tests pass |
 | US-002 | AC2.1-AC2.5 | L1 | node:test smoke | node --test tests/node/us002-cli-command-builder.test.mjs | 15 tests pass | exit 0 + full command-builder suite passes |
+| US-003 | AC3.1 | L1/L3 | node:test | node --test --test-name-pattern "US-003 AC3.1" tests/node/us003-signal-poller.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC3.1 tests pass |
+| US-003 | AC3.2 | L1 | node:test | node --test --test-name-pattern "US-003 AC3.2" tests/node/us003-signal-poller.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC3.2 tests pass |
+| US-003 | AC3.3 | L1/L3 | node:test | node --test --test-name-pattern "US-003 AC3.3" tests/node/us003-signal-poller.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC3.3 tests pass |
+| US-003 | AC3.4 | L1/L3 | node:test | node --test --test-name-pattern "US-003 AC3.4" tests/node/us003-signal-poller.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC3.4 tests pass |
+| US-003 | AC3.1-AC3.4 | L3 | node:test happy-path subset | node --test --test-name-pattern "US-003 AC3.1 boundary|US-003 AC3.4 happy" tests/node/us003-signal-poller.test.mjs | 2 tests pass | exit 0 + file-appearance and invalid-JSON recovery happy-path polling tests pass |
+| US-003 | AC3.1-AC3.4 | L3 | node:test boundary subset | node --test --test-name-pattern "US-003 AC3.2 boundary|US-003 AC3.3 boundary|US-003 AC3.4 boundary" tests/node/us003-signal-poller.test.mjs | 3 tests pass | exit 0 + codex idle-pane, invalid-JSON timeout, and partial-write boundary tests pass |
+| US-003 | AC3.1-AC3.4 | L3 | node:test error-path subset | node --test --test-name-pattern "US-003 AC3.1 negative|US-003 AC3.2 negative|US-003 AC3.3 negative|US-003 AC3.4 negative" tests/node/us003-signal-poller.test.mjs | 4 tests pass | exit 0 + read-error, pane-retry, codex-timeout, and invalid-JSON negative tests pass |
+| US-003 | AC3.1-AC3.4 | L1/L3 | node:test smoke | node --test tests/node/us003-signal-poller.test.mjs | 12 tests pass | exit 0 + full signal poller suite passes |
