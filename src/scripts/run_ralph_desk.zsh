@@ -1712,35 +1712,36 @@ run_single_verifier() {
 
   # Poll for verdict
   if [[ "$engine" = "codex" ]]; then
-    # Codex exec: file poll + wait for process exit to avoid reading partial results
+    # Codex exec: file poll + short grace period after verdict detected
     log "  Polling for verify-verdict.json ($suffix, codex TUI)..."
     local codex_poll_start
     codex_poll_start=$(date +%s)
-    local _verdict_detected=0
+    local _verdict_detected_at=0
     while true; do
-      # Phase 1: wait for verdict file
-      if (( ! _verdict_detected )) && [[ -f "$VERDICT_FILE" ]]; then
-        if jq . "$VERDICT_FILE" >/dev/null 2>&1; then
-          log "  Verdict file detected, waiting for codex process to finish..."
-          _verdict_detected=1
+      # Wait for verdict file with valid JSON
+      if [[ -f "$VERDICT_FILE" ]] && jq . "$VERDICT_FILE" >/dev/null 2>&1; then
+        if (( _verdict_detected_at == 0 )); then
+          _verdict_detected_at=$(date +%s)
+          log "  Verdict file detected. Grace period (30s) for codex to finalize..."
         fi
-      fi
-      # Phase 2: verdict exists, wait for codex to exit (pane returns to shell)
-      if (( _verdict_detected )); then
+        # Grace period: 30s after verdict detection, proceed regardless of pane state
+        local _grace_elapsed=$(( $(date +%s) - _verdict_detected_at ))
+        if (( _grace_elapsed >= 30 )); then
+          log "  Grace period complete. Proceeding."
+          break
+        fi
+        # Early exit: if pane returned to shell, no need to wait
         local _pane_cmd
         _pane_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null || echo "")
         if [[ "$_pane_cmd" = "zsh" || "$_pane_cmd" = "bash" || -z "$_pane_cmd" ]]; then
           log "  Codex verifier$suffix process exited. Proceeding."
-          # Re-read verdict in case codex updated it before exiting
-          if jq . "$VERDICT_FILE" >/dev/null 2>&1; then
-            break
-          fi
+          break
         fi
       fi
       local codex_elapsed=$(( $(date +%s) - codex_poll_start ))
       if (( codex_elapsed >= ITER_TIMEOUT )); then
-        if (( _verdict_detected )); then
-          log "  Codex verifier$suffix timed out waiting for exit, but verdict exists. Proceeding."
+        if (( _verdict_detected_at > 0 )); then
+          log "  Codex verifier$suffix timed out waiting, but verdict exists. Proceeding."
           break
         fi
         log_error "Codex verifier$suffix timed out after ${ITER_TIMEOUT}s"
