@@ -7,7 +7,7 @@ verify
 rlp-desk zsh to Node.js rewrite
 
 ## Current State
-Iteration 9 implemented US-008 only. The rewrite now has a Node CLI entry point at `src/node/run.mjs` that exposes the current top-level command surface, parses the documented `run` flags, wires `init`/`status` to the existing Node modules, and exits cleanly for unsupported commands. `scripts/postinstall.js` now installs the Node runtime under `~/.claude/ralph-desk/node`, copies the command/docs payload, removes the legacy zsh runtime files, and falls back safely when Node.js is older than 16 or malformed. `scripts/uninstall.js` now removes the installed Node runtime tree during npm uninstall cleanup. `package.json` now publishes only the Node runtime sources plus the command/docs payload, so the packed artifact no longer distributes `src/scripts/*.zsh`. `tests/node/us008-cli-entrypoint.test.mjs` adds 12 node:test cases so every US-008 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-008 traceability rows, smoke commands, and verification mapping.
+Iteration 10 performed the final ALL-verification pass for the completed Node rewrite. No product code changed in this iteration. Fresh verification confirmed that the Node runtime imports cleanly, the full node:test suite passes across US-00 through US-008, the CLI help still exposes the documented command surface and run flags, and a real `npm pack` plus isolated `npm install` cycle installs `~/.claude/ralph-desk/node/run.mjs` without shipping or restoring the legacy zsh runtime files.
 
 ## Completed Stories
 - US-00: Node bootstrap foundations for the rewrite
@@ -45,38 +45,36 @@ Iteration 9 implemented US-008 only. The rewrite now has a Node CLI entry point 
   - `tests/node/us007-analytics-reporting.test.mjs` provides 9 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
 - US-008: CLI Entry Point and npm Integration
   - `src/node/run.mjs` adds the Node CLI entry point with top-level help, `run` flag parsing, and `init`/`status` command wiring
-  - `scripts/postinstall.js` now installs the Node runtime under `~/.claude/ralph-desk/node`, removes legacy zsh runtime files, and preserves existing zsh installs when Node.js is unsupported
-  - `scripts/uninstall.js` removes the installed Node runtime tree, and `package.json` now excludes legacy zsh runtime files from the published artifact
+  - `scripts/postinstall.js` installs the Node runtime under `~/.claude/ralph-desk/node`, removes legacy zsh runtime files on supported Node versions, and preserves existing zsh installs when Node.js is unsupported or malformed
+  - `scripts/uninstall.js` removes the installed Node runtime tree, and `package.json` excludes legacy zsh runtime files from the published artifact
   - `tests/node/us008-cli-entrypoint.test.mjs` provides 12 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
 
 ## Next Iteration Contract
-Verifier should check US-008 only.
+Verifier should run final ALL verification for US-00 through US-008 using the fresh iteration-10 evidence artifacts.
 
 **Criteria**:
-- US-008 AC8.1: npm postinstall installs the Node runtime under `~/.claude/ralph-desk` and replaces the old zsh runtime files
-- US-008 AC8.2: the Node CLI parses `/rlp-desk run` flags correctly and launches the campaign with the expected configuration
-- US-008 AC8.3: `node src/node/run.mjs --help` shows the current CLI command surface with no missing run flags
-- US-008 AC8.4: unsupported Node.js versions fail gracefully during postinstall without corrupting an existing zsh installation
+- Build smoke: the full Node runtime imports successfully
+- Full suite: `node --test` passes for `tests/node/us00-bootstrap.test.mjs` through `tests/node/us008-cli-entrypoint.test.mjs`
+- CLI help: `node src/node/run.mjs --help` prints the current command surface and run flags
+- Packaging/install smoke: `npm pack --json` plus isolated `npm install` produces `~/.claude/ralph-desk/node/run.mjs` with no legacy zsh runtime files installed
 
 ## Key Decisions
-- Kept US-008 surgical by adding a single Node CLI entry point instead of trying to rewrite the slash-command markdown protocol in the same iteration.
-- Installed the runtime under `~/.claude/ralph-desk/node` so copied modules keep their relative imports intact and the package can remove the legacy shell runtime entirely.
-- Per the PRD boundary cases, the installer removes stale mixed-install state on supported Node versions but refuses to touch the existing zsh runtime on unsupported versions.
-- Narrowed the `package.json` publish list to `src/node`, `src/commands`, and the supporting docs so `npm pack` no longer ships the old zsh scripts.
+- Treated iteration 10 as a verification-only pass because the implementation stories were already complete and individually verified.
+- Followed the worker prompt's explicit final-verification block after logging the scope conflict with the stale US-008-only iteration context.
+- Regenerated the memo-level `done-claim` and `iter-signal` artifacts that had been deleted from the worktree, using only fresh verification evidence.
 
 ## Patterns Discovered
-- A basename-based direct-entry check in `run.mjs` is more reliable than comparing raw `import.meta.url` strings once the runtime is copied outside the repo.
-- The CLI can stay minimal if it forwards only the current `run` defaults and documented flags while leaving unsupported commands explicit instead of silently no-oping.
-- Real `npm pack` verification catches packaging/runtime issues that unit tests miss, especially around installed-path execution.
+- The full node:test suite remains a reliable regression gate because it exercises both pure modules and real `tmux`/filesystem/install flows.
+- The isolated `npm pack` plus temp-home install smoke is still the fastest way to detect packaging regressions that unit tests alone would miss.
+- CLI help output is a stable contract surface for verifying that the Node entry point still advertises the expected top-level commands and run flags.
 
 ## Learnings
-- Installing a copied ESM runtime is straightforward as long as the copied directory structure mirrors the repo tree under `src/node`.
-- The unsupported-Node safeguard belongs at the top of `postinstall.js`; once copy/remove work starts, preserving the legacy runtime becomes much harder.
-- Packaging scope matters as much as install logic here because the PRD explicitly treats shipping legacy zsh files as a regression.
+- Final verification can be run without reopening implementation scope as long as the artifacts capture fresh evidence and clearly distinguish verification-only iterations from coding iterations.
+- Memo-level orchestration files are easy to lose in a dirty tree, so regenerating them from logged evidence is safer than relying on previous working-copy state.
+- Logging prompt conflicts in `conflict-log.jsonl` preserves the audit trail when the iteration contract and final verification block diverge.
 
 ## Evidence Chain
-- RED full US-008 suite: `node --test tests/node/us008-cli-entrypoint.test.mjs` -> exit 1 because `src/node/run.mjs` did not exist, postinstall still copied zsh scripts, and unsupported-node fallback was missing
-- GREEN full US-008 suite: `node --test tests/node/us008-cli-entrypoint.test.mjs` -> exit 0, 12/12 pass
-- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs'); await import('./src/node/run.mjs');"` -> exit 0
+- GREEN build smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs'); await import('./src/node/run.mjs');"` -> exit 0
+- GREEN full suite: `node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs tests/node/us008-cli-entrypoint.test.mjs` -> exit 0, 105/105 pass
 - GREEN CLI help smoke: `node src/node/run.mjs --help` -> exit 0 and prints the current command surface plus all documented run flags
-- GREEN pack/install smoke: `npm pack --json` + `npm install <tarball>` into a temp prefix/home -> exit 0, installed `~/.claude/ralph-desk/node/run.mjs` exists, legacy zsh runtime files are absent, and the installed CLI help includes `--autonomous`
+- GREEN pack/install smoke: `npm pack --json` + isolated `npm install <tarball>` -> exit 0, installed `~/.claude/ralph-desk/node/run.mjs` exists, no legacy zsh runtime files are installed, and the installed CLI help includes `--autonomous`
