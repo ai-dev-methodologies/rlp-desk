@@ -1,201 +1,122 @@
 {
-  "us_id": "US-006",
+  "us_id": "US-007",
   "claims": [
-    "AC6.1: run() validates the scaffold, creates leader/worker/verifier tmux panes, launches the worker with the requested codex model flags, and writes runtime status for iteration 1 in worker phase.",
-    "AC6.2: worker verify signals scope verifier prompts to the completed US, codex signal timeouts fall back to current-US verification, and failed verdicts write a fix contract before retrying the same US.",
-    "AC6.3: repeated failures on the same US escalate gpt-5.4 from medium to high to xhigh and block the campaign after the final escalation path is exhausted.",
-    "AC6.4: once all per-US verifications pass, the runner re-verifies each US sequentially, runs the integration check, and writes COMPLETE only after every final step succeeds.",
-    "AC6.5: an existing BLOCKED sentinel prevents startup and tells the user to run clean first."
+    "AC7.1: completed campaigns generate campaign-report.md with the 8 required sections and version any previous report",
+    "AC7.2: completed iterations append one valid JSON line per iteration to campaign.jsonl and a fresh campaign versions an existing analytics file before reuse",
+    "AC7.3: status output renders iteration, phase, models, verified_us, consecutive_failures, and elapsed time while handling missing or corrupt status.json"
   ],
   "execution_steps": [
     {
       "step": "write_test",
-      "ac_id": "AC6.1",
+      "ac_id": "AC7.1",
       "command": null,
       "exit_code": 0,
-      "summary": "Added AC6.1 happy, boundary, and negative tests to tests/node/us006-campaign-main-loop.test.mjs covering tmux startup, real tmux pane creation, and missing-scaffold rejection."
+      "summary": "wrote tests/node/us007-analytics-reporting.test.mjs with happy, boundary, and negative campaign-report cases"
     },
     {
       "step": "verify_red",
-      "ac_id": "AC6.1",
-      "command": "node --test tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "AC7.1",
+      "command": "node --test tests/node/us007-analytics-reporting.test.mjs",
       "exit_code": 1,
-      "summary": "RED: the new US-006 suite failed because src/node/runner/campaign-main-loop.mjs did not exist yet (ERR_MODULE_NOT_FOUND)."
+      "summary": "RED: campaign-report.md was missing and src/node/reporting/campaign-reporting.mjs did not exist"
     },
     {
       "step": "implement",
-      "ac_id": "AC6.1",
+      "ac_id": "AC7.1",
       "command": null,
       "exit_code": 0,
-      "summary": "Created src/node/runner/campaign-main-loop.mjs with scaffold validation, tmux session/pane setup, worker prompt writing, worker launch command assembly, and runtime status persistence."
+      "summary": "added generateCampaignReport() in src/node/reporting/campaign-reporting.mjs and wired terminal report generation into src/node/runner/campaign-main-loop.mjs"
     },
     {
       "step": "verify_green",
-      "ac_id": "AC6.1",
-      "command": "node --test --test-name-pattern \"US-006 AC6.1\" tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "AC7.1",
+      "command": "node --test --test-name-pattern \"US-007 AC7.1\" tests/node/us007-analytics-reporting.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: AC6.1 tmux startup coverage passed (3/3)."
+      "summary": "GREEN: 3/3 AC7.1 tests passed"
     },
     {
       "step": "write_test",
-      "ac_id": "AC6.2",
+      "ac_id": "AC7.2",
       "command": null,
       "exit_code": 0,
-      "summary": "Added AC6.2 happy, boundary, and negative tests covering scoped verifier dispatch, codex timeout fallback, and same-US fix-contract retries."
+      "summary": "wrote analytics JSONL tests in tests/node/us007-analytics-reporting.test.mjs for append, versioning, and validation"
     },
     {
       "step": "verify_red",
-      "ac_id": "AC6.2",
-      "command": "node --test tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "AC7.2",
+      "command": "node --test tests/node/us007-analytics-reporting.test.mjs",
       "exit_code": 1,
-      "summary": "RED evidence reused from the initial US-006 suite run before any runner implementation existed."
+      "summary": "RED: campaign.jsonl was missing before the reporting module and runner hooks were implemented"
     },
     {
       "step": "implement",
-      "ac_id": "AC6.2",
+      "ac_id": "AC7.2",
       "command": null,
       "exit_code": 0,
-      "summary": "Implemented verifier prompt dispatch, current-US codex timeout fallback, verdict handling, and fix-contract generation for retry iterations."
+      "summary": "added prepareCampaignAnalytics() and appendCampaignAnalytics(), plus runner iteration logging and analytics versioning"
     },
     {
       "step": "verify_green",
-      "ac_id": "AC6.2",
-      "command": "node --test --test-name-pattern \"US-006 AC6.2\" tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "AC7.2",
+      "command": "node --test --test-name-pattern \"US-007 AC7.2\" tests/node/us007-analytics-reporting.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: AC6.2 verifier-scoping and fix-loop coverage passed (3/3)."
+      "summary": "GREEN: 3/3 AC7.2 tests passed"
     },
     {
       "step": "write_test",
-      "ac_id": "AC6.3",
+      "ac_id": "AC7.3",
       "command": null,
       "exit_code": 0,
-      "summary": "Added AC6.3 happy, boundary, and negative tests for model escalation, resume with persisted failure streaks, and blocking after xhigh exhaustion."
+      "summary": "wrote status rendering tests in tests/node/us007-analytics-reporting.test.mjs for normal, missing, and corrupt status.json cases"
     },
     {
       "step": "verify_red",
-      "ac_id": "AC6.3",
-      "command": "node --test tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "AC7.3",
+      "command": "node --test tests/node/us007-analytics-reporting.test.mjs",
       "exit_code": 1,
-      "summary": "RED evidence reused from the initial US-006 suite run before the runner module was created."
+      "summary": "RED: readStatus() was not implemented before the reporting module was added"
     },
     {
       "step": "implement",
-      "ac_id": "AC6.3",
+      "ac_id": "AC7.3",
       "command": null,
       "exit_code": 0,
-      "summary": "Implemented consecutive-failure tracking, codex model upgrade routing, persisted runtime resume fields, and blocked-sentinel writes after exhausting the upgrade path."
+      "summary": "added readStatus() and minimal status metadata support in the runner for elapsed-time rendering"
     },
     {
       "step": "verify_green",
-      "ac_id": "AC6.3",
-      "command": "node --test --test-name-pattern \"US-006 AC6.3\" tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "AC7.3",
+      "command": "node --test --test-name-pattern \"US-007 AC7.3\" tests/node/us007-analytics-reporting.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: AC6.3 escalation and blocked-path coverage passed (3/3)."
-    },
-    {
-      "step": "write_test",
-      "ac_id": "AC6.4",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Added AC6.4 happy, boundary, and negative tests for final sequential per-US verification, final regression handling, and integration failure prevention of COMPLETE."
-    },
-    {
-      "step": "verify_red",
-      "ac_id": "AC6.4",
-      "command": "node --test tests/node/us006-campaign-main-loop.test.mjs",
-      "exit_code": 1,
-      "summary": "RED evidence reused from the initial US-006 suite run before the final verify implementation existed."
-    },
-    {
-      "step": "implement",
-      "ac_id": "AC6.4",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Implemented final sequential verifier dispatch, dedicated final-US prompt artifacts, integration hook execution, and COMPLETE gating on all final checks passing."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "AC6.4",
-      "command": "node --test --test-name-pattern \"US-006 AC6.4\" tests/node/us006-campaign-main-loop.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: AC6.4 final sequential verify coverage passed (3/3)."
-    },
-    {
-      "step": "write_test",
-      "ac_id": "AC6.5",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Added AC6.5 happy, boundary, and negative tests for blocked-sentinel startup rejection, tmux/status short-circuiting, and normal startup without a blocked sentinel."
-    },
-    {
-      "step": "verify_red",
-      "ac_id": "AC6.5",
-      "command": "node --test tests/node/us006-campaign-main-loop.test.mjs",
-      "exit_code": 1,
-      "summary": "RED evidence reused from the initial US-006 suite run before the startup guard was implemented."
-    },
-    {
-      "step": "implement",
-      "ac_id": "AC6.5",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Implemented blocked-sentinel startup refusal with a clean-first error before any tmux session or status mutation occurs."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "AC6.5",
-      "command": "node --test --test-name-pattern \"US-006 AC6.5\" tests/node/us006-campaign-main-loop.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: AC6.5 blocked-start guard coverage passed (3/3)."
+      "summary": "GREEN: 3/3 AC7.3 tests passed"
     },
     {
       "step": "verify_e2e",
-      "ac_id": "AC6.1-AC6.5",
-      "command": "node --test --test-name-pattern \"US-006 AC6.1 happy|US-006 AC6.2 happy|US-006 AC6.3 happy|US-006 AC6.4 happy|US-006 AC6.5 negative\" tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "US-007",
+      "command": "node --test tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs",
       "exit_code": 0,
-      "summary": "Happy-path subset passed (5/5), including tmux bootstrap, verifier scoping, escalation, final sequential verify, and normal startup."
+      "summary": "runner regression + US-007 integration check passed with 24/24 tests"
     },
     {
       "step": "verify_e2e",
-      "ac_id": "AC6.1-AC6.5",
-      "command": "node --test --test-name-pattern \"US-006 AC6.1 boundary|US-006 AC6.2 boundary|US-006 AC6.3 boundary|US-006 AC6.4 boundary|US-006 AC6.5 boundary\" tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "US-007",
+      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs');\"",
       "exit_code": 0,
-      "summary": "Boundary subset passed (5/5), including real tmux pane creation, codex fallback, resume escalation, final regression handling, and blocked startup short-circuiting."
+      "summary": "import smoke passed for the full Node rewrite surface including reporting"
     },
     {
       "step": "verify_e2e",
-      "ac_id": "AC6.1-AC6.5",
-      "command": "node --test --test-name-pattern \"US-006 AC6.1 negative|US-006 AC6.2 negative|US-006 AC6.3 negative|US-006 AC6.4 negative|US-006 AC6.5 happy\" tests/node/us006-campaign-main-loop.test.mjs",
+      "ac_id": "US-007",
+      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs",
       "exit_code": 0,
-      "summary": "Error-path subset passed (5/5), covering scaffold rejection, fix-contract retry, blocked escalation, integration failure, and blocked-sentinel refusal."
-    },
-    {
-      "step": "verify_e2e",
-      "ac_id": "AC6.1-AC6.5",
-      "command": "node --test tests/node/us006-campaign-main-loop.test.mjs",
-      "exit_code": 0,
-      "summary": "Full US-006 suite passed (15/15)."
-    },
-    {
-      "step": "verify_e2e",
-      "ac_id": "AC6.1-AC6.5",
-      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs');\"",
-      "exit_code": 0,
-      "summary": "Import smoke passed for all implemented Node rewrite modules."
-    },
-    {
-      "step": "verify_e2e",
-      "ac_id": "AC6.1-AC6.5",
-      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs",
-      "exit_code": 0,
-      "summary": "Combined Node suite passed end-to-end (84/84)."
+      "summary": "full Node suite passed with 93/93 tests"
     },
     {
       "step": "commit",
-      "ac_id": "AC6.1-AC6.5",
-      "command": "git commit -m \"feat: implement iter 7 us-006 campaign main loop\"",
+      "ac_id": "US-007",
+      "command": "git commit -m \"iter-008 US-007 analytics and reporting\"",
       "exit_code": 0,
-      "summary": "Committed the US-006 runner, tests, and node-rewrite iteration artifacts."
+      "summary": "committed the iteration artifacts and US-007 implementation"
     }
   ]
 }

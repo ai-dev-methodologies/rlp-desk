@@ -7,7 +7,7 @@ verify
 rlp-desk zsh to Node.js rewrite
 
 ## Current State
-Iteration 7 implemented US-006 only. The new Node module `src/node/runner/campaign-main-loop.mjs` adds `run()` and `initAndRun()` for the rewrite's tmux-mode leader loop. The runner now validates scaffold prerequisites, creates leader/worker/verifier panes, assembles and writes worker/verifier prompts into the campaign log, launches worker and verifier commands with the existing CLI builders, persists runtime status under `logs/<slug>/runtime/status.json`, falls back to current-US verification when a codex worker times out before writing a signal, escalates worker models after repeated failures, performs final sequential per-US re-verification followed by the integration check, and blocks restarts when a BLOCKED sentinel already exists. `tests/node/us006-campaign-main-loop.test.mjs` adds 15 node:test cases so every US-006 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-006 traceability rows, verification mappings, and updated smoke commands.
+Iteration 8 implemented US-007 only. The Node rewrite now includes `src/node/reporting/campaign-reporting.mjs` for three reporting surfaces: `prepareCampaignAnalytics()` and `appendCampaignAnalytics()` manage per-iteration `campaign.jsonl` data with versioning and required-field validation; `generateCampaignReport()` versions and writes `campaign-report.md` with the required eight sections; and `readStatus()` renders the status-command view from `status.json`, including corrupt/missing-file handling. `src/node/runner/campaign-main-loop.mjs` now persists `started_at_utc` and `max_iterations`, versions an existing `campaign.jsonl` at fresh campaign start, appends one analytics record per completed worker iteration, and generates a campaign report on COMPLETE and BLOCKED terminal states. `tests/node/us007-analytics-reporting.test.mjs` adds 9 node:test cases so every US-007 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-007 traceability rows, commands, and smoke coverage.
 
 ## Completed Stories
 - US-00: Node bootstrap foundations for the rewrite
@@ -38,44 +38,38 @@ Iteration 7 implemented US-006 only. The new Node module `src/node/runner/campai
   - `src/node/runner/campaign-main-loop.mjs` adds `run` and `initAndRun`
   - The runner validates scaffold prerequisites, creates tmux panes, dispatches worker/verifier commands with scoped prompts, persists runtime status, retries codex signal gaps with current-US fallback, escalates worker models after repeated failures, performs final sequential verify plus integration, and blocks restart when a BLOCKED sentinel exists
   - `tests/node/us006-campaign-main-loop.test.mjs` provides 15 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
+- US-007: Analytics and Reporting
+  - `src/node/reporting/campaign-reporting.mjs` adds `prepareCampaignAnalytics`, `appendCampaignAnalytics`, `generateCampaignReport`, and `readStatus`
+  - The reporting module versions prior `campaign.jsonl` and `campaign-report.md` files, writes one analytics record per completed iteration, renders the required eight campaign-report sections, and formats status output from `status.json`
+  - `src/node/runner/campaign-main-loop.mjs` now connects analytics/report generation to the tmux loop without expanding story scope beyond reporting
+  - `tests/node/us007-analytics-reporting.test.mjs` provides 9 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
 
 ## Next Iteration Contract
-Verifier should check US-006 only.
+Verifier should check US-007 only.
 
 **Criteria**:
-- US-006 AC6.1: `run("test-slug", {mode:"tmux", workerModel:"gpt-5.4:medium"})` creates tmux leader/worker/verifier panes, launches the worker with the correct model flags, and writes `status.json` with iteration 1 in worker phase
-- US-006 AC6.2: worker verify signals scope the verifier to the completed US and failed verdicts produce a fix contract for the next retry of that same US
-- US-006 AC6.3: three consecutive failures on the same US upgrade `gpt-5.4:medium` to `gpt-5.4:high`, continued failures escalate through `xhigh`, and the campaign blocks after exhausting upgrades
-- US-006 AC6.4: after all per-US verifications pass, the runner re-verifies each US sequentially, runs the integration check, and writes COMPLETE only after every step passes
-- US-006 AC6.5: an existing BLOCKED sentinel prevents startup and tells the user to run clean first
+- US-007 AC7.1: a completed five-iteration campaign writes `campaign-report.md` with the eight required sections, including versioning of any previous report
+- US-007 AC7.2: completed iterations append one valid JSON line per iteration to `campaign.jsonl`, and a fresh campaign versions an existing analytics file before writing new records
+- US-007 AC7.3: the status reader displays iteration, phase, models, verified US, consecutive failures, and elapsed time, while handling missing or corrupt `status.json`
 
 ## Key Decisions
-- Kept US-006 surgical: one new module under `src/node/runner/` that orchestrates the already-implemented Node primitives instead of porting the full shell leader in one pass.
-- Used dependency injection for tmux, polling, and integration hooks so the runner can cover L1, L2, L3, and L4 scenarios without adding test-only branches to production code.
-- Scoped model escalation to the PRD-required codex upgrade path (`medium -> high -> xhigh -> BLOCKED`) and left broader governance heuristics out of this story.
-- Implemented final verification as sequential per-US verifier dispatch plus one integration hook, matching the timeout-avoidance behavior described in the protocol docs.
+- Kept US-007 surgical by adding one reporting module instead of spreading analytics/report logic across multiple new subsystems.
+- Stored `campaign.jsonl` and `campaign-report.md` under `logs/<slug>/` so the Node rewrite stays inside the project root and still preserves the required runtime artifacts.
+- Logged one analytics record per completed worker iteration, not per final re-verification step, so iteration counts stay aligned with the worker loop.
+- Extended `status.json` only with `started_at_utc` and `max_iterations`, which was enough to support elapsed-time rendering and reporting without changing the tmux orchestration model.
 
 ## Patterns Discovered
-- The runner stays manageable when the prompt-writing, launch-command building, and state persistence each remain separate, single-purpose steps inside the loop.
-- Reusing the existing prompt assembler and command builder modules keeps the tmux loop consistent with earlier stories and reduces new surface area.
-- A codex timeout fallback is safest when it stays narrowly scoped to "verify the current US" instead of inventing broader recovery logic.
-- Final sequential verify is easiest to test when its verifier prompts are written to dedicated `final-US-XXX.verifier-prompt.md` files.
+- The runner remains easier to reason about when reporting concerns are isolated behind small helper functions and the loop only calls them at iteration boundaries or terminal states.
+- Versioning old runtime artifacts before writing new ones keeps retries and reruns testable without introducing destructive cleanup into the story scope.
+- Reporting from `status.json`, PRD sections, analytics lines, and fix contracts is enough to satisfy the report contract without first porting the whole legacy archival pipeline.
 
 ## Learnings
-- The current Node rewrite can express the shell leader loop with a compact state machine if the story scope stays limited to tmux mode and per-US verification.
-- Real tmux coverage for pane creation can coexist with fake command dispatch, which keeps the L3 check meaningful without requiring real codex/claude CLI execution.
-- Capturing status transitions through one persisted `status.json` is enough to support the PRD's resume boundary case for this story.
+- US-007 can stay unit-focused even though it touches the runner, as long as the report and analytics behaviors are exposed through deterministic helper functions.
+- Adding reporting to the existing runner did not require changing the US-006 control flow beyond a few status and terminal hooks.
+- The elapsed-time requirement is easiest to satisfy when status rendering compares `updated_at_utc` against a caller-provided clock.
 
 ## Evidence Chain
-- RED full US-006 suite: `node --test tests/node/us006-campaign-main-loop.test.mjs` -> exit 1 because `src/node/runner/campaign-main-loop.mjs` did not exist yet (`ERR_MODULE_NOT_FOUND`)
-- GREEN AC6.1 subset: `node --test --test-name-pattern "US-006 AC6.1" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC6.2 subset: `node --test --test-name-pattern "US-006 AC6.2" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC6.3 subset: `node --test --test-name-pattern "US-006 AC6.3" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC6.4 subset: `node --test --test-name-pattern "US-006 AC6.4" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC6.5 subset: `node --test --test-name-pattern "US-006 AC6.5" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
-- GREEN L3/L2 happy subset: `node --test --test-name-pattern "US-006 AC6.1 happy|US-006 AC6.2 happy|US-006 AC6.3 happy|US-006 AC6.4 happy|US-006 AC6.5 negative" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 5/5 pass
-- GREEN boundary subset: `node --test --test-name-pattern "US-006 AC6.1 boundary|US-006 AC6.2 boundary|US-006 AC6.3 boundary|US-006 AC6.4 boundary|US-006 AC6.5 boundary" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 5/5 pass
-- GREEN error subset: `node --test --test-name-pattern "US-006 AC6.1 negative|US-006 AC6.2 negative|US-006 AC6.3 negative|US-006 AC6.4 negative|US-006 AC6.5 happy" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 5/5 pass
-- GREEN full US-006 suite: `node --test tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 15/15 pass
-- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs');"` -> exit 0
-- GREEN combined Node suite: `node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 84/84 pass
+- RED full US-007 suite: `node --test tests/node/us007-analytics-reporting.test.mjs` -> exit 1 because `src/node/reporting/campaign-reporting.mjs` did not exist yet and the runner did not write `campaign.jsonl` or `campaign-report.md`
+- GREEN full US-007 suite: `node --test tests/node/us007-analytics-reporting.test.mjs` -> exit 0, 9/9 pass
+- GREEN adjacent runner regression suite: `node --test tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs` -> exit 0, 24/24 pass
+- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs');"` -> exit 0

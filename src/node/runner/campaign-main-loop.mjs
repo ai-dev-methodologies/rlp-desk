@@ -11,6 +11,11 @@ import {
   assembleWorkerPrompt,
 } from '../prompts/prompt-assembler.mjs';
 import {
+  appendCampaignAnalytics,
+  generateCampaignReport,
+  prepareCampaignAnalytics,
+} from '../reporting/campaign-reporting.mjs';
+import {
   createPane as defaultCreatePane,
   sendKeys as defaultSendKeys,
 } from '../tmux/pane-manager.mjs';
@@ -50,6 +55,8 @@ function buildPaths(rootDir, slug) {
     contextFile: path.join(deskRoot, 'context', `${slug}-latest.md`),
     prdFile: path.join(deskRoot, 'plans', `prd-${slug}.md`),
     testSpecFile: path.join(deskRoot, 'plans', `test-spec-${slug}.md`),
+    analyticsFile: path.join(campaignLogDir, 'campaign.jsonl'),
+    reportFile: path.join(campaignLogDir, 'campaign-report.md'),
     statusFile: path.join(campaignLogDir, 'runtime', 'status.json'),
   };
 }
@@ -123,10 +130,18 @@ function toIso(now) {
   return new Date(now).toISOString();
 }
 
-async function writeStatus(paths, status, onStatusChange) {
+function resolveNow(nowOverride) {
+  if (typeof nowOverride === 'function') {
+    return nowOverride();
+  }
+
+  return nowOverride ?? Date.now();
+}
+
+async function writeStatus(paths, status, onStatusChange, nowOverride) {
   const nextStatus = {
     ...status,
-    updated_at_utc: toIso(Date.now()),
+    updated_at_utc: toIso(resolveNow(nowOverride)),
   };
   await writeJson(paths.statusFile, nextStatus);
   if (typeof onStatusChange === 'function') {
@@ -221,9 +236,11 @@ function deriveVerifierModel(usId, options) {
 
 async function readCurrentState(paths, slug, options) {
   const status = (await readJsonIfExists(paths.statusFile)) ?? {};
+  const startedAt = status.started_at_utc ?? toIso(resolveNow(options.now));
   return {
     slug,
     iteration: status.iteration ?? 1,
+    max_iterations: status.max_iterations ?? options.maxIterations ?? 100,
     phase: status.phase ?? 'worker',
     worker_model: status.worker_model ?? options.workerModel ?? 'sonnet',
     verifier_model: status.verifier_model ?? options.verifierModel ?? 'sonnet',
@@ -235,7 +252,20 @@ async function readCurrentState(paths, slug, options) {
     leader_pane_id: status.leader_pane_id ?? null,
     worker_pane_id: status.worker_pane_id ?? null,
     verifier_pane_id: status.verifier_pane_id ?? null,
+    started_at_utc: startedAt,
   };
+}
+
+async function appendIterationAnalytics(paths, state, usId, verdict, options) {
+  await appendCampaignAnalytics(paths.analyticsFile, {
+    iter: state.iteration,
+    us_id: usId,
+    worker_model: state.worker_model,
+    worker_engine: parseModelFlag(state.worker_model).engine,
+    verdict,
+    duration: 0,
+    timestamp: toIso(resolveNow(options.now)),
+  });
 }
 
 async function dispatchWorker({
@@ -376,6 +406,10 @@ export async function run(slug, options = {}) {
 
   await ensureDirs(paths);
   await ensureScaffold(paths);
+  await prepareCampaignAnalytics({
+    analyticsFile: paths.analyticsFile,
+    statusFile: paths.statusFile,
+  });
 
   if (await exists(paths.blockedSentinel)) {
     throw new Error(`Campaign ${slug} is blocked. Run clean first.`);
@@ -427,7 +461,15 @@ export async function run(slug, options = {}) {
       if (finalResult.status === 'complete') {
         state.phase = 'complete';
         await writeSentinel(paths.completeSentinel, 'complete', 'ALL');
-        await writeStatus(paths, state, options.onStatusChange);
+        await writeStatus(paths, state, options.onStatusChange, options.now);
+        await generateCampaignReport({
+          slug,
+          reportFile: paths.reportFile,
+          prdFile: paths.prdFile,
+          statusFile: paths.statusFile,
+          analyticsFile: paths.analyticsFile,
+          now: resolveNow(options.now),
+        });
         return {
           status: 'complete',
           usId: 'ALL',
@@ -439,7 +481,7 @@ export async function run(slug, options = {}) {
       state.current_us = finalResult.usId;
       fixContractPath = path.join(paths.campaignLogDir, `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`);
       await writePromptFile(fixContractPath, buildFixContract(finalResult.verdict));
-      await writeStatus(paths, state, options.onStatusChange);
+      await writeStatus(paths, state, options.onStatusChange, options.now);
       return {
         status: 'continue',
         usId: finalResult.usId,
@@ -448,7 +490,7 @@ export async function run(slug, options = {}) {
     }
 
     state.phase = 'worker';
-    await writeStatus(paths, state, options.onStatusChange);
+    await writeStatus(paths, state, options.onStatusChange, options.now);
     await dispatchWorker({
       iteration: state.iteration,
       paths,
@@ -484,7 +526,7 @@ export async function run(slug, options = {}) {
     state.phase = 'verifier';
     state.verifier_model = options.verifierModel ?? 'sonnet';
     state.final_verifier_model = options.finalVerifierModel ?? 'opus';
-    await writeStatus(paths, state, options.onStatusChange);
+    await writeStatus(paths, state, options.onStatusChange, options.now);
     await dispatchVerifier({
       iteration: state.iteration,
       paths,
@@ -507,6 +549,8 @@ export async function run(slug, options = {}) {
       }
       state.current_us = getNextUs(usList, state.verified_us, null);
       fixContractPath = null;
+      await appendIterationAnalytics(paths, state, usId, 'pass', options);
+      await writeStatus(paths, state, options.onStatusChange, options.now);
 
       if (state.verified_us.length === usList.length) {
         continue;
@@ -519,7 +563,16 @@ export async function run(slug, options = {}) {
     if (verdict.verdict === 'blocked') {
       state.phase = 'blocked';
       await writeSentinel(paths.blockedSentinel, 'blocked', usId);
-      await writeStatus(paths, state, options.onStatusChange);
+      await appendIterationAnalytics(paths, state, usId, 'blocked', options);
+      await writeStatus(paths, state, options.onStatusChange, options.now);
+      await generateCampaignReport({
+        slug,
+        reportFile: paths.reportFile,
+        prdFile: paths.prdFile,
+        statusFile: paths.statusFile,
+        analyticsFile: paths.analyticsFile,
+        now: resolveNow(options.now),
+      });
       return {
         status: 'blocked',
         usId,
@@ -528,11 +581,20 @@ export async function run(slug, options = {}) {
     }
 
     state.consecutive_failures += 1;
+    await appendIterationAnalytics(paths, state, usId, 'fail', options);
     const upgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
     if (upgradedModel === 'BLOCKED') {
       state.phase = 'blocked';
       await writeSentinel(paths.blockedSentinel, 'blocked', usId);
-      await writeStatus(paths, state, options.onStatusChange);
+      await writeStatus(paths, state, options.onStatusChange, options.now);
+      await generateCampaignReport({
+        slug,
+        reportFile: paths.reportFile,
+        prdFile: paths.prdFile,
+        statusFile: paths.statusFile,
+        analyticsFile: paths.analyticsFile,
+        now: resolveNow(options.now),
+      });
       return {
         status: 'blocked',
         usId,
@@ -545,6 +607,7 @@ export async function run(slug, options = {}) {
     fixContractPath = path.join(paths.campaignLogDir, `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`);
     await writePromptFile(fixContractPath, buildFixContract(verdict));
     state.phase = 'worker';
+    await writeStatus(paths, state, options.onStatusChange, options.now);
     state.iteration += 1;
   }
 

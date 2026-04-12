@@ -9,11 +9,11 @@
 ## Verification Commands
 ### Build
 ```bash
-node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs');"
+node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs');"
 ```
 ### Test
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs
 ```
 ### Lint
 ```bash
@@ -79,6 +79,10 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 - AC6.3: `run` circuit-breaker escalation happy + boundary + negative
 - AC6.4: `run` final sequential verify happy + boundary + negative
 - AC6.5: `run` blocked-sentinel guard happy + boundary + negative
+- `tests/node/us007-analytics-reporting.test.mjs`
+- AC7.1: `run`/`generateCampaignReport` report generation happy + boundary + negative
+- AC7.2: `run`/`appendCampaignAnalytics` analytics JSONL happy + boundary + negative
+- AC7.3: `readStatus` status rendering happy + boundary + negative
 
 ### Forbidden Shortcuts (see Worker prompt for full list)
 - Do not mock external services when L2 integration test is required
@@ -339,6 +343,15 @@ N/A — not CRITICAL risk
 | US-006 | AC6.5 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.5 happy: an existing blocked sentinel refuses to start and tells the user to run clean first | L1 | node --test --test-name-pattern "US-006 AC6.5 happy" tests/node/us006-campaign-main-loop.test.mjs | complete |
 | US-006 | AC6.5 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.5 boundary: a blocked sentinel short-circuits before any tmux session or status writes are created | L1 | node --test --test-name-pattern "US-006 AC6.5 boundary" tests/node/us006-campaign-main-loop.test.mjs | complete |
 | US-006 | AC6.5 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.5 negative: without a blocked sentinel the campaign is allowed to start normally | L1 | node --test --test-name-pattern "US-006 AC6.5 negative" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-007 | AC7.1 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.1 happy: completing a five-iteration campaign writes campaign-report.md with all eight required sections | L1 | node --test --test-name-pattern "US-007 AC7.1 happy" tests/node/us007-analytics-reporting.test.mjs | complete |
+| US-007 | AC7.1 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.1 boundary: generateCampaignReport still writes all eight sections for an empty campaign | L1 | node --test --test-name-pattern "US-007 AC7.1 boundary" tests/node/us007-analytics-reporting.test.mjs | complete |
+| US-007 | AC7.1 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.1 negative: generating a new campaign report versions the previous report first | L1 | node --test --test-name-pattern "US-007 AC7.1 negative" tests/node/us007-analytics-reporting.test.mjs | complete |
+| US-007 | AC7.2 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.2 happy: the runner appends one valid analytics JSON line per completed iteration | L1 | node --test --test-name-pattern "US-007 AC7.2 happy" tests/node/us007-analytics-reporting.test.mjs | complete |
+| US-007 | AC7.2 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.2 boundary: starting a new campaign versions an existing campaign.jsonl before appending fresh analytics | L1 | node --test --test-name-pattern "US-007 AC7.2 boundary" tests/node/us007-analytics-reporting.test.mjs | complete |
+| US-007 | AC7.2 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.2 negative: appendCampaignAnalytics rejects records that omit required fields | L1 | node --test --test-name-pattern "US-007 AC7.2 negative" tests/node/us007-analytics-reporting.test.mjs | complete |
+| US-007 | AC7.3 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.3 happy: readStatus renders iteration, phase, models, verified_us, consecutive_failures, and elapsed time | L1 | node --test --test-name-pattern "US-007 AC7.3 happy" tests/node/us007-analytics-reporting.test.mjs | complete |
+| US-007 | AC7.3 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.3 boundary: readStatus reports no active campaign when status.json does not exist | L1 | node --test --test-name-pattern "US-007 AC7.3 boundary" tests/node/us007-analytics-reporting.test.mjs | complete |
+| US-007 | AC7.3 | tests/node/us007-analytics-reporting.test.mjs :: US-007 AC7.3 negative: readStatus handles a corrupt status.json without throwing | L1 | node --test --test-name-pattern "US-007 AC7.3 negative" tests/node/us007-analytics-reporting.test.mjs | complete |
 
 ---
 
@@ -418,3 +431,10 @@ N/A — not CRITICAL risk
 | US-006 | AC6.1-AC6.5 | L1/L3 | node:test boundary subset | node --test --test-name-pattern "US-006 AC6.1 boundary|US-006 AC6.2 boundary|US-006 AC6.3 boundary|US-006 AC6.4 boundary|US-006 AC6.5 boundary" tests/node/us006-campaign-main-loop.test.mjs | 5 tests pass | exit 0 + real tmux, codex fallback, resume escalation, final regression handling, and blocked short-circuit boundary tests pass |
 | US-006 | AC6.1-AC6.5 | L1/L2/L4 | node:test error-path subset | node --test --test-name-pattern "US-006 AC6.1 negative|US-006 AC6.2 negative|US-006 AC6.3 negative|US-006 AC6.4 negative|US-006 AC6.5 happy" tests/node/us006-campaign-main-loop.test.mjs | 5 tests pass | exit 0 + scaffold rejection, fix-contract retry, xhigh blocking, integration failure, and blocked-start rejection tests pass |
 | US-006 | AC6.1-AC6.5 | L1/L2/L3/L4 | node:test smoke | node --test tests/node/us006-campaign-main-loop.test.mjs | 15 tests pass | exit 0 + full campaign main loop suite passes |
+| US-007 | AC7.1 | L1 | node:test | node --test --test-name-pattern "US-007 AC7.1" tests/node/us007-analytics-reporting.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC7.1 report-generation tests pass |
+| US-007 | AC7.2 | L1 | node:test | node --test --test-name-pattern "US-007 AC7.2" tests/node/us007-analytics-reporting.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC7.2 analytics tests pass |
+| US-007 | AC7.3 | L1 | node:test | node --test --test-name-pattern "US-007 AC7.3" tests/node/us007-analytics-reporting.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC7.3 status tests pass |
+| US-007 | AC7.1-AC7.3 | L1 | node:test happy-path subset | node --test --test-name-pattern "US-007 AC7.1 happy|US-007 AC7.2 happy|US-007 AC7.3 happy" tests/node/us007-analytics-reporting.test.mjs | 3 tests pass | exit 0 + integrated report generation, analytics append, and status rendering happy-path tests pass |
+| US-007 | AC7.1-AC7.3 | L1 | node:test boundary subset | node --test --test-name-pattern "US-007 AC7.1 boundary|US-007 AC7.2 boundary|US-007 AC7.3 boundary" tests/node/us007-analytics-reporting.test.mjs | 3 tests pass | exit 0 + empty campaign, analytics versioning, and missing-status boundary tests pass |
+| US-007 | AC7.1-AC7.3 | L1 | node:test error-path subset | node --test --test-name-pattern "US-007 AC7.1 negative|US-007 AC7.2 negative|US-007 AC7.3 negative" tests/node/us007-analytics-reporting.test.mjs | 3 tests pass | exit 0 + report versioning, analytics validation, and corrupt-status handling negative tests pass |
+| US-007 | AC7.1-AC7.3 | L1 | node:test smoke | node --test tests/node/us007-analytics-reporting.test.mjs | 9 tests pass | exit 0 + full analytics/reporting suite passes |
