@@ -7,7 +7,7 @@ verify
 rlp-desk zsh to Node.js rewrite
 
 ## Current State
-Iteration 6 implemented US-005 only. The new Node module `src/node/init/campaign-initializer.mjs` adds `initCampaign()` and `init()` for the rewrite's scaffold-creation flow. The initializer now creates the desk directories and base files, normalizes special-character slugs for stable filenames, updates `.gitignore` without duplicating the rlp-desk rule, splits PRDs on `## US-NNN:` markers while preserving the objective header, supports `mode="fresh"` by recreating the desk scaffold from scratch, and rejects `mode="tmux"` when no tmux session marker is present. `tests/node/us005-campaign-initializer.test.mjs` adds 12 node:test cases so every US-005 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-005 traceability rows, criteria mappings, and verification commands.
+Iteration 7 implemented US-006 only. The new Node module `src/node/runner/campaign-main-loop.mjs` adds `run()` and `initAndRun()` for the rewrite's tmux-mode leader loop. The runner now validates scaffold prerequisites, creates leader/worker/verifier panes, assembles and writes worker/verifier prompts into the campaign log, launches worker and verifier commands with the existing CLI builders, persists runtime status under `logs/<slug>/runtime/status.json`, falls back to current-US verification when a codex worker times out before writing a signal, escalates worker models after repeated failures, performs final sequential per-US re-verification followed by the integration check, and blocks restarts when a BLOCKED sentinel already exists. `tests/node/us006-campaign-main-loop.test.mjs` adds 15 node:test cases so every US-006 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-006 traceability rows, verification mappings, and updated smoke commands.
 
 ## Completed Stories
 - US-00: Node bootstrap foundations for the rewrite
@@ -34,42 +34,48 @@ Iteration 6 implemented US-005 only. The new Node module `src/node/init/campaign
   - `src/node/init/campaign-initializer.mjs` adds `initCampaign` and `init`
   - The initializer creates the desk scaffold, preserves existing `.gitignore` rules without duplication, splits PRDs into per-US files with the objective header, supports fresh re-init cleanup, and rejects tmux mode outside a tmux session
   - `tests/node/us005-campaign-initializer.test.mjs` provides 12 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
+- US-006: Campaign Main Loop
+  - `src/node/runner/campaign-main-loop.mjs` adds `run` and `initAndRun`
+  - The runner validates scaffold prerequisites, creates tmux panes, dispatches worker/verifier commands with scoped prompts, persists runtime status, retries codex signal gaps with current-US fallback, escalates worker models after repeated failures, performs final sequential verify plus integration, and blocks restart when a BLOCKED sentinel exists
+  - `tests/node/us006-campaign-main-loop.test.mjs` provides 15 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
 
 ## Next Iteration Contract
-Verifier should check US-005 only.
+Verifier should check US-006 only.
 
 **Criteria**:
-- US-005 AC5.1: `initCampaign()` creates the scaffold directories and expected base files for the campaign
-- US-005 AC5.2: `initCampaign()` splits a PRD on `## US-NNN:` markers into per-US files that preserve the objective header and isolate section content
-- US-005 AC5.3: `initCampaign()` with `mode="fresh"` deletes stale initializer artifacts and recreates the PRD from scratch
-- US-005 AC5.4: `initCampaign()` rejects `mode="tmux"` without a tmux session and leaves no scaffold behind
+- US-006 AC6.1: `run("test-slug", {mode:"tmux", workerModel:"gpt-5.4:medium"})` creates tmux leader/worker/verifier panes, launches the worker with the correct model flags, and writes `status.json` with iteration 1 in worker phase
+- US-006 AC6.2: worker verify signals scope the verifier to the completed US and failed verdicts produce a fix contract for the next retry of that same US
+- US-006 AC6.3: three consecutive failures on the same US upgrade `gpt-5.4:medium` to `gpt-5.4:high`, continued failures escalate through `xhigh`, and the campaign blocks after exhausting upgrades
+- US-006 AC6.4: after all per-US verifications pass, the runner re-verifies each US sequentially, runs the integration check, and writes COMPLETE only after every step passes
+- US-006 AC6.5: an existing BLOCKED sentinel prevents startup and tells the user to run clean first
 
 ## Key Decisions
-- Kept US-005 surgical: one new module under `src/node/init/` with only the APIs required by the PRD.
-- Used a line-based PRD splitter instead of porting the shell `awk` logic so the Node behavior stays deterministic and easy to test.
-- Scoped tmux prerequisite handling to the session-marker check required by the PRD instead of introducing broader runtime validation.
-- Limited initializer behavior to scaffold creation, PRD splitting, fresh cleanup, and `.gitignore` maintenance; test-spec splitting and settings-file mutation remain out of scope for this story.
+- Kept US-006 surgical: one new module under `src/node/runner/` that orchestrates the already-implemented Node primitives instead of porting the full shell leader in one pass.
+- Used dependency injection for tmux, polling, and integration hooks so the runner can cover L1, L2, L3, and L4 scenarios without adding test-only branches to production code.
+- Scoped model escalation to the PRD-required codex upgrade path (`medium -> high -> xhigh -> BLOCKED`) and left broader governance heuristics out of this story.
+- Implemented final verification as sequential per-US verifier dispatch plus one integration hook, matching the timeout-avoidance behavior described in the protocol docs.
 
 ## Patterns Discovered
-- The Node rewrite can keep each story self-contained by mirroring only the shell behavior demanded by the current AC, not the entire shell script at once.
-- Fresh re-init is simplest and safest when the desk root is removed wholesale and then regenerated from the current inputs.
-- Boundary coverage for initializer work is most reliable when the tests exercise real temporary filesystem trees rather than mocks.
-- A stable slug-normalization step keeps file naming predictable across prompt, memo, plan, and log paths.
+- The runner stays manageable when the prompt-writing, launch-command building, and state persistence each remain separate, single-purpose steps inside the loop.
+- Reusing the existing prompt assembler and command builder modules keeps the tmux loop consistent with earlier stories and reduces new surface area.
+- A codex timeout fallback is safest when it stays narrowly scoped to "verify the current US" instead of inventing broader recovery logic.
+- Final sequential verify is easiest to test when its verifier prompts are written to dedicated `final-US-XXX.verifier-prompt.md` files.
 
 ## Learnings
-- A small Node initializer is enough to cover the story without pulling in the higher-level runner orchestration or CLI layers prematurely.
-- `.gitignore` handling is easiest to verify by enforcing the marker and rule as an idempotent block append.
-- Splitting PRDs while preserving the shared objective header is easier to reason about with line parsing than regex-only extraction.
+- The current Node rewrite can express the shell leader loop with a compact state machine if the story scope stays limited to tmux mode and per-US verification.
+- Real tmux coverage for pane creation can coexist with fake command dispatch, which keeps the L3 check meaningful without requiring real codex/claude CLI execution.
+- Capturing status transitions through one persisted `status.json` is enough to support the PRD's resume boundary case for this story.
 
 ## Evidence Chain
-- RED full US-005 suite: `node --test tests/node/us005-campaign-initializer.test.mjs` -> exit 1 because `src/node/init/campaign-initializer.mjs` did not exist yet (`ERR_MODULE_NOT_FOUND`)
-- GREEN AC5.1 subset: `node --test --test-name-pattern "US-005 AC5.1" tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC5.2 subset: `node --test --test-name-pattern "US-005 AC5.2" tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC5.3 subset: `node --test --test-name-pattern "US-005 AC5.3" tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC5.4 subset: `node --test --test-name-pattern "US-005 AC5.4" tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 3/3 pass
-- GREEN L3 happy subset: `node --test --test-name-pattern "US-005 AC5.1 happy|US-005 AC5.2 happy|US-005 AC5.3 happy|US-005 AC5.4 happy" tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 4/4 pass
-- GREEN L3 boundary subset: `node --test --test-name-pattern "US-005 AC5.1 boundary|US-005 AC5.2 boundary|US-005 AC5.3 boundary|US-005 AC5.4 boundary" tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 4/4 pass
-- GREEN L3 error subset: `node --test --test-name-pattern "US-005 AC5.1 negative|US-005 AC5.2 negative|US-005 AC5.3 negative|US-005 AC5.4 negative" tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 4/4 pass
-- GREEN full US-005 suite: `node --test tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 12/12 pass
-- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs');"` -> exit 0
-- GREEN combined Node suite: `node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs` -> exit 0, 69/69 pass
+- RED full US-006 suite: `node --test tests/node/us006-campaign-main-loop.test.mjs` -> exit 1 because `src/node/runner/campaign-main-loop.mjs` did not exist yet (`ERR_MODULE_NOT_FOUND`)
+- GREEN AC6.1 subset: `node --test --test-name-pattern "US-006 AC6.1" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC6.2 subset: `node --test --test-name-pattern "US-006 AC6.2" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC6.3 subset: `node --test --test-name-pattern "US-006 AC6.3" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC6.4 subset: `node --test --test-name-pattern "US-006 AC6.4" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC6.5 subset: `node --test --test-name-pattern "US-006 AC6.5" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 3/3 pass
+- GREEN L3/L2 happy subset: `node --test --test-name-pattern "US-006 AC6.1 happy|US-006 AC6.2 happy|US-006 AC6.3 happy|US-006 AC6.4 happy|US-006 AC6.5 negative" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 5/5 pass
+- GREEN boundary subset: `node --test --test-name-pattern "US-006 AC6.1 boundary|US-006 AC6.2 boundary|US-006 AC6.3 boundary|US-006 AC6.4 boundary|US-006 AC6.5 boundary" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 5/5 pass
+- GREEN error subset: `node --test --test-name-pattern "US-006 AC6.1 negative|US-006 AC6.2 negative|US-006 AC6.3 negative|US-006 AC6.4 negative|US-006 AC6.5 happy" tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 5/5 pass
+- GREEN full US-006 suite: `node --test tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 15/15 pass
+- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs');"` -> exit 0
+- GREEN combined Node suite: `node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs` -> exit 0, 84/84 pass

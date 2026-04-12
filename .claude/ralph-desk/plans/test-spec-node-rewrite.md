@@ -9,11 +9,11 @@
 ## Verification Commands
 ### Build
 ```bash
-node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs');"
+node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs');"
 ```
 ### Test
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs
 ```
 ### Lint
 ```bash
@@ -73,6 +73,12 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 - AC5.2: `initCampaign` PRD splitting happy + boundary + negative
 - AC5.3: `initCampaign` fresh re-init happy + boundary + negative
 - AC5.4: `initCampaign` tmux prerequisite handling happy + boundary + negative
+- `tests/node/us006-campaign-main-loop.test.mjs`
+- AC6.1: `run` tmux bootstrap happy + boundary + negative
+- AC6.2: `run` per-US verifier dispatch and fix loop happy + boundary + negative
+- AC6.3: `run` circuit-breaker escalation happy + boundary + negative
+- AC6.4: `run` final sequential verify happy + boundary + negative
+- AC6.5: `run` blocked-sentinel guard happy + boundary + negative
 
 ### Forbidden Shortcuts (see Worker prompt for full list)
 - Do not mock external services when L2 integration test is required
@@ -198,6 +204,24 @@ node --test --test-name-pattern "US-005 AC5.1 boundary|US-005 AC5.2 boundary|US-
 ```bash
 node --test --test-name-pattern "US-005 AC5.1 negative|US-005 AC5.2 negative|US-005 AC5.3 negative|US-005 AC5.4 negative" tests/node/us005-campaign-initializer.test.mjs
 ```
+- **US-006 happy path input**: start a tmux-mode campaign from a valid scaffold, receive per-US verify signals for each story, then re-verify each US sequentially before running the integration check
+- **US-006 happy path expected output**: leader/worker/verifier panes are created, scoped verifier prompts are written for each US, the integration check runs once, and COMPLETE is written only after all pass
+- **US-006 happy path command**:
+```bash
+node --test --test-name-pattern "US-006 AC6.1 happy|US-006 AC6.2 happy|US-006 AC6.3 happy|US-006 AC6.4 happy|US-006 AC6.5 negative" tests/node/us006-campaign-main-loop.test.mjs
+```
+- **US-006 boundary input**: start from a persisted runtime status, allow a codex worker signal timeout fallback, create a real tmux session, and force a final sequential re-verify failure
+- **US-006 boundary expected**: resume preserves the failure streak, codex fallback still scopes verification to the current US, real tmux creates three panes, and final sequential verify stops before COMPLETE on regression
+- **US-006 boundary command**:
+```bash
+node --test --test-name-pattern "US-006 AC6.1 boundary|US-006 AC6.2 boundary|US-006 AC6.3 boundary|US-006 AC6.4 boundary|US-006 AC6.5 boundary" tests/node/us006-campaign-main-loop.test.mjs
+```
+- **US-006 error path input**: run with a missing scaffold file, repeated verifier failures through xhigh, integration failure after final re-verification, and an existing BLOCKED sentinel
+- **US-006 error path expected**: startup rejects incomplete scaffolds, repeated failures write BLOCKED, integration failure prevents COMPLETE, and blocked campaigns refuse to restart until cleaned
+- **US-006 error path command**:
+```bash
+node --test --test-name-pattern "US-006 AC6.1 negative|US-006 AC6.2 negative|US-006 AC6.3 negative|US-006 AC6.4 negative|US-006 AC6.5 happy" tests/node/us006-campaign-main-loop.test.mjs
+```
 
 ### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
 ```bash
@@ -300,6 +324,21 @@ N/A — not CRITICAL risk
 | US-005 | AC5.4 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.4 happy: initCampaign in agent mode does not require tmux | L1 | node --test --test-name-pattern "US-005 AC5.4 happy" tests/node/us005-campaign-initializer.test.mjs | complete |
 | US-005 | AC5.4 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.4 boundary: initCampaign in tmux mode proceeds when a tmux session marker is present | L3 | node --test --test-name-pattern "US-005 AC5.4 boundary" tests/node/us005-campaign-initializer.test.mjs | complete |
 | US-005 | AC5.4 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.4 negative: initCampaign rejects tmux mode without a tmux session and creates no scaffold | L1 | node --test --test-name-pattern "US-005 AC5.4 negative" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-006 | AC6.1 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.1 happy: run creates the tmux panes, launches the worker with codex flags, and writes worker status | L2 | node --test --test-name-pattern "US-006 AC6.1 happy" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.1 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.1 boundary: run can create a real tmux session with three panes before continuing the campaign | L3 | node --test --test-name-pattern "US-006 AC6.1 boundary" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.1 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.1 negative: run rejects a missing scaffold before it creates tmux state | L1 | node --test --test-name-pattern "US-006 AC6.1 negative" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.2 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.2 happy: a worker verify signal launches a verifier prompt scoped to the completed US and advances to the next story on pass | L1 | node --test --test-name-pattern "US-006 AC6.2 happy" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.2 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.2 boundary: a codex worker timeout falls back to verifying the current US so the loop can continue | L1 | node --test --test-name-pattern "US-006 AC6.2 boundary" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.2 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.2 negative: a failing verdict writes a fix contract and retries the same US before moving on | L1 | node --test --test-name-pattern "US-006 AC6.2 negative" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.3 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.3 happy: three consecutive failures on the same US upgrade the worker model from medium to high | L1 | node --test --test-name-pattern "US-006 AC6.3 happy" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.3 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.3 boundary: resume preserves the failure streak so the next failure upgrades the worker immediately | L1 | node --test --test-name-pattern "US-006 AC6.3 boundary" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.3 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.3 negative: after repeated failures through xhigh the campaign is blocked and writes a blocked sentinel | L4 | node --test --test-name-pattern "US-006 AC6.3 negative" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.4 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.4 happy: after all stories pass individually, final sequential verify re-checks each US and runs integration before COMPLETE | L1/L2 | node --test --test-name-pattern "US-006 AC6.4 happy" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.4 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.4 boundary: a failing final per-US re-verification stops completion and returns the failing US for another fix loop | L1 | node --test --test-name-pattern "US-006 AC6.4 boundary" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.4 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.4 negative: integration failure prevents COMPLETE even after all sequential re-verifications pass | L2 | node --test --test-name-pattern "US-006 AC6.4 negative" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.5 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.5 happy: an existing blocked sentinel refuses to start and tells the user to run clean first | L1 | node --test --test-name-pattern "US-006 AC6.5 happy" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.5 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.5 boundary: a blocked sentinel short-circuits before any tmux session or status writes are created | L1 | node --test --test-name-pattern "US-006 AC6.5 boundary" tests/node/us006-campaign-main-loop.test.mjs | complete |
+| US-006 | AC6.5 | tests/node/us006-campaign-main-loop.test.mjs :: US-006 AC6.5 negative: without a blocked sentinel the campaign is allowed to start normally | L1 | node --test --test-name-pattern "US-006 AC6.5 negative" tests/node/us006-campaign-main-loop.test.mjs | complete |
 
 ---
 
@@ -370,3 +409,12 @@ N/A — not CRITICAL risk
 | US-005 | AC5.1-AC5.4 | L3 | node:test boundary subset | node --test --test-name-pattern "US-005 AC5.1 boundary|US-005 AC5.2 boundary|US-005 AC5.3 boundary|US-005 AC5.4 boundary" tests/node/us005-campaign-initializer.test.mjs | 4 tests pass | exit 0 + slug/gitignore, split-file isolation, stale-file cleanup, and tmux-marker boundary tests pass |
 | US-005 | AC5.1-AC5.4 | L1 | node:test error-path subset | node --test --test-name-pattern "US-005 AC5.1 negative|US-005 AC5.2 negative|US-005 AC5.3 negative|US-005 AC5.4 negative" tests/node/us005-campaign-initializer.test.mjs | 4 tests pass | exit 0 + partial scaffold recovery, invalid-marker rejection, missing-prior-PRD fresh mode, and no-tmux rejection tests pass |
 | US-005 | AC5.1-AC5.4 | L1/L3 | node:test smoke | node --test tests/node/us005-campaign-initializer.test.mjs | 12 tests pass | exit 0 + full campaign initializer suite passes |
+| US-006 | AC6.1 | L1/L2/L3 | node:test | node --test --test-name-pattern "US-006 AC6.1" tests/node/us006-campaign-main-loop.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC6.1 tests pass |
+| US-006 | AC6.2 | L1 | node:test | node --test --test-name-pattern "US-006 AC6.2" tests/node/us006-campaign-main-loop.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC6.2 tests pass |
+| US-006 | AC6.3 | L1/L4 | node:test | node --test --test-name-pattern "US-006 AC6.3" tests/node/us006-campaign-main-loop.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC6.3 tests pass |
+| US-006 | AC6.4 | L1/L2 | node:test | node --test --test-name-pattern "US-006 AC6.4" tests/node/us006-campaign-main-loop.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC6.4 tests pass |
+| US-006 | AC6.5 | L1 | node:test | node --test --test-name-pattern "US-006 AC6.5" tests/node/us006-campaign-main-loop.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC6.5 tests pass |
+| US-006 | AC6.1-AC6.5 | L2/L3 | node:test happy-path subset | node --test --test-name-pattern "US-006 AC6.1 happy|US-006 AC6.2 happy|US-006 AC6.3 happy|US-006 AC6.4 happy|US-006 AC6.5 negative" tests/node/us006-campaign-main-loop.test.mjs | 5 tests pass | exit 0 + tmux startup, per-US verify, circuit-breaker upgrade, final sequential verify, and unblock-start happy-path tests pass |
+| US-006 | AC6.1-AC6.5 | L1/L3 | node:test boundary subset | node --test --test-name-pattern "US-006 AC6.1 boundary|US-006 AC6.2 boundary|US-006 AC6.3 boundary|US-006 AC6.4 boundary|US-006 AC6.5 boundary" tests/node/us006-campaign-main-loop.test.mjs | 5 tests pass | exit 0 + real tmux, codex fallback, resume escalation, final regression handling, and blocked short-circuit boundary tests pass |
+| US-006 | AC6.1-AC6.5 | L1/L2/L4 | node:test error-path subset | node --test --test-name-pattern "US-006 AC6.1 negative|US-006 AC6.2 negative|US-006 AC6.3 negative|US-006 AC6.4 negative|US-006 AC6.5 happy" tests/node/us006-campaign-main-loop.test.mjs | 5 tests pass | exit 0 + scaffold rejection, fix-contract retry, xhigh blocking, integration failure, and blocked-start rejection tests pass |
+| US-006 | AC6.1-AC6.5 | L1/L2/L3/L4 | node:test smoke | node --test tests/node/us006-campaign-main-loop.test.mjs | 15 tests pass | exit 0 + full campaign main loop suite passes |

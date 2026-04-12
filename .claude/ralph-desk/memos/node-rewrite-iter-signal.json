@@ -1,1 +1,1 @@
-{"iteration":6,"status":"verify","us_id":"US-005","summary":"Implemented the Node campaign initializer, added US-005 tests and verification mappings, and prepared verifier handoff for US-005.","timestamp":"2026-04-12T08:15:53Z"}
+{"iteration":7,"status":"verify","us_id":"US-006","summary":"Implemented the Node campaign main loop with tmux startup, scoped verifier dispatch, retry escalation, final sequential verify, and blocked-start protection.","timestamp":"2026-04-12T08:32:37Z"}
