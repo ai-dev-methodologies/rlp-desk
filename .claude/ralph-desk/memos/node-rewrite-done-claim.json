@@ -1,67 +1,201 @@
 {
-  "us_id": "US-001",
+  "us_id": "US-002",
   "claims": [
-    "AC1.1: createPane creates panes in an active tmux session and returns pane IDs confirmed by tmux list-panes.",
-    "AC1.2: sendKeys writes shell commands into the target pane and the output appears in pane capture within 2 seconds.",
-    "AC1.3: waitForProcessExit resolves only after the running pane process returns to the shell, with the happy-path regression test synchronized on the running process to avoid flakiness.",
-    "AC1.4: invalid pane IDs cause sendKeys to reject with TmuxError including the pane ID."
+    "AC2.1: buildClaudeCmd(\"tui\", model, {effort}) emits the expected Claude launch flags, starts with DISABLE_OMC=1, and omits --effort when empty.",
+    "AC2.2: buildCodexCmd(\"tui\", model, {reasoning}) emits the expected Codex launch flags and omits model_reasoning_effort when reasoning is undefined.",
+    "AC2.3: parseModelFlag(value, role) maps claude values like opus:max to {engine:\"claude\", model:\"opus\", effort:\"max\"} and rejects empty models.",
+    "AC2.4: parseModelFlag(value) maps codex values like spark:medium to {engine:\"codex\", model:\"gpt-5.3-codex-spark\", reasoning:\"medium\"} and preserves empty reasoning boundaries.",
+    "AC2.5: parseModelFlag(value) rejects malformed multi-colon formats with an invalid format error."
   ],
   "execution_steps": [
     {
       "step": "write_test",
-      "ac_id": "AC1.3",
+      "ac_id": "AC2.1",
       "command": null,
       "exit_code": null,
-      "summary": "Updated tests/node/us001-tmux-pane-manager.test.mjs AC1.3 happy to assert wait duration against sleep 1 instead of re-checking pane_current_command after resolution."
+      "summary": "Wrote US-002 AC2.1 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for Claude tui command building."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC1.3",
-      "command": "node --test --test-name-pattern \"US-001 AC1.3 happy\" tests/node/us001-tmux-pane-manager.test.mjs",
+      "ac_id": "AC2.1",
+      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
       "exit_code": 1,
-      "summary": "RED: targeted AC1.3 happy failed because waitForProcessExit returned in about 25 ms, proving the test started waiting before the pane entered sleep."
+      "summary": "RED: the new suite failed with ERR_MODULE_NOT_FOUND because src/node/cli/command-builder.mjs did not exist yet."
     },
     {
       "step": "implement",
-      "ac_id": "AC1.3",
+      "ac_id": "AC2.1",
       "command": null,
       "exit_code": null,
-      "summary": "Applied the minimal fix in the AC1.3 happy test only: wait for pane_current_command to become sleep before starting the elapsed-time assertion; production pane-manager.mjs was not modified."
+      "summary": "Implemented buildClaudeCmd() in src/node/cli/command-builder.mjs with the legacy DISABLE_OMC, mcp-config, strict MCP, skip-permissions, and optional effort flags."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC1.3",
-      "command": "node --test --test-name-pattern \"US-001 AC1.3 happy\" tests/node/us001-tmux-pane-manager.test.mjs",
+      "ac_id": "AC2.1",
+      "command": "node --test --test-name-pattern \"US-002 AC2.1\" tests/node/us002-cli-command-builder.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: targeted AC1.3 happy passed with about 1.4 s wait time, showing waitForProcessExit resolved after the running sleep process completed."
+      "summary": "GREEN: 3/3 AC2.1 tests passed."
     },
     {
-      "step": "verify_existing",
-      "ac_id": "AC1.1-AC1.4",
-      "command": "node --test --test-name-pattern \"US-001 AC1.3\" tests/node/us001-tmux-pane-manager.test.mjs && node --test tests/node/us001-tmux-pane-manager.test.mjs",
-      "exit_code": 0,
-      "summary": "US-001 AC1.3 subset passed 3/3 and the full US-001 suite passed 12/12 with the updated regression test."
+      "step": "write_test",
+      "ac_id": "AC2.2",
+      "command": null,
+      "exit_code": null,
+      "summary": "Wrote US-002 AC2.2 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for Codex tui command building."
     },
     {
-      "step": "verify_e2e",
-      "ac_id": "AC1.1-AC1.4",
-      "command": "for i in 1 2 3 4 5; do node --test tests/node/us001-tmux-pane-manager.test.mjs || exit $?; done",
-      "exit_code": 0,
-      "summary": "Determinism check passed: 5 consecutive isolated full-suite runs all exited 0 with 12/12 passing."
+      "step": "verify_red",
+      "ac_id": "AC2.2",
+      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 1,
+      "summary": "RED: the full US-002 suite was still failing before the command-builder module existed."
     },
     {
-      "step": "verify_build",
-      "ac_id": "AC1.1-AC1.4",
-      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs');\"",
-      "exit_code": 0,
-      "summary": "Build smoke import check passed."
+      "step": "implement",
+      "ac_id": "AC2.2",
+      "command": null,
+      "exit_code": null,
+      "summary": "Implemented buildCodexCmd() in src/node/cli/command-builder.mjs with the legacy model, optional reasoning, plugin-disable, and bypass flags."
     },
     {
-      "step": "verify_l1",
-      "ac_id": "AC1.1-AC1.4",
-      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs",
+      "step": "verify_green",
+      "ac_id": "AC2.2",
+      "command": "node --test --test-name-pattern \"US-002 AC2.2\" tests/node/us002-cli-command-builder.test.mjs",
       "exit_code": 0,
-      "summary": "Canonical L1 verification passed across US-00 and US-001."
+      "summary": "GREEN: 3/3 AC2.2 tests passed."
+    },
+    {
+      "step": "write_test",
+      "ac_id": "AC2.3",
+      "command": null,
+      "exit_code": null,
+      "summary": "Wrote US-002 AC2.3 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for Claude model parsing."
+    },
+    {
+      "step": "verify_red",
+      "ac_id": "AC2.3",
+      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 1,
+      "summary": "RED: parseModelFlag() tests were part of the initial missing-module failure."
+    },
+    {
+      "step": "implement",
+      "ac_id": "AC2.3",
+      "command": null,
+      "exit_code": null,
+      "summary": "Implemented parseModelFlag() Claude parsing for haiku/sonnet/opus plus empty-model validation."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "AC2.3",
+      "command": "node --test --test-name-pattern \"US-002 AC2.3\" tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: 3/3 AC2.3 tests passed."
+    },
+    {
+      "step": "write_test",
+      "ac_id": "AC2.4",
+      "command": null,
+      "exit_code": null,
+      "summary": "Wrote US-002 AC2.4 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for Codex model parsing."
+    },
+    {
+      "step": "verify_red",
+      "ac_id": "AC2.4",
+      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 1,
+      "summary": "RED: Codex parsing tests were part of the initial missing-module failure."
+    },
+    {
+      "step": "implement",
+      "ac_id": "AC2.4",
+      "command": null,
+      "exit_code": null,
+      "summary": "Implemented parseModelFlag() Codex parsing, including the spark -> gpt-5.3-codex-spark alias mapping."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "AC2.4",
+      "command": "node --test --test-name-pattern \"US-002 AC2.4\" tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: 3/3 AC2.4 tests passed."
+    },
+    {
+      "step": "write_test",
+      "ac_id": "AC2.5",
+      "command": null,
+      "exit_code": null,
+      "summary": "Wrote US-002 AC2.5 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for malformed multi-colon model flags."
+    },
+    {
+      "step": "verify_red",
+      "ac_id": "AC2.5",
+      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 1,
+      "summary": "RED: malformed-format tests were part of the initial missing-module failure."
+    },
+    {
+      "step": "implement",
+      "ac_id": "AC2.5",
+      "command": null,
+      "exit_code": null,
+      "summary": "Adjusted parseModelFlag() to reject multi-colon inputs and emit the lowercase invalid format message expected by the PRD and tests."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "AC2.5",
+      "command": "node --test --test-name-pattern \"US-002 AC2.5\" tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: 3/3 AC2.5 tests passed."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "US-002",
+      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: the full US-002 suite passed with 15/15 tests."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "US-002",
+      "command": "node --test --test-name-pattern \"happy\" tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: all 5 happy-path US-002 tests passed."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "US-002",
+      "command": "node --test --test-name-pattern \"boundary\" tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: all 5 boundary US-002 tests passed."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "US-002",
+      "command": "node --test --test-name-pattern \"negative\" tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: all 5 negative US-002 tests passed."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "US-002",
+      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs');\"",
+      "exit_code": 0,
+      "summary": "GREEN: import smoke check passed for the existing Node modules plus the new command-builder module."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "US-002",
+      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: the combined Node suite passed with 33/33 tests."
+    },
+    {
+      "step": "commit",
+      "ac_id": "US-002",
+      "command": "git commit -m \"iter-003 US-002 command builder implementation\"",
+      "exit_code": 0,
+      "summary": "Committed the US-002 implementation and supporting memory/context/spec updates as 8e45b3e."
     }
   ]
 }
