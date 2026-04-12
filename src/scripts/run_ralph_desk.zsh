@@ -58,19 +58,32 @@ IDLE_NUDGE_THRESHOLD="${IDLE_NUDGE_THRESHOLD:-30}"
 MAX_NUDGES="${MAX_NUDGES:-3}"
 WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 
-# --- Engine Selection (auto-detect from model format: name=claude, name:reasoning=codex) ---
-# If model contains ":", it's codex format — auto-set engine and split model/reasoning
+# --- Engine Selection (auto-detect from model format) ---
+# claude models (haiku/sonnet/opus) with :effort → claude engine + effort
+# codex models (gpt-*/spark) with :reasoning → codex engine + reasoning
+# plain name → claude engine (no effort/reasoning)
 _auto_detect_engine() {
-  local model_var="$1" engine_var="$2" codex_model_var="$3" codex_reasoning_var="$4"
+  local model_var="$1" engine_var="$2" codex_model_var="$3" codex_reasoning_var="$4" effort_var="${5:-}"
   local model_val="${(P)model_var}"
   if [[ "$model_val" == *:* ]]; then
     local model_part="${model_val%%:*}"
-    local reasoning_part="${model_val##*:}"
-    [[ "$model_part" == "spark" ]] && model_part="gpt-5.3-codex-spark"
-    eval "$engine_var=codex"
-    eval "$model_var=$model_part"
-    [[ -n "$codex_model_var" ]] && eval "$codex_model_var=$model_part"
-    [[ -n "$codex_reasoning_var" ]] && eval "$codex_reasoning_var=$reasoning_part"
+    local level_part="${model_val##*:}"
+    case "$model_part" in
+      haiku|sonnet|opus)
+        # Claude model with effort — keep engine as claude, store effort
+        eval "$engine_var=claude"
+        eval "$model_var=$model_part"
+        [[ -n "$effort_var" ]] && eval "$effort_var=$level_part"
+        ;;
+      *)
+        # Codex model with reasoning
+        [[ "$model_part" == "spark" ]] && model_part="gpt-5.3-codex-spark"
+        eval "$engine_var=codex"
+        eval "$model_var=$model_part"
+        [[ -n "$codex_model_var" ]] && eval "$codex_model_var=$model_part"
+        [[ -n "$codex_reasoning_var" ]] && eval "$codex_reasoning_var=$level_part"
+        ;;
+    esac
   fi
 }
 
@@ -78,10 +91,15 @@ WORKER_ENGINE="${WORKER_ENGINE:-claude}"
 VERIFIER_ENGINE="${VERIFIER_ENGINE:-claude}"
 FINAL_VERIFIER_ENGINE="${FINAL_VERIFIER_ENGINE:-claude}"
 
+# Effort levels for Claude models (set by _auto_detect_engine or CLI --worker-model opus:max)
+WORKER_EFFORT="${WORKER_EFFORT:-}"
+VERIFIER_EFFORT="${VERIFIER_EFFORT:-}"
+FINAL_VERIFIER_EFFORT="${FINAL_VERIFIER_EFFORT:-}"
+
 # Auto-detect engine from model format for env var path (CLI path uses parse_model_flag)
-_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING
-_auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING
-_auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE "" ""
+_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT
+_auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING VERIFIER_EFFORT
+_auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE "" "" FINAL_VERIFIER_EFFORT
 WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.4}"
 WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high
 VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.4}"
@@ -1023,7 +1041,7 @@ restart_worker() {
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
     safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
   else
-    safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL")"
+    safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
   fi
   WORKER_RESTARTS[$iter]=$((restart_count + 1))
   return 0
@@ -1166,7 +1184,7 @@ write_worker_trigger() {
     local engine_comment="# Run codex with fresh context (fallback trigger — TUI primary launch via launch_worker_codex)"
   else
     local engine_cmd
-    engine_cmd=$(build_claude_cmd print "$WORKER_MODEL" "$prompt_file" "$output_log")
+    engine_cmd=$(build_claude_cmd print "$WORKER_MODEL" "$prompt_file" "$output_log" "$WORKER_EFFORT")
     local engine_comment="# Run claude with fresh context, no MCP/skills (governance.md s7 step 5)"
   fi
 
@@ -1252,7 +1270,7 @@ write_verifier_trigger() {
     local engine_comment="# Run codex with fresh context (governance.md s7 step 7) — process substitution preserves tty"
   else
     local engine_cmd
-    engine_cmd=$(build_claude_cmd print "$verifier_model" "$prompt_file" "$output_log")
+    engine_cmd=$(build_claude_cmd print "$verifier_model" "$prompt_file" "$output_log" "$VERIFIER_EFFORT")
     local engine_comment="# Run claude with fresh context, no MCP/skills (governance.md s7 step 7)"
   fi
 
@@ -1656,7 +1674,7 @@ run_single_verifier() {
     launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
     log_debug "Verifier$suffix codex TUI dispatched"
   else
-    verifier_launch="$(build_claude_cmd tui "$model")"
+    verifier_launch="$(build_claude_cmd tui "$model" "" "" "$VERIFIER_EFFORT")"
     if ! launch_verifier_claude "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"; then
       log_error "Verifier$suffix failed to start"
       return 1
@@ -1758,7 +1776,7 @@ run_sequential_final_verify() {
       verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
       launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
     else
-      verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL")"
+      verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL" "" "" "$VERIFIER_EFFORT")"
       launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
         log_error "Failed to launch verifier for $us"
         FAILED_US="$us"
@@ -2203,7 +2221,7 @@ main() {
         return 1
       fi
     else
-      worker_launch="$(build_claude_cmd tui "$WORKER_MODEL")"
+      worker_launch="$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
       if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
         write_blocked_sentinel "Worker claude failed to start in pane"
         update_status "blocked" "worker_start_failed"
@@ -2380,7 +2398,7 @@ main() {
           if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
             verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
           else
-            verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL")"
+            verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL" "" "" "$VERIFIER_EFFORT")"
           fi
           log_debug "[FLOW] iter=$ITERATION phase=verifier engine=$VERIFIER_ENGINE model=$VERIFIER_MODEL scope=${signal_us_id:-all} dispatched=true"
 
@@ -2627,6 +2645,8 @@ while (( _cli_i <= $# )); do
       if [[ "$WORKER_ENGINE" = "codex" ]]; then
         WORKER_CODEX_MODEL="$WORKER_MODEL"
         WORKER_CODEX_REASONING="${_cli_rest##* }"
+      elif [[ "$_cli_rest" == *" "* ]]; then
+        WORKER_EFFORT="${_cli_rest##* }"
       fi
       ;;
     --verifier-model)
@@ -2638,6 +2658,8 @@ while (( _cli_i <= $# )); do
       if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
         VERIFIER_CODEX_MODEL="$VERIFIER_MODEL"
         VERIFIER_CODEX_REASONING="${_cli_rest##* }"
+      elif [[ "$_cli_rest" == *" "* ]]; then
+        VERIFIER_EFFORT="${_cli_rest##* }"
       fi
       ;;
     --lock-worker-model)
@@ -2652,6 +2674,8 @@ while (( _cli_i <= $# )); do
       if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
         FINAL_VERIFIER_CODEX_MODEL="$FINAL_VERIFIER_MODEL"
         FINAL_VERIFIER_CODEX_REASONING="${_cli_rest##* }"
+      elif [[ "$_cli_rest" == *" "* ]]; then
+        FINAL_VERIFIER_EFFORT="${_cli_rest##* }"
       fi
       ;;
     --consensus)
