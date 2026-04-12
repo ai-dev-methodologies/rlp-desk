@@ -2,33 +2,42 @@
 
 ## Current Frontier
 ### Completed
-- US-00 bootstrap foundations are implemented:
+- US-00 bootstrap foundations remain implemented:
   - `src/node/shared/paths.mjs`
   - `src/node/shared/fs.mjs`
   - `tests/node/us00-bootstrap.test.mjs`
-  - `test-spec-node-rewrite.md` traceability rows for US-00
+- Verifier blockers for US-00 were repaired:
+  - Added explicit `US-00` acceptance criteria to `prd-node-rewrite.md`
+  - Removed placeholder L3 rows from `test-spec-node-rewrite.md`
+  - Corrected L3 command ordering for `--test-name-pattern`
+  - Added L3 criteria-mapping rows for happy and boundary/negative subsets
+  - Isolated the US-00 test scratch directories by process and test name
 ### In Progress
 - Verifier handoff for US-00
 ### Next
 - If US-00 passes verification, start US-001 (Tmux Pane Manager) with fresh failing tests first
 
 ## Key Decisions
-- Interpreted iteration-only `US-00` as a bootstrap story derived from the PRD objective because the PRD starts at `US-001`.
-- Kept the implementation limited to shared path/file primitives to avoid leaking into tmux or CLI stories.
+- Followed the verifier fix contract over the earlier no-PRD/no-test-spec-edit warning because those edits were required to unblock US-00 verification.
+- Preserved scope lock: no work beyond US-00 bootstrap primitives was implemented.
 
 ## Known Issues
-- The Node rewrite remains at bootstrap stage; no tmux, command-builder, poller, prompt-assembler, or CLI behavior exists yet.
-- `test-spec-node-rewrite.md` conflicted with the worker prompt on whether the spec itself may be updated; the traceability update was applied because later prompt rules require concrete Criteria Mapping entries.
+- The Node rewrite is still only at bootstrap stage; tmux, command-builder, poller, prompt-assembler, initializer, main-loop, analytics, and CLI entrypoint work have not started.
+- Untracked files unrelated to US-00 exist in the worktree and were left untouched.
 
 ## Files Changed This Iteration
-- `src/node/shared/paths.mjs`
-- `src/node/shared/fs.mjs`
 - `tests/node/us00-bootstrap.test.mjs`
+- `.claude/ralph-desk/plans/prd-node-rewrite.md`
 - `.claude/ralph-desk/plans/test-spec-node-rewrite.md`
 - `.claude/ralph-desk/memos/node-rewrite-memory.md`
+- `.claude/ralph-desk/context/node-rewrite-latest.md`
 - `.claude/ralph-desk/logs/node-rewrite/conflict-log.jsonl`
+
 ## Verification Status
-- RED verified for missing bootstrap modules: exit 1
+- RED verified on existing AC2 filtered command before the harness fix: exit 1
 - AC1 verified green: 3/3 pass
 - AC2 verified green: 3/3 pass
+- L3 happy subset verified green: 2/2 pass
+- L3 boundary/negative subset verified green: 4/4 pass
 - Full bootstrap suite verified green: 6/6 pass
+- Build smoke verified green: exit 0

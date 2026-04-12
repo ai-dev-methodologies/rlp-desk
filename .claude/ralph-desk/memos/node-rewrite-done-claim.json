@@ -1,0 +1,79 @@
+{
+  "us_id": "US-00",
+  "claims": [
+    "AC1: project-root path resolution returns repo-local absolute paths and rejects escape attempts",
+    "AC2: atomic file writes succeed inside the repo root and reject outside-root targets"
+  ],
+  "execution_steps": [
+    {
+      "step": "implement",
+      "ac_id": "AC1",
+      "command": null,
+      "exit_code": null,
+      "summary": "Added an explicit US-00 bootstrap story to .claude/ralph-desk/plans/prd-node-rewrite.md and aligned the verifier-facing scope with AC1/AC2."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "AC1",
+      "command": "node --test --test-name-pattern \"AC1\" tests/node/us00-bootstrap.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: AC1 happy, boundary, and negative tests passed (3/3)."
+    },
+    {
+      "step": "verify_red",
+      "ac_id": "AC2",
+      "command": "node --test --test-name-pattern \"AC2\" tests/node/us00-bootstrap.test.mjs",
+      "exit_code": 1,
+      "summary": "RED before the harness fix: the AC2 boundary test failed under the filtered run because shared scratch paths were not isolated across test processes."
+    },
+    {
+      "step": "implement",
+      "ac_id": "AC2",
+      "command": null,
+      "exit_code": null,
+      "summary": "Updated tests/node/us00-bootstrap.test.mjs to use per-test, per-process scratch directories and corrected verifier-facing test-spec commands/placeholders for US-00."
+    },
+    {
+      "step": "verify_green",
+      "ac_id": "AC2",
+      "command": "node --test --test-name-pattern \"AC2\" tests/node/us00-bootstrap.test.mjs",
+      "exit_code": 0,
+      "summary": "GREEN: AC2 happy, boundary, and negative tests passed (3/3)."
+    },
+    {
+      "step": "verify_e2e",
+      "ac_id": "AC1-AC2",
+      "command": "node --test --test-name-pattern \"happy\" tests/node/us00-bootstrap.test.mjs",
+      "exit_code": 0,
+      "summary": "L3 happy-path subset passed (2/2)."
+    },
+    {
+      "step": "verify_e2e",
+      "ac_id": "AC1-AC2",
+      "command": "node --test --test-name-pattern \"negative|boundary\" tests/node/us00-bootstrap.test.mjs",
+      "exit_code": 0,
+      "summary": "L3 boundary/negative subset passed (4/4)."
+    },
+    {
+      "step": "verify_e2e",
+      "ac_id": "AC1-AC2",
+      "command": "node --test tests/node/us00-bootstrap.test.mjs",
+      "exit_code": 0,
+      "summary": "Full US-00 bootstrap suite passed (6/6)."
+    },
+    {
+      "step": "verify_existing",
+      "ac_id": "AC1-AC2",
+      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs');\"",
+      "exit_code": 0,
+      "summary": "Build smoke passed: both US-00 shared modules import successfully."
+    },
+    {
+      "step": "commit",
+      "ac_id": "AC1-AC2",
+      "command": null,
+      "exit_code": null,
+      "summary": "Pending commit."
+    }
+  ]
+}

@@ -74,19 +74,17 @@ N/A — no external services in US-00 bootstrap primitives
 ### L3: E2E Simulation (REQUIRED)
 Known input → full pipeline → quantitative output comparison.
 Must cover ALL AC types: happy path + boundary + error path.
-- **Happy path input**: TODO (specific test data)
 - **Happy path input**: `resolveProjectPath('src', 'scripts', 'run_ralph_desk.zsh')` and `writeFileAtomic('.tmp/us00-bootstrap-tests/nested/artifact.txt', 'first-pass')`
-- **Happy path expected output**: TODO (quantitative value)
 - **Happy path expected output**: absolute repo path returned; file created with exact content `first-pass`
 - **Happy path command**:
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs --test-name-pattern "happy"
+node --test --test-name-pattern "happy" tests/node/us00-bootstrap.test.mjs
 ```
 - **Error path input**: `resolveProjectPath('..')` and `writeFileAtomic(<outside-project>, 'blocked')`
 - **Error path expected**: error message includes `outside the project root`
 - **Error path command**:
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs --test-name-pattern "negative|boundary"
+node --test --test-name-pattern "negative|boundary" tests/node/us00-bootstrap.test.mjs
 ```
 
 ### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
@@ -98,7 +96,6 @@ N/A — no deployment in this iteration
 
 ## Mutation Testing Gate (CRITICAL risk only)
 - Required: only for CRITICAL risk classification (governance §1c)
-- Tool: TODO (e.g., mutmut, Stryker, go-mutesting) or "N/A — not CRITICAL risk"
 - Tool: N/A — not CRITICAL risk
 - Target: >= 60% mutation score on core business logic (project default; override in PRD if justified)
 - Scope: core business logic files (not config/tests/docs)
@@ -154,4 +151,6 @@ N/A — not CRITICAL risk
 |----|----|-------|--------|---------|-----------------|---------------|
 | US-00 | AC1 | L1 | node:test | node --test --test-name-pattern "AC1" tests/node/us00-bootstrap.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC1 tests pass |
 | US-00 | AC2 | L1 | node:test | node --test --test-name-pattern "AC2" tests/node/us00-bootstrap.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC2 tests pass |
+| US-00 | AC1-AC2 | L3 | node:test happy-path subset | node --test --test-name-pattern "happy" tests/node/us00-bootstrap.test.mjs | 2 tests pass | exit 0 + both happy-path bootstrap tests pass |
+| US-00 | AC1-AC2 | L3 | node:test boundary/negative subset | node --test --test-name-pattern "negative|boundary" tests/node/us00-bootstrap.test.mjs | 4 tests pass | exit 0 + all boundary and negative bootstrap tests pass |
 | US-00 | AC1-AC2 | L3 | node:test smoke | node --test tests/node/us00-bootstrap.test.mjs | 6 tests pass | exit 0 + all bootstrap tests pass together |
