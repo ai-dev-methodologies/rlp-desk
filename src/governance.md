@@ -267,6 +267,7 @@ Verifier records WHY each judgment was made in `verify-verdict.json`:
 - Runs commands directly to collect fresh evidence
 - Campaign Memory is for orientation only — not the source of truth
 - Writes verdict (`pass` | `fail` | `request_info`) — if uncertain, use `request_info` with specific questions; Leader decides
+- **Verdict output rule**: MUST write verdict JSON as a FILE (not stdout). Leader polls the file path — terminal output is lost. Evidence strings: include key metrics and exit codes only, do NOT quote full command output or logs verbatim.
 - Delegates deterministic checks (type hints, linting, security) to tools defined in test-spec
 - Focuses on AC verification, semantic review, and smoke tests
 - **Must NEVER modify code or write sentinel files**

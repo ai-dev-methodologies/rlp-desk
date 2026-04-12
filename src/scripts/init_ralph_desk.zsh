@@ -482,7 +482,6 @@ Check the iter-signal.json "us_id" field:
    - Step completeness: each AC should have write_test → verify_red → implement → verify_green sequence in execution_steps
 11. **Reproducibility check**: verify lock file committed, clean install succeeds, security scan passes, env vars documented (per test-spec Reproducibility Gate). Skip if test-spec says "N/A."
 12. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
-    **CRITICAL: You MUST write the verdict as a FILE using a file-writing tool (not stdout/echo/cat). NEVER print the verdict JSON to the terminal. The Leader polls this file path — terminal output is lost. Evidence strings: include key metrics and exit codes only — do NOT quote full command output or logs verbatim.**
 
 Verdict JSON:
 {
