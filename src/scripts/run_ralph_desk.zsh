@@ -245,14 +245,27 @@ launch_worker_codex() {
   paste_to_pane "$pane_id" "$worker_launch"
   tmux send-keys -t "$pane_id" C-m
 
-  # Wait for codex TUI to be ready
-  if ! wait_for_pane_ready "$pane_id" 30; then
-    log_error "Worker codex failed to start"
+  # Wait for codex TUI prompt (›) instead of shell prompt
+  local _codex_ready=0
+  local _codex_wait=0
+  while (( _codex_wait < 30 )); do
+    sleep 1
+    local _pane_text
+    _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
+      _codex_ready=1
+      log_debug "Worker codex TUI ready after ${_codex_wait}s"
+      break
+    fi
+    (( _codex_wait++ ))
+  done
+  if (( ! _codex_ready )); then
+    log_error "Worker codex TUI not ready after 30s"
     return 1
   fi
 
   # Send instruction to codex TUI
-  sleep 3
+  sleep 1
   local worker_instruction="Read and execute the instructions in $prompt_file"
   paste_to_pane "$pane_id" "$worker_instruction"
   tmux send-keys -t "$pane_id" C-m
@@ -378,12 +391,26 @@ launch_verifier_codex() {
   paste_to_pane "$pane_id" "$verifier_launch"
   tmux send-keys -t "$pane_id" C-m
 
-  if ! wait_for_pane_ready "$pane_id" 30; then
-    log_error "Verifier codex failed to start"
+  # Wait for codex TUI prompt (›) instead of shell prompt
+  local _codex_ready=0
+  local _codex_wait=0
+  while (( _codex_wait < 30 )); do
+    sleep 1
+    local _pane_text
+    _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
+      _codex_ready=1
+      log_debug "Verifier codex TUI ready after ${_codex_wait}s"
+      break
+    fi
+    (( _codex_wait++ ))
+  done
+  if (( ! _codex_ready )); then
+    log_error "Verifier codex TUI not ready after 30s"
     return 1
   fi
 
-  sleep 3
+  sleep 1
   local verifier_instruction="Read and execute the instructions in $prompt_file"
   paste_to_pane "$pane_id" "$verifier_instruction"
   tmux send-keys -t "$pane_id" C-m
