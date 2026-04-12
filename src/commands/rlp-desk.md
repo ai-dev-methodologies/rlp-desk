@@ -372,7 +372,6 @@ If claude engine (default):
 ```
 Agent(
   description="rlp-desk worker iter-NNN",
-  subagent_type="executor",
   model=<worker_model>,
   mode="bypassPermissions",
   prompt=<full worker prompt text>
@@ -433,7 +432,6 @@ If claude engine (default):
 ```
 Agent(
   description="rlp-desk verifier iter-NNN (us_id)",
-  subagent_type="executor",
   model=<selected_verifier_model>,
   mode="bypassPermissions",
   prompt=<full verifier prompt text with US scope>
