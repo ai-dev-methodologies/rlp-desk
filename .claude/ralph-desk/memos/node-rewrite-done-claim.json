@@ -1,165 +1,172 @@
 {
-  "us_id": "US-004",
+  "us_id": "US-005",
   "claims": [
-    "AC4.1: assembleWorkerPrompt preserves the base prompt and appends iteration context, fix-contract guidance, and per-US scope-lock content for the correct US.",
-    "AC4.2: assembleWorkerPrompt appends the AUTONOMOUS MODE section with PRD priority and conflict-log guidance when autonomous mode is enabled.",
-    "AC4.3: assembleVerifierPrompt scopes verification to the requested US or ALL and carries forward previously verified story notes.",
-    "AC4.4: assembleWorkerPrompt throws FileNotFoundError with the missing worker prompt base path before reading other inputs."
+    "AC5.1: initCampaign() creates the scaffold directories and expected base files for the campaign.",
+    "AC5.2: initCampaign() splits PRDs on ## US-NNN markers into per-US files that keep the objective header and isolate each section.",
+    "AC5.3: initCampaign() with mode=\"fresh\" recreates the PRD and removes stale split artifacts.",
+    "AC5.4: initCampaign() rejects mode=\"tmux\" without a tmux session and leaves no scaffold behind."
   ],
   "execution_steps": [
     {
       "step": "write_test",
-      "ac_id": "AC4.1",
+      "ac_id": "AC5.1",
       "command": null,
       "exit_code": 0,
-      "summary": "Wrote tests/node/us004-prompt-assembler.test.mjs with AC4.1 happy, boundary, and negative coverage for worker prompt assembly."
+      "summary": "Wrote tests/node/us005-campaign-initializer.test.mjs with AC5.1 happy, boundary, and negative scaffold tests."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC4.1",
-      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.1",
+      "command": "node --test tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 1,
-      "summary": "RED: the new prompt assembler suite failed because src/node/prompts/prompt-assembler.mjs did not exist yet (ERR_MODULE_NOT_FOUND)."
+      "summary": "RED: full US-005 suite failed because src/node/init/campaign-initializer.mjs did not exist."
     },
     {
       "step": "implement",
-      "ac_id": "AC4.1",
+      "ac_id": "AC5.1",
       "command": null,
       "exit_code": 0,
-      "summary": "Implemented src/node/prompts/prompt-assembler.mjs with worker prompt assembly, iteration-context extraction, fix-contract injection, per-US scope locking, and final-verification branching."
+      "summary": "Created src/node/init/campaign-initializer.mjs with scaffold creation, slug normalization, and idempotent .gitignore handling."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC4.1",
-      "command": "node --test --test-name-pattern \"US-004 AC4.1\" tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.1",
+      "command": "node --test --test-name-pattern \"US-005 AC5.1\" tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC4.1 tests passed."
+      "summary": "GREEN: AC5.1 subset passed 3/3."
     },
     {
       "step": "write_test",
-      "ac_id": "AC4.2",
+      "ac_id": "AC5.2",
       "command": null,
       "exit_code": 0,
-      "summary": "Wrote AC4.2 happy, boundary, and negative autonomous-mode tests in tests/node/us004-prompt-assembler.test.mjs."
+      "summary": "Wrote AC5.2 PRD-splitting tests covering valid sections, objective-header preservation, and invalid marker rejection."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC4.2",
-      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.2",
+      "command": "node --test tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 1,
-      "summary": "RED already established on the new suite before implementation; AC4.2 tests were part of the failing module-not-found run."
+      "summary": "RED evidence reused from the initial full-suite run before the initializer module existed."
     },
     {
       "step": "implement",
-      "ac_id": "AC4.2",
+      "ac_id": "AC5.2",
       "command": null,
       "exit_code": 0,
-      "summary": "Added autonomous-mode section assembly that mirrors the zsh wording and conflict-log JSONL guidance."
+      "summary": "Added line-based PRD splitting that writes plans/prd-<slug>-US-NNN.md files with the shared objective header."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC4.2",
-      "command": "node --test --test-name-pattern \"US-004 AC4.2\" tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.2",
+      "command": "node --test --test-name-pattern \"US-005 AC5.2\" tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC4.2 tests passed."
+      "summary": "GREEN: AC5.2 subset passed 3/3."
     },
     {
       "step": "write_test",
-      "ac_id": "AC4.3",
+      "ac_id": "AC5.3",
       "command": null,
       "exit_code": 0,
-      "summary": "Wrote AC4.3 happy, boundary, and negative verifier prompt scope tests in tests/node/us004-prompt-assembler.test.mjs."
+      "summary": "Wrote AC5.3 fresh re-init tests for PRD recreation, stale split cleanup, and missing-prior-PRD behavior."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC4.3",
-      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.3",
+      "command": "node --test tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 1,
-      "summary": "RED already established on the new suite before implementation; AC4.3 tests were part of the failing module-not-found run."
+      "summary": "RED evidence reused from the initial full-suite run before any initializer implementation existed."
     },
     {
       "step": "implement",
-      "ac_id": "AC4.3",
+      "ac_id": "AC5.3",
       "command": null,
       "exit_code": 0,
-      "summary": "Implemented verifier prompt context assembly for scoped US verification, ALL final verification, previously verified notes, and optional autonomous guidance."
+      "summary": "Implemented mode=\"fresh\" as a desk-root reset followed by scaffold regeneration."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC4.3",
-      "command": "node --test --test-name-pattern \"US-004 AC4.3\" tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.3",
+      "command": "node --test --test-name-pattern \"US-005 AC5.3\" tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC4.3 tests passed."
+      "summary": "GREEN: AC5.3 subset passed 3/3."
     },
     {
       "step": "write_test",
-      "ac_id": "AC4.4",
+      "ac_id": "AC5.4",
       "command": null,
       "exit_code": 0,
-      "summary": "Wrote AC4.4 happy, boundary, and negative FileNotFoundError tests in tests/node/us004-prompt-assembler.test.mjs."
+      "summary": "Wrote AC5.4 tmux prerequisite tests for agent mode, tmux mode with a session marker, and tmux mode without a session."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC4.4",
-      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.4",
+      "command": "node --test tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 1,
-      "summary": "RED already established on the new suite before implementation; AC4.4 tests were part of the failing module-not-found run."
+      "summary": "RED evidence reused from the initial full-suite run before the initializer module existed."
     },
     {
       "step": "implement",
-      "ac_id": "AC4.4",
+      "ac_id": "AC5.4",
       "command": null,
       "exit_code": 0,
-      "summary": "Added FileNotFoundError and required base-file checks so missing worker or verifier prompt bases fail explicitly."
+      "summary": "Added tmux-session gating that throws \"tmux required\" before any scaffold paths are created."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC4.4",
-      "command": "node --test --test-name-pattern \"US-004 AC4.4\" tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.4",
+      "command": "node --test --test-name-pattern \"US-005 AC5.4\" tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC4.4 tests passed."
+      "summary": "GREEN: AC5.4 subset passed 3/3."
     },
     {
       "step": "verify_e2e",
-      "ac_id": "AC4.1",
-      "command": "node --test --test-name-pattern \"US-004 AC4.1 happy|US-004 AC4.2 happy|US-004 AC4.3 happy\" tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.1-AC5.4",
+      "command": "node --test --test-name-pattern \"US-005 AC5.1 happy|US-005 AC5.2 happy|US-005 AC5.3 happy|US-005 AC5.4 happy\" tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "L3 happy-path output verification passed: 3/3 tests."
+      "summary": "L3 happy subset passed 4/4."
     },
     {
       "step": "verify_e2e",
-      "ac_id": "AC4.2",
-      "command": "node --test --test-name-pattern \"US-004 AC4.1 boundary|US-004 AC4.2 boundary|US-004 AC4.3 boundary|US-004 AC4.4 boundary\" tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.1-AC5.4",
+      "command": "node --test --test-name-pattern \"US-005 AC5.1 boundary|US-005 AC5.2 boundary|US-005 AC5.3 boundary|US-005 AC5.4 boundary\" tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "L3 boundary output verification passed: 4/4 tests."
+      "summary": "L3 boundary subset passed 4/4."
     },
     {
       "step": "verify_e2e",
-      "ac_id": "AC4.4",
-      "command": "node --test --test-name-pattern \"US-004 AC4.1 negative|US-004 AC4.2 negative|US-004 AC4.3 negative|US-004 AC4.4 happy|US-004 AC4.4 negative\" tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.1-AC5.4",
+      "command": "node --test --test-name-pattern \"US-005 AC5.1 negative|US-005 AC5.2 negative|US-005 AC5.3 negative|US-005 AC5.4 negative\" tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "L1/L3 negative-path verification passed: 5/5 tests."
+      "summary": "L3 error subset passed 4/4."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC4.1",
-      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.1-AC5.4",
+      "command": "node --test tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "Full US-004 suite passed: 12/12 tests."
+      "summary": "Full US-005 suite passed 12/12."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC4.1",
-      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs');\"",
+      "ac_id": "AC5.1-AC5.4",
+      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs');\"",
       "exit_code": 0,
-      "summary": "Import smoke passed for all current Node rewrite modules, including prompt-assembler.mjs."
+      "summary": "Import smoke passed for all implemented Node modules."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC4.1",
-      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs",
+      "ac_id": "AC5.1-AC5.4",
+      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs",
       "exit_code": 0,
-      "summary": "Full Node regression suite passed: 57/57 tests."
+      "summary": "Combined Node suite passed 69/69."
+    },
+    {
+      "step": "commit",
+      "ac_id": "AC5.1-AC5.4",
+      "command": "git commit -m \"iter-006 US-005 campaign initializer\"",
+      "exit_code": 0,
+      "summary": "Committed the US-005 implementation and required campaign artifacts."
     }
   ]
 }

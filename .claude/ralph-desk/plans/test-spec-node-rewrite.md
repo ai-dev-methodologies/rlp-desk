@@ -9,11 +9,11 @@
 ## Verification Commands
 ### Build
 ```bash
-node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs');"
+node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs');"
 ```
 ### Test
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs
 ```
 ### Lint
 ```bash
@@ -31,6 +31,7 @@ What behavior does this project change or introduce?
 - Introduce Node-native CLI command builders and unified model-flag parsing under `src/node/cli/` so later runner stories can reuse the zsh-compatible launch strings.
 - Introduce a Node-native signal and verdict poller under `src/node/polling/` that waits for valid JSON artifacts, enforces timeouts, and applies Codex-specific two-phase pane-exit polling.
 - Introduce a Node-native prompt assembler under `src/node/prompts/` that appends iteration and verification context sections onto worker and verifier prompt base files.
+- Introduce a Node-native campaign initializer under `src/node/init/` that scaffolds the desk files, splits PRDs into per-US files, supports fresh re-init, and blocks tmux mode outside tmux sessions.
 
 ### Impacted Tests
 Existing tests that may break due to this change:
@@ -39,6 +40,7 @@ Existing tests that may break due to this change:
 - No existing Node command-builder tests existed. US-002 adds a new unit-only command-builder test file.
 - No existing Node poller tests existed. US-003 adds a mixed unit/L3 real-file polling test file.
 - No existing Node prompt-assembler tests existed. US-004 adds a mixed unit/L3 output-content test file.
+- No existing Node campaign-initializer tests existed. US-005 adds a mixed unit/L3 filesystem scaffold test file.
 
 ### Required New Tests
 Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
@@ -66,6 +68,11 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 - AC4.2: `assembleWorkerPrompt` autonomous-mode injection happy + boundary + negative
 - AC4.3: `assembleVerifierPrompt` scoped verification context happy + boundary + negative
 - AC4.4: `assembleWorkerPrompt` missing base file happy + boundary + negative
+- `tests/node/us005-campaign-initializer.test.mjs`
+- AC5.1: `initCampaign` scaffold creation happy + boundary + negative
+- AC5.2: `initCampaign` PRD splitting happy + boundary + negative
+- AC5.3: `initCampaign` fresh re-init happy + boundary + negative
+- AC5.4: `initCampaign` tmux prerequisite handling happy + boundary + negative
 
 ### Forbidden Shortcuts (see Worker prompt for full list)
 - Do not mock external services when L2 integration test is required
@@ -173,6 +180,24 @@ node --test --test-name-pattern "US-004 AC4.1 boundary|US-004 AC4.2 boundary|US-
 ```bash
 node --test --test-name-pattern "US-004 AC4.1 negative|US-004 AC4.2 negative|US-004 AC4.3 negative|US-004 AC4.4 happy|US-004 AC4.4 negative" tests/node/us004-prompt-assembler.test.mjs
 ```
+- **US-005 happy path input**: initialize a fresh campaign root with a slug, objective, and a PRD containing three `## US-NNN:` sections
+- **US-005 happy path expected output**: scaffold directories exist, base prompt/memo/plan files are created, and three per-US PRD files are written
+- **US-005 happy path command**:
+```bash
+node --test --test-name-pattern "US-005 AC5.1 happy|US-005 AC5.2 happy|US-005 AC5.3 happy|US-005 AC5.4 happy" tests/node/us005-campaign-initializer.test.mjs
+```
+- **US-005 boundary input**: initialize with a special-character slug, an existing `.gitignore`, a PRD that must preserve the objective header in split files, `mode=\"fresh\"`, and `mode=\"tmux\"` with a tmux marker
+- **US-005 boundary expected**: slug sanitizes to stable filenames, `.gitignore` rules are not duplicated, split PRDs preserve only their own section plus the objective header, stale split files are removed on fresh re-init, and tmux mode succeeds when a tmux marker is present
+- **US-005 boundary command**:
+```bash
+node --test --test-name-pattern "US-005 AC5.1 boundary|US-005 AC5.2 boundary|US-005 AC5.3 boundary|US-005 AC5.4 boundary" tests/node/us005-campaign-initializer.test.mjs
+```
+- **US-005 error path input**: initialize against a partial scaffold, a PRD with invalid `### US-NNN:` markers, `mode=\"fresh\"` without an existing PRD, and `mode=\"tmux\"` without a tmux session
+- **US-005 error path expected**: missing scaffold files are filled in, invalid PRD markers produce no per-US files, fresh mode recreates the PRD from scratch, and tmux mode rejects with `tmux required` without creating any scaffold
+- **US-005 error path command**:
+```bash
+node --test --test-name-pattern "US-005 AC5.1 negative|US-005 AC5.2 negative|US-005 AC5.3 negative|US-005 AC5.4 negative" tests/node/us005-campaign-initializer.test.mjs
+```
 
 ### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
 ```bash
@@ -263,6 +288,18 @@ N/A — not CRITICAL risk
 | US-004 | AC4.4 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.4 happy: assembleWorkerPrompt throws FileNotFoundError when the worker prompt base file does not exist | L1 | node --test --test-name-pattern "US-004 AC4.4 happy" tests/node/us004-prompt-assembler.test.mjs | complete |
 | US-004 | AC4.4 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.4 boundary: FileNotFoundError includes the missing worker prompt base path in the message | L1 | node --test --test-name-pattern "US-004 AC4.4 boundary" tests/node/us004-prompt-assembler.test.mjs | complete |
 | US-004 | AC4.4 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.4 negative: assembleWorkerPrompt throws FileNotFoundError before reading other inputs when the worker prompt base file is missing | L1 | node --test --test-name-pattern "US-004 AC4.4 negative" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-005 | AC5.1 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.1 happy: initCampaign creates the scaffold directories and base files | L1 | node --test --test-name-pattern "US-005 AC5.1 happy" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.1 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.1 boundary: initCampaign sanitizes special-character slugs and does not duplicate gitignore rules | L3 | node --test --test-name-pattern "US-005 AC5.1 boundary" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.1 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.1 negative: initCampaign completes a partial scaffold instead of leaving missing files behind | L1 | node --test --test-name-pattern "US-005 AC5.1 negative" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.2 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.2 happy: initCampaign creates one per-US PRD file for each ## US-NNN section | L1 | node --test --test-name-pattern "US-005 AC5.2 happy" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.2 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.2 boundary: each split PRD keeps the objective header and only its own US section | L3 | node --test --test-name-pattern "US-005 AC5.2 boundary" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.2 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.2 negative: initCampaign does not create per-US PRDs when the PRD markers do not match ## US-NNN | L1 | node --test --test-name-pattern "US-005 AC5.2 negative" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.3 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.3 happy: initCampaign fresh mode recreates the PRD instead of preserving old content | L1 | node --test --test-name-pattern "US-005 AC5.3 happy" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.3 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.3 boundary: initCampaign fresh mode removes stale per-US PRD files before recreating them | L3 | node --test --test-name-pattern "US-005 AC5.3 boundary" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.3 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.3 negative: initCampaign fresh mode still creates a new PRD when no prior PRD exists | L1 | node --test --test-name-pattern "US-005 AC5.3 negative" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.4 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.4 happy: initCampaign in agent mode does not require tmux | L1 | node --test --test-name-pattern "US-005 AC5.4 happy" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.4 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.4 boundary: initCampaign in tmux mode proceeds when a tmux session marker is present | L3 | node --test --test-name-pattern "US-005 AC5.4 boundary" tests/node/us005-campaign-initializer.test.mjs | complete |
+| US-005 | AC5.4 | tests/node/us005-campaign-initializer.test.mjs :: US-005 AC5.4 negative: initCampaign rejects tmux mode without a tmux session and creates no scaffold | L1 | node --test --test-name-pattern "US-005 AC5.4 negative" tests/node/us005-campaign-initializer.test.mjs | complete |
 
 ---
 
@@ -325,3 +362,11 @@ N/A — not CRITICAL risk
 | US-004 | AC4.1-AC4.4 | L3 | node:test boundary subset | node --test --test-name-pattern "US-004 AC4.1 boundary|US-004 AC4.2 boundary|US-004 AC4.3 boundary|US-004 AC4.4 boundary" tests/node/us004-prompt-assembler.test.mjs | 4 tests pass | exit 0 + fallback paths, conflict-log override, ALL scope, and FileNotFoundError message boundary tests pass |
 | US-004 | AC4.1-AC4.4 | L1 | node:test error-path subset | node --test --test-name-pattern "US-004 AC4.1 negative|US-004 AC4.2 negative|US-004 AC4.3 negative|US-004 AC4.4 happy|US-004 AC4.4 negative" tests/node/us004-prompt-assembler.test.mjs | 5 tests pass | exit 0 + final-verify branch, disabled optional sections, and missing-base-file error tests pass |
 | US-004 | AC4.1-AC4.4 | L1/L3 | node:test smoke | node --test tests/node/us004-prompt-assembler.test.mjs | 12 tests pass | exit 0 + full prompt assembler suite passes |
+| US-005 | AC5.1 | L1/L3 | node:test | node --test --test-name-pattern "US-005 AC5.1" tests/node/us005-campaign-initializer.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC5.1 tests pass |
+| US-005 | AC5.2 | L1/L3 | node:test | node --test --test-name-pattern "US-005 AC5.2" tests/node/us005-campaign-initializer.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC5.2 tests pass |
+| US-005 | AC5.3 | L1/L3 | node:test | node --test --test-name-pattern "US-005 AC5.3" tests/node/us005-campaign-initializer.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC5.3 tests pass |
+| US-005 | AC5.4 | L1/L3 | node:test | node --test --test-name-pattern "US-005 AC5.4" tests/node/us005-campaign-initializer.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC5.4 tests pass |
+| US-005 | AC5.1-AC5.4 | L3 | node:test happy-path subset | node --test --test-name-pattern "US-005 AC5.1 happy|US-005 AC5.2 happy|US-005 AC5.3 happy|US-005 AC5.4 happy" tests/node/us005-campaign-initializer.test.mjs | 4 tests pass | exit 0 + scaffold creation, PRD splitting, fresh recreation, and agent-mode happy-path tests pass |
+| US-005 | AC5.1-AC5.4 | L3 | node:test boundary subset | node --test --test-name-pattern "US-005 AC5.1 boundary|US-005 AC5.2 boundary|US-005 AC5.3 boundary|US-005 AC5.4 boundary" tests/node/us005-campaign-initializer.test.mjs | 4 tests pass | exit 0 + slug/gitignore, split-file isolation, stale-file cleanup, and tmux-marker boundary tests pass |
+| US-005 | AC5.1-AC5.4 | L1 | node:test error-path subset | node --test --test-name-pattern "US-005 AC5.1 negative|US-005 AC5.2 negative|US-005 AC5.3 negative|US-005 AC5.4 negative" tests/node/us005-campaign-initializer.test.mjs | 4 tests pass | exit 0 + partial scaffold recovery, invalid-marker rejection, missing-prior-PRD fresh mode, and no-tmux rejection tests pass |
+| US-005 | AC5.1-AC5.4 | L1/L3 | node:test smoke | node --test tests/node/us005-campaign-initializer.test.mjs | 12 tests pass | exit 0 + full campaign initializer suite passes |
