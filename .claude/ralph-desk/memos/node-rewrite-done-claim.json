@@ -1,122 +1,67 @@
 {
-  "us_id": "US-007",
+  "us_id": "US-008",
   "claims": [
-    "AC7.1: completed campaigns generate campaign-report.md with the 8 required sections and version any previous report",
-    "AC7.2: completed iterations append one valid JSON line per iteration to campaign.jsonl and a fresh campaign versions an existing analytics file before reuse",
-    "AC7.3: status output renders iteration, phase, models, verified_us, consecutive_failures, and elapsed time while handling missing or corrupt status.json"
+    "AC8.1: postinstall installs the Node runtime under ~/.claude/ralph-desk and removes the legacy zsh runtime files, while uninstall removes the installed Node runtime tree",
+    "AC8.2: the Node CLI entry point parses the documented /rlp-desk run flags and launches the campaign with the expected configuration",
+    "AC8.3: node src/node/run.mjs --help shows the current CLI command surface and all documented run flags with no missing options",
+    "AC8.4: unsupported or malformed Node versions fall back gracefully during postinstall without corrupting an existing zsh installation"
   ],
   "execution_steps": [
     {
       "step": "write_test",
-      "ac_id": "AC7.1",
+      "ac_id": "AC8.1-AC8.4",
       "command": null,
-      "exit_code": 0,
-      "summary": "wrote tests/node/us007-analytics-reporting.test.mjs with happy, boundary, and negative campaign-report cases"
+      "exit_code": null,
+      "summary": "Wrote tests/node/us008-cli-entrypoint.test.mjs with 12 node:test cases covering happy, boundary, and negative coverage for AC8.1 through AC8.4."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC7.1",
-      "command": "node --test tests/node/us007-analytics-reporting.test.mjs",
+      "ac_id": "AC8.1-AC8.4",
+      "command": "node --test tests/node/us008-cli-entrypoint.test.mjs",
       "exit_code": 1,
-      "summary": "RED: campaign-report.md was missing and src/node/reporting/campaign-reporting.mjs did not exist"
+      "summary": "RED: the suite failed because src/node/run.mjs did not exist, postinstall still installed legacy zsh runtime files, and unsupported-node fallback behavior was missing."
     },
     {
       "step": "implement",
-      "ac_id": "AC7.1",
+      "ac_id": "AC8.1",
       "command": null,
-      "exit_code": 0,
-      "summary": "added generateCampaignReport() in src/node/reporting/campaign-reporting.mjs and wired terminal report generation into src/node/runner/campaign-main-loop.mjs"
+      "exit_code": null,
+      "summary": "Implemented src/node/run.mjs, rewrote scripts/postinstall.js and scripts/uninstall.js for Node-runtime installation/removal, narrowed package.json publish files to Node sources, and updated the test-spec traceability for US-008."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC7.1",
-      "command": "node --test --test-name-pattern \"US-007 AC7.1\" tests/node/us007-analytics-reporting.test.mjs",
+      "ac_id": "AC8.1-AC8.4",
+      "command": "node --test tests/node/us008-cli-entrypoint.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC7.1 tests passed"
-    },
-    {
-      "step": "write_test",
-      "ac_id": "AC7.2",
-      "command": null,
-      "exit_code": 0,
-      "summary": "wrote analytics JSONL tests in tests/node/us007-analytics-reporting.test.mjs for append, versioning, and validation"
-    },
-    {
-      "step": "verify_red",
-      "ac_id": "AC7.2",
-      "command": "node --test tests/node/us007-analytics-reporting.test.mjs",
-      "exit_code": 1,
-      "summary": "RED: campaign.jsonl was missing before the reporting module and runner hooks were implemented"
-    },
-    {
-      "step": "implement",
-      "ac_id": "AC7.2",
-      "command": null,
-      "exit_code": 0,
-      "summary": "added prepareCampaignAnalytics() and appendCampaignAnalytics(), plus runner iteration logging and analytics versioning"
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "AC7.2",
-      "command": "node --test --test-name-pattern \"US-007 AC7.2\" tests/node/us007-analytics-reporting.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: 3/3 AC7.2 tests passed"
-    },
-    {
-      "step": "write_test",
-      "ac_id": "AC7.3",
-      "command": null,
-      "exit_code": 0,
-      "summary": "wrote status rendering tests in tests/node/us007-analytics-reporting.test.mjs for normal, missing, and corrupt status.json cases"
-    },
-    {
-      "step": "verify_red",
-      "ac_id": "AC7.3",
-      "command": "node --test tests/node/us007-analytics-reporting.test.mjs",
-      "exit_code": 1,
-      "summary": "RED: readStatus() was not implemented before the reporting module was added"
-    },
-    {
-      "step": "implement",
-      "ac_id": "AC7.3",
-      "command": null,
-      "exit_code": 0,
-      "summary": "added readStatus() and minimal status metadata support in the runner for elapsed-time rendering"
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "AC7.3",
-      "command": "node --test --test-name-pattern \"US-007 AC7.3\" tests/node/us007-analytics-reporting.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: 3/3 AC7.3 tests passed"
+      "summary": "GREEN: 12/12 US-008 tests passed, covering install/uninstall behavior, CLI parsing, help output, and unsupported-node fallback."
     },
     {
       "step": "verify_e2e",
-      "ac_id": "US-007",
-      "command": "node --test tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs",
+      "ac_id": "AC8.3",
+      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs'); await import('./src/node/run.mjs');\"",
       "exit_code": 0,
-      "summary": "runner regression + US-007 integration check passed with 24/24 tests"
+      "summary": "Import smoke passed for the full Node runtime including the new CLI entry point."
     },
     {
       "step": "verify_e2e",
-      "ac_id": "US-007",
-      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs');\"",
+      "ac_id": "AC8.3",
+      "command": "node src/node/run.mjs --help",
       "exit_code": 0,
-      "summary": "import smoke passed for the full Node rewrite surface including reporting"
+      "summary": "CLI help smoke passed and printed the full command surface plus all documented run flags, including --autonomous and --with-self-verification."
     },
     {
       "step": "verify_e2e",
-      "ac_id": "US-007",
-      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs",
+      "ac_id": "AC8.1",
+      "command": "tmpdir=$(mktemp -d) && home=\"$tmpdir/home\" && proj=\"$tmpdir/proj\" && mkdir -p \"$home\" \"$proj\" && pack_json=$(npm pack --json) && tarball=$(node -e \"const data = JSON.parse(process.argv[1]); process.stdout.write(data[0].filename);\" \"$pack_json\") && tar -tf \"$tarball\" > \"$tmpdir/tar.txt\" && if grep -E 'package/src/scripts/|package/src/scripts/(init_ralph_desk|run_ralph_desk|lib_ralph_desk)\\.zsh' \"$tmpdir/tar.txt\" >/dev/null; then echo 'tarball contains legacy zsh runtime' >&2; exit 1; fi && HOME=\"$home\" npm install --prefix \"$proj\" \"$PWD/$tarball\" >/dev/null 2>&1 && test -f \"$home/.claude/ralph-desk/node/run.mjs\" && test ! -e \"$home/.claude/ralph-desk/run_ralph_desk.zsh\" && node \"$home/.claude/ralph-desk/node/run.mjs\" --help | grep -- '--autonomous'",
       "exit_code": 0,
-      "summary": "full Node suite passed with 93/93 tests"
+      "summary": "Real npm pack/install cycle passed: the tarball contained only the Node runtime sources, postinstall created ~/.claude/ralph-desk/node/run.mjs, no legacy zsh runtime file was installed, and the installed CLI help worked."
     },
     {
       "step": "commit",
-      "ac_id": "US-007",
-      "command": "git commit -m \"iter-008 US-007 analytics and reporting\"",
+      "ac_id": "AC8.1-AC8.4",
+      "command": "git commit -m \"iter-009 US-008 node cli entry point\"",
       "exit_code": 0,
-      "summary": "committed the iteration artifacts and US-007 implementation"
+      "summary": "Committed the US-008 implementation and evidence artifacts."
     }
   ]
 }

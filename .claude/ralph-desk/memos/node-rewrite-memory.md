@@ -7,7 +7,7 @@ verify
 rlp-desk zsh to Node.js rewrite
 
 ## Current State
-Iteration 8 implemented US-007 only. The Node rewrite now includes `src/node/reporting/campaign-reporting.mjs` for three reporting surfaces: `prepareCampaignAnalytics()` and `appendCampaignAnalytics()` manage per-iteration `campaign.jsonl` data with versioning and required-field validation; `generateCampaignReport()` versions and writes `campaign-report.md` with the required eight sections; and `readStatus()` renders the status-command view from `status.json`, including corrupt/missing-file handling. `src/node/runner/campaign-main-loop.mjs` now persists `started_at_utc` and `max_iterations`, versions an existing `campaign.jsonl` at fresh campaign start, appends one analytics record per completed worker iteration, and generates a campaign report on COMPLETE and BLOCKED terminal states. `tests/node/us007-analytics-reporting.test.mjs` adds 9 node:test cases so every US-007 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-007 traceability rows, commands, and smoke coverage.
+Iteration 9 implemented US-008 only. The rewrite now has a Node CLI entry point at `src/node/run.mjs` that exposes the current top-level command surface, parses the documented `run` flags, wires `init`/`status` to the existing Node modules, and exits cleanly for unsupported commands. `scripts/postinstall.js` now installs the Node runtime under `~/.claude/ralph-desk/node`, copies the command/docs payload, removes the legacy zsh runtime files, and falls back safely when Node.js is older than 16 or malformed. `scripts/uninstall.js` now removes the installed Node runtime tree during npm uninstall cleanup. `package.json` now publishes only the Node runtime sources plus the command/docs payload, so the packed artifact no longer distributes `src/scripts/*.zsh`. `tests/node/us008-cli-entrypoint.test.mjs` adds 12 node:test cases so every US-008 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-008 traceability rows, smoke commands, and verification mapping.
 
 ## Completed Stories
 - US-00: Node bootstrap foundations for the rewrite
@@ -43,33 +43,40 @@ Iteration 8 implemented US-007 only. The Node rewrite now includes `src/node/rep
   - The reporting module versions prior `campaign.jsonl` and `campaign-report.md` files, writes one analytics record per completed iteration, renders the required eight campaign-report sections, and formats status output from `status.json`
   - `src/node/runner/campaign-main-loop.mjs` now connects analytics/report generation to the tmux loop without expanding story scope beyond reporting
   - `tests/node/us007-analytics-reporting.test.mjs` provides 9 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
+- US-008: CLI Entry Point and npm Integration
+  - `src/node/run.mjs` adds the Node CLI entry point with top-level help, `run` flag parsing, and `init`/`status` command wiring
+  - `scripts/postinstall.js` now installs the Node runtime under `~/.claude/ralph-desk/node`, removes legacy zsh runtime files, and preserves existing zsh installs when Node.js is unsupported
+  - `scripts/uninstall.js` removes the installed Node runtime tree, and `package.json` now excludes legacy zsh runtime files from the published artifact
+  - `tests/node/us008-cli-entrypoint.test.mjs` provides 12 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
 
 ## Next Iteration Contract
-Verifier should check US-007 only.
+Verifier should check US-008 only.
 
 **Criteria**:
-- US-007 AC7.1: a completed five-iteration campaign writes `campaign-report.md` with the eight required sections, including versioning of any previous report
-- US-007 AC7.2: completed iterations append one valid JSON line per iteration to `campaign.jsonl`, and a fresh campaign versions an existing analytics file before writing new records
-- US-007 AC7.3: the status reader displays iteration, phase, models, verified US, consecutive failures, and elapsed time, while handling missing or corrupt `status.json`
+- US-008 AC8.1: npm postinstall installs the Node runtime under `~/.claude/ralph-desk` and replaces the old zsh runtime files
+- US-008 AC8.2: the Node CLI parses `/rlp-desk run` flags correctly and launches the campaign with the expected configuration
+- US-008 AC8.3: `node src/node/run.mjs --help` shows the current CLI command surface with no missing run flags
+- US-008 AC8.4: unsupported Node.js versions fail gracefully during postinstall without corrupting an existing zsh installation
 
 ## Key Decisions
-- Kept US-007 surgical by adding one reporting module instead of spreading analytics/report logic across multiple new subsystems.
-- Stored `campaign.jsonl` and `campaign-report.md` under `logs/<slug>/` so the Node rewrite stays inside the project root and still preserves the required runtime artifacts.
-- Logged one analytics record per completed worker iteration, not per final re-verification step, so iteration counts stay aligned with the worker loop.
-- Extended `status.json` only with `started_at_utc` and `max_iterations`, which was enough to support elapsed-time rendering and reporting without changing the tmux orchestration model.
+- Kept US-008 surgical by adding a single Node CLI entry point instead of trying to rewrite the slash-command markdown protocol in the same iteration.
+- Installed the runtime under `~/.claude/ralph-desk/node` so copied modules keep their relative imports intact and the package can remove the legacy shell runtime entirely.
+- Per the PRD boundary cases, the installer removes stale mixed-install state on supported Node versions but refuses to touch the existing zsh runtime on unsupported versions.
+- Narrowed the `package.json` publish list to `src/node`, `src/commands`, and the supporting docs so `npm pack` no longer ships the old zsh scripts.
 
 ## Patterns Discovered
-- The runner remains easier to reason about when reporting concerns are isolated behind small helper functions and the loop only calls them at iteration boundaries or terminal states.
-- Versioning old runtime artifacts before writing new ones keeps retries and reruns testable without introducing destructive cleanup into the story scope.
-- Reporting from `status.json`, PRD sections, analytics lines, and fix contracts is enough to satisfy the report contract without first porting the whole legacy archival pipeline.
+- A basename-based direct-entry check in `run.mjs` is more reliable than comparing raw `import.meta.url` strings once the runtime is copied outside the repo.
+- The CLI can stay minimal if it forwards only the current `run` defaults and documented flags while leaving unsupported commands explicit instead of silently no-oping.
+- Real `npm pack` verification catches packaging/runtime issues that unit tests miss, especially around installed-path execution.
 
 ## Learnings
-- US-007 can stay unit-focused even though it touches the runner, as long as the report and analytics behaviors are exposed through deterministic helper functions.
-- Adding reporting to the existing runner did not require changing the US-006 control flow beyond a few status and terminal hooks.
-- The elapsed-time requirement is easiest to satisfy when status rendering compares `updated_at_utc` against a caller-provided clock.
+- Installing a copied ESM runtime is straightforward as long as the copied directory structure mirrors the repo tree under `src/node`.
+- The unsupported-Node safeguard belongs at the top of `postinstall.js`; once copy/remove work starts, preserving the legacy runtime becomes much harder.
+- Packaging scope matters as much as install logic here because the PRD explicitly treats shipping legacy zsh files as a regression.
 
 ## Evidence Chain
-- RED full US-007 suite: `node --test tests/node/us007-analytics-reporting.test.mjs` -> exit 1 because `src/node/reporting/campaign-reporting.mjs` did not exist yet and the runner did not write `campaign.jsonl` or `campaign-report.md`
-- GREEN full US-007 suite: `node --test tests/node/us007-analytics-reporting.test.mjs` -> exit 0, 9/9 pass
-- GREEN adjacent runner regression suite: `node --test tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs` -> exit 0, 24/24 pass
-- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs');"` -> exit 0
+- RED full US-008 suite: `node --test tests/node/us008-cli-entrypoint.test.mjs` -> exit 1 because `src/node/run.mjs` did not exist, postinstall still copied zsh scripts, and unsupported-node fallback was missing
+- GREEN full US-008 suite: `node --test tests/node/us008-cli-entrypoint.test.mjs` -> exit 0, 12/12 pass
+- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs'); await import('./src/node/run.mjs');"` -> exit 0
+- GREEN CLI help smoke: `node src/node/run.mjs --help` -> exit 0 and prints the current command surface plus all documented run flags
+- GREEN pack/install smoke: `npm pack --json` + `npm install <tarball>` into a temp prefix/home -> exit 0, installed `~/.claude/ralph-desk/node/run.mjs` exists, legacy zsh runtime files are absent, and the installed CLI help includes `--autonomous`
