@@ -9,11 +9,11 @@
 ## Verification Commands
 ### Build
 ```bash
-node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs');"
+node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs');"
 ```
 ### Test
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs
 ```
 ### Lint
 ```bash
@@ -28,11 +28,13 @@ N/A — no lint configuration exists in this repository yet
 What behavior does this project change or introduce?
 - Introduce the initial Node rewrite bootstrap primitives needed by later stories: safe project-root path resolution and atomic file writes under `src/node/shared/`.
 - Introduce a Node-native tmux pane manager under `src/node/tmux/` that can create panes, send commands, and wait for interactive pane processes to return to the shell.
+- Introduce Node-native CLI command builders and unified model-flag parsing under `src/node/cli/` so later runner stories can reuse the zsh-compatible launch strings.
 
 ### Impacted Tests
 Existing tests that may break due to this change:
 - None identified. This iteration adds the first Node-native tests alongside the existing zsh test suites.
 - No existing Node tmux tests existed. US-001 adds a new real-`tmux` test file.
+- No existing Node command-builder tests existed. US-002 adds a new unit-only command-builder test file.
 
 ### Required New Tests
 Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
@@ -44,6 +46,12 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 - AC1.2: `sendKeys` happy + boundary + negative
 - AC1.3: `waitForProcessExit` happy + boundary + negative
 - AC1.4: invalid pane `sendKeys` error handling happy + boundary + negative
+- `tests/node/us002-cli-command-builder.test.mjs`
+- AC2.1: `buildClaudeCmd` happy + boundary + negative
+- AC2.2: `buildCodexCmd` happy + boundary + negative
+- AC2.3: `parseModelFlag` claude parsing happy + boundary + negative
+- AC2.4: `parseModelFlag` codex parsing happy + boundary + negative
+- AC2.5: `parseModelFlag` invalid-format rejection happy + boundary + negative
 
 ### Forbidden Shortcuts (see Worker prompt for full list)
 - Do not mock external services when L2 integration test is required
@@ -70,12 +78,12 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 
 ### L1: Unit Test (REQUIRED)
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs
 ```
 
 ### L2: Integration (required if external services exist, otherwise "N/A — reason")
 ```bash
-N/A — no external services in US-00 bootstrap primitives
+N/A — no external services in US-00 bootstrap primitives, US-001 tmux pane tests use the local CLI directly, and US-002 is unit-only per the PRD
 ```
 
 ### L3: E2E Simulation (REQUIRED)
@@ -110,6 +118,10 @@ node --test --test-name-pattern "boundary" tests/node/us001-tmux-pane-manager.te
 - **US-001 error path command**:
 ```bash
 node --test --test-name-pattern "negative" tests/node/us001-tmux-pane-manager.test.mjs
+```
+- **US-002 L3 status**:
+```bash
+N/A — PRD marks US-002 as L1-only unit coverage
 ```
 
 ### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
@@ -162,6 +174,21 @@ N/A — not CRITICAL risk
 | US-001 | AC1.4 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.4 happy: sendKeys throws TmuxError for an invalid pane id | L1 | node --test --test-name-pattern "US-001 AC1.4 happy" tests/node/us001-tmux-pane-manager.test.mjs | complete |
 | US-001 | AC1.4 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.4 boundary: sendKeys includes the invalid pane id in the TmuxError message | L1 | node --test --test-name-pattern "US-001 AC1.4 boundary" tests/node/us001-tmux-pane-manager.test.mjs | complete |
 | US-001 | AC1.4 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.4 negative: sendKeys surfaces tmux pane lookup failures as rejected promises | L1 | node --test --test-name-pattern "US-001 AC1.4 negative" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-002 | AC2.1 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.1 happy: buildClaudeCmd tui includes claude flags and effort | L1 | node --test --test-name-pattern "US-002 AC2.1 happy" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.1 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.1 boundary: buildClaudeCmd omits effort when it is empty | L1 | node --test --test-name-pattern "US-002 AC2.1 boundary" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.1 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.1 negative: buildClaudeCmd rejects unsupported modes | L1 | node --test --test-name-pattern "US-002 AC2.1 negative" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.2 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.2 happy: buildCodexCmd tui includes codex model and reasoning flags | L1 | node --test --test-name-pattern "US-002 AC2.2 happy" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.2 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.2 boundary: buildCodexCmd omits reasoning when it is undefined | L1 | node --test --test-name-pattern "US-002 AC2.2 boundary" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.2 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.2 negative: buildCodexCmd rejects unsupported modes | L1 | node --test --test-name-pattern "US-002 AC2.2 negative" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.3 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.3 happy: parseModelFlag returns claude engine and effort for opus:max | L1 | node --test --test-name-pattern "US-002 AC2.3 happy" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.3 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.3 boundary: parseModelFlag keeps an empty effort for claude model values | L1 | node --test --test-name-pattern "US-002 AC2.3 boundary" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.3 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.3 negative: parseModelFlag rejects an empty model before the colon | L1 | node --test --test-name-pattern "US-002 AC2.3 negative" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.4 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.4 happy: parseModelFlag maps spark:medium to codex spark defaults | L1 | node --test --test-name-pattern "US-002 AC2.4 happy" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.4 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.4 boundary: parseModelFlag keeps an empty reasoning for codex values | L1 | node --test --test-name-pattern "US-002 AC2.4 boundary" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.4 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.4 negative: parseModelFlag rejects an empty codex model alias | L1 | node --test --test-name-pattern "US-002 AC2.4 negative" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.5 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.5 happy: parseModelFlag rejects values with more than one colon | L1 | node --test --test-name-pattern "US-002 AC2.5 happy" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.5 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.5 boundary: parseModelFlag rejects an empty triple-colon format | L1 | node --test --test-name-pattern "US-002 AC2.5 boundary" tests/node/us002-cli-command-builder.test.mjs | complete |
+| US-002 | AC2.5 | tests/node/us002-cli-command-builder.test.mjs :: US-002 AC2.5 negative: parseModelFlag rejects extra segments for spark aliases | L1 | node --test --test-name-pattern "US-002 AC2.5 negative" tests/node/us002-cli-command-builder.test.mjs | complete |
 
 ---
 
@@ -199,3 +226,12 @@ N/A — not CRITICAL risk
 | US-001 | AC1.1-AC1.4 | L3 | node:test boundary subset | node --test --test-name-pattern "boundary" tests/node/us001-tmux-pane-manager.test.mjs | 4 tests pass | exit 0 + all boundary tmux pane manager tests pass |
 | US-001 | AC1.1-AC1.4 | L3 | node:test error-path subset | node --test --test-name-pattern "negative" tests/node/us001-tmux-pane-manager.test.mjs | 4 tests pass | exit 0 + all error-path tmux pane manager tests pass |
 | US-001 | AC1.1-AC1.4 | L3 | node:test smoke | node --test tests/node/us001-tmux-pane-manager.test.mjs | 12 tests pass | exit 0 + full tmux pane manager suite passes |
+| US-002 | AC2.1 | L1 | node:test | node --test --test-name-pattern "US-002 AC2.1" tests/node/us002-cli-command-builder.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC2.1 tests pass |
+| US-002 | AC2.2 | L1 | node:test | node --test --test-name-pattern "US-002 AC2.2" tests/node/us002-cli-command-builder.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC2.2 tests pass |
+| US-002 | AC2.3 | L1 | node:test | node --test --test-name-pattern "US-002 AC2.3" tests/node/us002-cli-command-builder.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC2.3 tests pass |
+| US-002 | AC2.4 | L1 | node:test | node --test --test-name-pattern "US-002 AC2.4" tests/node/us002-cli-command-builder.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC2.4 tests pass |
+| US-002 | AC2.5 | L1 | node:test | node --test --test-name-pattern "US-002 AC2.5" tests/node/us002-cli-command-builder.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC2.5 tests pass |
+| US-002 | AC2.1-AC2.5 | L1 | node:test happy-path subset | node --test --test-name-pattern "happy" tests/node/us002-cli-command-builder.test.mjs | 5 tests pass | exit 0 + all happy-path command-builder tests pass |
+| US-002 | AC2.1-AC2.5 | L1 | node:test boundary subset | node --test --test-name-pattern "boundary" tests/node/us002-cli-command-builder.test.mjs | 5 tests pass | exit 0 + all boundary command-builder tests pass |
+| US-002 | AC2.1-AC2.5 | L1 | node:test error-path subset | node --test --test-name-pattern "negative" tests/node/us002-cli-command-builder.test.mjs | 5 tests pass | exit 0 + all error-path command-builder tests pass |
+| US-002 | AC2.1-AC2.5 | L1 | node:test smoke | node --test tests/node/us002-cli-command-builder.test.mjs | 15 tests pass | exit 0 + full command-builder suite passes |

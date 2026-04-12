@@ -7,7 +7,7 @@ verify
 rlp-desk zsh to Node.js rewrite
 
 ## Current State
-Iteration 2 kept scope on US-001 only and fixed the verifier-reported AC1.3 happy-test race in `tests/node/us001-tmux-pane-manager.test.mjs`. The implementation in `src/node/tmux/pane-manager.mjs` was left unchanged. US-001 is ready for verifier review again with refreshed evidence.
+Iteration 3 implemented US-002 only. The new Node module `src/node/cli/command-builder.mjs` now ports the zsh CLI string-building behavior needed for later runner stories: `buildClaudeCmd()`, `buildCodexCmd()`, and `parseModelFlag()`. `tests/node/us002-cli-command-builder.test.mjs` adds 15 node:test cases, giving every US-002 acceptance criterion happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-002 traceability rows and criteria mappings with the actual file path and test names.
 
 ## Completed Stories
 - US-00: Node bootstrap foundations for the rewrite
@@ -16,43 +16,51 @@ Iteration 2 kept scope on US-001 only and fixed the verifier-reported AC1.3 happ
   - `tests/node/us00-bootstrap.test.mjs` provides 6 node:test cases with isolated per-process scratch paths for AC1/AC2 happy, boundary, and negative coverage
 - US-001: Tmux Pane Manager
   - `src/node/tmux/pane-manager.mjs` adds `TmuxError`, `createPane`, `sendKeys`, and `waitForProcessExit`
-  - `tests/node/us001-tmux-pane-manager.test.mjs` still provides 12 real-`tmux` node:test cases with 3 tests per AC across happy, boundary, and negative coverage
-  - Iteration 2 changed only the AC1.3 happy test so it waits for `pane_current_command` to become `sleep` before timing `waitForProcessExit`, eliminating the flaky post-resolution shell re-check
-  - `test-spec-node-rewrite.md` includes concrete US-001 traceability rows and criteria mappings with actual file paths and test names
+  - `tests/node/us001-tmux-pane-manager.test.mjs` provides 12 real-`tmux` node:test cases with 3 tests per AC across happy, boundary, and negative coverage
+- US-002: CLI Command Builder
+  - `src/node/cli/command-builder.mjs` adds `buildClaudeCmd`, `buildCodexCmd`, and `parseModelFlag`
+  - Claude command building preserves the zsh launch contract: `DISABLE_OMC=1`, `--mcp-config '{"mcpServers":{}}'`, `--strict-mcp-config`, `--dangerously-skip-permissions`, and optional `--effort`
+  - Codex command building preserves the zsh launch contract: `-m`, optional `-c model_reasoning_effort="..."`, `--disable plugins`, and `--dangerously-bypass-approvals-and-sandbox`
+  - Unified model parsing preserves the existing zsh mapping rules: `haiku|sonnet|opus` stay on the Claude engine, `spark` expands to `gpt-5.3-codex-spark`, and malformed `a:b:c`-style values fail with an `invalid format` error
+  - `tests/node/us002-cli-command-builder.test.mjs` provides 15 unit tests with 3 tests per AC across happy, boundary, and negative coverage
 
 ## Next Iteration Contract
-Verifier should check US-001 only.
+Verifier should check US-002 only.
 
 **Criteria**:
-- US-001 AC1.1: pane manager creates a pane in an active tmux session, returns its pane ID, and `tmux list-panes` confirms it exists
-- US-001 AC1.2: `sendKeys` writes a shell command into the target pane and the command output appears in pane capture within 2 seconds
-- US-001 AC1.3: `waitForProcessExit` resolves only after `pane_current_command` returns to `zsh`/`bash`/`sh`
-- US-001 AC1.4: invalid pane IDs cause `sendKeys` to reject with `TmuxError` and include the pane ID in the error message
+- US-002 AC2.1: `buildClaudeCmd("tui", "opus", {effort:"max"})` starts with `DISABLE_OMC=1` and includes the expected Claude flags and effort
+- US-002 AC2.2: `buildCodexCmd("tui", "gpt-5.4", {reasoning:"high"})` includes the expected Codex model, reasoning, plugin-disable, and bypass flags
+- US-002 AC2.3: `parseModelFlag("opus:max", "worker")` returns `{engine:"claude", model:"opus", effort:"max"}`
+- US-002 AC2.4: `parseModelFlag("spark:medium")` returns `{engine:"codex", model:"gpt-5.3-codex-spark", reasoning:"medium"}`
+- US-002 AC2.5: malformed inputs such as `a:b:c` reject with an `invalid format` error
 
 ## Key Decisions
-- Kept US-001 surgical: one new module under `src/node/tmux/` with only the APIs required by the PRD.
-- Used real detached tmux sessions in `node:test` instead of mocks so L3-style evidence comes from the actual CLI behavior the rewrite depends on.
-- Treated shell readiness as `pane_current_command` returning to `zsh`, `bash`, or `sh`, which satisfies the PRD language without coupling to one shell.
-- For the AC1.3 happy-path verifier fix, synchronized the test on `pane_current_command === 'sleep'` before timing `waitForProcessExit`; this validates the process-exit contract directly and avoids TOCTOU races from shell init commands after resolution.
+- Kept US-002 surgical: one new module under `src/node/cli/` with only the APIs required by the PRD.
+- Matched the zsh runner strings exactly where the PRD requires flag parity instead of introducing argument-object abstractions prematurely.
+- Treated empty Claude effort and undefined Codex reasoning as boundary cases so later callers can preserve legacy defaults without extra branching.
+- Rejected unsupported builder modes now rather than adding unused print-mode behavior that the PRD does not require for US-002.
 
 ## Patterns Discovered
-- `tmux split-window -P -F '#{pane_id}'` is enough to create deterministic pane IDs for tests without extra session bookkeeping code.
-- `tmux send-keys -l -- <command>` followed by `Enter` preserves quoting reliably for the shell command strings used by the runner.
-- AC1.3 negative coverage needs a synchronization wait until `pane_current_command` becomes `sleep`; otherwise the race can start before the subprocess is actually running.
-- AC1.3 happy coverage needs the same synchronization before the measurement window starts; without it, the test can pass or fail based on timing before the shell launches `sleep`.
+- The zsh source of truth already separates Claude and Codex launch strings cleanly, so the Node port can remain string-based without needing shell-escaping helpers yet.
+- `spark` is the only alias that expands to a different Codex model identifier; the other colon-form values can pass through as-is.
+- Lowercase `invalid format` text matters because the verifier and tests key off that phrase directly.
+- A single unit-test file can satisfy the per-AC `>= 3 tests` rule cleanly when test names embed the US/AC IDs.
 
 ## Learnings
-- Real tmux integration is stable in detached sessions, so the Node rewrite can verify pane behavior without needing to be launched inside an existing interactive tmux client.
-- The PRD boundary cases do not require a session-creation API yet; keeping US-001 scoped to pane-level operations avoids premature abstraction.
-- A post-resolution assertion on `pane_current_command` is weaker than measuring the wait against a known running process because the shell may launch transient init commands after control returns.
+- US-002 does not need any tmux or subprocess execution to prove correctness; direct string and object assertions are enough because the PRD marks it as L1-only.
+- The existing zsh `parse_model_flag()` behavior accepts empty effort/reasoning suffixes after the colon, so the Node port should preserve that boundary rather than tightening it prematurely.
+- Constraining the Node module to `tui` mode avoids speculative work until a later story actually ports the print/trigger path.
 
 ## Evidence Chain
-- RED regression test: `node --test --test-name-pattern "US-001 AC1.3 happy" tests/node/us001-tmux-pane-manager.test.mjs` -> exit 1 after replacing the flaky shell re-check with an elapsed-time assertion before synchronizing on `sleep`
-- GREEN targeted happy regression: `node --test --test-name-pattern "US-001 AC1.3 happy" tests/node/us001-tmux-pane-manager.test.mjs` -> exit 0 after adding `waitForCurrentCommand(rootPaneId, 'sleep', 2000)`
-- GREEN AC1.3 subset: `node --test --test-name-pattern "US-001 AC1.3" tests/node/us001-tmux-pane-manager.test.mjs` -> exit 0, 3/3 pass
-- GREEN full US-001 suite: `node --test tests/node/us001-tmux-pane-manager.test.mjs` -> exit 0, 12/12 pass
-- GREEN stability run 1: `node --test tests/node/us001-tmux-pane-manager.test.mjs` -> exit 0, 12/12 pass
-- GREEN stability run 2: `node --test tests/node/us001-tmux-pane-manager.test.mjs` -> exit 0, 12/12 pass
-- GREEN stability run 3: `node --test tests/node/us001-tmux-pane-manager.test.mjs` -> exit 0, 12/12 pass
-- GREEN stability run 4: `node --test tests/node/us001-tmux-pane-manager.test.mjs` -> exit 0, 12/12 pass
-- GREEN stability run 5: `node --test tests/node/us001-tmux-pane-manager.test.mjs` -> exit 0, 12/12 pass
+- RED full US-002 suite: `node --test tests/node/us002-cli-command-builder.test.mjs` -> exit 1 because `src/node/cli/command-builder.mjs` did not exist yet (`ERR_MODULE_NOT_FOUND`)
+- GREEN full US-002 suite: `node --test tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 15/15 pass
+- GREEN AC2.1 subset: `node --test --test-name-pattern "US-002 AC2.1" tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC2.2 subset: `node --test --test-name-pattern "US-002 AC2.2" tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC2.3 subset: `node --test --test-name-pattern "US-002 AC2.3" tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC2.4 subset: `node --test --test-name-pattern "US-002 AC2.4" tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC2.5 subset: `node --test --test-name-pattern "US-002 AC2.5" tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 3/3 pass
+- GREEN happy-path subset: `node --test --test-name-pattern "happy" tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 5/5 pass
+- GREEN boundary subset: `node --test --test-name-pattern "boundary" tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 5/5 pass
+- GREEN negative subset: `node --test --test-name-pattern "negative" tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 5/5 pass
+- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs');"` -> exit 0
+- GREEN combined Node suite: `node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs` -> exit 0, 33/33 pass
