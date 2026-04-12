@@ -57,6 +57,7 @@ MAX_RESTARTS="${MAX_RESTARTS:-3}"
 IDLE_NUDGE_THRESHOLD="${IDLE_NUDGE_THRESHOLD:-30}"
 MAX_NUDGES="${MAX_NUDGES:-3}"
 WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
+AUTONOMOUS_MODE="${AUTONOMOUS_MODE:-0}"    # 1=don't stop on ambiguity, PRD is authoritative
 
 # --- Engine Selection (auto-detect from model format) ---
 # claude models (haiku/sonnet/opus) with :effort → claude engine + effort
@@ -715,7 +716,8 @@ create_session() {
     "max_nudges": '"$MAX_NUDGES"',
     "cb_threshold": '"$CB_THRESHOLD"',
     "effective_cb_threshold": '"$EFFECTIVE_CB_THRESHOLD"',
-    "with_self_verification": '"$WITH_SELF_VERIFICATION"'
+    "with_self_verification": '"$WITH_SELF_VERIFICATION"',
+    "autonomous_mode": '"$AUTONOMOUS_MODE"'
   }
 }' | atomic_write "$SESSION_CONFIG"
 
@@ -1171,6 +1173,19 @@ write_worker_trigger() {
         echo "- Do NOT signal verify after individual stories"
       fi
     fi
+
+    # Autonomous mode: don't stop on ambiguity, PRD is authoritative
+    if (( AUTONOMOUS_MODE )); then
+      echo ""
+      echo "---"
+      echo "## AUTONOMOUS MODE"
+      echo "Do NOT stop or ask questions when encountering ambiguity or document conflicts."
+      echo "**Resolution priority**: PRD > test-spec > context > memory"
+      echo "If documents disagree, follow PRD and proceed. Log any conflict you find by"
+      echo "appending to \`$LOGS_DIR/conflict-log.jsonl\` in format:"
+      echo '  {"iteration":N,"us_id":"US-NNN","source_a":"prd","source_b":"test-spec","conflict":"description","resolution":"followed PRD"}'
+      echo "Do NOT wait for human input. Keep working."
+    fi
   } | atomic_write "$prompt_file"
 
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
@@ -1256,6 +1271,19 @@ write_verifier_trigger() {
         echo "- **Previously verified US**: $VERIFIED_US"
         echo "- **Note**: Skip re-verifying the above US. Focus on unverified stories."
       fi
+    fi
+
+    # Autonomous mode: don't stop on ambiguity, PRD is authoritative
+    if (( AUTONOMOUS_MODE )); then
+      echo ""
+      echo "---"
+      echo "## AUTONOMOUS MODE"
+      echo "Do NOT stop or ask questions when encountering ambiguity or document conflicts."
+      echo "**Resolution priority**: PRD > test-spec > context > memory"
+      echo "If documents disagree, follow PRD and proceed. Log any conflict by"
+      echo "appending to \`$LOGS_DIR/conflict-log.jsonl\` in format:"
+      echo '  {"iteration":N,"us_id":"US-NNN","source_a":"prd","source_b":"test-spec","conflict":"description","resolution":"followed PRD"}'
+      echo "Do NOT wait for human input. Keep verifying."
     fi
   } | atomic_write "$prompt_file"
 
@@ -1787,7 +1815,7 @@ run_sequential_final_verify() {
     # Poll for verdict
     rm -f "$VERDICT_FILE"
     local poll_rc=0
-    poll_for_signal "$VERDICT_FILE" "$ITER_TIMEOUT" "verdict" || poll_rc=$?
+    poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
     if (( poll_rc != 0 )); then
       log_error "Verifier poll failed for $us (rc=$poll_rc)"
       FAILED_US="$us"
@@ -2664,6 +2692,9 @@ while (( _cli_i <= $# )); do
       ;;
     --lock-worker-model)
       LOCK_WORKER_MODEL=1
+      ;;
+    --autonomous)
+      AUTONOMOUS_MODE=1
       ;;
     --final-verifier-model)
       (( _cli_i++ ))
