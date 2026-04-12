@@ -30,9 +30,9 @@ log_error() {
 }
 
 # build_claude_cmd() — centralized claude CLI command builder
-# Single source of truth for all claude invocation flags (--no-mcp, DISABLE_OMC, etc.)
+# Single source of truth for all claude invocation flags (--mcp-config, DISABLE_OMC, --effort, etc.)
 # Inspired by codex-plugin-cc companion pattern: CLI abstraction in one place.
-# Args: $1=mode (tui|print)  $2=model  $3=prompt_file (print mode only)  $4=output_log (print mode only)
+# Args: $1=mode (tui|print)  $2=model  $3=prompt_file (print mode only)  $4=output_log (print mode only)  $5=effort (optional: low|medium|high|max)
 # Output: complete command string on stdout
 # Globals read: CLAUDE_BIN
 build_claude_cmd() {
@@ -40,8 +40,12 @@ build_claude_cmd() {
   local model="$2"
   local prompt_file="${3:-}"
   local output_log="${4:-}"
+  local effort="${5:-}"
 
   local base="DISABLE_OMC=1 $CLAUDE_BIN --model $model --mcp-config '{\"mcpServers\":{}}' --strict-mcp-config --dangerously-skip-permissions"
+  if [[ -n "$effort" ]]; then
+    base="$base --effort $effort"
+  fi
   case "$mode" in
     tui)
       echo "$base"
@@ -57,10 +61,12 @@ build_claude_cmd() {
 }
 
 # parse_model_flag() — parse unified --worker-model / --verifier-model value
-# Colon format (model:reasoning) → codex engine; plain name → claude engine.
-# Spark alias: bare "spark" is expanded to full model ID "gpt-5.3-codex-spark".
+# Colon format: claude models (haiku/sonnet/opus) with effort → claude engine + effort
+#               codex models (gpt-*/spark) with reasoning → codex engine + reasoning
+#               plain name → claude engine (no effort override)
 # Usage:  parse_model_flag <value> <role>
-# Output (stdout): "engine model [reasoning]"  e.g. "codex gpt-5.4 medium" | "claude sonnet"
+# Output (stdout): "engine model [reasoning_or_effort]"
+#   e.g. "codex gpt-5.4 medium" | "claude opus max" | "claude sonnet"
 # Returns: 0 on success, 1 on invalid format (error written to stderr)
 parse_model_flag() {
   local value="$1"
@@ -68,16 +74,24 @@ parse_model_flag() {
   local colon_count
   colon_count=$(printf '%s' "$value" | tr -cd ':' | wc -c | tr -d ' ')
   if (( colon_count > 1 )); then
-    echo "ERROR: Invalid --${role}-model format '${value}'. Use 'model:reasoning' (codex) or 'model-name' (claude)." >&2
+    echo "ERROR: Invalid --${role}-model format '${value}'. Use 'model:effort' (claude) or 'model:reasoning' (codex)." >&2
     return 1
   fi
   if (( colon_count == 1 )); then
     local model="${value%%:*}"
-    local reasoning="${value##*:}"
-    if [[ "$model" == "spark" ]]; then
-      model="gpt-5.3-codex-spark"
-    fi
-    echo "codex $model $reasoning"
+    local level="${value##*:}"
+    # Detect engine by model name
+    case "$model" in
+      haiku|sonnet|opus)
+        echo "claude $model $level"
+        ;;
+      spark)
+        echo "codex gpt-5.3-codex-spark $level"
+        ;;
+      *)
+        echo "codex $model $level"
+        ;;
+    esac
   else
     echo "claude $value"
   fi
