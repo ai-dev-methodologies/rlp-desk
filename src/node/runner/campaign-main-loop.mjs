@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -13,6 +14,7 @@ import {
 import {
   appendCampaignAnalytics,
   generateCampaignReport,
+  generateSVReport,
   prepareCampaignAnalytics,
 } from '../reporting/campaign-reporting.mjs';
 import {
@@ -56,9 +58,10 @@ function buildPaths(rootDir, slug) {
     prdFile: path.join(deskRoot, 'plans', `prd-${slug}.md`),
     testSpecFile: path.join(deskRoot, 'plans', `test-spec-${slug}.md`),
     analyticsFile: path.join(campaignLogDir, 'campaign.jsonl'),
+    analyticsDir: path.join(os.homedir(), '.claude', 'ralph-desk', 'analytics', slug),
     reportFile: path.join(campaignLogDir, 'campaign-report.md'),
     statusFile: path.join(campaignLogDir, 'runtime', 'status.json'),
-  };
+};
 }
 
 async function exists(targetPath) {
@@ -462,6 +465,22 @@ export async function run(slug, options = {}) {
         state.phase = 'complete';
         await writeSentinel(paths.completeSentinel, 'complete', 'ALL');
         await writeStatus(paths, state, options.onStatusChange, options.now);
+        let svSummary;
+        if (options.withSelfVerification) {
+          try {
+            const sv = await generateSVReport({
+              slug,
+              logsDir: path.dirname(paths.reportFile),
+              prdFile: paths.prdFile,
+              testSpecFile: paths.testSpecFile,
+              analyticsFile: paths.analyticsFile,
+              outputDir: paths.analyticsDir,
+            });
+            svSummary = sv.summary;
+          } catch (err) {
+            svSummary = `SV report generation failed: ${err.message}`;
+          }
+        }
         await generateCampaignReport({
           slug,
           reportFile: paths.reportFile,
@@ -469,6 +488,7 @@ export async function run(slug, options = {}) {
           statusFile: paths.statusFile,
           analyticsFile: paths.analyticsFile,
           now: resolveNow(options.now),
+          svSummary,
         });
         return {
           status: 'complete',
@@ -565,6 +585,22 @@ export async function run(slug, options = {}) {
       await writeSentinel(paths.blockedSentinel, 'blocked', usId);
       await appendIterationAnalytics(paths, state, usId, 'blocked', options);
       await writeStatus(paths, state, options.onStatusChange, options.now);
+      let svSummary;
+      if (options.withSelfVerification) {
+        try {
+          const sv = await generateSVReport({
+            slug,
+            logsDir: path.dirname(paths.reportFile),
+            prdFile: paths.prdFile,
+            testSpecFile: paths.testSpecFile,
+            analyticsFile: paths.analyticsFile,
+            outputDir: paths.analyticsDir,
+          });
+          svSummary = sv.summary;
+        } catch (err) {
+          svSummary = `SV report generation failed: ${err.message}`;
+        }
+      }
       await generateCampaignReport({
         slug,
         reportFile: paths.reportFile,
@@ -572,6 +608,7 @@ export async function run(slug, options = {}) {
         statusFile: paths.statusFile,
         analyticsFile: paths.analyticsFile,
         now: resolveNow(options.now),
+        svSummary,
       });
       return {
         status: 'blocked',
@@ -587,6 +624,22 @@ export async function run(slug, options = {}) {
       state.phase = 'blocked';
       await writeSentinel(paths.blockedSentinel, 'blocked', usId);
       await writeStatus(paths, state, options.onStatusChange, options.now);
+      let svSummary;
+      if (options.withSelfVerification) {
+        try {
+          const sv = await generateSVReport({
+            slug,
+            logsDir: path.dirname(paths.reportFile),
+            prdFile: paths.prdFile,
+            testSpecFile: paths.testSpecFile,
+            analyticsFile: paths.analyticsFile,
+            outputDir: paths.analyticsDir,
+          });
+          svSummary = sv.summary;
+        } catch (err) {
+          svSummary = `SV report generation failed: ${err.message}`;
+        }
+      }
       await generateCampaignReport({
         slug,
         reportFile: paths.reportFile,
@@ -594,6 +647,7 @@ export async function run(slug, options = {}) {
         statusFile: paths.statusFile,
         analyticsFile: paths.analyticsFile,
         now: resolveNow(options.now),
+        svSummary,
       });
       return {
         status: 'blocked',

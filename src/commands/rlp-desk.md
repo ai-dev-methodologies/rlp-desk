@@ -112,7 +112,17 @@ Ask about these items one by one (or in small groups):
 
 After all items are confirmed:
 
-0. **SV Report Feedback** — If a prior campaign's self-verification report exists for this project (`~/.claude/ralph-desk/analytics/*/self-verification-report-*.md`), reference it to inform this brainstorm: which US types failed most, which model tiers underperformed, which AC patterns caused issues. Present relevant findings to the user. (governance §8½)
+0. **SV Report Feedback** — If a prior campaign's self-verification report exists:
+   a. Scan `~/.claude/ralph-desk/analytics/` for directories matching this project (by slug or project root)
+   b. Read the latest `self-verification-report.md` from each matching directory
+   c. Extract from §7 (Patterns) and §8 (Recommendations):
+      - Which US types/sizes failed most frequently
+      - Which AC quality dimensions scored lowest
+      - Which model tiers underperformed for this project's complexity
+      - Specific brainstorm/PRD/test-spec recommendations from prior campaigns
+   d. Present findings to user: "Prior campaign analysis found: [patterns]. Recommendations: [suggestions]."
+   e. If no prior reports exist, skip and note "No prior campaign data available."
+   (governance §8½)
 1. **Ambiguity Gate (IL-2)** — score each AC per governance §1a IL-2 (6 dimensions, 0-12 points).
    If ANY AC scores below 6: **REJECT** — refine that AC before proceeding.
    If all ACs score 6-9: **WARN** — proceed with logged warning, show low-scoring dimensions.
