@@ -399,6 +399,64 @@ Per-US catches issues early before later stories build on broken foundations.
 
 Worker completes all stories, then a single verification checks all AC at once. Final verify still applies.
 
+## Autonomous Mode
+
+By default, Worker and Verifier stop and ask for human input when they encounter document conflicts (e.g., PRD says one thing, test-spec says another) or ambiguous instructions. This breaks unattended execution.
+
+**`--autonomous`** enables fully unattended campaigns:
+
+```bash
+/rlp-desk run my-feature --mode tmux --worker-model gpt-5.4:medium --autonomous --debug
+```
+
+### How it works
+
+When `--autonomous` is active:
+
+1. **PRD is the single source of truth.** Resolution priority: `PRD > test-spec > context > memory`
+2. **No stopping for questions.** Worker and Verifier make autonomous decisions based on the priority chain
+3. **All conflicts are logged.** Every decision is recorded in `conflict-log.jsonl` for post-campaign review
+
+### Conflict log
+
+Each conflict is logged as a JSONL entry in `logs/<slug>/conflict-log.jsonl`:
+
+```json
+{
+  "iteration": 1,
+  "us_id": "US-001",
+  "source_a": "worker-prompt",
+  "source_b": "prd",
+  "conflict": "US-00 is required by the iteration prompt but is not defined as a PRD user story.",
+  "resolution": "Followed PRD as source of truth."
+}
+```
+
+### When to use
+
+- **Long-running campaigns** that run overnight or while you're away
+- **High-iteration tasks** where stopping for every ambiguity wastes hours
+- **Well-defined PRDs** where the PRD is comprehensive and authoritative
+
+### When NOT to use
+
+- **Exploratory work** where you want to review each decision
+- **Ambiguous PRDs** where conflicts indicate real design gaps that need human judgment
+- **First run of a new project** — run without `--autonomous` first to catch PRD issues interactively
+
+### Post-campaign review
+
+After the campaign, review the conflict log to identify systemic issues:
+
+```bash
+cat .claude/ralph-desk/logs/<slug>/conflict-log.jsonl | jq .
+```
+
+Common patterns:
+- **Repeated PRD vs test-spec conflicts** — test-spec needs updating to match PRD
+- **Scope lock vs fix contract conflicts** — governance rules may need tuning
+- **Missing PRD definitions** — Worker created stories not in the PRD (add them or tighten the brainstorm)
+
 ## Project Structure
 
 After `init`, your project gets this scaffold:
