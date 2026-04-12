@@ -214,7 +214,7 @@ This is the default behavior, not an optional flag. Without it, IL-1 (Evidence M
 ### Worker: execution_steps in done-claim.json
 Worker records what was done, in what order, with command evidence in `done-claim.json`:
 - Each step includes: what action, which AC, command executed, exit code, summary
-- Step types: `write_test`, `verify_red`, `implement`, `verify_green`, `refactor`, `commit`, `verify`, `verify_existing`
+- Step types: `plan`, `write_test`, `verify_red`, `implement`, `verify_green`, `refactor`, `commit`, `verify`, `verify_existing`
 - This proves the Worker followed test-first approach and did not skip steps
 - **Existing implementation rule**: When code already exists from a prior iteration/campaign, Worker MAY use `verify_existing` instead of `write_test → verify_red → implement → verify_green`. `verify_existing` requires: run all existing tests, record exit codes, confirm all AC are covered by passing tests. Worker MUST NOT skip recording evidence — `verify_existing` is evidence that existing code satisfies AC, not a shortcut to skip verification.
 

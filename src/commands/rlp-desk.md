@@ -23,6 +23,12 @@ Present your suggestion, then wait for the user's confirmation or change.
 Ask about these items one by one (or in small groups):
 1. **Slug** — short identifier (e.g., `auth-refactor`). Suggest one, ask if OK.
 2. **Objective** — what the loop achieves
+2.5. **Codebase Exploration** — Before proposing user stories, examine the project:
+   - Read the project's entry points, key modules, and test structure
+   - Identify architectural patterns in use (frameworks, conventions, test setup)
+   - Note constraints the Worker will encounter (dependencies, build system, existing code style)
+   - Present findings: "I explored the codebase and found: [patterns], [constraints], [existing tests]. This informs the US breakdown below."
+   - If the project is new/empty, skip this step and note "greenfield project."
 3. **User Stories** — discrete units with testable acceptance criteria. Propose a breakdown, ask the user to confirm/modify.
    - Apply INVEST criteria: each US must be Independent, Negotiable, Valuable, Estimable, Small, Testable.
    - **Task Sizing (governance §1c)**: Size each US within the Worker's comfortable zone — smaller than what the Worker can handle, not at its ceiling. Max 3-4 ACs, max 2 files. If a US feels "just barely doable" for the target model, split it further.
@@ -128,7 +134,10 @@ Do NOT auto-decide iteration unit — the user MUST explicitly choose.
 ## `init <slug> [objective]`
 
 Run: `~/.claude/ralph-desk/init_ralph_desk.zsh <slug> "<objective>" [--mode fresh|improve]`
-If brainstorm was done, auto-fill PRD and test-spec with the results.
+If brainstorm was done, auto-fill:
+- PRD and test-spec with the brainstorm results
+- Campaign memory "Key Decisions" with architectural decisions from brainstorm
+- Campaign memory "Patterns Discovered" with codebase exploration findings (from step 2.5)
 
 **After init completes, STOP. Do NOT auto-run the loop.**
 
