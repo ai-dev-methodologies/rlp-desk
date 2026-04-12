@@ -1,0 +1,37 @@
+{
+  "us_id": "ALL",
+  "claims": [
+    "ALL: the complete Node rewrite remains green across US-00 through US-008 under a fresh final verification run",
+    "ALL: the full Node runtime imports cleanly, the CLI help contract still matches the documented command surface, and the packaged npm install still installs the Node runtime without legacy zsh runtime files"
+  ],
+  "execution_steps": [
+    {
+      "step": "verify_existing",
+      "ac_id": "ALL-build",
+      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs'); await import('./src/node/init/campaign-initializer.mjs'); await import('./src/node/runner/campaign-main-loop.mjs'); await import('./src/node/reporting/campaign-reporting.mjs'); await import('./src/node/run.mjs');\"",
+      "exit_code": 0,
+      "summary": "Fresh build smoke passed for the complete Node runtime import graph."
+    },
+    {
+      "step": "verify_existing",
+      "ac_id": "ALL-tests",
+      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs tests/node/us005-campaign-initializer.test.mjs tests/node/us006-campaign-main-loop.test.mjs tests/node/us007-analytics-reporting.test.mjs tests/node/us008-cli-entrypoint.test.mjs",
+      "exit_code": 0,
+      "summary": "Fresh full-suite verification passed: 105 tests, 105 passed, 0 failed, 0 skipped."
+    },
+    {
+      "step": "verify_existing",
+      "ac_id": "ALL-cli",
+      "command": "node src/node/run.mjs --help",
+      "exit_code": 0,
+      "summary": "Fresh CLI help verification passed and printed the current top-level command surface plus all documented run flags."
+    },
+    {
+      "step": "verify_existing",
+      "ac_id": "ALL-packaging",
+      "command": "tmpdir=$(mktemp -d) && home=\"$tmpdir/home\" && proj=\"$tmpdir/proj\" && mkdir -p \"$home\" \"$proj\" && pack_json=$(npm pack --json) && tarball=$(node -e \"const data = JSON.parse(process.argv[1]); process.stdout.write(data[0].filename);\" \"$pack_json\") && tar -tf \"$tarball\" > \"$tmpdir/tar.txt\" && if grep -E 'package/src/scripts/|package/src/scripts/(init_ralph_desk|run_ralph_desk|lib_ralph_desk)\\.zsh' \"$tmpdir/tar.txt\" >/dev/null; then echo 'tarball contains legacy zsh runtime' >&2; exit 1; fi && HOME=\"$home\" npm install --prefix \"$proj\" \"$PWD/$tarball\" >/dev/null 2>&1 && test -f \"$home/.claude/ralph-desk/node/run.mjs\" && test ! -e \"$home/.claude/ralph-desk/run_ralph_desk.zsh\" && node \"$home/.claude/ralph-desk/node/run.mjs\" --help | grep -- '--autonomous'",
+      "exit_code": 0,
+      "summary": "Fresh pack/install smoke passed: tarball excluded legacy zsh runtime files, isolated install created ~/.claude/ralph-desk/node/run.mjs, and the installed CLI help worked."
+    }
+  ]
+}

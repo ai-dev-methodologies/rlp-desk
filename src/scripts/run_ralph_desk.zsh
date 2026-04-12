@@ -242,17 +242,38 @@ launch_worker_codex() {
   local worker_launch="$4"
 
   log "  Launching Worker codex TUI in pane $pane_id..."
+  # Clean pane before launch: kill any lingering process, ensure fresh shell
+  local _pre_cmd
+  _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
+  if [[ "$_pre_cmd" != "zsh" && "$_pre_cmd" != "bash" && -n "$_pre_cmd" ]]; then
+    log_debug "Worker pane has lingering process ($_pre_cmd), cleaning..."
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
+  fi
   paste_to_pane "$pane_id" "$worker_launch"
   tmux send-keys -t "$pane_id" C-m
 
-  # Wait for codex TUI to be ready
-  if ! wait_for_pane_ready "$pane_id" 30; then
-    log_error "Worker codex failed to start"
+  # Wait for codex TUI prompt (›) instead of shell prompt
+  local _codex_ready=0
+  local _codex_wait=0
+  while (( _codex_wait < 30 )); do
+    sleep 1
+    local _pane_text
+    _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
+      _codex_ready=1
+      log_debug "Worker codex TUI ready after ${_codex_wait}s"
+      break
+    fi
+    (( _codex_wait++ ))
+  done
+  if (( ! _codex_ready )); then
+    log_error "Worker codex TUI not ready after 30s"
     return 1
   fi
 
   # Send instruction to codex TUI
-  sleep 3
+  sleep 1
   local worker_instruction="Read and execute the instructions in $prompt_file"
   paste_to_pane "$pane_id" "$worker_instruction"
   tmux send-keys -t "$pane_id" C-m
@@ -375,15 +396,37 @@ launch_verifier_codex() {
   local verifier_launch="$4"
 
   log "  Launching Verifier codex TUI in pane $pane_id..."
+  # Clean pane before launch: kill any lingering process, ensure fresh shell
+  local _pre_cmd
+  _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
+  if [[ "$_pre_cmd" != "zsh" && "$_pre_cmd" != "bash" && -n "$_pre_cmd" ]]; then
+    log_debug "Verifier pane has lingering process ($_pre_cmd), cleaning..."
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
+  fi
   paste_to_pane "$pane_id" "$verifier_launch"
   tmux send-keys -t "$pane_id" C-m
 
-  if ! wait_for_pane_ready "$pane_id" 30; then
-    log_error "Verifier codex failed to start"
+  # Wait for codex TUI prompt (›) instead of shell prompt
+  local _codex_ready=0
+  local _codex_wait=0
+  while (( _codex_wait < 30 )); do
+    sleep 1
+    local _pane_text
+    _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
+      _codex_ready=1
+      log_debug "Verifier codex TUI ready after ${_codex_wait}s"
+      break
+    fi
+    (( _codex_wait++ ))
+  done
+  if (( ! _codex_ready )); then
+    log_error "Verifier codex TUI not ready after 30s"
     return 1
   fi
 
-  sleep 3
+  sleep 1
   local verifier_instruction="Read and execute the instructions in $prompt_file"
   paste_to_pane "$pane_id" "$verifier_instruction"
   tmux send-keys -t "$pane_id" C-m
@@ -1712,35 +1755,36 @@ run_single_verifier() {
 
   # Poll for verdict
   if [[ "$engine" = "codex" ]]; then
-    # Codex exec: file poll + wait for process exit to avoid reading partial results
+    # Codex exec: file poll + short grace period after verdict detected
     log "  Polling for verify-verdict.json ($suffix, codex TUI)..."
     local codex_poll_start
     codex_poll_start=$(date +%s)
-    local _verdict_detected=0
+    local _verdict_detected_at=0
     while true; do
-      # Phase 1: wait for verdict file
-      if (( ! _verdict_detected )) && [[ -f "$VERDICT_FILE" ]]; then
-        if jq . "$VERDICT_FILE" >/dev/null 2>&1; then
-          log "  Verdict file detected, waiting for codex process to finish..."
-          _verdict_detected=1
+      # Wait for verdict file with valid JSON
+      if [[ -f "$VERDICT_FILE" ]] && jq . "$VERDICT_FILE" >/dev/null 2>&1; then
+        if (( _verdict_detected_at == 0 )); then
+          _verdict_detected_at=$(date +%s)
+          log "  Verdict file detected. Grace period (30s) for codex to finalize..."
         fi
-      fi
-      # Phase 2: verdict exists, wait for codex to exit (pane returns to shell)
-      if (( _verdict_detected )); then
+        # Grace period: 30s after verdict detection, proceed regardless of pane state
+        local _grace_elapsed=$(( $(date +%s) - _verdict_detected_at ))
+        if (( _grace_elapsed >= 30 )); then
+          log "  Grace period complete. Proceeding."
+          break
+        fi
+        # Early exit: if pane returned to shell, no need to wait
         local _pane_cmd
         _pane_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null || echo "")
         if [[ "$_pane_cmd" = "zsh" || "$_pane_cmd" = "bash" || -z "$_pane_cmd" ]]; then
           log "  Codex verifier$suffix process exited. Proceeding."
-          # Re-read verdict in case codex updated it before exiting
-          if jq . "$VERDICT_FILE" >/dev/null 2>&1; then
-            break
-          fi
+          break
         fi
       fi
       local codex_elapsed=$(( $(date +%s) - codex_poll_start ))
       if (( codex_elapsed >= ITER_TIMEOUT )); then
-        if (( _verdict_detected )); then
-          log "  Codex verifier$suffix timed out waiting for exit, but verdict exists. Proceeding."
+        if (( _verdict_detected_at > 0 )); then
+          log "  Codex verifier$suffix timed out waiting, but verdict exists. Proceeding."
           break
         fi
         log_error "Codex verifier$suffix timed out after ${ITER_TIMEOUT}s"

@@ -7,7 +7,10 @@
     "uninstall": "node scripts/uninstall.js"
   },
   "files": [
-    "src/",
+    "src/commands/",
+    "src/node/",
+    "src/governance.md",
+    "src/model-upgrade-table.md",
     "scripts/",
     "docs/",
     "examples/",

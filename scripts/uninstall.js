@@ -16,22 +16,31 @@ console.log("");
 
 const files = [
   path.join(commandsDir, "rlp-desk.md"),
-  path.join(deskDir, "init_ralph_desk.zsh"),
-  path.join(deskDir, "run_ralph_desk.zsh"),
-  path.join(deskDir, "lib_ralph_desk.zsh"),
   path.join(deskDir, "governance.md"),
+  path.join(deskDir, "model-upgrade-table.md"),
+  path.join(deskDir, "README.md"),
+  path.join(deskDir, "install.sh"),
 ];
 
-for (const f of files) {
+for (const targetPath of files) {
   try {
-    fs.unlinkSync(f);
-    console.log("  - " + f);
+    fs.rmSync(targetPath, { recursive: true, force: true });
+    console.log("  - " + targetPath);
   } catch (_) {
-    // File may not exist
+    // Ignore missing files.
   }
 }
 
-// Remove ralph-desk dir if empty
+for (const subdir of ["docs", "node"]) {
+  const targetPath = path.join(deskDir, subdir);
+  try {
+    fs.rmSync(targetPath, { recursive: true, force: true });
+    console.log("  - " + targetPath);
+  } catch (_) {
+    // Ignore missing directories.
+  }
+}
+
 try {
   const remaining = fs.readdirSync(deskDir);
   if (remaining.length === 0) {
@@ -39,7 +48,7 @@ try {
     console.log("  - " + deskDir);
   }
 } catch (_) {
-  // Directory may not exist
+  // Directory may not exist.
 }
 
 console.log("");
