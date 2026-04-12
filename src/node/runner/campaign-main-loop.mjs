@@ -397,6 +397,12 @@ async function runFinalSequentialVerify({
   };
 }
 
+export function shouldRunFlywheel(flywheelMode, state) {
+  if (flywheelMode === 'off') return false;
+  if (flywheelMode === 'on-fail' && (state.consecutive_failures ?? 0) > 0) return true;
+  return false;
+}
+
 export async function run(slug, options = {}) {
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
   const paths = buildPaths(rootDir, slug);
