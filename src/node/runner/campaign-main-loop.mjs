@@ -61,6 +61,8 @@ function buildPaths(rootDir, slug) {
     analyticsDir: path.join(os.homedir(), '.claude', 'ralph-desk', 'analytics', slug),
     reportFile: path.join(campaignLogDir, 'campaign-report.md'),
     statusFile: path.join(campaignLogDir, 'runtime', 'status.json'),
+    flywheelPromptFile: path.join(deskRoot, 'prompts', `${slug}.flywheel.prompt.md`),
+    flywheelSignalFile: path.join(deskRoot, 'memos', `${slug}-flywheel-signal.json`),
 };
 }
 
@@ -397,6 +399,19 @@ async function runFinalSequentialVerify({
   };
 }
 
+function buildFlywheelTriggerCmd({ flywheelPromptFile, flywheelModel, rootDir }) {
+  return `cd ${JSON.stringify(rootDir)} && DISABLE_OMC=1 claude --model ${flywheelModel} --no-mcp -p "$(cat ${JSON.stringify(flywheelPromptFile)})"`;
+}
+
+async function dispatchFlywheel({ paths, sendKeys, flywheelPaneId, flywheelModel, rootDir }) {
+  const triggerCmd = buildFlywheelTriggerCmd({
+    flywheelPromptFile: paths.flywheelPromptFile,
+    flywheelModel,
+    rootDir,
+  });
+  await sendKeys(flywheelPaneId, triggerCmd);
+}
+
 export function shouldRunFlywheel(flywheelMode, state) {
   if (flywheelMode === 'off') return false;
   if (flywheelMode === 'on-fail' && (state.consecutive_failures ?? 0) > 0) return true;
@@ -513,6 +528,30 @@ export async function run(slug, options = {}) {
         usId: finalResult.usId,
         statusFile: paths.statusFile,
       };
+    }
+
+    // Flywheel direction review (runs BEFORE Worker)
+    if (shouldRunFlywheel(options.flywheel ?? 'off', state)) {
+      state.phase = 'flywheel';
+      await writeStatus(paths, state, options.onStatusChange, options.now);
+
+      await dispatchFlywheel({
+        paths,
+        sendKeys,
+        flywheelPaneId: state.flywheel_pane_id ?? state.verifier_pane_id,
+        flywheelModel: options.flywheelModel ?? 'opus',
+        rootDir,
+      });
+
+      const flywheelSignal = await pollForSignal(paths.flywheelSignalFile, {
+        mode: 'claude',
+        paneId: state.flywheel_pane_id ?? state.verifier_pane_id,
+      });
+
+      state.last_flywheel_decision = flywheelSignal.decision;
+      // Campaign memory already updated by flywheel agent
+      // Clean signal file for next iteration
+      await fs.unlink(paths.flywheelSignalFile).catch(() => {});
     }
 
     state.phase = 'worker';

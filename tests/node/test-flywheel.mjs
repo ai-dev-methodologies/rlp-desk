@@ -67,3 +67,25 @@ test('T8: flywheel prompt records rejected directions', async () => {
   const content = await fs.readFile(script, 'utf8');
   assert.match(content, /Rejected Directions/);
 });
+
+test('T9: buildPaths includes flywheel paths', async () => {
+  const script = path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs');
+  const content = await fs.readFile(script, 'utf8');
+  assert.match(content, /flywheelPromptFile/);
+  assert.match(content, /flywheelSignalFile/);
+});
+
+test('T10: flywheel dispatch exists for both tmux and agent modes', async () => {
+  const script = path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs');
+  const content = await fs.readFile(script, 'utf8');
+  assert.match(content, /dispatchFlywheel/);
+  assert.match(content, /phase.*flywheel/i);
+});
+
+test('T11: flywheel runs BEFORE worker in the loop', async () => {
+  const script = path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs');
+  const content = await fs.readFile(script, 'utf8');
+  const flywheelPos = content.indexOf('shouldRunFlywheel');
+  const workerPos = content.indexOf('dispatchWorker', flywheelPos);
+  assert.ok(flywheelPos < workerPos, 'flywheel check must appear before worker dispatch');
+});
