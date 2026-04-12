@@ -190,6 +190,8 @@ Tell the user:
    #   --iter-timeout N                       tmux only (default: 600)
    #   --debug                                debug logging
    #   --with-self-verification               post-campaign SV report
+   #   --flywheel off|on-fail                 direction review on fail (default: off)
+   #   --flywheel-model MODEL                 flywheel reviewer model (default: opus)
    ```
 
    **If codex is NOT installed** — show claude-only presets + install recommendation:
@@ -218,6 +220,8 @@ Tell the user:
    #   --iter-timeout N                       tmux only (default: 600)
    #   --debug                                debug logging
    #   --with-self-verification               post-campaign SV report
+   #   --flywheel off|on-fail                 direction review on fail (default: off)
+   #   --flywheel-model MODEL                 flywheel reviewer model (default: opus)
    ```
 
    Replace `<actual-slug>` with the real slug from this init (e.g. `auth-refactor`).

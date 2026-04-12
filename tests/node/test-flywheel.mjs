@@ -89,3 +89,20 @@ test('T11: flywheel runs BEFORE worker in the loop', async () => {
   const workerPos = content.indexOf('dispatchWorker', flywheelPos);
   assert.ok(flywheelPos < workerPos, 'flywheel check must appear before worker dispatch');
 });
+
+test('T12: rlp-desk.md options reference includes flywheel flags', async () => {
+  const content = await fs.readFile(path.join(repoRoot, 'src', 'commands', 'rlp-desk.md'), 'utf8');
+  assert.match(content, /--flywheel off\|on-fail/);
+  assert.match(content, /--flywheel-model MODEL/);
+});
+
+test('T13: init presets include flywheel in options reference', async () => {
+  const content = await fs.readFile(path.join(repoRoot, 'src', 'scripts', 'init_ralph_desk.zsh'), 'utf8');
+  assert.match(content, /--flywheel off\|on-fail/);
+  assert.match(content, /--flywheel-model MODEL/);
+});
+
+test('T14: campaign-main-loop creates flywheel pane in tmux mode', async () => {
+  const content = await fs.readFile(path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs'), 'utf8');
+  assert.match(content, /flywheel_pane_id/);
+});

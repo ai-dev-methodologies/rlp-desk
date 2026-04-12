@@ -240,6 +240,8 @@ print_run_presets() {
   echo "#   --iter-timeout N                       tmux only (default: 600)"
   echo "#   --debug                                debug logging"
   echo "#   --with-self-verification               post-campaign SV report"
+  echo "#   --flywheel off|on-fail                 direction review on fail (default: off)"
+  echo "#   --flywheel-model MODEL                 flywheel reviewer model (default: opus)"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 

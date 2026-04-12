@@ -457,6 +457,10 @@ export async function run(slug, options = {}) {
     });
     state.session_name = session.sessionName;
     state.leader_pane_id = session.leaderPaneId;
+    state.flywheel_pane_id = await createPane({
+      targetPaneId: session.leaderPaneId,
+      layout: 'horizontal',
+    });
     state.worker_pane_id = await createPane({
       targetPaneId: session.leaderPaneId,
       layout: 'horizontal',
