@@ -1,137 +1,67 @@
 {
   "us_id": "US-001",
   "claims": [
-    "AC1.1: createPane creates tmux panes with horizontal and vertical layouts, returns pane IDs, and the IDs are confirmed by tmux list-panes.",
-    "AC1.2: sendKeys sends shell command strings into a pane and the resulting output appears in pane capture within 2 seconds.",
-    "AC1.3: waitForProcessExit resolves only after pane_current_command returns to zsh/bash/sh and stays pending while a process is still running.",
-    "AC1.4: sendKeys rejects invalid pane IDs with TmuxError and includes the invalid pane ID in the error message."
+    "AC1.1: createPane creates panes in an active tmux session and returns pane IDs confirmed by tmux list-panes.",
+    "AC1.2: sendKeys writes shell commands into the target pane and the output appears in pane capture within 2 seconds.",
+    "AC1.3: waitForProcessExit resolves only after the running pane process returns to the shell, with the happy-path regression test synchronized on the running process to avoid flakiness.",
+    "AC1.4: invalid pane IDs cause sendKeys to reject with TmuxError including the pane ID."
   ],
   "execution_steps": [
     {
       "step": "write_test",
-      "ac_id": "AC1.1",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Wrote tests/node/us001-tmux-pane-manager.test.mjs with AC1.1 happy, boundary, and negative createPane coverage."
-    },
-    {
-      "step": "verify_red",
-      "ac_id": "AC1.1",
-      "command": "node --test --test-name-pattern \"US-001 AC1.1\" tests/node/us001-tmux-pane-manager.test.mjs",
-      "exit_code": 1,
-      "summary": "RED: AC1.1 tests failed before implementation because src/node/tmux/pane-manager.mjs did not exist."
-    },
-    {
-      "step": "implement",
-      "ac_id": "AC1.1",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Implemented createPane() in src/node/tmux/pane-manager.mjs with horizontal/vertical layout support and tmux pane ID output."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "AC1.1",
-      "command": "node --test --test-name-pattern \"US-001 AC1.1\" tests/node/us001-tmux-pane-manager.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: 3/3 AC1.1 tests passed."
-    },
-    {
-      "step": "write_test",
-      "ac_id": "AC1.2",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Added AC1.2 sendKeys happy, boundary, and negative coverage to tests/node/us001-tmux-pane-manager.test.mjs."
-    },
-    {
-      "step": "verify_red",
-      "ac_id": "AC1.2",
-      "command": "node --test --test-name-pattern \"US-001 AC1.2\" tests/node/us001-tmux-pane-manager.test.mjs",
-      "exit_code": 1,
-      "summary": "RED: AC1.2 tests failed before implementation because src/node/tmux/pane-manager.mjs did not exist."
-    },
-    {
-      "step": "implement",
-      "ac_id": "AC1.2",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Implemented sendKeys() with tmux send-keys literal input followed by Enter and tmux error wrapping."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "AC1.2",
-      "command": "node --test --test-name-pattern \"US-001 AC1.2\" tests/node/us001-tmux-pane-manager.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: 3/3 AC1.2 tests passed."
-    },
-    {
-      "step": "write_test",
       "ac_id": "AC1.3",
       "command": null,
-      "exit_code": 0,
-      "summary": "Added AC1.3 waitForProcessExit happy, boundary, and negative coverage including the pending-while-sleeping assertion."
+      "exit_code": null,
+      "summary": "Updated tests/node/us001-tmux-pane-manager.test.mjs AC1.3 happy to assert wait duration against sleep 1 instead of re-checking pane_current_command after resolution."
     },
     {
       "step": "verify_red",
       "ac_id": "AC1.3",
-      "command": "node --test --test-name-pattern \"US-001 AC1.3\" tests/node/us001-tmux-pane-manager.test.mjs",
+      "command": "node --test --test-name-pattern \"US-001 AC1.3 happy\" tests/node/us001-tmux-pane-manager.test.mjs",
       "exit_code": 1,
-      "summary": "RED: AC1.3 tests failed before implementation because src/node/tmux/pane-manager.mjs did not exist."
+      "summary": "RED: targeted AC1.3 happy failed because waitForProcessExit returned in about 25 ms, proving the test started waiting before the pane entered sleep."
     },
     {
       "step": "implement",
       "ac_id": "AC1.3",
       "command": null,
-      "exit_code": 0,
-      "summary": "Implemented waitForProcessExit() by polling pane_current_command until it returns to zsh/bash/sh or times out."
+      "exit_code": null,
+      "summary": "Applied the minimal fix in the AC1.3 happy test only: wait for pane_current_command to become sleep before starting the elapsed-time assertion; production pane-manager.mjs was not modified."
     },
     {
       "step": "verify_green",
       "ac_id": "AC1.3",
-      "command": "node --test --test-name-pattern \"US-001 AC1.3\" tests/node/us001-tmux-pane-manager.test.mjs",
+      "command": "node --test --test-name-pattern \"US-001 AC1.3 happy\" tests/node/us001-tmux-pane-manager.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC1.3 tests passed."
+      "summary": "GREEN: targeted AC1.3 happy passed with about 1.4 s wait time, showing waitForProcessExit resolved after the running sleep process completed."
     },
     {
-      "step": "write_test",
-      "ac_id": "AC1.4",
-      "command": null,
+      "step": "verify_existing",
+      "ac_id": "AC1.1-AC1.4",
+      "command": "node --test --test-name-pattern \"US-001 AC1.3\" tests/node/us001-tmux-pane-manager.test.mjs && node --test tests/node/us001-tmux-pane-manager.test.mjs",
       "exit_code": 0,
-      "summary": "Added AC1.4 invalid-pane error assertions for TmuxError type, message contents, and rejected promise behavior."
-    },
-    {
-      "step": "verify_red",
-      "ac_id": "AC1.4",
-      "command": "node --test --test-name-pattern \"US-001 AC1.4\" tests/node/us001-tmux-pane-manager.test.mjs",
-      "exit_code": 1,
-      "summary": "RED: AC1.4 tests failed before implementation because src/node/tmux/pane-manager.mjs did not exist."
-    },
-    {
-      "step": "implement",
-      "ac_id": "AC1.4",
-      "command": null,
-      "exit_code": 0,
-      "summary": "Added TmuxError and wrapped tmux CLI failures so invalid pane IDs surface with pane-specific error messages."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "AC1.4",
-      "command": "node --test --test-name-pattern \"US-001 AC1.4\" tests/node/us001-tmux-pane-manager.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: 3/3 AC1.4 tests passed."
+      "summary": "US-001 AC1.3 subset passed 3/3 and the full US-001 suite passed 12/12 with the updated regression test."
     },
     {
       "step": "verify_e2e",
-      "ac_id": "US-001",
-      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs');\" && node --test --test-name-pattern \"happy\" tests/node/us001-tmux-pane-manager.test.mjs && node --test --test-name-pattern \"boundary\" tests/node/us001-tmux-pane-manager.test.mjs && node --test --test-name-pattern \"negative\" tests/node/us001-tmux-pane-manager.test.mjs && node --test tests/node/us001-tmux-pane-manager.test.mjs",
+      "ac_id": "AC1.1-AC1.4",
+      "command": "for i in 1 2 3 4 5; do node --test tests/node/us001-tmux-pane-manager.test.mjs || exit $?; done",
       "exit_code": 0,
-      "summary": "Build smoke passed; L3 happy 4/4 passed; L3 boundary 4/4 passed; L3 error 4/4 passed; full US-001 suite passed 12/12."
+      "summary": "Determinism check passed: 5 consecutive isolated full-suite runs all exited 0 with 12/12 passing."
     },
     {
-      "step": "commit",
-      "ac_id": "US-001",
-      "command": "git commit -m \"iter-001 US-001 tmux pane manager\"",
+      "step": "verify_build",
+      "ac_id": "AC1.1-AC1.4",
+      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs');\"",
       "exit_code": 0,
-      "summary": "Committed the US-001 implementation and campaign artifact updates for verifier handoff."
+      "summary": "Build smoke import check passed."
+    },
+    {
+      "step": "verify_l1",
+      "ac_id": "AC1.1-AC1.4",
+      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs",
+      "exit_code": 0,
+      "summary": "Canonical L1 verification passed across US-00 and US-001."
     }
   ]
 }

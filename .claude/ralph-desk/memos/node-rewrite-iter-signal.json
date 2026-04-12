@@ -1,1 +1,1 @@
-{"iteration":1,"status":"verify","us_id":"US-001","summary":"Implemented the Node tmux pane manager, added 12 real-tmux tests, refreshed the test spec, and prepared US-001 for verifier review.","timestamp":"2026-04-12T07:17:01Z"}
+{"iteration":2,"status":"verify","us_id":"US-001","summary":"Fixed the US-001 AC1.3 happy-test race by synchronizing on pane_current_command=sleep before timing waitForProcessExit; refreshed evidence and verification artifacts.","timestamp":"2026-04-12T16:24:47+09:00"}

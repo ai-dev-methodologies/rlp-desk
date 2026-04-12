@@ -135,9 +135,11 @@ test('US-001 AC1.3 happy: waitForProcessExit resolves after a running process re
   const { rootPaneId } = await createSession(t);
 
   await sendKeys(rootPaneId, 'sleep 1');
+  await waitForCurrentCommand(rootPaneId, 'sleep', 2000);
+  const start = Date.now();
   await waitForProcessExit(rootPaneId, { pollIntervalMs: 100, timeoutMs: 4000 });
 
-  assert.match(await currentCommand(rootPaneId), /^(zsh|bash|sh)$/);
+  assert.ok(Date.now() - start >= 700);
 });
 
 test('US-001 AC1.3 boundary: waitForProcessExit resolves immediately when the pane is already at the shell prompt', async (t) => {

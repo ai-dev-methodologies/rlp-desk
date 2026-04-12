@@ -242,6 +242,14 @@ launch_worker_codex() {
   local worker_launch="$4"
 
   log "  Launching Worker codex TUI in pane $pane_id..."
+  # Clean pane before launch: kill any lingering process, ensure fresh shell
+  local _pre_cmd
+  _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
+  if [[ "$_pre_cmd" != "zsh" && "$_pre_cmd" != "bash" && -n "$_pre_cmd" ]]; then
+    log_debug "Worker pane has lingering process ($_pre_cmd), cleaning..."
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
+  fi
   paste_to_pane "$pane_id" "$worker_launch"
   tmux send-keys -t "$pane_id" C-m
 
@@ -388,6 +396,14 @@ launch_verifier_codex() {
   local verifier_launch="$4"
 
   log "  Launching Verifier codex TUI in pane $pane_id..."
+  # Clean pane before launch: kill any lingering process, ensure fresh shell
+  local _pre_cmd
+  _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
+  if [[ "$_pre_cmd" != "zsh" && "$_pre_cmd" != "bash" && -n "$_pre_cmd" ]]; then
+    log_debug "Verifier pane has lingering process ($_pre_cmd), cleaning..."
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
+  fi
   paste_to_pane "$pane_id" "$verifier_launch"
   tmux send-keys -t "$pane_id" C-m
 
