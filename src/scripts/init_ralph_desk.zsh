@@ -204,16 +204,16 @@ print_run_presets() {
   echo ""
   if [[ $codex_available -eq 1 ]]; then
     echo "# Recommended: cross-engine + final-consensus (full context + blind-spot coverage):"
-    echo "/rlp-desk run $slug --worker-model gpt-5.4:medium --final-consensus --debug"
+    echo "/rlp-desk run $slug --mode tmux --worker-model gpt-5.4:medium --consensus final-only --debug"
     echo ""
     echo "# Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):"
-    echo "/rlp-desk run $slug --worker-model gpt-5.3-codex-spark:high --debug"
+    echo "/rlp-desk run $slug --mode tmux --worker-model spark:high --consensus final-only --debug"
+    echo ""
+    echo "# Critical (full consensus on every verify):"
+    echo "/rlp-desk run $slug --mode tmux --worker-model gpt-5.4:high --consensus all --debug"
     echo ""
     echo "# Claude-only:"
     echo "/rlp-desk run $slug --debug"
-    echo ""
-    echo "# Basic agent:"
-    echo "/rlp-desk run $slug"
   else
     echo "# Recommended: tmux mode + claude-only (real-time visibility):"
     echo "/rlp-desk run $slug --mode tmux --debug"
@@ -226,14 +226,20 @@ print_run_presets() {
   fi
   echo ""
   echo "# Full options reference:"
-  echo "#   --mode agent|tmux                (default: agent)"
-  echo "#   --worker-model MODEL             haiku|sonnet|opus or gpt-5.4:low|medium|high (default: sonnet)"
-  echo "#   --verifier-model MODEL           haiku|sonnet|opus (default: opus)"
-  echo "#   --verify-consensus               both claude+codex must pass"
-  echo "#   --verify-mode per-us|batch       (default: per-us)"
-  echo "#   --max-iter N                     (default: 100)"
-  echo "#   --debug                          enable debug logging"
-  echo "#   --with-self-verification         post-campaign analysis report"
+  echo "#   --mode agent|tmux                      (default: agent)"
+  echo "#   --worker-model MODEL                   haiku|sonnet|opus or gpt-5.4:high|spark:high (default: haiku)"
+  echo "#   --lock-worker-model                    disable auto model upgrade"
+  echo "#   --verifier-model MODEL                 per-US verifier (default: sonnet)"
+  echo "#   --final-verifier-model MODEL           final ALL verifier (default: opus)"
+  echo "#   --consensus off|all|final-only         cross-engine consensus (default: off)"
+  echo "#   --consensus-model MODEL                per-US cross-verifier (default: gpt-5.4:medium)"
+  echo "#   --final-consensus-model MODEL          final cross-verifier (default: gpt-5.4:high)"
+  echo "#   --verify-mode per-us|batch             (default: per-us)"
+  echo "#   --cb-threshold N                       (default: 6)"
+  echo "#   --max-iter N                           (default: 100)"
+  echo "#   --iter-timeout N                       tmux only (default: 600)"
+  echo "#   --debug                                debug logging"
+  echo "#   --with-self-verification               post-campaign SV report"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 
@@ -315,6 +321,50 @@ if [[ ! -f "$F" ]]; then
   cat > "$F" <<EOF
 Execute the plan for $SLUG.
 
+## Coding Principles (applies to ALL work in this iteration)
+
+1. Think Before Coding
+   Don't assume. Don't hide confusion. Surface tradeoffs.
+   - State assumptions explicitly. If uncertain, signal blocked with your options
+     listed — do not guess.
+   - If multiple interpretations exist, present them in blocked signal — do not
+     pick silently.
+   - If a simpler approach exists, note it in your plan.
+   - If something important is unclear, stop and name what is confusing.
+
+2. Simplicity First
+   Minimum code that solves the problem. Nothing speculative.
+   - No features beyond what was asked.
+   - No abstractions for single-use code.
+   - No configurability that was not specified.
+   - No defensive handling for implausible scenarios unless the context requires it.
+   - If 200 lines could be 50, rewrite it.
+   Ask: "Would a strong senior engineer call this overcomplicated?" If yes, simplify.
+
+3. Surgical Changes
+   Touch only what you must. Clean up only your own mess.
+   - Do not improve adjacent code, comments, or formatting unless required by the task.
+   - Do not refactor unrelated code.
+   - Match the local style unless there is a compelling reason not to.
+   - If unrelated dead code is noticed, mention it in done-claim — do not delete it.
+   - Remove imports, variables, or functions that YOUR changes made unused.
+   - Do not remove pre-existing dead code.
+   Test: every changed line should trace directly to the contract.
+
+4. Goal-Driven Execution
+   Define success criteria. Loop until verified.
+   These principles are enforced by the TDD Mandate and Planning step below.
+   If success criteria for any AC are unclear, signal blocked.
+
+## Planning (before writing any code)
+After reading all files, BEFORE writing any test or code:
+1. List the specific files you will create or modify
+2. For each AC in the contract, state your approach in 1 sentence
+3. Identify ordering constraints (which AC depends on which)
+4. Record as first execution_step: {"step": "plan", "ac_id": "all", "command": null, "exit_code": null, "summary": "Plan: [files], [approach], [order]"}
+Keep planning lightweight — 1-2 sentences per AC, not a detailed analysis.
+If the plan reveals the contract is unclear or infeasible, signal "blocked" immediately.
+
 ## Before you start
 Read these files in order:
 1. Campaign Memory: $DESK/memos/$SLUG-memory.md → Next Iteration Contract is your mission
@@ -353,6 +403,7 @@ Read these files in order:
 - Execute exactly the work specified in the Next Iteration Contract.
 - Refresh context file with the current frontier.
 - Rewrite campaign memory in full.
+- When rewriting campaign memory, PRESERVE the Key Decisions and Patterns Discovered sections from prior iterations — append new entries, do not erase existing ones.
 - Write evidence artifacts.
 - **After writing tests, update test-spec Criteria Mapping with actual test file paths and function names** (replace placeholder -k filters).
 - Ensure **each AC has >= 3 tests** (happy + negative + boundary). Do not just meet the total count — distribute evenly per AC.
@@ -428,6 +479,22 @@ if [[ ! -f "$F" ]]; then
   cat > "$F" <<EOF
 Independent verifier for Ralph Desk: $SLUG
 
+## Verification Principles
+
+1. Think Before Judging
+   Don't assume. Don't default to PASS or FAIL without evidence.
+   - State your assumptions about what PASS looks like for each AC before
+     checking evidence.
+   - If evidence is ambiguous or incomplete, say what is unclear and why —
+     do not default to either verdict.
+   - If multiple interpretations of an AC exist, flag it as a spec issue.
+
+2. Goal-Driven Verification
+   Define the specific evidence required for PASS before you start checking.
+   - For each AC, state: "PASS requires [specific evidence]."
+   - Verify against that criteria, not against a general impression of code quality.
+   - If success criteria are unclear, note it in reasoning — do not invent criteria.
+
 ## Iron Law (ABSOLUTE — no exceptions)
 > NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 > "should pass", "probably works", "seems to" = automatic FAIL
@@ -480,6 +547,7 @@ Check the iter-signal.json "us_id" field:
    - RED phase evidence: at least one verify_red step with exit_code=1 per AC (proves tests were written before passing)
    - Forbidden shortcuts: check done-claim claims and summary for forbidden phrases ("code inspection", "I'm confident", "too simple", "I'll test after", "already manually tested", "partial check")
    - Step completeness: each AC should have write_test → verify_red → implement → verify_green sequence in execution_steps
+   - Planning Step presence: done-claim execution_steps should include a \`plan\` step as the first entry. If missing, record in reasoning as {"check": "Planning Step", "decision": "info", "basis": "plan step present/absent"} — informational only (does not affect pass/fail verdict)
 11. **Reproducibility check**: verify lock file committed, clean install succeeds, security scan passes, env vars documented (per test-spec Reproducibility Gate). Skip if test-spec says "N/A."
 12. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
     **CRITICAL: You MUST write the verdict as a FILE (not stdout/echo/cat). The Leader polls this file path — terminal output is lost. Evidence strings: include key metrics and exit codes only, do NOT quote full command output or logs verbatim.**
@@ -576,8 +644,10 @@ Start from the beginning: read PRD and plan the first bounded action.
 - (to be defined by first worker after reading PRD)
 
 ## Key Decisions
+(seeded from brainstorm — do not erase, only append)
 
 ## Patterns Discovered
+(seeded from brainstorm codebase exploration — do not erase, only append)
 ## Learnings
 ## Evidence Chain
 EOF
