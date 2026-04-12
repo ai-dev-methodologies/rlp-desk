@@ -1,201 +1,165 @@
 {
-  "us_id": "US-002",
+  "us_id": "US-004",
   "claims": [
-    "AC2.1: buildClaudeCmd(\"tui\", model, {effort}) emits the expected Claude launch flags, starts with DISABLE_OMC=1, and omits --effort when empty.",
-    "AC2.2: buildCodexCmd(\"tui\", model, {reasoning}) emits the expected Codex launch flags and omits model_reasoning_effort when reasoning is undefined.",
-    "AC2.3: parseModelFlag(value, role) maps claude values like opus:max to {engine:\"claude\", model:\"opus\", effort:\"max\"} and rejects empty models.",
-    "AC2.4: parseModelFlag(value) maps codex values like spark:medium to {engine:\"codex\", model:\"gpt-5.3-codex-spark\", reasoning:\"medium\"} and preserves empty reasoning boundaries.",
-    "AC2.5: parseModelFlag(value) rejects malformed multi-colon formats with an invalid format error."
+    "AC4.1: assembleWorkerPrompt preserves the base prompt and appends iteration context, fix-contract guidance, and per-US scope-lock content for the correct US.",
+    "AC4.2: assembleWorkerPrompt appends the AUTONOMOUS MODE section with PRD priority and conflict-log guidance when autonomous mode is enabled.",
+    "AC4.3: assembleVerifierPrompt scopes verification to the requested US or ALL and carries forward previously verified story notes.",
+    "AC4.4: assembleWorkerPrompt throws FileNotFoundError with the missing worker prompt base path before reading other inputs."
   ],
   "execution_steps": [
     {
       "step": "write_test",
-      "ac_id": "AC2.1",
+      "ac_id": "AC4.1",
       "command": null,
-      "exit_code": null,
-      "summary": "Wrote US-002 AC2.1 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for Claude tui command building."
+      "exit_code": 0,
+      "summary": "Wrote tests/node/us004-prompt-assembler.test.mjs with AC4.1 happy, boundary, and negative coverage for worker prompt assembly."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC2.1",
-      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.1",
+      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 1,
-      "summary": "RED: the new suite failed with ERR_MODULE_NOT_FOUND because src/node/cli/command-builder.mjs did not exist yet."
+      "summary": "RED: the new prompt assembler suite failed because src/node/prompts/prompt-assembler.mjs did not exist yet (ERR_MODULE_NOT_FOUND)."
     },
     {
       "step": "implement",
-      "ac_id": "AC2.1",
+      "ac_id": "AC4.1",
       "command": null,
-      "exit_code": null,
-      "summary": "Implemented buildClaudeCmd() in src/node/cli/command-builder.mjs with the legacy DISABLE_OMC, mcp-config, strict MCP, skip-permissions, and optional effort flags."
+      "exit_code": 0,
+      "summary": "Implemented src/node/prompts/prompt-assembler.mjs with worker prompt assembly, iteration-context extraction, fix-contract injection, per-US scope locking, and final-verification branching."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC2.1",
-      "command": "node --test --test-name-pattern \"US-002 AC2.1\" tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.1",
+      "command": "node --test --test-name-pattern \"US-004 AC4.1\" tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC2.1 tests passed."
+      "summary": "GREEN: 3/3 AC4.1 tests passed."
     },
     {
       "step": "write_test",
-      "ac_id": "AC2.2",
+      "ac_id": "AC4.2",
       "command": null,
-      "exit_code": null,
-      "summary": "Wrote US-002 AC2.2 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for Codex tui command building."
+      "exit_code": 0,
+      "summary": "Wrote AC4.2 happy, boundary, and negative autonomous-mode tests in tests/node/us004-prompt-assembler.test.mjs."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC2.2",
-      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.2",
+      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 1,
-      "summary": "RED: the full US-002 suite was still failing before the command-builder module existed."
+      "summary": "RED already established on the new suite before implementation; AC4.2 tests were part of the failing module-not-found run."
     },
     {
       "step": "implement",
-      "ac_id": "AC2.2",
+      "ac_id": "AC4.2",
       "command": null,
-      "exit_code": null,
-      "summary": "Implemented buildCodexCmd() in src/node/cli/command-builder.mjs with the legacy model, optional reasoning, plugin-disable, and bypass flags."
+      "exit_code": 0,
+      "summary": "Added autonomous-mode section assembly that mirrors the zsh wording and conflict-log JSONL guidance."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC2.2",
-      "command": "node --test --test-name-pattern \"US-002 AC2.2\" tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.2",
+      "command": "node --test --test-name-pattern \"US-004 AC4.2\" tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC2.2 tests passed."
+      "summary": "GREEN: 3/3 AC4.2 tests passed."
     },
     {
       "step": "write_test",
-      "ac_id": "AC2.3",
+      "ac_id": "AC4.3",
       "command": null,
-      "exit_code": null,
-      "summary": "Wrote US-002 AC2.3 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for Claude model parsing."
+      "exit_code": 0,
+      "summary": "Wrote AC4.3 happy, boundary, and negative verifier prompt scope tests in tests/node/us004-prompt-assembler.test.mjs."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC2.3",
-      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.3",
+      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 1,
-      "summary": "RED: parseModelFlag() tests were part of the initial missing-module failure."
+      "summary": "RED already established on the new suite before implementation; AC4.3 tests were part of the failing module-not-found run."
     },
     {
       "step": "implement",
-      "ac_id": "AC2.3",
+      "ac_id": "AC4.3",
       "command": null,
-      "exit_code": null,
-      "summary": "Implemented parseModelFlag() Claude parsing for haiku/sonnet/opus plus empty-model validation."
+      "exit_code": 0,
+      "summary": "Implemented verifier prompt context assembly for scoped US verification, ALL final verification, previously verified notes, and optional autonomous guidance."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC2.3",
-      "command": "node --test --test-name-pattern \"US-002 AC2.3\" tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.3",
+      "command": "node --test --test-name-pattern \"US-004 AC4.3\" tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC2.3 tests passed."
+      "summary": "GREEN: 3/3 AC4.3 tests passed."
     },
     {
       "step": "write_test",
-      "ac_id": "AC2.4",
+      "ac_id": "AC4.4",
       "command": null,
-      "exit_code": null,
-      "summary": "Wrote US-002 AC2.4 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for Codex model parsing."
+      "exit_code": 0,
+      "summary": "Wrote AC4.4 happy, boundary, and negative FileNotFoundError tests in tests/node/us004-prompt-assembler.test.mjs."
     },
     {
       "step": "verify_red",
-      "ac_id": "AC2.4",
-      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.4",
+      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 1,
-      "summary": "RED: Codex parsing tests were part of the initial missing-module failure."
+      "summary": "RED already established on the new suite before implementation; AC4.4 tests were part of the failing module-not-found run."
     },
     {
       "step": "implement",
-      "ac_id": "AC2.4",
+      "ac_id": "AC4.4",
       "command": null,
-      "exit_code": null,
-      "summary": "Implemented parseModelFlag() Codex parsing, including the spark -> gpt-5.3-codex-spark alias mapping."
+      "exit_code": 0,
+      "summary": "Added FileNotFoundError and required base-file checks so missing worker or verifier prompt bases fail explicitly."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC2.4",
-      "command": "node --test --test-name-pattern \"US-002 AC2.4\" tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.4",
+      "command": "node --test --test-name-pattern \"US-004 AC4.4\" tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC2.4 tests passed."
+      "summary": "GREEN: 3/3 AC4.4 tests passed."
     },
     {
-      "step": "write_test",
-      "ac_id": "AC2.5",
-      "command": null,
-      "exit_code": null,
-      "summary": "Wrote US-002 AC2.5 happy, boundary, and negative tests in tests/node/us002-cli-command-builder.test.mjs for malformed multi-colon model flags."
+      "step": "verify_e2e",
+      "ac_id": "AC4.1",
+      "command": "node --test --test-name-pattern \"US-004 AC4.1 happy|US-004 AC4.2 happy|US-004 AC4.3 happy\" tests/node/us004-prompt-assembler.test.mjs",
+      "exit_code": 0,
+      "summary": "L3 happy-path output verification passed: 3/3 tests."
     },
     {
-      "step": "verify_red",
-      "ac_id": "AC2.5",
-      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
-      "exit_code": 1,
-      "summary": "RED: malformed-format tests were part of the initial missing-module failure."
+      "step": "verify_e2e",
+      "ac_id": "AC4.2",
+      "command": "node --test --test-name-pattern \"US-004 AC4.1 boundary|US-004 AC4.2 boundary|US-004 AC4.3 boundary|US-004 AC4.4 boundary\" tests/node/us004-prompt-assembler.test.mjs",
+      "exit_code": 0,
+      "summary": "L3 boundary output verification passed: 4/4 tests."
     },
     {
-      "step": "implement",
-      "ac_id": "AC2.5",
-      "command": null,
-      "exit_code": null,
-      "summary": "Adjusted parseModelFlag() to reject multi-colon inputs and emit the lowercase invalid format message expected by the PRD and tests."
+      "step": "verify_e2e",
+      "ac_id": "AC4.4",
+      "command": "node --test --test-name-pattern \"US-004 AC4.1 negative|US-004 AC4.2 negative|US-004 AC4.3 negative|US-004 AC4.4 happy|US-004 AC4.4 negative\" tests/node/us004-prompt-assembler.test.mjs",
+      "exit_code": 0,
+      "summary": "L1/L3 negative-path verification passed: 5/5 tests."
     },
     {
       "step": "verify_green",
-      "ac_id": "AC2.5",
-      "command": "node --test --test-name-pattern \"US-002 AC2.5\" tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.1",
+      "command": "node --test tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: 3/3 AC2.5 tests passed."
+      "summary": "Full US-004 suite passed: 12/12 tests."
     },
     {
       "step": "verify_green",
-      "ac_id": "US-002",
-      "command": "node --test tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.1",
+      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs');\"",
       "exit_code": 0,
-      "summary": "GREEN: the full US-002 suite passed with 15/15 tests."
+      "summary": "Import smoke passed for all current Node rewrite modules, including prompt-assembler.mjs."
     },
     {
       "step": "verify_green",
-      "ac_id": "US-002",
-      "command": "node --test --test-name-pattern \"happy\" tests/node/us002-cli-command-builder.test.mjs",
+      "ac_id": "AC4.1",
+      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs",
       "exit_code": 0,
-      "summary": "GREEN: all 5 happy-path US-002 tests passed."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "US-002",
-      "command": "node --test --test-name-pattern \"boundary\" tests/node/us002-cli-command-builder.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: all 5 boundary US-002 tests passed."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "US-002",
-      "command": "node --test --test-name-pattern \"negative\" tests/node/us002-cli-command-builder.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: all 5 negative US-002 tests passed."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "US-002",
-      "command": "node -e \"await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs');\"",
-      "exit_code": 0,
-      "summary": "GREEN: import smoke check passed for the existing Node modules plus the new command-builder module."
-    },
-    {
-      "step": "verify_green",
-      "ac_id": "US-002",
-      "command": "node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs",
-      "exit_code": 0,
-      "summary": "GREEN: the combined Node suite passed with 33/33 tests."
-    },
-    {
-      "step": "commit",
-      "ac_id": "US-002",
-      "command": "git commit -m \"iter-003 US-002 command builder implementation\"",
-      "exit_code": 0,
-      "summary": "Committed the US-002 implementation and supporting memory/context/spec updates as 8e45b3e."
+      "summary": "Full Node regression suite passed: 57/57 tests."
     }
   ]
 }

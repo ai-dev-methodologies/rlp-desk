@@ -7,7 +7,7 @@ verify
 rlp-desk zsh to Node.js rewrite
 
 ## Current State
-Iteration 4 implemented US-003 only. The new Node module `src/node/polling/signal-poller.mjs` adds `pollForSignal()` and `TimeoutError` for the rewrite's signal/verdict polling flow. The poller now waits for valid JSON, retries through missing or partially written files, enforces a bounded timeout, and applies a Codex-only second phase that waits for the pane process to return to a shell before resolving. `tests/node/us003-signal-poller.test.mjs` adds 12 node:test cases so every US-003 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-003 traceability rows, criteria mappings, and verification commands.
+Iteration 5 implemented US-004 only. The new Node module `src/node/prompts/prompt-assembler.mjs` adds `assembleWorkerPrompt()`, `assembleVerifierPrompt()`, and `FileNotFoundError` for the rewrite's prompt-assembly flow. The worker assembler now preserves the base prompt content, injects iteration context, fix-contract text, per-US scope locking, final-verification messaging, and autonomous-mode guidance while falling back to the full PRD/test-spec when per-US files are missing. The verifier assembler now appends scoped verification context for a single US or `ALL`, carries forward the previously verified stories note, and mirrors the autonomous conflict-resolution guidance. `tests/node/us004-prompt-assembler.test.mjs` adds 12 node:test cases so every US-004 acceptance criterion has happy, boundary, and negative coverage. `.claude/ralph-desk/plans/test-spec-node-rewrite.md` now contains concrete US-004 traceability rows, criteria mappings, and verification commands.
 
 ## Completed Stories
 - US-00: Node bootstrap foundations for the rewrite
@@ -25,42 +25,47 @@ Iteration 4 implemented US-003 only. The new Node module `src/node/polling/signa
   - The poller retries through `ENOENT` and invalid JSON until a valid JSON payload appears or the overall deadline expires
   - Codex mode preserves the two-phase contract by waiting for both valid JSON and the pane process returning to `zsh`/`bash`/`sh`
   - `tests/node/us003-signal-poller.test.mjs` provides 12 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
+- US-004: Prompt Assembler
+  - `src/node/prompts/prompt-assembler.mjs` adds `assembleWorkerPrompt`, `assembleVerifierPrompt`, and `FileNotFoundError`
+  - The worker assembler mirrors the zsh prompt protocol for iteration context, fix contracts, per-US scope locking, final verification messaging, and autonomous conflict guidance
+  - The verifier assembler mirrors the zsh verification-context protocol for per-US and full-verify scopes, previously verified story notes, and autonomous conflict guidance
+  - `tests/node/us004-prompt-assembler.test.mjs` provides 12 node:test cases with 3 tests per AC across happy, boundary, and negative coverage
 
 ## Next Iteration Contract
-Verifier should check US-003 only.
+Verifier should check US-004 only.
 
 **Criteria**:
-- US-003 AC3.1: `pollForSignal()` keeps polling until the verdict file exists and contains valid JSON, then resolves with the parsed payload
-- US-003 AC3.2: `pollForSignal()` in codex mode waits for both valid JSON and pane exit before resolving
-- US-003 AC3.3: `pollForSignal()` rejects with `TimeoutError` instead of hanging when no valid verdict appears before timeout
-- US-003 AC3.4: invalid or partially written JSON does not resolve early and is retried until a later poll returns valid JSON
+- US-004 AC4.1: `assembleWorkerPrompt()` preserves the base prompt and appends iteration context, fix-contract details, and per-US scope lock content with the correct US ID
+- US-004 AC4.2: `assembleWorkerPrompt()` appends the AUTONOMOUS MODE section with PRD priority and conflict-log guidance when autonomous mode is enabled
+- US-004 AC4.3: `assembleVerifierPrompt()` scopes verification to the requested US and notes already verified stories
+- US-004 AC4.4: `assembleWorkerPrompt()` throws `FileNotFoundError` with the missing path when the worker prompt base file does not exist
 
 ## Key Decisions
-- Kept US-003 surgical: one new module under `src/node/polling/` with only the APIs required by the PRD.
-- Used dependency injection for `readFile` and `getPaneCommand` so L1 tests can stay deterministic while the default path still uses real `fs` and `tmux`.
-- Treated invalid JSON and partially written files as retryable states instead of surfacing parse errors to callers prematurely.
-- Applied the same overall timeout budget to both phases so codex polling cannot hang after the verdict file appears.
+- Kept US-004 surgical: one new module under `src/node/prompts/` with only the APIs required by the PRD.
+- Matched the zsh prompt section wording closely instead of introducing a new prompt schema, so later runner work can swap implementations without rewriting the contract text.
+- Treated per-US PRD replacement as a pure base-prompt content transform and handled per-US test-spec selection in the appended section, matching the current shell behavior.
+- Used `FileNotFoundError` only for required base prompt files and left optional artifacts such as fix contracts and per-US split files as soft fallbacks.
 
 ## Patterns Discovered
-- Valid JSON is the first gate; codex pane-state polling should not begin until the file parses successfully.
-- Partially written files naturally surface as `SyntaxError`, so retrying parse failures is enough to cover the atomic-write-in-progress boundary.
-- Treating an empty tmux command as shell-like matches the zsh poller grace-path behavior when the pane is already idle or gone.
-- Repo-local `.tmp` scratch paths are sufficient for L3 real-file polling coverage without introducing new dependencies.
+- The worker and verifier prompt flows share the same structure: read a required base prompt first, then append deterministic context sections in a fixed order.
+- Empty campaign-memory sections should degrade to explicit defaults (`unknown`, `Start from the beginning`) instead of omitting the section entirely.
+- The per-US final-verify branch is distinct from the normal scope-lock branch and should suppress the PER-US SCOPE LOCK section once every listed US is already verified.
+- The verifier prompt keeps previously verified stories as a comma-separated list, matching the shell runner's existing string format.
 
 ## Learnings
-- US-003 can stay independent from the higher-level runner orchestration by focusing on one poller function with injectable I/O boundaries.
-- The verifier-facing and worker-facing JSON files share the same core polling requirement: do not trust the file until `JSON.parse` succeeds.
-- Codex needs explicit second-phase handling because file presence alone does not guarantee the TUI process has finished flushing output.
+- Prompt assembly can stay independent from higher-level runner orchestration if the module accepts plain file paths and already-computed iteration state.
+- Real-file fixture tests are enough to cover the output-assembly boundary cases without introducing template engines or mock-heavy infrastructure.
+- Mirroring the shell text exactly where it matters keeps the Node rewrite low-risk because downstream workers and verifiers already rely on that wording.
 
 ## Evidence Chain
-- RED full US-003 suite: `node --test tests/node/us003-signal-poller.test.mjs` -> exit 1 because `src/node/polling/signal-poller.mjs` did not exist yet (`ERR_MODULE_NOT_FOUND`)
-- GREEN full US-003 suite: `node --test tests/node/us003-signal-poller.test.mjs` -> exit 0, 12/12 pass
-- GREEN AC3.1 subset: `node --test --test-name-pattern "US-003 AC3.1" tests/node/us003-signal-poller.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC3.2 subset: `node --test --test-name-pattern "US-003 AC3.2" tests/node/us003-signal-poller.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC3.3 subset: `node --test --test-name-pattern "US-003 AC3.3" tests/node/us003-signal-poller.test.mjs` -> exit 0, 3/3 pass
-- GREEN AC3.4 subset: `node --test --test-name-pattern "US-003 AC3.4" tests/node/us003-signal-poller.test.mjs` -> exit 0, 3/3 pass
-- GREEN L3 happy subset: `node --test --test-name-pattern "US-003 AC3.1 boundary|US-003 AC3.4 happy" tests/node/us003-signal-poller.test.mjs` -> exit 0, 2/2 pass
-- GREEN L3 boundary subset: `node --test --test-name-pattern "US-003 AC3.2 boundary|US-003 AC3.3 boundary|US-003 AC3.4 boundary" tests/node/us003-signal-poller.test.mjs` -> exit 0, 3/3 pass
-- GREEN L3 error subset: `node --test --test-name-pattern "US-003 AC3.1 negative|US-003 AC3.2 negative|US-003 AC3.3 negative|US-003 AC3.4 negative" tests/node/us003-signal-poller.test.mjs` -> exit 0, 4/4 pass
-- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs');"` -> exit 0
-- GREEN combined Node suite: `node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs` -> exit 0, 45/45 pass
+- RED full US-004 suite: `node --test tests/node/us004-prompt-assembler.test.mjs` -> exit 1 because `src/node/prompts/prompt-assembler.mjs` did not exist yet (`ERR_MODULE_NOT_FOUND`)
+- GREEN AC4.1 subset: `node --test --test-name-pattern "US-004 AC4.1" tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC4.2 subset: `node --test --test-name-pattern "US-004 AC4.2" tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC4.3 subset: `node --test --test-name-pattern "US-004 AC4.3" tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 3/3 pass
+- GREEN AC4.4 subset: `node --test --test-name-pattern "US-004 AC4.4" tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 3/3 pass
+- GREEN L3 happy subset: `node --test --test-name-pattern "US-004 AC4.1 happy|US-004 AC4.2 happy|US-004 AC4.3 happy" tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 3/3 pass
+- GREEN L3 boundary subset: `node --test --test-name-pattern "US-004 AC4.1 boundary|US-004 AC4.2 boundary|US-004 AC4.3 boundary|US-004 AC4.4 boundary" tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 4/4 pass
+- GREEN L3 error subset: `node --test --test-name-pattern "US-004 AC4.1 negative|US-004 AC4.2 negative|US-004 AC4.3 negative|US-004 AC4.4 happy|US-004 AC4.4 negative" tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 5/5 pass
+- GREEN full US-004 suite: `node --test tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 12/12 pass
+- GREEN import smoke: `node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs');"` -> exit 0
+- GREEN combined Node suite: `node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs` -> exit 0, 57/57 pass

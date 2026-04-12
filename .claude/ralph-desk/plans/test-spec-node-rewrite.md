@@ -9,11 +9,11 @@
 ## Verification Commands
 ### Build
 ```bash
-node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs');"
+node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs'); await import('./src/node/cli/command-builder.mjs'); await import('./src/node/polling/signal-poller.mjs'); await import('./src/node/prompts/prompt-assembler.mjs');"
 ```
 ### Test
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs
 ```
 ### Lint
 ```bash
@@ -30,6 +30,7 @@ What behavior does this project change or introduce?
 - Introduce a Node-native tmux pane manager under `src/node/tmux/` that can create panes, send commands, and wait for interactive pane processes to return to the shell.
 - Introduce Node-native CLI command builders and unified model-flag parsing under `src/node/cli/` so later runner stories can reuse the zsh-compatible launch strings.
 - Introduce a Node-native signal and verdict poller under `src/node/polling/` that waits for valid JSON artifacts, enforces timeouts, and applies Codex-specific two-phase pane-exit polling.
+- Introduce a Node-native prompt assembler under `src/node/prompts/` that appends iteration and verification context sections onto worker and verifier prompt base files.
 
 ### Impacted Tests
 Existing tests that may break due to this change:
@@ -37,6 +38,7 @@ Existing tests that may break due to this change:
 - No existing Node tmux tests existed. US-001 adds a new real-`tmux` test file.
 - No existing Node command-builder tests existed. US-002 adds a new unit-only command-builder test file.
 - No existing Node poller tests existed. US-003 adds a mixed unit/L3 real-file polling test file.
+- No existing Node prompt-assembler tests existed. US-004 adds a mixed unit/L3 output-content test file.
 
 ### Required New Tests
 Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
@@ -59,6 +61,11 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 - AC3.2: `pollForSignal` codex two-phase polling happy + boundary + negative
 - AC3.3: `pollForSignal` timeout handling happy + boundary + negative
 - AC3.4: `pollForSignal` invalid-JSON retry happy + boundary + negative
+- `tests/node/us004-prompt-assembler.test.mjs`
+- AC4.1: `assembleWorkerPrompt` base prompt + iteration context + per-US scope happy + boundary + negative
+- AC4.2: `assembleWorkerPrompt` autonomous-mode injection happy + boundary + negative
+- AC4.3: `assembleVerifierPrompt` scoped verification context happy + boundary + negative
+- AC4.4: `assembleWorkerPrompt` missing base file happy + boundary + negative
 
 ### Forbidden Shortcuts (see Worker prompt for full list)
 - Do not mock external services when L2 integration test is required
@@ -85,7 +92,7 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 
 ### L1: Unit Test (REQUIRED)
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs tests/node/us002-cli-command-builder.test.mjs tests/node/us003-signal-poller.test.mjs tests/node/us004-prompt-assembler.test.mjs
 ```
 
 ### L2: Integration (required if external services exist, otherwise "N/A — reason")
@@ -147,6 +154,24 @@ node --test --test-name-pattern "US-003 AC3.2 boundary|US-003 AC3.4 boundary" te
 - **US-003 error path command**:
 ```bash
 node --test --test-name-pattern "US-003 AC3.3" tests/node/us003-signal-poller.test.mjs
+```
+- **US-004 happy path input**: assemble a worker prompt from a real base file with iteration context, a fix-contract, and per-US test-spec paths
+- **US-004 happy path expected output**: output preserves the base prompt text and appends the fix-contract and per-US scope lock for `US-004`
+- **US-004 happy path command**:
+```bash
+node --test --test-name-pattern "US-004 AC4.1 happy|US-004 AC4.2 happy|US-004 AC4.3 happy" tests/node/us004-prompt-assembler.test.mjs
+```
+- **US-004 boundary input**: assemble prompts with empty memory, missing per-US PRD/test-spec files, `usId="ALL"`, and custom conflict-log paths
+- **US-004 boundary expected**: worker prompt falls back to the full PRD/test-spec, verifier prompt switches to full-verify scope, and autonomous mode uses the provided conflict-log path
+- **US-004 boundary command**:
+```bash
+node --test --test-name-pattern "US-004 AC4.1 boundary|US-004 AC4.2 boundary|US-004 AC4.3 boundary|US-004 AC4.4 boundary" tests/node/us004-prompt-assembler.test.mjs
+```
+- **US-004 error path input**: missing worker prompt base file or disabled optional sections
+- **US-004 error path expected**: `FileNotFoundError` includes the missing prompt path and autonomous/verified-US sections are omitted when disabled
+- **US-004 error path command**:
+```bash
+node --test --test-name-pattern "US-004 AC4.1 negative|US-004 AC4.2 negative|US-004 AC4.3 negative|US-004 AC4.4 happy|US-004 AC4.4 negative" tests/node/us004-prompt-assembler.test.mjs
 ```
 
 ### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
@@ -226,6 +251,18 @@ N/A — not CRITICAL risk
 | US-003 | AC3.4 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.4 happy: pollForSignal ignores invalid JSON and resolves once a later poll returns valid JSON | L1 | node --test --test-name-pattern "US-003 AC3.4 happy" tests/node/us003-signal-poller.test.mjs | complete |
 | US-003 | AC3.4 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.4 boundary: pollForSignal handles a real partially written file before the final JSON lands | L3 | node --test --test-name-pattern "US-003 AC3.4 boundary" tests/node/us003-signal-poller.test.mjs | complete |
 | US-003 | AC3.4 | tests/node/us003-signal-poller.test.mjs :: US-003 AC3.4 negative: pollForSignal does not start codex exit checks until the signal file contains valid JSON | L1 | node --test --test-name-pattern "US-003 AC3.4 negative" tests/node/us003-signal-poller.test.mjs | complete |
+| US-004 | AC4.1 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.1 happy: assembleWorkerPrompt appends iteration context, fix contract, and per-US scope lock | L1 | node --test --test-name-pattern "US-004 AC4.1 happy" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.1 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.1 boundary: assembleWorkerPrompt keeps the base prompt verbatim when memory is empty and per-US PRD is missing | L3 | node --test --test-name-pattern "US-004 AC4.1 boundary" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.1 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.1 negative: assembleWorkerPrompt emits the final verification section when all user stories are already verified | L1 | node --test --test-name-pattern "US-004 AC4.1 negative" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.2 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.2 happy: assembleWorkerPrompt includes the autonomous mode section when enabled | L1 | node --test --test-name-pattern "US-004 AC4.2 happy" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.2 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.2 boundary: assembleWorkerPrompt uses the provided conflict log path in autonomous mode | L3 | node --test --test-name-pattern "US-004 AC4.2 boundary" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.2 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.2 negative: assembleWorkerPrompt omits the autonomous mode section when disabled | L1 | node --test --test-name-pattern "US-004 AC4.2 negative" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.3 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.3 happy: assembleVerifierPrompt scopes verification to a single user story and notes previously verified stories | L1 | node --test --test-name-pattern "US-004 AC4.3 happy" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.3 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.3 boundary: assembleVerifierPrompt emits the full verify scope when usId is ALL | L3 | node --test --test-name-pattern "US-004 AC4.3 boundary" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.3 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.3 negative: assembleVerifierPrompt omits previously verified guidance when none was provided | L1 | node --test --test-name-pattern "US-004 AC4.3 negative" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.4 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.4 happy: assembleWorkerPrompt throws FileNotFoundError when the worker prompt base file does not exist | L1 | node --test --test-name-pattern "US-004 AC4.4 happy" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.4 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.4 boundary: FileNotFoundError includes the missing worker prompt base path in the message | L1 | node --test --test-name-pattern "US-004 AC4.4 boundary" tests/node/us004-prompt-assembler.test.mjs | complete |
+| US-004 | AC4.4 | tests/node/us004-prompt-assembler.test.mjs :: US-004 AC4.4 negative: assembleWorkerPrompt throws FileNotFoundError before reading other inputs when the worker prompt base file is missing | L1 | node --test --test-name-pattern "US-004 AC4.4 negative" tests/node/us004-prompt-assembler.test.mjs | complete |
 
 ---
 
@@ -280,3 +317,11 @@ N/A — not CRITICAL risk
 | US-003 | AC3.1-AC3.4 | L3 | node:test boundary subset | node --test --test-name-pattern "US-003 AC3.2 boundary|US-003 AC3.3 boundary|US-003 AC3.4 boundary" tests/node/us003-signal-poller.test.mjs | 3 tests pass | exit 0 + codex idle-pane, invalid-JSON timeout, and partial-write boundary tests pass |
 | US-003 | AC3.1-AC3.4 | L3 | node:test error-path subset | node --test --test-name-pattern "US-003 AC3.1 negative|US-003 AC3.2 negative|US-003 AC3.3 negative|US-003 AC3.4 negative" tests/node/us003-signal-poller.test.mjs | 4 tests pass | exit 0 + read-error, pane-retry, codex-timeout, and invalid-JSON negative tests pass |
 | US-003 | AC3.1-AC3.4 | L1/L3 | node:test smoke | node --test tests/node/us003-signal-poller.test.mjs | 12 tests pass | exit 0 + full signal poller suite passes |
+| US-004 | AC4.1 | L1/L3 | node:test | node --test --test-name-pattern "US-004 AC4.1" tests/node/us004-prompt-assembler.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC4.1 tests pass |
+| US-004 | AC4.2 | L1/L3 | node:test | node --test --test-name-pattern "US-004 AC4.2" tests/node/us004-prompt-assembler.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC4.2 tests pass |
+| US-004 | AC4.3 | L1/L3 | node:test | node --test --test-name-pattern "US-004 AC4.3" tests/node/us004-prompt-assembler.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC4.3 tests pass |
+| US-004 | AC4.4 | L1 | node:test | node --test --test-name-pattern "US-004 AC4.4" tests/node/us004-prompt-assembler.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC4.4 tests pass |
+| US-004 | AC4.1-AC4.4 | L3 | node:test happy-path subset | node --test --test-name-pattern "US-004 AC4.1 happy|US-004 AC4.2 happy|US-004 AC4.3 happy" tests/node/us004-prompt-assembler.test.mjs | 3 tests pass | exit 0 + worker prompt assembly, autonomous mode, and verifier scope happy-path tests pass |
+| US-004 | AC4.1-AC4.4 | L3 | node:test boundary subset | node --test --test-name-pattern "US-004 AC4.1 boundary|US-004 AC4.2 boundary|US-004 AC4.3 boundary|US-004 AC4.4 boundary" tests/node/us004-prompt-assembler.test.mjs | 4 tests pass | exit 0 + fallback paths, conflict-log override, ALL scope, and FileNotFoundError message boundary tests pass |
+| US-004 | AC4.1-AC4.4 | L1 | node:test error-path subset | node --test --test-name-pattern "US-004 AC4.1 negative|US-004 AC4.2 negative|US-004 AC4.3 negative|US-004 AC4.4 happy|US-004 AC4.4 negative" tests/node/us004-prompt-assembler.test.mjs | 5 tests pass | exit 0 + final-verify branch, disabled optional sections, and missing-base-file error tests pass |
+| US-004 | AC4.1-AC4.4 | L1/L3 | node:test smoke | node --test tests/node/us004-prompt-assembler.test.mjs | 12 tests pass | exit 0 + full prompt assembler suite passes |
