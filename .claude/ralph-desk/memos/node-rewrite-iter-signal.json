@@ -1,1 +1,1 @@
-{"iteration":2,"status":"verify","us_id":"US-00","summary":"US-00 verifier blockers fixed: PRD now defines US-00, test-spec L3 placeholders/commands were corrected, and bootstrap tests were made deterministic under filtered runs.","timestamp":"2026-04-12T15:55:00+09:00"}
+{"iteration":1,"status":"verify","us_id":"US-001","summary":"Implemented the Node tmux pane manager, added 12 real-tmux tests, refreshed the test spec, and prepared US-001 for verifier review.","timestamp":"2026-04-12T07:17:01Z"}

@@ -9,11 +9,11 @@
 ## Verification Commands
 ### Build
 ```bash
-node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs');"
+node -e "await import('./src/node/shared/paths.mjs'); await import('./src/node/shared/fs.mjs'); await import('./src/node/tmux/pane-manager.mjs');"
 ```
 ### Test
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs
 ```
 ### Lint
 ```bash
@@ -27,16 +27,23 @@ N/A — no lint configuration exists in this repository yet
 ### Target Behavior
 What behavior does this project change or introduce?
 - Introduce the initial Node rewrite bootstrap primitives needed by later stories: safe project-root path resolution and atomic file writes under `src/node/shared/`.
+- Introduce a Node-native tmux pane manager under `src/node/tmux/` that can create panes, send commands, and wait for interactive pane processes to return to the shell.
 
 ### Impacted Tests
 Existing tests that may break due to this change:
 - None identified. This iteration adds the first Node-native tests alongside the existing zsh test suites.
+- No existing Node tmux tests existed. US-001 adds a new real-`tmux` test file.
 
 ### Required New Tests
 Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 - `tests/node/us00-bootstrap.test.mjs`
 - AC1: `resolveProjectPath` happy + boundary + negative
 - AC2: `writeFileAtomic` happy + boundary + negative
+- `tests/node/us001-tmux-pane-manager.test.mjs`
+- AC1.1: `createPane` happy + boundary + negative
+- AC1.2: `sendKeys` happy + boundary + negative
+- AC1.3: `waitForProcessExit` happy + boundary + negative
+- AC1.4: invalid pane `sendKeys` error handling happy + boundary + negative
 
 ### Forbidden Shortcuts (see Worker prompt for full list)
 - Do not mock external services when L2 integration test is required
@@ -63,7 +70,7 @@ Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
 
 ### L1: Unit Test (REQUIRED)
 ```bash
-node --test tests/node/us00-bootstrap.test.mjs
+node --test tests/node/us00-bootstrap.test.mjs tests/node/us001-tmux-pane-manager.test.mjs
 ```
 
 ### L2: Integration (required if external services exist, otherwise "N/A — reason")
@@ -85,6 +92,24 @@ node --test --test-name-pattern "happy" tests/node/us00-bootstrap.test.mjs
 - **Error path command**:
 ```bash
 node --test --test-name-pattern "negative|boundary" tests/node/us00-bootstrap.test.mjs
+```
+- **US-001 happy path input**: create a real detached tmux session, split a pane, send `printf`, and wait for `sleep 1` to return to the shell
+- **US-001 happy path expected output**: pane ID is listed by `tmux list-panes`; capture output includes the sent marker; `waitForProcessExit` resolves after the pane command returns to `zsh`
+- **US-001 happy path command**:
+```bash
+node --test --test-name-pattern "happy" tests/node/us001-tmux-pane-manager.test.mjs
+```
+- **US-001 boundary input**: vertical pane split, quoted command payload, and waiting on an already-idle shell pane
+- **US-001 boundary expected**: vertical split succeeds; output preserves spaces; idle shell resolves immediately
+- **US-001 boundary command**:
+```bash
+node --test --test-name-pattern "boundary" tests/node/us001-tmux-pane-manager.test.mjs
+```
+- **US-001 error path input**: invalid layout, invalid pane IDs, and a pane that is still running `sleep 2`
+- **US-001 error path expected**: `TmuxError` includes pane ID or layout detail; `waitForProcessExit` remains pending while `pane_current_command` is `sleep`
+- **US-001 error path command**:
+```bash
+node --test --test-name-pattern "negative" tests/node/us001-tmux-pane-manager.test.mjs
 ```
 
 ### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
@@ -125,6 +150,18 @@ N/A — not CRITICAL risk
 | US-00 | AC2 | tests/node/us00-bootstrap.test.mjs :: US-00 AC2 happy: writeFileAtomic creates a new file under the repo root | L1 | node --test tests/node/us00-bootstrap.test.mjs --test-name-pattern "US-00 AC2 happy" | complete |
 | US-00 | AC2 | tests/node/us00-bootstrap.test.mjs :: US-00 AC2 boundary: writeFileAtomic overwrites existing content and leaves no tmp file behind | L1 | node --test tests/node/us00-bootstrap.test.mjs --test-name-pattern "US-00 AC2 boundary" | complete |
 | US-00 | AC2 | tests/node/us00-bootstrap.test.mjs :: US-00 AC2 negative: writeFileAtomic rejects writes outside the repo root | L1 | node --test tests/node/us00-bootstrap.test.mjs --test-name-pattern "US-00 AC2 negative" | complete |
+| US-001 | AC1.1 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.1 happy: createPane creates a horizontal split and returns a pane id listed by tmux | L1 | node --test --test-name-pattern "US-001 AC1.1 happy" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.1 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.1 boundary: createPane supports vertical layout splits | L1 | node --test --test-name-pattern "US-001 AC1.1 boundary" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.1 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.1 negative: createPane rejects an invalid layout | L1 | node --test --test-name-pattern "US-001 AC1.1 negative" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.2 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.2 happy: sendKeys sends a command that appears in pane output within 2 seconds | L1 | node --test --test-name-pattern "US-001 AC1.2 happy" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.2 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.2 boundary: sendKeys preserves shell quoting in the pane output | L1 | node --test --test-name-pattern "US-001 AC1.2 boundary" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.2 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.2 negative: sendKeys rejects an invalid pane id instead of silently failing | L1 | node --test --test-name-pattern "US-001 AC1.2 negative" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.3 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.3 happy: waitForProcessExit resolves after a running process returns to the shell | L1 | node --test --test-name-pattern "US-001 AC1.3 happy" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.3 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.3 boundary: waitForProcessExit resolves immediately when the pane is already at the shell prompt | L1 | node --test --test-name-pattern "US-001 AC1.3 boundary" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.3 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.3 negative: waitForProcessExit does not resolve while the pane process is still running | L1 | node --test --test-name-pattern "US-001 AC1.3 negative" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.4 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.4 happy: sendKeys throws TmuxError for an invalid pane id | L1 | node --test --test-name-pattern "US-001 AC1.4 happy" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.4 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.4 boundary: sendKeys includes the invalid pane id in the TmuxError message | L1 | node --test --test-name-pattern "US-001 AC1.4 boundary" tests/node/us001-tmux-pane-manager.test.mjs | complete |
+| US-001 | AC1.4 | tests/node/us001-tmux-pane-manager.test.mjs :: US-001 AC1.4 negative: sendKeys surfaces tmux pane lookup failures as rejected promises | L1 | node --test --test-name-pattern "US-001 AC1.4 negative" tests/node/us001-tmux-pane-manager.test.mjs | complete |
 
 ---
 
@@ -154,3 +191,11 @@ N/A — not CRITICAL risk
 | US-00 | AC1-AC2 | L3 | node:test happy-path subset | node --test --test-name-pattern "happy" tests/node/us00-bootstrap.test.mjs | 2 tests pass | exit 0 + both happy-path bootstrap tests pass |
 | US-00 | AC1-AC2 | L3 | node:test boundary/negative subset | node --test --test-name-pattern "negative|boundary" tests/node/us00-bootstrap.test.mjs | 4 tests pass | exit 0 + all boundary and negative bootstrap tests pass |
 | US-00 | AC1-AC2 | L3 | node:test smoke | node --test tests/node/us00-bootstrap.test.mjs | 6 tests pass | exit 0 + all bootstrap tests pass together |
+| US-001 | AC1.1 | L1 | node:test | node --test --test-name-pattern "US-001 AC1.1" tests/node/us001-tmux-pane-manager.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC1.1 tests pass |
+| US-001 | AC1.2 | L1 | node:test | node --test --test-name-pattern "US-001 AC1.2" tests/node/us001-tmux-pane-manager.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC1.2 tests pass |
+| US-001 | AC1.3 | L1 | node:test | node --test --test-name-pattern "US-001 AC1.3" tests/node/us001-tmux-pane-manager.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC1.3 tests pass |
+| US-001 | AC1.4 | L1 | node:test | node --test --test-name-pattern "US-001 AC1.4" tests/node/us001-tmux-pane-manager.test.mjs | 3 tests pass | exit 0 + happy, boundary, and negative AC1.4 tests pass |
+| US-001 | AC1.1-AC1.4 | L3 | node:test happy-path subset | node --test --test-name-pattern "happy" tests/node/us001-tmux-pane-manager.test.mjs | 4 tests pass | exit 0 + all happy-path tmux pane manager tests pass |
+| US-001 | AC1.1-AC1.4 | L3 | node:test boundary subset | node --test --test-name-pattern "boundary" tests/node/us001-tmux-pane-manager.test.mjs | 4 tests pass | exit 0 + all boundary tmux pane manager tests pass |
+| US-001 | AC1.1-AC1.4 | L3 | node:test error-path subset | node --test --test-name-pattern "negative" tests/node/us001-tmux-pane-manager.test.mjs | 4 tests pass | exit 0 + all error-path tmux pane manager tests pass |
+| US-001 | AC1.1-AC1.4 | L3 | node:test smoke | node --test tests/node/us001-tmux-pane-manager.test.mjs | 12 tests pass | exit 0 + full tmux pane manager suite passes |

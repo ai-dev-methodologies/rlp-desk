@@ -6,38 +6,42 @@
   - `src/node/shared/paths.mjs`
   - `src/node/shared/fs.mjs`
   - `tests/node/us00-bootstrap.test.mjs`
-- Verifier blockers for US-00 were repaired:
-  - Added explicit `US-00` acceptance criteria to `prd-node-rewrite.md`
-  - Removed placeholder L3 rows from `test-spec-node-rewrite.md`
-  - Corrected L3 command ordering for `--test-name-pattern`
-  - Added L3 criteria-mapping rows for happy and boundary/negative subsets
-  - Isolated the US-00 test scratch directories by process and test name
+- US-001 tmux pane manager is now implemented:
+  - `src/node/tmux/pane-manager.mjs`
+  - `tests/node/us001-tmux-pane-manager.test.mjs`
+  - `.claude/ralph-desk/plans/test-spec-node-rewrite.md` updated with US-001 traceability and criteria mappings
 ### In Progress
-- Verifier handoff for US-00
+- Verifier handoff for US-001
 ### Next
-- If US-00 passes verification, start US-001 (Tmux Pane Manager) with fresh failing tests first
+- If US-001 passes verification, move to the next unverified Node rewrite story with fresh failing tests first
 
 ## Key Decisions
-- Followed the verifier fix contract over the earlier no-PRD/no-test-spec-edit warning because those edits were required to unblock US-00 verification.
-- Preserved scope lock: no work beyond US-00 bootstrap primitives was implemented.
+- Implemented the smallest API that meets the PRD: pane creation, command sending, process-exit waiting, and tmux-specific error surfacing.
+- Kept verification fully real against detached tmux sessions rather than introducing mocks or fake pane state.
+- Treated `zsh`, `bash`, and `sh` as the valid shell return states for `waitForProcessExit`.
 
 ## Known Issues
-- The Node rewrite is still only at bootstrap stage; tmux, command-builder, poller, prompt-assembler, initializer, main-loop, analytics, and CLI entrypoint work have not started.
-- Untracked files unrelated to US-00 exist in the worktree and were left untouched.
+- No Node wrapper exists yet for session lifecycle, command building, pollers, prompt assembly, initializer flow, main loop behavior, analytics, or CLI entrypoints.
+- The worktree still contains unrelated untracked files outside the US-001 scope and they were left untouched.
 
 ## Files Changed This Iteration
-- `tests/node/us00-bootstrap.test.mjs`
-- `.claude/ralph-desk/plans/prd-node-rewrite.md`
+- `src/node/tmux/pane-manager.mjs`
+- `tests/node/us001-tmux-pane-manager.test.mjs`
 - `.claude/ralph-desk/plans/test-spec-node-rewrite.md`
 - `.claude/ralph-desk/memos/node-rewrite-memory.md`
 - `.claude/ralph-desk/context/node-rewrite-latest.md`
-- `.claude/ralph-desk/logs/node-rewrite/conflict-log.jsonl`
 
 ## Verification Status
-- RED verified on existing AC2 filtered command before the harness fix: exit 1
-- AC1 verified green: 3/3 pass
-- AC2 verified green: 3/3 pass
-- L3 happy subset verified green: 2/2 pass
-- L3 boundary/negative subset verified green: 4/4 pass
-- Full bootstrap suite verified green: 6/6 pass
+- RED AC1.1 verified: exit 1 before implementation because `src/node/tmux/pane-manager.mjs` did not exist
+- RED AC1.2 verified: exit 1 before implementation because `src/node/tmux/pane-manager.mjs` did not exist
+- RED AC1.3 verified: exit 1 before implementation because `src/node/tmux/pane-manager.mjs` did not exist
+- RED AC1.4 verified: exit 1 before implementation because `src/node/tmux/pane-manager.mjs` did not exist
 - Build smoke verified green: exit 0
+- AC1.1 verified green: 3/3 pass
+- AC1.2 verified green: 3/3 pass
+- AC1.3 verified green: 3/3 pass
+- AC1.4 verified green: 3/3 pass
+- L3 happy subset verified green: 4/4 pass
+- L3 boundary subset verified green: 4/4 pass
+- L3 error subset verified green: 4/4 pass
+- Full US-001 suite verified green: 12/12 pass
