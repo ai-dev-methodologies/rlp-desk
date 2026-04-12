@@ -27,16 +27,29 @@ When a Worker repeatedly fails on the same US, the fix loop retries the same app
 
 ```
 Current:  ① → ② → ③ → ④ → ⑤ worker → ⑥ signal → ⑦ verifier → ⑧ result
-Proposed: ① → ② → ③ → ④ → ⑤ worker → ⑤½ PIVOT → ⑥ signal → ⑦ verifier → ⑧ result
+Proposed: ① → ② → ③ → ③½ PIVOT → ④ → ⑤ worker → ⑥ signal → ⑦ verifier → ⑧ result
 ```
 
-### ⑤½ Pivot Review Step
+Pivot runs BEFORE Worker — it decides direction, then Worker executes that direction.
+
+### Tmux Pane Layout (3 panes)
+
+```
++------------------+------------------+------------------+
+| Worker pane      | Pivot pane       | Verifier pane    |
+| claude/codex     | claude (opus)    | claude/codex     |
+| implements code  | direction review | verifies result  |
++------------------+------------------+------------------+
+```
+
+Pivot pane is reused each iteration (not persistent). Leader launches pivot → waits for memory update → launches Worker in Worker pane.
+
+### ③½ Pivot Review Step
 
 **Agent mode:**
 ```
 Agent(
   description="rlp-desk pivot review iter-NNN",
-  subagent_type="executor",
   model=<pivot_model>,
   mode="bypassPermissions",
   prompt=<pivot_prompt>
@@ -44,9 +57,9 @@ Agent(
 ```
 
 **Tmux mode:**
-- Reuse Worker pane or dedicated pivot pane
+- Dedicated pivot pane (3rd pane)
 - `DISABLE_OMC=1 claude --model opus --mcp-config '{"mcpServers":{}}' --strict-mcp-config -p "$(cat pivot-prompt.md)"`
-- After pivot completes, verify memory updated → proceed to Verifier
+- After pivot completes, verify memory updated → build Worker prompt (④) → launch Worker (⑤)
 
 ### Pivot Review Responsibilities
 
