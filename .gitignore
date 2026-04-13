@@ -1,31 +1,26 @@
-# Node
-node_modules/
-package-lock.json
-
-# OS
-.DS_Store
-Thumbs.db
 
 # Editors
-*.swp
-*.swo
-*~
-.idea/
-.vscode/
-
-# Worktrees
-.worktrees/
-
-# OMC/OMX runtime state
-.omx/
-.omc/
-
-# Misc
-write
-
 # Internal strategy/research docs (local only, never publish)
-docs/internal/
-
+# Misc
+# Node
+# OMC/OMX runtime state
+# OS
 # RLP Desk runtime artifacts (generated during runs)
 # The entire .claude/ralph-desk/ directory is project-local runtime state
+# Worktrees
+*.swo
+*.swp
+*~
+.DS_Store
 .claude/ralph-desk/
+.idea/
+.omc/
+.omx/
+.sv/
+.vscode/
+.worktrees/
+Thumbs.db
+docs/internal/
+node_modules/
+package-lock.json
+write
