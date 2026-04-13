@@ -107,3 +107,42 @@ test('G12: cleanup list includes guard verdict file', async () => {
   assert.ok(memoMatch, 'guard verdict file should be in memo cleanup');
   assert.ok(promptMatch, 'guard prompt file should be in prompt cleanup');
 });
+
+test('G13: buildPaths includes guard paths', async () => {
+  const script = path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs');
+  const content = await fs.readFile(script, 'utf8');
+  assert.match(content, /flywheelGuardPromptFile/);
+  assert.match(content, /flywheelGuardVerdictFile/);
+});
+
+test('G14: guard dispatch exists in main loop', async () => {
+  const script = path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs');
+  const content = await fs.readFile(script, 'utf8');
+  assert.match(content, /dispatchGuard/);
+  assert.match(content, /phase.*guard/i);
+});
+
+test('G15: guard runs AFTER flywheel and BEFORE worker', async () => {
+  const script = path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs');
+  const content = await fs.readFile(script, 'utf8');
+  // Search within the run() function body for call-site ordering
+  const runBody = content.slice(content.indexOf('export async function run('));
+  const flywheelPos = runBody.indexOf('dispatchFlywheel');
+  const guardPos = runBody.indexOf('dispatchGuard');
+  const workerPos = runBody.indexOf('dispatchWorker');
+  assert.ok(flywheelPos < guardPos, 'flywheel must come before guard');
+  assert.ok(guardPos < workerPos, 'guard must come before worker');
+});
+
+test('G16: readCurrentState includes flywheel_guard_count', async () => {
+  const script = path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs');
+  const content = await fs.readFile(script, 'utf8');
+  assert.match(content, /flywheel_guard_count/);
+});
+
+test('G17: inconclusive verdict triggers BLOCKED', async () => {
+  const script = path.join(repoRoot, 'src', 'node', 'runner', 'campaign-main-loop.mjs');
+  const content = await fs.readFile(script, 'utf8');
+  assert.match(content, /inconclusive/);
+  assert.match(content, /escalate/i);
+});

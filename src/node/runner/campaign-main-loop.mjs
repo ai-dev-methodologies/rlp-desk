@@ -259,6 +259,7 @@ async function readCurrentState(paths, slug, options) {
     leader_pane_id: status.leader_pane_id ?? null,
     worker_pane_id: status.worker_pane_id ?? null,
     verifier_pane_id: status.verifier_pane_id ?? null,
+    flywheel_guard_count: status.flywheel_guard_count ?? {},
     started_at_utc: startedAt,
   };
 }
@@ -414,6 +415,19 @@ async function dispatchFlywheel({ paths, sendKeys, flywheelPaneId, flywheelModel
   await sendKeys(flywheelPaneId, triggerCmd);
 }
 
+function buildGuardTriggerCmd({ guardPromptFile, guardModel, rootDir }) {
+  return `cd ${JSON.stringify(rootDir)} && DISABLE_OMC=1 claude --model ${guardModel} --no-mcp -p "$(cat ${JSON.stringify(guardPromptFile)})"`;
+}
+
+async function dispatchGuard({ paths, sendKeys, guardPaneId, guardModel, rootDir }) {
+  const triggerCmd = buildGuardTriggerCmd({
+    guardPromptFile: paths.flywheelGuardPromptFile,
+    guardModel,
+    rootDir,
+  });
+  await sendKeys(guardPaneId, triggerCmd);
+}
+
 export function shouldRunFlywheel(flywheelMode, state) {
   if (flywheelMode === 'off') return false;
   if (flywheelMode === 'on-fail' && (state.consecutive_failures ?? 0) > 0) return true;
@@ -562,9 +576,76 @@ export async function run(slug, options = {}) {
       });
 
       state.last_flywheel_decision = flywheelSignal.decision;
-      // Campaign memory already updated by flywheel agent
-      // Clean signal file for next iteration
       await fs.unlink(paths.flywheelSignalFile).catch(() => {});
+
+      // Flywheel Guard (independent validation of flywheel decision)
+      if (shouldRunGuard(options.flywheelGuard ?? 'off', state, state.current_us)) {
+        state.phase = 'guard';
+        await writeStatus(paths, state, options.onStatusChange, options.now);
+
+        const guardPaneId = state.flywheel_pane_id ?? state.verifier_pane_id;
+        const guardModel = options.flywheelGuardModel ?? 'opus';
+
+        await dispatchGuard({ paths, sendKeys, guardPaneId, guardModel, rootDir });
+
+        const guardVerdict = await pollForSignal(paths.flywheelGuardVerdictFile, {
+          mode: 'claude',
+          paneId: guardPaneId,
+        });
+
+        if (!state.flywheel_guard_count[state.current_us]) {
+          state.flywheel_guard_count[state.current_us] = 0;
+        }
+        state.flywheel_guard_count[state.current_us] += 1;
+
+        await fs.unlink(paths.flywheelGuardVerdictFile).catch(() => {});
+
+        if (guardVerdict.verdict === 'inconclusive') {
+          state.phase = 'blocked';
+          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us);
+          await writeStatus(paths, state, options.onStatusChange, options.now);
+          return {
+            status: 'blocked',
+            usId: state.current_us,
+            reason: 'flywheel-guard-escalate-inconclusive',
+            guardIssues: guardVerdict.issues,
+            statusFile: paths.statusFile,
+          };
+        }
+
+        if (guardVerdict.verdict === 'fail') {
+          if (state.flywheel_guard_count[state.current_us] >= 3) {
+            state.phase = 'blocked';
+            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us);
+            await writeStatus(paths, state, options.onStatusChange, options.now);
+            return {
+              status: 'blocked',
+              usId: state.current_us,
+              reason: 'flywheel-guard-retries-exhausted',
+              guardIssues: guardVerdict.issues,
+              statusFile: paths.statusFile,
+            };
+          }
+          // Retry: skip Worker, continue to next iteration (flywheel will re-run)
+          state.phase = 'worker';
+          await writeStatus(paths, state, options.onStatusChange, options.now);
+          state.iteration += 1;
+          continue;
+        }
+
+        // verdict === 'pass'
+        if (guardVerdict.analysis_only) {
+          state.phase = 'worker';
+          await writeStatus(paths, state, options.onStatusChange, options.now);
+          state.iteration += 1;
+          continue;
+        }
+      }
+
+      // Reset guard count on pass (flywheel direction accepted)
+      if (state.flywheel_guard_count[state.current_us]) {
+        state.flywheel_guard_count[state.current_us] = 0;
+      }
     }
 
     state.phase = 'worker';
