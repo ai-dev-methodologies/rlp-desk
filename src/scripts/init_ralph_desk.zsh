@@ -280,7 +280,8 @@ if [[ -n "$MODE" ]]; then
     "$DESK/memos/$SLUG-complete.md" \
     "$DESK/memos/$SLUG-blocked.md" \
     "$DESK/memos/$SLUG-flywheel-signal.json" \
-    "$DESK/memos/$SLUG-flywheel-review.md"; do
+    "$DESK/memos/$SLUG-flywheel-review.md" \
+    "$DESK/memos/$SLUG-flywheel-guard-verdict.json"; do
     [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
   done
 
@@ -295,7 +296,8 @@ if [[ -n "$MODE" ]]; then
     "$DESK/plans/test-spec-$SLUG.md" \
     "$DESK/prompts/$SLUG.worker.prompt.md" \
     "$DESK/prompts/$SLUG.verifier.prompt.md" \
-    "$DESK/prompts/$SLUG.flywheel.prompt.md"; do
+    "$DESK/prompts/$SLUG.flywheel.prompt.md" \
+    "$DESK/prompts/$SLUG.flywheel-guard.prompt.md"; do
     [[ -f "$f" ]] &&
       if [[ "$MODE" == "fresh" ]] || [[ "$f" != "$DESK/plans/test-spec-$SLUG.md" ]]; then
         rm "$f"; (( ++DELETED_COUNT ));
@@ -684,6 +686,80 @@ Based on your decision, update campaign memory:
 3. Write signal: {DESK}/memos/{SLUG}-flywheel-signal.json
    Format: {"iteration": N, "decision": "hold|pivot|reduce|expand", "summary": "one line", "rejected_directions": ["approach X because Y"], "contract_updated": true, "timestamp": "ISO"}
 FLYWHEEL_EOF
+
+  # Replace placeholders with actual paths
+  sed -i '' "s|{DESK}|$DESK|g; s|{SLUG}|$SLUG|g" "$F"
+
+  echo "  + $F"
+else echo "  · $F"; fi
+
+# --- Flywheel Guard Prompt ---
+F="$DESK/prompts/$SLUG.flywheel-guard.prompt.md"
+if [[ ! -f "$F" ]]; then
+  cat > "$F" <<'GUARD_EOF'
+# Flywheel Guard Review
+
+You are an independent reviewer verifying whether a flywheel direction decision is safe to execute.
+You have NO prior context about this campaign. Read the files below and evaluate the decision objectively.
+
+## Files to Read (in order)
+1. PRD: {DESK}/plans/prd-{SLUG}.md — the ground truth for what success means
+2. Flywheel Decision: {DESK}/memos/{SLUG}-flywheel-signal.json — what the flywheel decided
+3. Flywheel Analysis: {DESK}/memos/{SLUG}-flywheel-review.md — the flywheel's reasoning
+4. Campaign Memory: {DESK}/memos/{SLUG}-memory.md — history, rejected directions, key decisions
+5. Done Claim: {DESK}/memos/{SLUG}-done-claim.json — what the Worker actually produced
+6. Verify Verdict: {DESK}/memos/{SLUG}-verify-verdict.json — why the Verifier failed it
+
+## Validation Checks
+
+### Check 1: Look-ahead Bias
+List every data feature the flywheel's proposed direction depends on.
+For each: "feature X — available at decision time: YES/NO/UNCLEAR"
+- YES: feature is known before the event (entry time, session start price, order book state)
+- NO: feature requires future information (peak price, session end, outcome)
+- UNCLEAR: cannot determine from available context → mark inconclusive
+If ANY feature is NO and used in a deployable strategy (not just upper-bound analysis): FAIL.
+
+### Check 2: Metric Alignment
+1. What metric does the PRD define as the optimization target?
+2. What metric does the flywheel's direction optimize?
+3. Are they the same?
+   - Same metric → pass
+   - Different metric, not flagged → FAIL (silent metric switch)
+   - Different metric, flagged with evidence → FAIL with recommendation: "metric mismatch requires PRD update or user approval before proceeding"
+   PRD is ground truth. The guard cannot approve off-PRD metric changes autonomously.
+
+### Check 3: Deployability
+Can the proposed direction's output be used in production as-is?
+- Requires post-hoc data → FAIL
+- Requires infrastructure not mentioned in PRD → FAIL
+- Labeled as "upper-bound only" or "reference" → pass, but you MUST include "analysis_only": true in your verdict so Leader skips Worker dispatch (no implementation, analysis record only)
+
+### Check 4: Repeat Pattern (same-US scoped)
+Compare to prior flywheel decisions for the current US only in campaign memory's Key Decisions section.
+- Same scope decision + same underlying approach as a prior flywheel for this US → FAIL
+- Reframing of a previously rejected direction (check Rejected Directions) → FAIL
+- Genuinely new approach → pass
+Before writing your verdict, you MUST append any rejected flywheel direction to campaign memory's Rejected Directions section. This persists the record before cleanup can erase it.
+
+## Output
+Write verdict to: {DESK}/memos/{SLUG}-flywheel-guard-verdict.json
+
+Use this format:
+{
+  "verdict": "pass|fail|inconclusive",
+  "issues": [{"check": "check-name", "status": "pass|fail|inconclusive", "detail": "finding", "evidence": "reference"}],
+  "analysis_only": false,
+  "recommendation": "proceed|retry-flywheel|escalate-to-user",
+  "timestamp": "ISO"
+}
+
+Rules:
+- If ALL checks pass → verdict: pass, recommendation: proceed
+- If ANY check is fail → verdict: fail, recommendation: retry-flywheel
+- If ANY check is inconclusive and none are fail → verdict: inconclusive, recommendation: escalate-to-user
+- Include specific evidence for every check. No "seems fine" or "probably ok."
+GUARD_EOF
 
   # Replace placeholders with actual paths
   sed -i '' "s|{DESK}|$DESK|g; s|{SLUG}|$SLUG|g" "$F"
