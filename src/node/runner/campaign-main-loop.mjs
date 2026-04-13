@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -13,6 +14,7 @@ import {
 import {
   appendCampaignAnalytics,
   generateCampaignReport,
+  generateSVReport,
   prepareCampaignAnalytics,
 } from '../reporting/campaign-reporting.mjs';
 import {
@@ -56,9 +58,12 @@ function buildPaths(rootDir, slug) {
     prdFile: path.join(deskRoot, 'plans', `prd-${slug}.md`),
     testSpecFile: path.join(deskRoot, 'plans', `test-spec-${slug}.md`),
     analyticsFile: path.join(campaignLogDir, 'campaign.jsonl'),
+    analyticsDir: path.join(os.homedir(), '.claude', 'ralph-desk', 'analytics', slug),
     reportFile: path.join(campaignLogDir, 'campaign-report.md'),
     statusFile: path.join(campaignLogDir, 'runtime', 'status.json'),
-  };
+    flywheelPromptFile: path.join(deskRoot, 'prompts', `${slug}.flywheel.prompt.md`),
+    flywheelSignalFile: path.join(deskRoot, 'memos', `${slug}-flywheel-signal.json`),
+};
 }
 
 async function exists(targetPath) {
@@ -394,6 +399,25 @@ async function runFinalSequentialVerify({
   };
 }
 
+function buildFlywheelTriggerCmd({ flywheelPromptFile, flywheelModel, rootDir }) {
+  return `cd ${JSON.stringify(rootDir)} && DISABLE_OMC=1 claude --model ${flywheelModel} --no-mcp -p "$(cat ${JSON.stringify(flywheelPromptFile)})"`;
+}
+
+async function dispatchFlywheel({ paths, sendKeys, flywheelPaneId, flywheelModel, rootDir }) {
+  const triggerCmd = buildFlywheelTriggerCmd({
+    flywheelPromptFile: paths.flywheelPromptFile,
+    flywheelModel,
+    rootDir,
+  });
+  await sendKeys(flywheelPaneId, triggerCmd);
+}
+
+export function shouldRunFlywheel(flywheelMode, state) {
+  if (flywheelMode === 'off') return false;
+  if (flywheelMode === 'on-fail' && (state.consecutive_failures ?? 0) > 0) return true;
+  return false;
+}
+
 export async function run(slug, options = {}) {
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
   const paths = buildPaths(rootDir, slug);
@@ -433,6 +457,10 @@ export async function run(slug, options = {}) {
     });
     state.session_name = session.sessionName;
     state.leader_pane_id = session.leaderPaneId;
+    state.flywheel_pane_id = await createPane({
+      targetPaneId: session.leaderPaneId,
+      layout: 'horizontal',
+    });
     state.worker_pane_id = await createPane({
       targetPaneId: session.leaderPaneId,
       layout: 'horizontal',
@@ -462,6 +490,22 @@ export async function run(slug, options = {}) {
         state.phase = 'complete';
         await writeSentinel(paths.completeSentinel, 'complete', 'ALL');
         await writeStatus(paths, state, options.onStatusChange, options.now);
+        let svSummary;
+        if (options.withSelfVerification) {
+          try {
+            const sv = await generateSVReport({
+              slug,
+              logsDir: path.dirname(paths.reportFile),
+              prdFile: paths.prdFile,
+              testSpecFile: paths.testSpecFile,
+              analyticsFile: paths.analyticsFile,
+              outputDir: paths.analyticsDir,
+            });
+            svSummary = sv.summary;
+          } catch (err) {
+            svSummary = `SV report generation failed: ${err.message}`;
+          }
+        }
         await generateCampaignReport({
           slug,
           reportFile: paths.reportFile,
@@ -469,6 +513,7 @@ export async function run(slug, options = {}) {
           statusFile: paths.statusFile,
           analyticsFile: paths.analyticsFile,
           now: resolveNow(options.now),
+          svSummary,
         });
         return {
           status: 'complete',
@@ -487,6 +532,30 @@ export async function run(slug, options = {}) {
         usId: finalResult.usId,
         statusFile: paths.statusFile,
       };
+    }
+
+    // Flywheel direction review (runs BEFORE Worker)
+    if (shouldRunFlywheel(options.flywheel ?? 'off', state)) {
+      state.phase = 'flywheel';
+      await writeStatus(paths, state, options.onStatusChange, options.now);
+
+      await dispatchFlywheel({
+        paths,
+        sendKeys,
+        flywheelPaneId: state.flywheel_pane_id ?? state.verifier_pane_id,
+        flywheelModel: options.flywheelModel ?? 'opus',
+        rootDir,
+      });
+
+      const flywheelSignal = await pollForSignal(paths.flywheelSignalFile, {
+        mode: 'claude',
+        paneId: state.flywheel_pane_id ?? state.verifier_pane_id,
+      });
+
+      state.last_flywheel_decision = flywheelSignal.decision;
+      // Campaign memory already updated by flywheel agent
+      // Clean signal file for next iteration
+      await fs.unlink(paths.flywheelSignalFile).catch(() => {});
     }
 
     state.phase = 'worker';
@@ -565,6 +634,22 @@ export async function run(slug, options = {}) {
       await writeSentinel(paths.blockedSentinel, 'blocked', usId);
       await appendIterationAnalytics(paths, state, usId, 'blocked', options);
       await writeStatus(paths, state, options.onStatusChange, options.now);
+      let svSummary;
+      if (options.withSelfVerification) {
+        try {
+          const sv = await generateSVReport({
+            slug,
+            logsDir: path.dirname(paths.reportFile),
+            prdFile: paths.prdFile,
+            testSpecFile: paths.testSpecFile,
+            analyticsFile: paths.analyticsFile,
+            outputDir: paths.analyticsDir,
+          });
+          svSummary = sv.summary;
+        } catch (err) {
+          svSummary = `SV report generation failed: ${err.message}`;
+        }
+      }
       await generateCampaignReport({
         slug,
         reportFile: paths.reportFile,
@@ -572,6 +657,7 @@ export async function run(slug, options = {}) {
         statusFile: paths.statusFile,
         analyticsFile: paths.analyticsFile,
         now: resolveNow(options.now),
+        svSummary,
       });
       return {
         status: 'blocked',
@@ -587,6 +673,22 @@ export async function run(slug, options = {}) {
       state.phase = 'blocked';
       await writeSentinel(paths.blockedSentinel, 'blocked', usId);
       await writeStatus(paths, state, options.onStatusChange, options.now);
+      let svSummary;
+      if (options.withSelfVerification) {
+        try {
+          const sv = await generateSVReport({
+            slug,
+            logsDir: path.dirname(paths.reportFile),
+            prdFile: paths.prdFile,
+            testSpecFile: paths.testSpecFile,
+            analyticsFile: paths.analyticsFile,
+            outputDir: paths.analyticsDir,
+          });
+          svSummary = sv.summary;
+        } catch (err) {
+          svSummary = `SV report generation failed: ${err.message}`;
+        }
+      }
       await generateCampaignReport({
         slug,
         reportFile: paths.reportFile,
@@ -594,6 +696,7 @@ export async function run(slug, options = {}) {
         statusFile: paths.statusFile,
         analyticsFile: paths.analyticsFile,
         now: resolveNow(options.now),
+        svSummary,
       });
       return {
         status: 'blocked',

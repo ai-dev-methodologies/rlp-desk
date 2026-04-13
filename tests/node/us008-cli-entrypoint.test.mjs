@@ -136,6 +136,8 @@ test('US-008 AC8.2 happy: the run command parses tmux example flags and launches
       lockWorkerModel: false,
       autonomous: false,
       withSelfVerification: false,
+      flywheel: 'off',
+      flywheelModel: 'opus',
     },
   });
 });

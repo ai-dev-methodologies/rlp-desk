@@ -21,6 +21,8 @@ const RUN_DEFAULTS = {
   lockWorkerModel: false,
   autonomous: false,
   withSelfVerification: false,
+  flywheel: 'off',
+  flywheelModel: 'opus',
 };
 
 function write(stream, value) {
@@ -57,6 +59,8 @@ function buildHelpText() {
     '  --debug',
     '  --autonomous',
     '  --with-self-verification',
+    '  --flywheel off|on-fail',
+    '  --flywheel-model MODEL',
     '  --help',
   ].join('\n');
 }
@@ -141,6 +145,14 @@ function parseRunOptions(args, cwd) {
         break;
       case '--with-self-verification':
         options.withSelfVerification = true;
+        break;
+      case '--flywheel':
+        options.flywheel = consumeValue(args, index, token);
+        index += 1;
+        break;
+      case '--flywheel-model':
+        options.flywheelModel = consumeValue(args, index, token);
+        index += 1;
         break;
       default:
         throw new Error(`unknown option: ${token}`);
