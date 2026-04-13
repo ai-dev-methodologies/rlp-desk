@@ -63,6 +63,8 @@ function buildPaths(rootDir, slug) {
     statusFile: path.join(campaignLogDir, 'runtime', 'status.json'),
     flywheelPromptFile: path.join(deskRoot, 'prompts', `${slug}.flywheel.prompt.md`),
     flywheelSignalFile: path.join(deskRoot, 'memos', `${slug}-flywheel-signal.json`),
+    flywheelGuardPromptFile: path.join(deskRoot, 'prompts', `${slug}.flywheel-guard.prompt.md`),
+    flywheelGuardVerdictFile: path.join(deskRoot, 'memos', `${slug}-flywheel-guard-verdict.json`),
 };
 }
 
@@ -416,6 +418,13 @@ export function shouldRunFlywheel(flywheelMode, state) {
   if (flywheelMode === 'off') return false;
   if (flywheelMode === 'on-fail' && (state.consecutive_failures ?? 0) > 0) return true;
   return false;
+}
+
+export function shouldRunGuard(flywheelGuard, state, usId) {
+  if (flywheelGuard !== 'on') return false;
+  const count = (state.flywheel_guard_count ?? {})[usId] ?? 0;
+  if (count >= 3) return false;
+  return true;
 }
 
 export async function run(slug, options = {}) {

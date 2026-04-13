@@ -50,3 +50,18 @@ test('G4: help text includes flywheel guard flags', async () => {
   assert.match(stream.data, /--flywheel-guard off\|on/);
   assert.match(stream.data, /--flywheel-guard-model MODEL/);
 });
+
+test('G5: shouldRunGuard returns false when flywheelGuard=off', async () => {
+  const { shouldRunGuard } = await import('../../src/node/runner/campaign-main-loop.mjs');
+  assert.equal(shouldRunGuard('off', { flywheel_guard_count: {} }), false);
+});
+
+test('G6: shouldRunGuard returns true when flywheelGuard=on', async () => {
+  const { shouldRunGuard } = await import('../../src/node/runner/campaign-main-loop.mjs');
+  assert.equal(shouldRunGuard('on', { flywheel_guard_count: {} }, 'US-001'), true);
+});
+
+test('G7: shouldRunGuard returns false when guard retries exhausted', async () => {
+  const { shouldRunGuard } = await import('../../src/node/runner/campaign-main-loop.mjs');
+  assert.equal(shouldRunGuard('on', { flywheel_guard_count: { 'US-001': 3 } }, 'US-001'), false);
+});
