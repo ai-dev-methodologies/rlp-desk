@@ -632,6 +632,8 @@ Read these in order:
 8. Blast radius — assess impact scope of direction change
 9. Reversibility — prefer easily reversible decisions
 10. Evidence > opinion — judge only by this iteration's actual results
+11. Proxy skepticism — is the optimization metric the right proxy for the real goal?
+12. Classification — hard-to-reverse + large-magnitude changes need stronger evidence
 
 ## Review Process
 

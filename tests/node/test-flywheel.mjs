@@ -32,7 +32,7 @@ test('T4: init generates flywheel prompt with 6 review steps', async () => {
   assert.match(content, /Contract Rewrite/);
 });
 
-test('T5: flywheel prompt contains 10 CEO cognitive patterns', async () => {
+test('T5: flywheel prompt contains 12 CEO cognitive patterns', async () => {
   const script = path.join(repoRoot, 'src', 'scripts', 'init_ralph_desk.zsh');
   const content = await fs.readFile(script, 'utf8');
   assert.match(content, /First-principles/);
@@ -45,6 +45,8 @@ test('T5: flywheel prompt contains 10 CEO cognitive patterns', async () => {
   assert.match(content, /Blast radius/);
   assert.match(content, /Reversibility/);
   assert.match(content, /Evidence > opinion/);
+  assert.match(content, /Proxy skepticism/);
+  assert.match(content, /Classification/);
 });
 
 test('T6: flywheel prompt contains 4 scope decisions', async () => {
