@@ -483,6 +483,19 @@ for iteration in 1..max_iter:
      parsing memory.md. In Agent() mode, the Leader MAY read iter-signal.json
      as a structured alternative to parsing the Stop Status from memory.md.
 
+  ⑥½ Flywheel direction review (when --flywheel on-fail and consecutive_failures > 0)
+     - Dispatch Flywheel agent (fresh context, --flywheel-model)
+     - Read flywheel-signal.json for direction decision (hold/pivot/reduce/expand)
+     - If --flywheel-guard on:
+       - Dispatch Guard agent (fresh context, --flywheel-guard-model)
+       - Read flywheel-guard-verdict.json:
+         • pass → proceed to Worker with updated contract
+         • pass + analysis_only → skip Worker, record analysis, next iteration
+         • fail → re-run Flywheel with guard feedback (max 2 retries)
+         • fail + retries exhausted → BLOCKED
+         • inconclusive → BLOCKED (escalate to user)
+       - Guard count tracked per-US in status.json
+
   ⑦ Execute Verifier (see §7a for per-US and §7b for consensus details)
      - Build prompt (scoped to us_id if per-us mode) → log
      - Agent(subagent_type="executor", model=selected, prompt=prompt)

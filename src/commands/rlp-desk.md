@@ -192,6 +192,8 @@ Tell the user:
    #   --with-self-verification               post-campaign SV report
    #   --flywheel off|on-fail                 direction review on fail (default: off)
    #   --flywheel-model MODEL                 flywheel reviewer model (default: opus)
+   #   --flywheel-guard off|on                  guard validates flywheel decisions (default: off)
+   #   --flywheel-guard-model MODEL             guard reviewer model (default: opus)
    ```
 
    **If codex is NOT installed** — show claude-only presets + install recommendation:
@@ -222,6 +224,8 @@ Tell the user:
    #   --with-self-verification               post-campaign SV report
    #   --flywheel off|on-fail                 direction review on fail (default: off)
    #   --flywheel-model MODEL                 flywheel reviewer model (default: opus)
+   #   --flywheel-guard off|on                  guard validates flywheel decisions (default: off)
+   #   --flywheel-guard-model MODEL             guard reviewer model (default: opus)
    ```
 
    Replace `<actual-slug>` with the real slug from this init (e.g. `auth-refactor`).

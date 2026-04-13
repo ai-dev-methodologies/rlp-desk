@@ -23,6 +23,8 @@ const RUN_DEFAULTS = {
   withSelfVerification: false,
   flywheel: 'off',
   flywheelModel: 'opus',
+  flywheelGuard: 'off',
+  flywheelGuardModel: 'opus',
 };
 
 function write(stream, value) {
@@ -61,6 +63,8 @@ function buildHelpText() {
     '  --with-self-verification',
     '  --flywheel off|on-fail',
     '  --flywheel-model MODEL',
+    '  --flywheel-guard off|on',
+    '  --flywheel-guard-model MODEL',
     '  --help',
   ].join('\n');
 }
@@ -152,6 +156,14 @@ function parseRunOptions(args, cwd) {
         break;
       case '--flywheel-model':
         options.flywheelModel = consumeValue(args, index, token);
+        index += 1;
+        break;
+      case '--flywheel-guard':
+        options.flywheelGuard = consumeValue(args, index, token);
+        index += 1;
+        break;
+      case '--flywheel-guard-model':
+        options.flywheelGuardModel = consumeValue(args, index, token);
         index += 1;
         break;
       default:
