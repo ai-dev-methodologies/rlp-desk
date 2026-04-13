@@ -242,6 +242,8 @@ print_run_presets() {
   echo "#   --with-self-verification               post-campaign SV report"
   echo "#   --flywheel off|on-fail                 direction review on fail (default: off)"
   echo "#   --flywheel-model MODEL                 flywheel reviewer model (default: opus)"
+  echo "#   --flywheel-guard off|on                  guard validates flywheel decisions (default: off)"
+  echo "#   --flywheel-guard-model MODEL             guard reviewer model (default: opus)"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 

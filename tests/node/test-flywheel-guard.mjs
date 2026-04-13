@@ -146,3 +146,15 @@ test('G17: inconclusive verdict triggers BLOCKED', async () => {
   assert.match(content, /inconclusive/);
   assert.match(content, /escalate/i);
 });
+
+test('G18: rlp-desk.md options reference includes guard flags', async () => {
+  const content = await fs.readFile(path.join(repoRoot, 'src', 'commands', 'rlp-desk.md'), 'utf8');
+  assert.match(content, /--flywheel-guard off\|on/);
+  assert.match(content, /--flywheel-guard-model MODEL/);
+});
+
+test('G19: init presets include guard flags', async () => {
+  const content = await fs.readFile(path.join(repoRoot, 'src', 'scripts', 'init_ralph_desk.zsh'), 'utf8');
+  assert.match(content, /--flywheel-guard off\|on/);
+  assert.match(content, /--flywheel-guard-model MODEL/);
+});
