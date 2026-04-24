@@ -410,7 +410,7 @@ test_ac5_negative() {
   tmpdir=$(mktemp -d)
   run_debug_harness "$tmpdir" 1
   if [[ -f "$tmpdir/debug.log" ]]; then
-    # Verify 4 distinct debug categories exist in source (PRD AC5: "4-category 디버그 항목")
+    # Verify 4 distinct debug categories exist in source (PRD AC5: "4-category debug items")
     # Note: startup harness only produces [OPTION]; [GOV],[DECIDE],[FLOW] appear during loop execution.
     # Verify all 4 categories are used in the source code instead.
     local cat_count

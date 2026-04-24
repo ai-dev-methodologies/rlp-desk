@@ -259,6 +259,15 @@ mkdir -p "$DESK/prompts" "$DESK/context" "$DESK/memos" "$DESK/plans" "$DESK/logs
 PRD_FILE="$DESK/plans/prd-$SLUG.md"
 LOGS_DIR="$DESK/logs/$SLUG"
 
+# No-PRD fallback: --mode provided but no PRD exists yet → treat as first-run.
+# Print a note so the user knows the requested mode was ignored, reset MODE so
+# the re-execution lifecycle below is skipped, and let the rest of the script
+# scaffold a fresh PRD template alongside the other prompt/test-spec files.
+if [[ -n "$MODE" ]] && [[ ! -f "$PRD_FILE" ]]; then
+  echo "Note: --mode $MODE provided but no PRD found at $PRD_FILE — treating as first-run."
+  MODE=""
+fi
+
 if [[ -n "$MODE" ]]; then
   echo "Re-execution mode: --mode $MODE"
   echo ""
