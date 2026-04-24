@@ -47,7 +47,7 @@ Logged at every decision point during execution:
 Consensus-specific:
 ```
 [EXEC] iter=1 phase=consensus_claude verdict=pass model=opus
-[EXEC] iter=1 phase=consensus_codex verdict=pass model=gpt-5.4 reasoning=high
+[EXEC] iter=1 phase=consensus_codex verdict=pass model=gpt-5.5 reasoning=high
 [EXEC] iter=1 phase=consensus round=1 claude=pass codex=pass combined_action=pass
 ```
 

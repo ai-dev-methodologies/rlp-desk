@@ -99,7 +99,7 @@ test('US-007 AC7.1 happy: completing a five-iteration campaign writes campaign-r
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     maxIterations: 6,
     now: new Date('2026-04-12T00:00:00Z'),
     pollForSignal: createPoller([
@@ -151,7 +151,7 @@ test('US-007 AC7.1 boundary: generateCampaignReport still writes all eight secti
     iteration: 0,
     max_iterations: 100,
     phase: 'idle',
-    worker_model: 'gpt-5.4:medium',
+    worker_model: 'gpt-5.5:medium',
     verifier_model: 'sonnet',
     final_verifier_model: 'opus',
     verified_us: [],
@@ -193,7 +193,7 @@ test('US-007 AC7.1 negative: generating a new campaign report versions the previ
     iteration: 1,
     max_iterations: 100,
     phase: 'complete',
-    worker_model: 'gpt-5.4:medium',
+    worker_model: 'gpt-5.5:medium',
     verifier_model: 'sonnet',
     final_verifier_model: 'opus',
     verified_us: ['US-001'],
@@ -228,7 +228,7 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     maxIterations: 3,
     now: new Date('2026-04-12T00:00:00Z'),
     pollForSignal: createPoller([
@@ -287,7 +287,7 @@ test('US-007 AC7.2 negative: appendCampaignAnalytics rejects records that omit r
       iter: 1,
       us_id: 'US-001',
       verdict: 'pass',
-      worker_model: 'gpt-5.4:medium',
+      worker_model: 'gpt-5.5:medium',
       worker_engine: 'codex',
       duration: 2,
     }),
@@ -304,7 +304,7 @@ test('US-007 AC7.3 happy: readStatus renders iteration, phase, models, verified_
     iteration: 4,
     max_iterations: 9,
     phase: 'verifier',
-    worker_model: 'gpt-5.4:high',
+    worker_model: 'gpt-5.5:high',
     verifier_model: 'sonnet',
     final_verifier_model: 'opus',
     verified_us: ['US-001', 'US-002'],
@@ -322,7 +322,7 @@ test('US-007 AC7.3 happy: readStatus renders iteration, phase, models, verified_
   assert.match(output, /Campaign: status-slug/);
   assert.match(output, /Iteration: 4 \/ 9/);
   assert.match(output, /Phase: verifier/);
-  assert.match(output, /Worker Model: gpt-5\.4:high/);
+  assert.match(output, /Worker Model: gpt-5\.5:high/);
   assert.match(output, /Verified US: US-001, US-002/);
   assert.match(output, /Consecutive Failures: 1/);
   assert.match(output, /elapsed: 30s/);

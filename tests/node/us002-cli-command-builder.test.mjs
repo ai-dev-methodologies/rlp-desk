@@ -34,29 +34,29 @@ test('US-002 AC2.1 negative: buildClaudeCmd rejects unsupported modes', async ()
 test('US-002 AC2.2 happy: buildCodexCmd tui includes codex model and reasoning flags', async () => {
   const { buildCodexCmd } = await import('../../src/node/cli/command-builder.mjs');
 
-  const command = buildCodexCmd('tui', 'gpt-5.4', { reasoning: 'high' });
+  const command = buildCodexCmd('tui', 'gpt-5.5', { reasoning: 'high' });
 
   assert.match(
     command,
-    /^codex -m gpt-5\.4 -c model_reasoning_effort="high" --disable plugins --dangerously-bypass-approvals-and-sandbox$/,
+    /^codex -m gpt-5\.5 -c model_reasoning_effort="high" --disable plugins --dangerously-bypass-approvals-and-sandbox$/,
   );
 });
 
 test('US-002 AC2.2 boundary: buildCodexCmd omits reasoning when it is undefined', async () => {
   const { buildCodexCmd } = await import('../../src/node/cli/command-builder.mjs');
 
-  const command = buildCodexCmd('tui', 'gpt-5.4', {});
+  const command = buildCodexCmd('tui', 'gpt-5.5', {});
 
   assert.equal(
     command,
-    'codex -m gpt-5.4 --disable plugins --dangerously-bypass-approvals-and-sandbox',
+    'codex -m gpt-5.5 --disable plugins --dangerously-bypass-approvals-and-sandbox',
   );
 });
 
 test('US-002 AC2.2 negative: buildCodexCmd rejects unsupported modes', async () => {
   const { buildCodexCmd } = await import('../../src/node/cli/command-builder.mjs');
 
-  assert.throws(() => buildCodexCmd('print', 'gpt-5.4', { reasoning: 'high' }), /unknown mode/i);
+  assert.throws(() => buildCodexCmd('print', 'gpt-5.5', { reasoning: 'high' }), /unknown mode/i);
 });
 
 test('US-002 AC2.3 happy: parseModelFlag returns claude engine and effort for opus:max', async () => {
@@ -98,9 +98,9 @@ test('US-002 AC2.4 happy: parseModelFlag maps spark:medium to codex spark defaul
 test('US-002 AC2.4 boundary: parseModelFlag keeps an empty reasoning for codex values', async () => {
   const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
 
-  assert.deepEqual(parseModelFlag('gpt-5.4:'), {
+  assert.deepEqual(parseModelFlag('gpt-5.5:'), {
     engine: 'codex',
-    model: 'gpt-5.4',
+    model: 'gpt-5.5',
     reasoning: '',
   });
 });

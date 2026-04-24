@@ -11,7 +11,7 @@
 | 5 | Instruction delivery fix | ✅ Working | Direct send-keys + submit check loop |
 | 6 | Batch mode isolation | ✅ Fixed | BATCH MODE OVERRIDE injected, Worker signals us_id=ALL |
 | 7 | Duplicate execution | ✅ Fixed | Atomic lockfile (set -C noclobber) prevents 2nd instance |
-| 8 | Codex worker | ✅ Working | codex TUI launches, gpt-5.4 high, instruction delivered, Worker completes |
+| 8 | Codex worker | ✅ Working | codex TUI launches, gpt-5.5 high, instruction delivered, Worker completes |
 | 9 | Codex→Claude verify | ✅ Working | codex Worker → claude Verifier → pass → COMPLETE |
 | 10 | Consensus verify | ⚠️ Partial | claude verifier works, codex verifier instruction delivery fails in same pane |
 | 11 | timeout_active bug | ❌ Bug | timeout+active causes new iteration instead of continuing same poll |

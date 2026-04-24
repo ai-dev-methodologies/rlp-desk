@@ -244,8 +244,8 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 | `--verifier-model MODEL` | sonnet | per-US verification model (lighter) |
 | `--final-verifier-model MODEL` | opus | final ALL verification model (stricter) |
 | `--consensus off\|all\|final-only` | off | Cross-engine consensus scope |
-| `--consensus-model MODEL` | gpt-5.4:medium | per-US cross-verifier (lighter) |
-| `--final-consensus-model MODEL` | gpt-5.4:high | final cross-verifier (stricter) |
+| `--consensus-model MODEL` | gpt-5.5:medium | per-US cross-verifier (lighter) |
+| `--final-consensus-model MODEL` | gpt-5.5:high | final cross-verifier (stricter) |
 | `--verify-mode per-us\|batch` | per-us | per-us: verify each US → final ALL |
 | `--cb-threshold N` | 6 | Consecutive failures → BLOCKED |
 | `--max-iter N` | 100 | Max iterations → TIMEOUT |
@@ -267,7 +267,7 @@ When `--consensus` is enabled, a second cross-engine verifier runs alongside eac
 After `brainstorm`, `init` detects your environment and presents run command presets:
 
 - **Codex detected (GPT Pro / spark)** → recommends cross-engine mode (`--worker-model spark:high --consensus final-only`)
-- **Codex detected (large PRD, AC > 15)** → offers gpt-5.4 preset (`--worker-model gpt-5.4:high --consensus final-only`)
+- **Codex detected (large PRD, AC > 15)** → offers gpt-5.5 preset (`--worker-model gpt-5.5:high --consensus final-only`)
 - **Claude-only** → defaults to `--debug` with haiku worker and opus final verifier
 - **Basic** → minimal flags for quick iteration
 
@@ -363,7 +363,7 @@ npm install -g @openai/codex
 /rlp-desk run calculator --worker-model spark:high
 
 # Customize model and reasoning effort
-/rlp-desk run calculator --worker-model gpt-5.4:high
+/rlp-desk run calculator --worker-model gpt-5.5:high
 
 # Cross-engine: codex worker, claude verifier (recommended)
 /rlp-desk run calculator --worker-model spark:high --consensus final-only --debug
@@ -406,7 +406,7 @@ By default, Worker and Verifier stop and ask for human input when they encounter
 **`--autonomous`** enables fully unattended campaigns:
 
 ```bash
-/rlp-desk run my-feature --mode tmux --worker-model gpt-5.4:medium --autonomous --debug
+/rlp-desk run my-feature --mode tmux --worker-model gpt-5.5:medium --autonomous --debug
 ```
 
 ### How it works

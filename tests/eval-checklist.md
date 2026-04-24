@@ -125,7 +125,7 @@ cd /tmp/eval-tmux
 ```bash
 mkdir /tmp/eval-codex && cd /tmp/eval-codex && git init
 /rlp-desk init codex-test "Python fizzbuzz: fizzbuzz(n) returns list + pytest"
-/rlp-desk run codex-test --worker-engine codex --worker-codex-model gpt-5.4
+/rlp-desk run codex-test --worker-engine codex --worker-codex-model gpt-5.5
 ```
 
 **Pass criteria:**

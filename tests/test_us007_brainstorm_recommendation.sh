@@ -74,12 +74,19 @@ test_ac1_l1_4() {
   fi
 }
 
-# AC1-L1-5 (negative): model mapping rows (LOW/MEDIUM/HIGH) do NOT recommend gpt models
+# AC1-L1-5 (negative): the Claude-only mapping table does NOT recommend gpt models.
+# The Cross-engine mapping table (codex-installed path) intentionally maps gpt to Worker — out of scope here.
 test_ac1_l1_5() {
-  if ! echo "$BRAINSTORM_SECTION" | grep -qiE '(LOW|MEDIUM|HIGH).*gpt'; then
-    pass "AC1-L1-5: model mapping table uses only claude models for LOW/MEDIUM/HIGH rows (negative: no gpt in table)"
+  local claude_only_table
+  claude_only_table=$(echo "$BRAINSTORM_SECTION" | awk '/Model mapping — Claude-only/,/Model mapping — Cross-engine/')
+  if [[ -z "$claude_only_table" ]]; then
+    fail "AC1-L1-5: could not isolate the Claude-only mapping table — section header drift"
+    return
+  fi
+  if ! echo "$claude_only_table" | grep -qiE '(LOW|MEDIUM|HIGH).*gpt'; then
+    pass "AC1-L1-5: Claude-only mapping table uses only claude models for LOW/MEDIUM/HIGH rows"
   else
-    fail "AC1-L1-5: model mapping table must not map LOW/MEDIUM/HIGH to gpt models"
+    fail "AC1-L1-5: Claude-only mapping table must not map LOW/MEDIUM/HIGH to gpt models"
   fi
 }
 

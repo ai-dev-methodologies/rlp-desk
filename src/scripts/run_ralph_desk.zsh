@@ -30,9 +30,9 @@ set -uo pipefail
 #   MAX_NUDGES                - max nudges per pane per iteration (default: 3)
 #
 # Per-role codex config:
-#   WORKER_CODEX_MODEL            - codex model for Worker (default: gpt-5.4)
+#   WORKER_CODEX_MODEL            - codex model for Worker (default: gpt-5.5)
 #   WORKER_CODEX_REASONING        - codex reasoning for Worker (default: high)
-#   VERIFIER_CODEX_MODEL          - codex model for Verifier (default: gpt-5.4)
+#   VERIFIER_CODEX_MODEL          - codex model for Verifier (default: gpt-5.5)
 #   VERIFIER_CODEX_REASONING      - codex reasoning for Verifier (default: high)
 #
 # Consensus scope:
@@ -101,9 +101,9 @@ FINAL_VERIFIER_EFFORT="${FINAL_VERIFIER_EFFORT:-}"
 _auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT
 _auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING VERIFIER_EFFORT
 _auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE "" "" FINAL_VERIFIER_EFFORT
-WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.4}"
+WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.5}"
 WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high
-VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.4}"
+VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.5}"
 VERIFIER_CODEX_REASONING="${VERIFIER_CODEX_REASONING:-high}"   # low|medium|high
 CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 
@@ -111,8 +111,8 @@ CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 VERIFY_MODE="${VERIFY_MODE:-per-us}"        # per-us|batch
 # Consensus: off|all|final-only (replaces VERIFY_CONSENSUS + FINAL_CONSENSUS + CONSENSUS_SCOPE)
 CONSENSUS_MODE="${CONSENSUS_MODE:-off}"     # off|all|final-only
-CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.4:medium}"       # per-US cross-verifier (lighter)
-FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.4:high}"  # final cross-verifier (stricter)
+CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.5:medium}"       # per-US cross-verifier (lighter)
+FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.5:high}"  # final cross-verifier (stricter)
 # Legacy compat: map old flags to CONSENSUS_MODE
 if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
   CONSENSUS_MODE="${CONSENSUS_SCOPE:-all}"
@@ -2759,11 +2759,11 @@ while (( _cli_i <= $# )); do
       ;;
     --consensus-model)
       (( _cli_i++ ))
-      CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.4:medium}"
+      CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.5:medium}"
       ;;
     --final-consensus-model)
       (( _cli_i++ ))
-      FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.4:high}"
+      FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.5:high}"
       ;;
     --final-consensus)
       # Legacy: map to new --consensus final-only

@@ -438,7 +438,7 @@ The `run` command accepts engine flags to control which CLI executes Worker and 
 |------|---------|-------------|
 | `--worker-engine claude\|codex` | `claude` | Engine for Worker |
 | `--verifier-engine claude\|codex` | `claude` | Engine for Verifier |
-| `--codex-model MODEL` | `gpt-5.4` | Model passed to the `codex` CLI (when engine=codex) |
+| `--codex-model MODEL` | `gpt-5.5` | Model passed to the `codex` CLI (when engine=codex) |
 | `--codex-reasoning low\|medium\|high` | `high` | Reasoning effort for the `codex` CLI |
 
 **Claude engine** (default): uses `Agent()` in agent mode, `claude -p` with `--dangerously-skip-permissions` in tmux mode.

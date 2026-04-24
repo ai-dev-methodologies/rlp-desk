@@ -123,7 +123,7 @@ test('T1: generateSVReport produces 10-section report from done-claims and verdi
   await writeVerdict(logsDir, 1, verdict1);
 
   await writeAnalyticsLine(analyticsFile, {
-    iter: 1, us_id: 'US-001', worker_model: 'gpt-5.4:medium',
+    iter: 1, us_id: 'US-001', worker_model: 'gpt-5.5:medium',
     worker_engine: 'codex', verdict: 'pass', duration: 120, timestamp: '2026-04-12T00:02:00Z',
   });
 

@@ -65,18 +65,18 @@ else
   fail "D4: CONSENSUS_MODE default should be off"
 fi
 
-# D5: CONSENSUS_MODEL default is gpt-5.4:medium
-if grep -q 'CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.4:medium}"' "$RUN"; then
-  pass "D5: CONSENSUS_MODEL default is gpt-5.4:medium (per-US, lighter)"
+# D5: CONSENSUS_MODEL default is gpt-5.5:medium
+if grep -q 'CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.5:medium}"' "$RUN"; then
+  pass "D5: CONSENSUS_MODEL default is gpt-5.5:medium (per-US, lighter)"
 else
-  fail "D5: CONSENSUS_MODEL default should be gpt-5.4:medium"
+  fail "D5: CONSENSUS_MODEL default should be gpt-5.5:medium"
 fi
 
-# D6: FINAL_CONSENSUS_MODEL default is gpt-5.4:high
-if grep -q 'FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.4:high}"' "$RUN"; then
-  pass "D6: FINAL_CONSENSUS_MODEL default is gpt-5.4:high (final, stricter)"
+# D6: FINAL_CONSENSUS_MODEL default is gpt-5.5:high
+if grep -q 'FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.5:high}"' "$RUN"; then
+  pass "D6: FINAL_CONSENSUS_MODEL default is gpt-5.5:high (final, stricter)"
 else
-  fail "D6: FINAL_CONSENSUS_MODEL default should be gpt-5.4:high"
+  fail "D6: FINAL_CONSENSUS_MODEL default should be gpt-5.5:high"
 fi
 
 # ============================================================
@@ -210,11 +210,11 @@ else
   fail "G2: spark paths missing from get_next_model"
 fi
 
-# G3: gpt-5.4 paths still exist
-if echo "$fn_body" | grep -q 'gpt-5.4:'; then
-  pass "G3: gpt-5.4 paths still in get_next_model"
+# G3: gpt-5.5 paths still exist
+if echo "$fn_body" | grep -q 'gpt-5.5:'; then
+  pass "G3: gpt-5.5 paths still in get_next_model"
 else
-  fail "G3: gpt-5.4 paths missing from get_next_model"
+  fail "G3: gpt-5.5 paths missing from get_next_model"
 fi
 
 # ============================================================

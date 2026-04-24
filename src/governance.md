@@ -14,7 +14,7 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 - **Worker must NEVER modify Claude Code settings** (settings.json, settings.local.json). Permission prompts must be reported as blocked, not bypassed by editing settings.
 - **Verifier is independent**: The Verifier judges based on evidence alone, without knowledge of the Worker's reasoning process.
 - **Sentinels are Leader-owned**: Only the Leader writes COMPLETE/BLOCKED sentinels.
-- **Supported engines**: claude (default; models: haiku, sonnet, opus) and codex (opt-in via `--worker-model spark:high` or `--worker-model gpt-5.4:high`).
+- **Supported engines**: claude (default; models: haiku, sonnet, opus) and codex (opt-in via `--worker-model spark:high` or `--worker-model gpt-5.5:high`).
 
 ## 1a. Iron Laws
 
@@ -300,11 +300,11 @@ The Leader decides each iteration. Decision criteria:
 
 ### Codex (opt-in engine)
 
-Model routing uses `--worker-model` and `--verifier-model` with codex format: `spark:high` or `gpt-5.4:high`.
+Model routing uses `--worker-model` and `--verifier-model` with codex format: `spark:high` or `gpt-5.5:high`.
 
 ```
 --worker-model spark:high        # codex worker, spark model, high reasoning
---verifier-model gpt-5.4:high    # codex verifier, gpt-5.4, high reasoning
+--verifier-model gpt-5.5:high    # codex verifier, gpt-5.5, high reasoning
 ```
 
 `parse_model_flag()` auto-detects engine from the model name: plain names (haiku, sonnet, opus) = claude; `name:reasoning` format = codex. Claude is the default engine; codex is explicitly opt-in.
@@ -331,7 +331,7 @@ Agent(
 )
 ```
 
-If `--worker-model` or `--verifier-model` uses codex format (e.g., `spark:high`, `gpt-5.4:high`) (opt-in):
+If `--worker-model` or `--verifier-model` uses codex format (e.g., `spark:high`, `gpt-5.5:high`) (opt-in):
 ```
 # Worker or Verifier (codex engine)
 Bash("codex -m <codex_model> -c model_reasoning_effort=<codex_reasoning> --dangerously-bypass-approvals-and-sandbox <prompt>")
@@ -377,7 +377,7 @@ claude -p "$(cat /path/to/prompt.md)" \
 When `WORKER_ENGINE=codex` or `VERIFIER_ENGINE=codex`, the `codex` CLI is used instead:
 ```bash
 # codex engine (opt-in)
-codex -m gpt-5.4 \
+codex -m gpt-5.5 \
   -c model_reasoning_effort="high" \
   --dangerously-bypass-approvals-and-sandbox \
   "$(cat /path/to/prompt.md)"
@@ -569,9 +569,9 @@ Worker completes US → signal verify
 
 | Scenario | Primary verifier | Cross verifier |
 |----------|-----------------|----------------|
-| per-US, primary=claude | `--verifier-model` (sonnet) | `--consensus-model` (gpt-5.4:medium) |
+| per-US, primary=claude | `--verifier-model` (sonnet) | `--consensus-model` (gpt-5.5:medium) |
 | per-US, primary=codex | `--verifier-model` | claude opus (fixed) |
-| final, primary=claude | `--final-verifier-model` (opus) | `--final-consensus-model` (gpt-5.4:high) |
+| final, primary=claude | `--final-verifier-model` (opus) | `--final-consensus-model` (gpt-5.5:high) |
 | final, primary=codex | `--final-verifier-model` | claude opus (fixed) |
 
 - Both must pass. No engine priority.
