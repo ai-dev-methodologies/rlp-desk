@@ -161,15 +161,15 @@ else
   fail "T2-2: skipped"
 fi
 
-# T2-3: codex gpt-5.4 medium → "gpt-5.4:medium"
+# T2-3: codex gpt-5.5 medium → "gpt-5.5:medium"
 if [[ -n "$fn2" ]]; then
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn2}
-get_model_string codex gpt-5.4 medium")
-  if [[ "$result" == "gpt-5.4:medium" ]]; then
-    pass "T2-3: get_model_string codex gpt-5.4 medium → 'gpt-5.4:medium'"
+get_model_string codex gpt-5.5 medium")
+  if [[ "$result" == "gpt-5.5:medium" ]]; then
+    pass "T2-3: get_model_string codex gpt-5.5 medium → 'gpt-5.5:medium'"
   else
-    fail "T2-3: expected 'gpt-5.4:medium', got '$result'"
+    fail "T2-3: expected 'gpt-5.5:medium', got '$result'"
   fi
 else
   fail "T2-3: skipped"
@@ -255,12 +255,14 @@ else
   fail "T3-4: skipped"
 fi
 
-# T3-5: launch_worker_codex has bash trigger
+# T3-5: launch_worker_codex has codex TUI launch (paste_to_pane dispatch)
+# Refactored: codex workers now use paste_to_pane (matching claude pattern) instead of
+# bash trigger scripts. Assert the launch primitive is present.
 if [[ -n "$fn3x" ]]; then
-  if echo "$fn3x" | grep -q "trigger"; then
-    pass "T3-5: launch_worker_codex has trigger reference"
+  if echo "$fn3x" | grep -q "paste_to_pane"; then
+    pass "T3-5: launch_worker_codex dispatches via paste_to_pane"
   else
-    fail "T3-5: launch_worker_codex missing trigger reference"
+    fail "T3-5: launch_worker_codex missing paste_to_pane dispatch"
   fi
 else
   fail "T3-5: skipped"
@@ -303,8 +305,9 @@ if [[ -n "$fn4c" ]]; then
 else fail "T4-3: skipped"; fi
 
 if [[ -n "$fn4x" ]]; then
-  count=$(echo "$fn4x" | grep -c "submit_attempts" 2>/dev/null) || count=0
-  if (( count == 0 )); then pass "T4-4: launch_verifier_codex has no submit loop"; else fail "T4-4: should not have submit loop"; fi
+  # launch_verifier_codex uses the same submit_attempts submit loop as launch_verifier_claude
+  # for parity (visual tmux execution + adaptive retry). Assert the loop is present.
+  if echo "$fn4x" | grep -q "submit_attempts"; then pass "T4-4: launch_verifier_codex has submit loop (parity with claude)"; else fail "T4-4: missing submit loop"; fi
 else fail "T4-4: skipped"; fi
 
 count=$(grep -c "launch_verifier_claude\|launch_verifier_codex" "$RUN" 2>/dev/null) || count=0
@@ -356,9 +359,10 @@ else
   fail "T6-2: skipped"
 fi
 
-# T6-3: existing restart logic unchanged (check claude path still has CLAUDE_BIN)
+# T6-3: existing claude restart path preserved (refactored to use build_claude_cmd helper
+# instead of direct CLAUDE_BIN invocation).
 if [[ -n "$fn6" ]]; then
-  if echo "$fn6" | grep -q "CLAUDE_BIN"; then pass "T6-3: claude restart path preserved"; else fail "T6-3: claude path missing"; fi
+  if echo "$fn6" | grep -q "build_claude_cmd"; then pass "T6-3: claude restart path preserved (build_claude_cmd)"; else fail "T6-3: claude path missing"; fi
 else fail "T6-3: skipped"; fi
 
 # =============================================================================

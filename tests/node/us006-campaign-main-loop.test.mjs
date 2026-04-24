@@ -83,7 +83,8 @@ async function setupCampaign(t, options = {}) {
 function createTmuxFakes() {
   const commands = [];
   const sessions = [];
-  const paneIds = ['%worker', '%verifier'];
+  // Panes are created in order: flywheel → worker → verifier (see campaign-main-loop.mjs)
+  const paneIds = ['%flywheel', '%worker', '%verifier'];
   const createdPanes = [];
 
   return {
@@ -116,7 +117,7 @@ test('US-006 AC6.1 happy: run creates the tmux panes, launches the worker with c
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -130,11 +131,11 @@ test('US-006 AC6.1 happy: run creates the tmux panes, launches the worker with c
   assert.equal(tmux.sessions.length, 1);
   assert.deepEqual(
     tmux.createdPanes.map(({ layout }) => layout),
-    ['horizontal', 'vertical'],
+    ['horizontal', 'horizontal', 'vertical'],
   );
 
   const workerCommand = tmux.commands.find((entry) => entry.paneId === '%worker')?.command ?? '';
-  assert.match(workerCommand, /codex -m gpt-5\.4/);
+  assert.match(workerCommand, /codex -m gpt-5\.5/);
   assert.match(workerCommand, /model_reasoning_effort="medium"/);
   assert.match(workerCommand, /--disable plugins --dangerously-bypass-approvals-and-sandbox/);
   assert.match(workerCommand, /iter-001\.worker-prompt\.md/);
@@ -147,7 +148,7 @@ test('US-006 AC6.1 happy: run creates the tmux panes, launches the worker with c
   assert.equal(status.phase, 'complete');
 });
 
-test('US-006 AC6.1 boundary: run can create a real tmux session with three panes before continuing the campaign', async (t) => {
+test('US-006 AC6.1 boundary: run can create a real tmux session with four panes (leader + flywheel + worker + verifier) before continuing the campaign', async (t) => {
   const campaign = await setupCampaign(t);
   const sessionName = `us006-${Date.now()}`;
   const sendCommands = [];
@@ -161,7 +162,7 @@ test('US-006 AC6.1 boundary: run can create a real tmux session with three panes
     rootDir: campaign.rootDir,
     mode: 'tmux',
     sessionName,
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -176,8 +177,9 @@ test('US-006 AC6.1 boundary: run can create a real tmux session with three panes
   const { stdout } = await execFileAsync('tmux', ['list-panes', '-t', sessionName, '-F', '#{pane_id}']);
   const paneIds = stdout.trim().split('\n').filter(Boolean);
 
-  assert.equal(paneIds.length, 3);
-  assert.match(sendCommands[0].command, /gpt-5\.4/);
+  // 4 panes: leader (from new-session) + flywheel + worker + verifier
+  assert.equal(paneIds.length, 4);
+  assert.match(sendCommands[0].command, /gpt-5\.5/);
 });
 
 test('US-006 AC6.1 negative: run rejects a missing scaffold before it creates tmux state', async (t) => {
@@ -192,7 +194,7 @@ test('US-006 AC6.1 negative: run rejects a missing scaffold before it creates tm
     run(campaign.slug, {
       rootDir: campaign.rootDir,
       mode: 'tmux',
-      workerModel: 'gpt-5.4:medium',
+      workerModel: 'gpt-5.5:medium',
       pollForSignal: createPoller([]),
       runIntegrationCheck: async () => ({ exitCode: 0 }),
       ...tmux.deps,
@@ -216,7 +218,7 @@ test('US-006 AC6.2 happy: a worker verify signal launches a verifier prompt scop
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -253,7 +255,7 @@ test('US-006 AC6.2 boundary: a codex worker timeout falls back to verifying the 
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       new TimeoutError('codex worker exited before writing a signal'),
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -277,7 +279,7 @@ test('US-006 AC6.2 negative: a failing verdict writes a fix contract and retries
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       {
@@ -322,7 +324,7 @@ test('US-006 AC6.3 happy: three consecutive failures on the same US upgrade the 
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'fail', recommended_state_transition: 'continue', issues: [] },
@@ -345,7 +347,7 @@ test('US-006 AC6.3 happy: three consecutive failures on the same US upgrade the 
     .find((command) => /model_reasoning_effort="high"/.test(command));
 
   assert.ok(upgradedCommand, 'expected a retried worker launch with high reasoning');
-  assert.ok(statusHistory.some((status) => status.worker_model === 'gpt-5.4:high'));
+  assert.ok(statusHistory.some((status) => status.worker_model === 'gpt-5.5:high'));
 });
 
 test('US-006 AC6.3 boundary: resume preserves the failure streak so the next failure upgrades the worker immediately', async (t) => {
@@ -358,7 +360,7 @@ test('US-006 AC6.3 boundary: resume preserves the failure streak so the next fai
       slug: campaign.slug,
       iteration: 2,
       phase: 'worker',
-      worker_model: 'gpt-5.4:medium',
+      worker_model: 'gpt-5.5:medium',
       verifier_model: 'sonnet',
       final_verifier_model: 'opus',
       verified_us: [],
@@ -374,7 +376,7 @@ test('US-006 AC6.3 boundary: resume preserves the failure streak so the next fai
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       { iteration: 3, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'fail', recommended_state_transition: 'continue', issues: [] },
@@ -406,7 +408,7 @@ test('US-006 AC6.3 negative: after repeated failures through xhigh the campaign 
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller(failureSequence),
     runIntegrationCheck: async () => ({ exitCode: 0 }),
     ...tmux.deps,
@@ -433,7 +435,7 @@ test('US-006 AC6.4 happy: after all stories pass individually, final sequential 
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -478,7 +480,7 @@ test('US-006 AC6.4 boundary: a failing final per-US re-verification stops comple
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     maxIterations: 3,
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
@@ -507,7 +509,7 @@ test('US-006 AC6.4 negative: integration failure prevents COMPLETE even after al
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     maxIterations: 2,
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
@@ -541,7 +543,7 @@ test('US-006 AC6.5 happy: an existing blocked sentinel refuses to start and tell
     run(campaign.slug, {
       rootDir: campaign.rootDir,
       mode: 'tmux',
-      workerModel: 'gpt-5.4:medium',
+      workerModel: 'gpt-5.5:medium',
       pollForSignal: createPoller([]),
       runIntegrationCheck: async () => ({ exitCode: 0 }),
       ...tmux.deps,
@@ -566,7 +568,7 @@ test('US-006 AC6.5 boundary: a blocked sentinel short-circuits before any tmux s
     run(campaign.slug, {
       rootDir: campaign.rootDir,
       mode: 'tmux',
-      workerModel: 'gpt-5.4:medium',
+      workerModel: 'gpt-5.5:medium',
       pollForSignal: createPoller([]),
       runIntegrationCheck: async () => ({ exitCode: 0 }),
       onStatusChange: (status) => statusHistory.push(status),
@@ -587,7 +589,7 @@ test('US-006 AC6.5 negative: without a blocked sentinel the campaign is allowed 
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.4:medium',
+    workerModel: 'gpt-5.5:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },

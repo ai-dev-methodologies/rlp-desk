@@ -75,13 +75,13 @@ Ask about these items one by one (or in small groups):
 
    | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
    |------------|--------|-----------------|----------------|-----------|
-   | LOW | gpt-5.4:medium | sonnet | opus | final-only |
-   | MEDIUM | gpt-5.4:medium | opus | opus | final-only |
-   | HIGH | gpt-5.4:high | opus | opus | all |
-   | CRITICAL | gpt-5.4:high | opus | opus + human | all |
+   | LOW | gpt-5.5:medium | sonnet | opus | final-only |
+   | MEDIUM | gpt-5.5:medium | opus | opus | final-only |
+   | HIGH | gpt-5.5:high | opus | opus | all |
+   | CRITICAL | gpt-5.5:high | opus | opus + human | all |
 
    **Worker model selection** (cross-engine):
-   - **gpt-5.4:medium** — default recommendation (full context window, progressive upgrade handles harder US)
+   - **gpt-5.5:medium** — default recommendation (full context window, progressive upgrade handles harder US)
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
 
    Present complexity score with evidence to the user, e.g.: "I rate this MEDIUM because: US count=4 (MEDIUM), file scope=2 (MEDIUM), logic=conditionals (MEDIUM), deps=none (LOW), impact=modify (MEDIUM). Highest=MEDIUM."
@@ -91,8 +91,8 @@ Ask about these items one by one (or in small groups):
    **If codex is NOT installed** — say: "Codex is not installed. Defaulting to claude-only Worker. Note: without a second engine, your Verifier shares the same perspective as the Worker — there is a risk of blind spots where both Worker and Verifier miss the same issue. To unlock cross-engine coverage: `npm install -g @openai/codex`"
 
 8. **Batch Capacity Check** — when verify-mode is batch and PRD is large:
-   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to gpt-5.4 or split smaller"
-   - batch + gpt-5.4 + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
+   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to gpt-5.5 or split smaller"
+   - batch + gpt-5.5 + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
    - per-us → no warning (US-level processing, no limit concern)
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
 10. **Consensus** — Ask: "Use cross-engine consensus? off (single engine), final-only (cross-engine on final verify only), or all (cross-engine on every verify). Requires codex CLI." Default: off. Recommended: final-only when codex is installed.
@@ -164,26 +164,26 @@ Tell the user:
    Available run commands (copy the one you want):
 
    # ★ Recommended: cross-engine + final-consensus (full context + blind-spot coverage):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.4:medium --consensus final-only --debug
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.5:medium --consensus final-only --debug
 
    # Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):
    /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
 
    # Critical (full consensus on every verify):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.4:high --consensus all --debug
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.5:high --consensus all --debug
 
    # Claude-only:
    /rlp-desk run <actual-slug> --debug
 
    # Full options reference:
    #   --mode agent|tmux                      (default: agent)
-   #   --worker-model MODEL                   haiku|sonnet|opus or gpt-5.4:high|spark:high (default: haiku)
+   #   --worker-model MODEL                   haiku|sonnet|opus or gpt-5.5:high|spark:high (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
    #   --verifier-model MODEL                 per-US verifier (default: sonnet)
    #   --final-verifier-model MODEL           final ALL verifier (default: opus)
    #   --consensus off|all|final-only         cross-engine consensus (default: off)
-   #   --consensus-model MODEL                per-US cross-verifier (default: gpt-5.4:medium)
-   #   --final-consensus-model MODEL          final cross-verifier (default: gpt-5.4:high)
+   #   --consensus-model MODEL                per-US cross-verifier (default: gpt-5.5:medium)
+   #   --final-consensus-model MODEL          final cross-verifier (default: gpt-5.5:high)
    #   --verify-mode per-us|batch             (default: per-us)
    #   --cb-threshold N                       (default: 6)
    #   --max-iter N                           (default: 100)
@@ -240,16 +240,16 @@ Tell the user:
 
 Options (parse from `$ARGUMENTS`):
 - `--mode agent|tmux` (default: `agent`) — execution mode
-- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.4:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
-- `--lock-worker-model` — disable automatic model upgrade on failure (check_model_upgrade). Worker stays on the specified model regardless of consecutive failures.
+- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.5:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
+- `--lock-worker-model` — disable automatic model upgrade on failure. Worker stays on the specified model regardless of consecutive failures.
 - `--verifier-model MODEL` (default: `sonnet`) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier.
 - `--final-verifier-model MODEL` (default: `opus`) — final ALL verification model. Independent from per-US verifier. Used only for the final full-AC verify pass.
 - `--consensus off|all|final-only` (default: `off`) — cross-engine consensus verification mode.
   - `off`: single-engine verification only
   - `all`: cross-engine consensus on every verify (per-US and final)
   - `final-only`: cross-engine consensus only on the final ALL verify
-- `--consensus-model MODEL` (default: `gpt-5.4:medium`) — per-US cross-verifier model. Lighter weight for cost efficiency.
-- `--final-consensus-model MODEL` (default: `gpt-5.4:high`) — final cross-verifier model. Stricter. Note: spark is not allowed here (100k output limit).
+- `--consensus-model MODEL` (default: `gpt-5.5:medium`) — per-US cross-verifier model. Lighter weight for cost efficiency.
+- `--final-consensus-model MODEL` (default: `gpt-5.5:high`) — final cross-verifier model. Stricter. Note: spark is not allowed here (100k output limit).
 - `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
   - `per-us`: verify after each US, then final full verify of all AC
   - `batch`: verify only after all US done (legacy behavior)
@@ -292,8 +292,8 @@ VERIFIER_MODEL=<--verifier-model value, default: sonnet> \
 FINAL_VERIFIER_MODEL=<--final-verifier-model value, default: opus> \
 VERIFY_MODE=<--verify-mode value, default: per-us> \
 CONSENSUS_MODE=<--consensus value, default: off> \
-CONSENSUS_MODEL=<--consensus-model value, default: gpt-5.4:medium> \
-FINAL_CONSENSUS_MODEL=<--final-consensus-model value, default: gpt-5.4:high> \
+CONSENSUS_MODEL=<--consensus-model value, default: gpt-5.5:medium> \
+FINAL_CONSENSUS_MODEL=<--final-consensus-model value, default: gpt-5.5:high> \
 CB_THRESHOLD=<--cb-threshold value, default: 6> \
 ITER_TIMEOUT=<--iter-timeout value, default: 600> \
 DEBUG=<1 if --debug, else 0> \
@@ -473,8 +473,8 @@ Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <ful
 **⑦b Consensus Verification** (when `--consensus` is `all`, or `final-only` and scope is ALL):
 After the primary verifier runs, run a cross-engine second verifier:
 - Determine cross-verifier model based on scope:
-  - per-US verify → use `--consensus-model` (default: gpt-5.4:medium)
-  - final ALL verify → use `--final-consensus-model` (default: gpt-5.4:high)
+  - per-US verify → use `--consensus-model` (default: gpt-5.5:medium)
+  - final ALL verify → use `--final-consensus-model` (default: gpt-5.5:high)
 - If primary engine is claude → cross-verifier uses codex (the consensus model)
 - If primary engine is codex → cross-verifier uses claude `opus` (fixed)
 - Both produce `verify-verdict.json` (Leader renames to `verify-verdict-claude.json` and `verify-verdict-codex.json`)
@@ -732,13 +732,13 @@ Example:
 
 Run options:
   --mode agent|tmux                    Execution mode (default: agent)
-  --worker-model MODEL                 Worker model: haiku|sonnet|opus or gpt-5.4:high|spark:high (default: haiku)
+  --worker-model MODEL                 Worker model: haiku|sonnet|opus or gpt-5.5:high|spark:high (default: haiku)
   --lock-worker-model                  Disable auto model upgrade on failure
   --verifier-model MODEL               per-US verifier (default: sonnet)
   --final-verifier-model MODEL         Final ALL verifier (default: opus)
   --consensus off|all|final-only       Cross-engine consensus (default: off)
-  --consensus-model MODEL              per-US cross-verifier (default: gpt-5.4:medium)
-  --final-consensus-model MODEL        Final cross-verifier (default: gpt-5.4:high)
+  --consensus-model MODEL              per-US cross-verifier (default: gpt-5.5:medium)
+  --final-consensus-model MODEL        Final cross-verifier (default: gpt-5.5:high)
   --verify-mode per-us|batch           Verification strategy (default: per-us)
   --cb-threshold N                     Consecutive failures before BLOCKED (default: 6)
   --max-iter N                         Max iterations (default: 100)

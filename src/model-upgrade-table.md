@@ -18,14 +18,14 @@ CB default: 6. Override: `--cb-threshold N`. Worker only — Verifier fixed at c
 | HIGH | gpt-5.3-codex-spark:high | gpt-5.3-codex-spark:xhigh | gpt-5.3-codex-spark:xhigh | BLOCKED |
 | CRITICAL | gpt-5.3-codex-spark:xhigh | gpt-5.3-codex-spark:xhigh | gpt-5.3-codex-spark:xhigh | BLOCKED |
 
-## Non-Pro (gpt-5.4)
+## Non-Pro (gpt-5.5)
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7+ |
 |------------|-----|-----|-----|-----|
-| LOW | gpt-5.4:low | gpt-5.4:medium | gpt-5.4:high | BLOCKED |
-| MEDIUM | gpt-5.4:medium | gpt-5.4:high | gpt-5.4:xhigh | BLOCKED |
-| HIGH | gpt-5.4:high | gpt-5.4:xhigh | gpt-5.4:xhigh | BLOCKED |
-| CRITICAL | gpt-5.4:xhigh | gpt-5.4:xhigh | gpt-5.4:xhigh | BLOCKED |
+| LOW | gpt-5.5:low | gpt-5.5:medium | gpt-5.5:high | BLOCKED |
+| MEDIUM | gpt-5.5:medium | gpt-5.5:high | gpt-5.5:xhigh | BLOCKED |
+| HIGH | gpt-5.5:high | gpt-5.5:xhigh | gpt-5.5:xhigh | BLOCKED |
+| CRITICAL | gpt-5.5:xhigh | gpt-5.5:xhigh | gpt-5.5:xhigh | BLOCKED |
 
 ## Claude-only
 

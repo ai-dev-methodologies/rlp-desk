@@ -69,22 +69,22 @@ echo ""
 # ============================================================
 echo "--- AC1: Colon format parsed as codex ---"
 
-_run_parse "gpt-5.4:medium" "worker"
-if _func_or_fail "AC1-L1-1: gpt-5.4:medium → engine=codex"; then
+_run_parse "gpt-5.5:medium" "worker"
+if _func_or_fail "AC1-L1-1: gpt-5.5:medium → engine=codex"; then
   assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "codex" \
-    "AC1-L1-1: gpt-5.4:medium → engine=codex"
+    "AC1-L1-1: gpt-5.5:medium → engine=codex"
 fi
 
-_run_parse "gpt-5.4:medium" "worker"
-if _func_or_fail "AC1-L1-2: gpt-5.4:medium → model=gpt-5.4"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.4" \
-    "AC1-L1-2: gpt-5.4:medium → model=gpt-5.4"
+_run_parse "gpt-5.5:medium" "worker"
+if _func_or_fail "AC1-L1-2: gpt-5.5:medium → model=gpt-5.5"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.5" \
+    "AC1-L1-2: gpt-5.5:medium → model=gpt-5.5"
 fi
 
-_run_parse "gpt-5.4:medium" "worker"
-if _func_or_fail "AC1-L1-3: gpt-5.4:medium → reasoning=medium"; then
+_run_parse "gpt-5.5:medium" "worker"
+if _func_or_fail "AC1-L1-3: gpt-5.5:medium → reasoning=medium"; then
   assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "medium" \
-    "AC1-L1-3: gpt-5.4:medium → reasoning=medium"
+    "AC1-L1-3: gpt-5.5:medium → reasoning=medium"
 fi
 
 _run_parse "gpt-5.3-codex-spark:high" "worker"
@@ -106,20 +106,20 @@ if _func_or_fail "AC1-L1-6: gpt-5.3-codex-spark:high → reasoning=high"; then
 fi
 
 # AC1-L1-7 (boundary): colon format with empty reasoning still detected as codex
-_run_parse "gpt-5.4:" "worker"
-if _func_or_fail "AC1-L1-7: gpt-5.4: (empty reasoning) → engine=codex"; then
+_run_parse "gpt-5.5:" "worker"
+if _func_or_fail "AC1-L1-7: gpt-5.5: (empty reasoning) → engine=codex"; then
   assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "codex" \
-    "AC1-L1-7: gpt-5.4: boundary (empty reasoning) → still engine=codex"
+    "AC1-L1-7: gpt-5.5: boundary (empty reasoning) → still engine=codex"
 fi
 
 # AC1-L1-8 (negative): identical model name without colon → NOT codex (proves colon is required)
-_run_parse "gpt-5.4" "worker"
-if _func_or_fail "AC1-L1-8: gpt-5.4 (no colon) → NOT codex"; then
+_run_parse "gpt-5.5" "worker"
+if _func_or_fail "AC1-L1-8: gpt-5.5 (no colon) → NOT codex"; then
   engine="$(echo "$PARSE_STDOUT" | awk '{print $1}')"
   if [[ "$engine" != "codex" ]]; then
-    pass "AC1-L1-8: gpt-5.4 (no colon) → engine=$engine, proves colon required for codex"
+    pass "AC1-L1-8: gpt-5.5 (no colon) → engine=$engine, proves colon required for codex"
   else
-    fail "AC1-L1-8: gpt-5.4 without colon must NOT be codex engine (colon is required)"
+    fail "AC1-L1-8: gpt-5.5 without colon must NOT be codex engine (colon is required)"
   fi
 fi
 
@@ -212,19 +212,19 @@ mkdir -p "$TMP_L3/.claude/ralph-desk/plans" \
          "$TMP_L3/.claude/ralph-desk/logs/e2eslug"
 touch "$TMP_L3/.claude/ralph-desk/plans/prd-e2eslug.md"
 
-# L3-E2E-1: --worker-model gpt-5.4:medium → startup log shows gpt-5.4
+# L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows gpt-5.5
 L3_OUT_1=$(LOOP_NAME=e2eslug ROOT="$TMP_L3" TMUX=test \
-  zsh "$RUN" --worker-model gpt-5.4:medium 2>/dev/null || true)
-c=$(echo "$L3_OUT_1" | grep -c "gpt-5.4" 2>/dev/null) || c=0
+  zsh "$RUN" --worker-model gpt-5.5:medium 2>/dev/null || true)
+c=$(echo "$L3_OUT_1" | grep -c "gpt-5.5" 2>/dev/null) || c=0
 if [[ "$c" -ge 1 ]]; then
-  pass "L3-E2E-1: --worker-model gpt-5.4:medium → startup log shows gpt-5.4"
+  pass "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows gpt-5.5"
 else
-  fail "L3-E2E-1: --worker-model gpt-5.4:medium → startup log shows gpt-5.4 (output: '$(echo "$L3_OUT_1" | head -5)')"
+  fail "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows gpt-5.5 (output: '$(echo "$L3_OUT_1" | head -5)')"
 fi
 
 # L3-E2E-2: --verifier-model sonnet → startup log shows sonnet
 L3_OUT_2=$(LOOP_NAME=e2eslug ROOT="$TMP_L3" TMUX=test \
-  zsh "$RUN" --worker-model gpt-5.4:medium --verifier-model sonnet 2>/dev/null || true)
+  zsh "$RUN" --worker-model gpt-5.5:medium --verifier-model sonnet 2>/dev/null || true)
 c=$(echo "$L3_OUT_2" | grep -c "sonnet" 2>/dev/null) || c=0
 if [[ "$c" -ge 1 ]]; then
   pass "L3-E2E-2: --verifier-model sonnet → startup log shows sonnet"

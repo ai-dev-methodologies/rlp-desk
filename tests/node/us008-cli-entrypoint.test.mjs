@@ -104,7 +104,7 @@ test('US-008 AC8.2 happy: the run command parses tmux example flags and launches
   let received = null;
 
   const exitCode = await cli.main(
-    ['run', 'test', '--mode', 'tmux', '--worker-model', 'gpt-5.4:medium', '--debug'],
+    ['run', 'test', '--mode', 'tmux', '--worker-model', 'gpt-5.5:medium', '--debug'],
     {
       cwd: repoRoot,
       stdout: { write() {} },
@@ -122,12 +122,12 @@ test('US-008 AC8.2 happy: the run command parses tmux example flags and launches
     options: {
       rootDir: repoRoot,
       mode: 'tmux',
-      workerModel: 'gpt-5.4:medium',
+      workerModel: 'gpt-5.5:medium',
       verifierModel: 'sonnet',
       finalVerifierModel: 'opus',
       consensusMode: 'off',
-      consensusModel: 'gpt-5.4:medium',
-      finalConsensusModel: 'gpt-5.4:high',
+      consensusModel: 'gpt-5.5:medium',
+      finalConsensusModel: 'gpt-5.5:high',
       verifyMode: 'per-us',
       cbThreshold: 6,
       maxIterations: 100,

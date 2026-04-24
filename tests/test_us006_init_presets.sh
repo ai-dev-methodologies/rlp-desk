@@ -67,15 +67,15 @@ run_presets_without_codex() {
 # ── AC1: codex detected → cross-engine presets first ────────────────────────
 echo "--- AC1: codex detected → cross-engine presets ---"
 
-# AC1-L1-1: output contains --worker-model gpt-5.4 when codex detected
+# AC1-L1-1: output contains --worker-model gpt-5.5 when codex detected
 test_ac1_l1_1() {
   if [[ -z "$FN_BODY" ]]; then fail "AC1-L1-1: function missing"; return; fi
   local out
   out="$(run_presets_with_codex "testslug")"
-  if echo "$out" | grep -qF -- '--worker-model gpt-5.4'; then
-    pass "AC1-L1-1: codex detected → output contains --worker-model gpt-5.4"
+  if echo "$out" | grep -qF -- '--worker-model gpt-5.5'; then
+    pass "AC1-L1-1: codex detected → output contains --worker-model gpt-5.5"
   else
-    fail "AC1-L1-1: codex detected → --worker-model gpt-5.4 not found in output"
+    fail "AC1-L1-1: codex detected → --worker-model gpt-5.5 not found in output"
   fi
 }
 
@@ -85,7 +85,7 @@ test_ac1_l1_2() {
   local out
   out="$(run_presets_with_codex "testslug")"
   local line_gpt line_basic
-  line_gpt=$(echo "$out" | grep -n 'gpt-5.4' | head -1 | cut -d: -f1)
+  line_gpt=$(echo "$out" | grep -n 'gpt-5.5' | head -1 | cut -d: -f1)
   # find the first /rlp-desk run line that has NO gpt/codex/spark (pure claude-only line)
   line_basic=$(echo "$out" | grep -n '/rlp-desk run' | grep -v 'gpt\|codex\|spark\|consensus' | head -1 | cut -d: -f1)
   if [[ -n "$line_gpt" && -n "$line_basic" ]] && (( line_gpt < line_basic )); then
@@ -110,20 +110,20 @@ test_ac1_l1_3() {
   fi
 }
 
-# AC1-L1-4: first codex preset uses --final-consensus (not --verify-consensus)
-# PRD AC1: "cross-engine + final-consensus preset shown first"
-# --final-consensus runs consensus only on final ALL verify (cost-effective)
-# --verify-consensus runs consensus on every per-US verify (expensive)
+# AC1-L1-4: first codex preset uses --consensus final-only (unified consensus flag)
+# PRD AC1: "cross-engine + final-only consensus preset shown first"
+# --consensus final-only runs consensus only on final ALL verify (cost-effective)
+# --consensus all runs consensus on every per-US verify (expensive)
 test_ac1_l1_4() {
   if [[ -z "$FN_BODY" ]]; then fail "AC1-L1-4: function missing"; return; fi
   local out
   out="$(run_presets_with_codex "testslug")"
   local first_run_line
   first_run_line=$(echo "$out" | grep -m1 '/rlp-desk run')
-  if echo "$first_run_line" | grep -qF -- '--final-consensus'; then
-    pass "AC1-L1-4: first codex preset uses --final-consensus"
+  if echo "$first_run_line" | grep -qF -- '--consensus final-only'; then
+    pass "AC1-L1-4: first codex preset uses --consensus final-only"
   else
-    fail "AC1-L1-4: first codex preset must use --final-consensus, got: '$first_run_line'"
+    fail "AC1-L1-4: first codex preset must use --consensus final-only, got: '$first_run_line'"
   fi
 }
 
@@ -162,17 +162,17 @@ test_ac2_l1_2() {
   fi
 }
 
-# AC2-L1-3: no gpt-5.4 preset shown when codex not installed
+# AC2-L1-3: no gpt-5.5 preset shown when codex not installed
 test_ac2_l1_3() {
   if [[ -z "$FN_BODY" ]]; then fail "AC2-L1-3: function missing"; return; fi
   local out
   out="$(run_presets_without_codex "testslug")"
   local gpt_count
-  gpt_count=$(echo "$out" | grep -c -- '--worker-model gpt-5.4')
+  gpt_count=$(echo "$out" | grep -c -- '--worker-model gpt-5.5')
   if (( gpt_count == 0 )); then
-    pass "AC2-L1-3: no gpt-5.4 run preset when codex not installed"
+    pass "AC2-L1-3: no gpt-5.5 run preset when codex not installed"
   else
-    fail "AC2-L1-3: unexpected gpt-5.4 preset shown without codex (count=$gpt_count)"
+    fail "AC2-L1-3: unexpected gpt-5.5 preset shown without codex (count=$gpt_count)"
   fi
 }
 
@@ -231,7 +231,7 @@ echo "--- L3 E2E: Full init output ---"
 L3_BASE="$(mktemp -d)"
 trap 'rm -rf "$L3_BASE"' EXIT
 
-# L3-E2E-1: full init with codex → gpt-5.4 preset in output
+# L3-E2E-1: full init with codex → gpt-5.5 preset in output
 test_l3_e2e_1() {
   local test_dir="$L3_BASE/e2e1"
   mkdir -p "$test_dir"
@@ -241,10 +241,10 @@ test_l3_e2e_1() {
   chmod +x "$bin_dir/codex"
   local output
   output=$(ROOT="$test_dir" PATH="$bin_dir:$PATH" zsh "$INIT" "testslug-e2e" 2>/dev/null)
-  if echo "$output" | grep -qF 'gpt-5.4'; then
-    pass "L3-E2E-1: full init with codex → gpt-5.4 preset present in output"
+  if echo "$output" | grep -qF 'gpt-5.5'; then
+    pass "L3-E2E-1: full init with codex → gpt-5.5 preset present in output"
   else
-    fail "L3-E2E-1: gpt-5.4 missing in init output (last 8 lines: $(echo "$output" | tail -8 | tr '\n' '|'))"
+    fail "L3-E2E-1: gpt-5.5 missing in init output (last 8 lines: $(echo "$output" | tail -8 | tr '\n' '|'))"
   fi
 }
 

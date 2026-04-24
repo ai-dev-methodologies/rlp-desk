@@ -26,9 +26,9 @@ const execFileAsync = promisify(execFile);
 const REQUIRED_SCAFFOLD_NAMES = ['workerPrompt', 'verifierPrompt', 'memoryFile', 'prdFile', 'testSpecFile'];
 const CLAUDE_MODELS = new Set(['haiku', 'sonnet', 'opus']);
 const MODEL_UPGRADES = {
-  'gpt-5.4:medium': 'gpt-5.4:high',
-  'gpt-5.4:high': 'gpt-5.4:xhigh',
-  'gpt-5.4:xhigh': 'BLOCKED',
+  'gpt-5.5:medium': 'gpt-5.5:high',
+  'gpt-5.5:high': 'gpt-5.5:xhigh',
+  'gpt-5.5:xhigh': 'BLOCKED',
   'gpt-5.3-codex-spark:medium': 'gpt-5.3-codex-spark:high',
   'gpt-5.3-codex-spark:high': 'gpt-5.3-codex-spark:xhigh',
   'gpt-5.3-codex-spark:xhigh': 'BLOCKED',
