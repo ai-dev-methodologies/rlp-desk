@@ -13,6 +13,8 @@
 *~
 .DS_Store
 .claude/ralph-desk/
+.claude/settings.local.json
+docs/superpowers/
 .idea/
 .omc/
 .omx/

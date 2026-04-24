@@ -24,7 +24,6 @@ import {
 
 const execFileAsync = promisify(execFile);
 const REQUIRED_SCAFFOLD_NAMES = ['workerPrompt', 'verifierPrompt', 'memoryFile', 'prdFile', 'testSpecFile'];
-const CLAUDE_MODELS = new Set(['haiku', 'sonnet', 'opus']);
 const MODEL_UPGRADES = {
   'gpt-5.5:medium': 'gpt-5.5:high',
   'gpt-5.5:high': 'gpt-5.5:xhigh',
