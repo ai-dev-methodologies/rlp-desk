@@ -321,6 +321,53 @@ else
   fail "AC13-e: report missing the blockedReason line (got: $report_out)"
 fi
 
+# ------------------------------------------------------------------
+# AC14: lint reports file-local line numbers (FNR), not cumulative (NR).
+# (codex final review issue #3 — two-pass awk inflated line numbers.)
+# ------------------------------------------------------------------
+# Bad fixture line 21 holds: "  - Given: post-iter 신규 batch 6 run (US-003)"
+# (the offending AC). With NR the diagnostic would read line 21 + (file
+# total lines from pass 1), which would be > 30. With FNR it must read
+# exactly 21.
+expected_lineno=$(grep -nE 'post-iter 신규 batch' "$FIX_BAD" | head -1 | cut -d: -f1)
+got_lineno=$(zsh -c "$helper_body
+_detect_cross_us_refs '$FIX_BAD'" | head -1 | cut -d: -f2)
+if [[ -n "$expected_lineno" && "$got_lineno" == "$expected_lineno" ]]; then
+  pass "AC14: FNR yields PRD-local line $got_lineno (expected $expected_lineno)"
+else
+  fail "AC14: line mismatch (expected $expected_lineno, got $got_lineno)"
+fi
+
+# ------------------------------------------------------------------
+# AC15: flywheel-guard BLOCKED branches now call generateCampaignReport
+# (codex final review issue #1 — three-channel surfacing for those paths).
+# ------------------------------------------------------------------
+# Static check: in the file, both 'flywheel-guard-escalate-inconclusive'
+# and 'flywheel-guard-retries-exhausted' must appear paired with a
+# generateCampaignReport({ ... blockedReason }) call within ~30 lines.
+guard_excerpt=$(awk '/flywheel-guard-escalate-inconclusive/{flag=1;cnt=0} flag{print;cnt++; if(cnt>=30){flag=0}}' "$LOOP")
+if echo "$guard_excerpt" | grep -q 'generateCampaignReport'; then
+  pass "AC15-a: inconclusive guard branch calls generateCampaignReport"
+else
+  fail "AC15-a: inconclusive guard branch missing generateCampaignReport"
+fi
+exhaust_excerpt=$(awk '/flywheel-guard-retries-exhausted/{flag=1;cnt=0} flag{print;cnt++; if(cnt>=30){flag=0}}' "$LOOP")
+if echo "$exhaust_excerpt" | grep -q 'generateCampaignReport'; then
+  pass "AC15-b: retries-exhausted guard branch calls generateCampaignReport"
+else
+  fail "AC15-b: retries-exhausted guard branch missing generateCampaignReport"
+fi
+
+# ------------------------------------------------------------------
+# AC16: tmux campaign report renders blocked reason from sentinel
+# (codex final review issue #2).
+# ------------------------------------------------------------------
+LIB="$ROOT_REPO/src/scripts/lib_ralph_desk.zsh"
+assert_one "$LIB" 'blocked_reason=\$\(grep -m1' \
+  "AC16-a: tmux report extracts Reason: from BLOCKED_SENTINEL"
+assert_one "$LIB" '"- Blocked reason: \$blocked_reason"' \
+  "AC16-b: tmux report renders blocked reason line"
+
 echo
 echo "=== RESULTS: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

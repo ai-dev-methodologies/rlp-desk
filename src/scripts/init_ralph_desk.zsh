@@ -1191,7 +1191,9 @@ _detect_cross_us_refs() {
         ref_tok = substr(slice, 4)
         ref = ref_tok + 0
         if (ref > current && defined[ref]) {
-          printf("US-%03d:%d:%s\n", current, NR, $0)
+          # FNR (file-local) gives the PRD line number; NR would accumulate
+          # across both awk passes and report inflated line numbers.
+          printf("US-%03d:%d:%s\n", current, FNR, $0)
         }
         line = substr(line, RSTART + RLENGTH)
       }

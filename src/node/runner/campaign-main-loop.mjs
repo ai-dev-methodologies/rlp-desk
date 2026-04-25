@@ -606,12 +606,26 @@ export async function run(slug, options = {}) {
 
         if (guardVerdict.verdict === 'inconclusive') {
           state.phase = 'blocked';
-          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, 'flywheel-guard-escalate-inconclusive');
+          const guardReason = 'flywheel-guard-escalate-inconclusive';
+          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, guardReason);
           await writeStatus(paths, state, options.onStatusChange, options.now);
+          // governance §1f three-channel: sentinel + report + return value all
+          // carry the same blocked reason. SV is intentionally not generated
+          // here because the guard fires before the iteration runs to
+          // completion; the campaign report uses the default SV message.
+          await generateCampaignReport({
+            slug,
+            reportFile: paths.reportFile,
+            prdFile: paths.prdFile,
+            statusFile: paths.statusFile,
+            analyticsFile: paths.analyticsFile,
+            now: resolveNow(options.now),
+            blockedReason: guardReason,
+          });
           return {
             status: 'blocked',
             usId: state.current_us,
-            reason: 'flywheel-guard-escalate-inconclusive',
+            reason: guardReason,
             guardIssues: guardVerdict.issues,
             statusFile: paths.statusFile,
           };
@@ -620,12 +634,23 @@ export async function run(slug, options = {}) {
         if (guardVerdict.verdict === 'fail') {
           if (state.flywheel_guard_count[state.current_us] >= 3) {
             state.phase = 'blocked';
-            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, 'flywheel-guard-retries-exhausted');
+            const exhaustReason = 'flywheel-guard-retries-exhausted';
+            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, exhaustReason);
             await writeStatus(paths, state, options.onStatusChange, options.now);
+            // governance §1f three-channel: see comment above.
+            await generateCampaignReport({
+              slug,
+              reportFile: paths.reportFile,
+              prdFile: paths.prdFile,
+              statusFile: paths.statusFile,
+              analyticsFile: paths.analyticsFile,
+              now: resolveNow(options.now),
+              blockedReason: exhaustReason,
+            });
             return {
               status: 'blocked',
               usId: state.current_us,
-              reason: 'flywheel-guard-retries-exhausted',
+              reason: exhaustReason,
               guardIssues: guardVerdict.issues,
               statusFile: paths.statusFile,
             };

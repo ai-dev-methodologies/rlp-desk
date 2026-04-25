@@ -459,8 +459,16 @@ generate_campaign_report() {
   CAMPAIGN_REPORT_GENERATED=1
 
   local final_status="UNKNOWN"
+  local blocked_reason=""
   if [[ -f "$COMPLETE_SENTINEL" ]]; then final_status="COMPLETE"
-  elif [[ -f "$BLOCKED_SENTINEL" ]]; then final_status="BLOCKED"
+  elif [[ -f "$BLOCKED_SENTINEL" ]]; then
+    final_status="BLOCKED"
+    # governance §1f BLOCKED Surfacing: surface the reason on the campaign
+    # report (channel #2). Sentinels written by the leader / write_blocked_sentinel
+    # carry a "Reason: <text>" line; tolerate either a one-line legacy sentinel
+    # (no Reason:) or a multi-line one.
+    blocked_reason=$(grep -m1 -E '^[Rr]eason:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
+      | sed -E 's/^[Rr]eason:[[:space:]]*//')
   else final_status="TIMEOUT"; fi
 
   local report_file="$LOGS_DIR/campaign-report.md"
@@ -525,6 +533,9 @@ ${untracked}"
     echo ""
     echo "## Execution Summary"
     echo "- Terminal state: $final_status"
+    if [[ -n "$blocked_reason" ]]; then
+      echo "- Blocked reason: $blocked_reason"
+    fi
     echo "- Iterations run: $ITERATION / $MAX_ITER"
     echo "- Elapsed: ${elapsed}s"
     echo "- Worker model: $WORKER_MODEL ($WORKER_ENGINE)"
