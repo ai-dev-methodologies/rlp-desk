@@ -489,6 +489,7 @@ for iteration in 1..max_iter:
   ⑥½ Flywheel direction review (when --flywheel on-fail and consecutive_failures > 0)
      - Dispatch Flywheel agent (fresh context, --flywheel-model)
      - Read flywheel-signal.json for direction decision (hold/pivot/reduce/expand)
+     - Optional `next_mission_candidate` field (string | null): when present, the leader propagates it to status.json so consumer wrappers can chain the next mission without code edits. See docs/multi-mission-orchestration.md.
      - If --flywheel-guard on:
        - Dispatch Guard agent (fresh context, --flywheel-guard-model)
        - Read flywheel-guard-verdict.json:

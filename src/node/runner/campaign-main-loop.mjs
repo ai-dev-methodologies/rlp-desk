@@ -580,6 +580,11 @@ export async function run(slug, options = {}) {
       });
 
       state.last_flywheel_decision = flywheelSignal.decision;
+      // P0-A multi-mission orchestration: optionally captured from flywheel signal.
+      // null when the flywheel did not suggest a next mission. Consumer wrappers
+      // poll status.next_mission_candidate to chain missions without code edits.
+      // See docs/multi-mission-orchestration.md.
+      state.next_mission_candidate = flywheelSignal.next_mission_candidate ?? null;
       await fs.unlink(paths.flywheelSignalFile).catch(() => {});
 
       // Flywheel Guard (independent validation of flywheel decision)

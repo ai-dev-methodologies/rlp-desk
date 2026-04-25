@@ -116,9 +116,19 @@ Three design notes:
 
 ## Flywheel-driven dynamic chain (optional)
 
-If a mission's flywheel populates `memos/<slug>-flywheel-signal.json` with a
-`next_mission_candidate`, the wrapper can pick the next slug from that field
-instead of a fixed list:
+**Emit side (rlp-desk responsibility)**: when a mission runs the flywheel
+review (`--flywheel on-fail`), the flywheel agent's signal JSON
+(`memos/<slug>-flywheel-signal.json`) MAY include an optional
+`next_mission_candidate` field — `null` for "no recommendation" or a slug
+string for "consumer should chain this slug next." The Node leader
+propagates this field into `status.json` (`status.next_mission_candidate`)
+so wrappers can poll either file. The flywheel prompt template
+(`init_ralph_desk.zsh` flywheel heredoc) and `governance.md` §7 ⑥½ both
+document the field. Field is OPTIONAL and absence is treated as `null` —
+backward-compat with prior flywheel signals.
+
+**Consumer side (wrapper responsibility)**: pick the next slug from that
+field instead of a fixed list:
 
 ```zsh
 NEXT_SLUG=$(jq -r '.next_mission_candidate // empty' \

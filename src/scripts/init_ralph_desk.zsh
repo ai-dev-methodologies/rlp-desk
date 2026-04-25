@@ -707,7 +707,16 @@ Based on your decision, update campaign memory:
 1. Write analysis to: {DESK}/memos/{SLUG}-flywheel-review.md
 2. Update campaign memory: {DESK}/memos/{SLUG}-memory.md
 3. Write signal: {DESK}/memos/{SLUG}-flywheel-signal.json
-   Format: {"iteration": N, "decision": "hold|pivot|reduce|expand", "summary": "one line", "rejected_directions": ["approach X because Y"], "contract_updated": true, "timestamp": "ISO"}
+   Format: {"iteration": N, "decision": "hold|pivot|reduce|expand", "summary": "one line", "rejected_directions": ["approach X because Y"], "contract_updated": true, "next_mission_candidate": null, "timestamp": "ISO"}
+
+   Optional field — `next_mission_candidate` (string | null):
+   - null: no specific next mission suggested (default).
+   - "<slug>": suggest a slug the consumer wrapper should chain next, given the
+     current direction. The wrapper polls this field for autonomous
+     multi-mission orchestration (rlp-desk does not auto-launch missions —
+     the consumer wrapper owns that policy). Field is OPTIONAL; absence is
+     treated as null. See docs/multi-mission-orchestration.md for the
+     consumer-side polling pattern.
 FLYWHEEL_EOF
 
   # Replace placeholders with actual paths
