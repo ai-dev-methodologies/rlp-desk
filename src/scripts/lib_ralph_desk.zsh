@@ -697,10 +697,16 @@ generate_sv_report() {
 # --- governance.md s7: Only the Leader writes sentinels ---
 write_complete_sentinel() {
   local summary="$1"
-  echo "# Campaign Complete
+  # Optional 2nd arg: us_id (defaults to ALL). Same first-line contract
+  # as writeSentinel(complete) on the Node side so wrappers can parse
+  # `head -1 | awk '{print $2}'` consistently.
+  local us_id="${2:-${CURRENT_US:-ALL}}"
+  echo "COMPLETE: $us_id
+Summary: $summary
+
+# Campaign Complete
 
 Completed at iteration $ITERATION.
-$summary
 
 Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$COMPLETE_SENTINEL"
   log "COMPLETE sentinel written: $COMPLETE_SENTINEL"
@@ -708,10 +714,20 @@ Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$COMPLETE_SENTINEL"
 
 write_blocked_sentinel() {
   local reason="$1"
-  echo "# Campaign Blocked
+  # Optional 2nd arg: us_id. Defaults to "ALL" when the failure is not
+  # scoped to a specific user story (e.g. API unavailable, context stale,
+  # consensus exhausted). The Node leader (writeSentinel) and the zsh
+  # runner now share the same first-line contract:
+  #   BLOCKED: <us_id>
+  # so external wrappers can `head -1 | awk '{print $2}'` regardless of
+  # which entry point produced the campaign.
+  local us_id="${2:-${CURRENT_US:-ALL}}"
+  echo "BLOCKED: $us_id
+Reason: $reason
+
+# Campaign Blocked
 
 Blocked at iteration $ITERATION.
-Reason: $reason
 
 Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$BLOCKED_SENTINEL"
   log_error "Campaign BLOCKED: $reason"
