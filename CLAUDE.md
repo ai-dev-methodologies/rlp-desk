@@ -44,6 +44,7 @@ docs/architecture.md            → ~/.claude/ralph-desk/docs/architecture.md
 docs/getting-started.md         → ~/.claude/ralph-desk/docs/getting-started.md
 docs/protocol-reference.md      → ~/.claude/ralph-desk/docs/protocol-reference.md
 docs/TODO-verification-next.md  → ~/.claude/ralph-desk/docs/TODO-verification-next.md
+docs/multi-mission-orchestration.md → ~/.claude/ralph-desk/docs/multi-mission-orchestration.md
 docs/internal/*                 → ~/.claude/ralph-desk/docs/internal/
 docs/blueprints/*               → ~/.claude/ralph-desk/docs/blueprints/
 ```
