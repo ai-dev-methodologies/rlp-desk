@@ -57,6 +57,8 @@ MAX_RESTARTS="${MAX_RESTARTS:-3}"
 IDLE_NUDGE_THRESHOLD="${IDLE_NUDGE_THRESHOLD:-30}"
 MAX_NUDGES="${MAX_NUDGES:-3}"
 WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
+WITH_SELF_VERIFICATION_REQUESTED="$WITH_SELF_VERIFICATION"  # preserves original user intent for traceability (governance §1f)
+SV_SKIPPED_REASON=""                                         # set when SV is disabled despite user request
 AUTONOMOUS_MODE="${AUTONOMOUS_MODE:-0}"    # 1=don't stop on ambiguity, PRD is authoritative
 
 # --- Engine Selection (auto-detect from model format) ---
@@ -715,9 +717,12 @@ create_session() {
   # Truncate cost-log for fresh run (previous data in versioned campaign reports)
   > "$COST_LOG"
 
-  # SV flag warning for tmux mode
+  # SV flag is Agent-mode only — disable for tmux runner and record the intent
+  # (governance §1f: requested vs effective state is preserved separately for traceability)
   if (( WITH_SELF_VERIFICATION )); then
-    log "  NOTE: --with-self-verification recorded but SV report generation is Agent-mode only"
+    log "  NOTE: --with-self-verification is Agent-mode only; disabling for tmux runner"
+    WITH_SELF_VERIFICATION=0
+    SV_SKIPPED_REASON="tmux_runner"
   fi
 
   # Write session config (atomic write)
@@ -760,6 +765,8 @@ create_session() {
     "cb_threshold": '"$CB_THRESHOLD"',
     "effective_cb_threshold": '"$EFFECTIVE_CB_THRESHOLD"',
     "with_self_verification": '"$WITH_SELF_VERIFICATION"',
+    "with_self_verification_requested": '"$WITH_SELF_VERIFICATION_REQUESTED"',
+    "sv_skipped_reason": "'"$SV_SKIPPED_REASON"'",
     "autonomous_mode": '"$AUTONOMOUS_MODE"'
   }
 }' | atomic_write "$SESSION_CONFIG"
@@ -2118,8 +2125,10 @@ main() {
     --arg verifier_model "$VERIFIER_MODEL" \
     --argjson debug "$DEBUG" \
     --argjson with_sv "$WITH_SELF_VERIFICATION" \
+    --argjson with_sv_requested "$WITH_SELF_VERIFICATION_REQUESTED" \
+    --arg sv_skipped_reason "$SV_SKIPPED_REASON" \
     --argjson consensus "${VERIFY_CONSENSUS:-0}" \
-    '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, consensus: $consensus}' \
+    '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, with_self_verification_requested: $with_sv_requested, sv_skipped_reason: $sv_skipped_reason, consensus: $consensus}' \
     > "$METADATA_FILE"
 
   # --- Startup ---
@@ -2148,7 +2157,7 @@ main() {
     log_debug "[OPTION] worker_engine=$WORKER_ENGINE worker_model=$WORKER_MODEL"
     log_debug "[OPTION] verifier_engine=$VERIFIER_ENGINE verifier_model=$VERIFIER_MODEL"
     log_debug "[OPTION] verify_mode=$VERIFY_MODE consensus_mode=$CONSENSUS_MODE max_iter=$MAX_ITER"
-    log_debug "[OPTION] cb_threshold=$CB_THRESHOLD effective_cb_threshold=$EFFECTIVE_CB_THRESHOLD iter_timeout=$ITER_TIMEOUT with_self_verification=$WITH_SELF_VERIFICATION debug=$DEBUG"
+    log_debug "[OPTION] cb_threshold=$CB_THRESHOLD effective_cb_threshold=$EFFECTIVE_CB_THRESHOLD iter_timeout=$ITER_TIMEOUT with_self_verification=$WITH_SELF_VERIFICATION (requested=$WITH_SELF_VERIFICATION_REQUESTED skipped=${SV_SKIPPED_REASON:-none}) debug=$DEBUG"
 
     if [[ "$VERIFY_MODE" = "per-us" ]]; then
       # Build expected flow

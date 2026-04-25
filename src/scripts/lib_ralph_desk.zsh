@@ -504,6 +504,8 @@ ${untracked}"
     else
       sv_summary="SV report generation pending — will be appended after this report."
     fi
+  elif [[ "${WITH_SELF_VERIFICATION_REQUESTED:-0}" == "1" ]]; then
+    sv_summary="N/A — --with-self-verification requested but skipped (reason: ${SV_SKIPPED_REASON:-unknown})"
   else
     sv_summary="N/A — --with-self-verification not enabled"
   fi
@@ -607,6 +609,13 @@ generate_sv_report() {
   # AC3-negative: early return if ! WITH_SELF_VERIFICATION flag not set
   if (( ! WITH_SELF_VERIFICATION )); then return 0; fi
 
+  # Defense-in-depth: skip in tmux runner even if WITH_SELF_VERIFICATION leaks through
+  # (claude --print hangs without TTY/stdin in tmux pane; SV is Agent-mode only)
+  if [[ -n "${TMUX:-}" ]]; then
+    log "SV report skipped: tmux runner detected (Agent-mode only feature)"
+    return 0
+  fi
+
   SV_REPORT_GENERATED=1
 
   # AC4: check claude CLI availability — graceful degradation, not exit 1
@@ -631,8 +640,9 @@ generate_sv_report() {
   rm -f "$_sv_timeout_file"
 
   # Spawn claude CLI in background — write to sv_report_file
+  # </dev/null prevents the spawned process from blocking on inherited stdin (e.g. tmux pane)
   claude --print "Analyze campaign artifacts in $LOGS_DIR and generate a self-verification report with sections: 1. Automated Validation Summary, 2. Failure Deep Dive, 3. Worker Process Quality, 4. Verifier Judgment Quality, 5. AC Lifecycle, 6. Test-Spec Adherence, 7. Patterns: Strengths & Weaknesses, 8. Recommendations for Next Cycle, 9. Cost & Performance, 10. Blind Spots." \
-    > "$sv_report_file" 2>/dev/null &
+    </dev/null > "$sv_report_file" 2>/dev/null &
   local _sv_pid=$!
 
   # AC5: watchdog — signals timeout file THEN kills _sv_pid after _sv_timeout_secs
