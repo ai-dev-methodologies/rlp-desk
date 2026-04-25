@@ -116,6 +116,39 @@ else
   fail "AC8: unexpected state '$out'"
 fi
 
+# ----------------------------------------------------------------------------
+# AC9: Normalization happens at script startup (before metadata.json write),
+# not inside create_session(). codex review caught that a late normalization
+# would leak WITH_SELF_VERIFICATION=1 into metadata.json. Lock the order in.
+# ----------------------------------------------------------------------------
+norm_line=$(grep -nE 'SV_SKIPPED_REASON="tmux_runner"' "$RUN" | head -1 | cut -d: -f1)
+sess_line=$(grep -nE '"with_self_verification": ' "$RUN" | head -1 | cut -d: -f1)
+meta_line=$(grep -nE '\-\-argjson with_sv "\$WITH_SELF_VERIFICATION"' "$RUN" | head -1 | cut -d: -f1)
+debug_line=$(grep -nE '\[OPTION\] cb_threshold' "$RUN" | head -1 | cut -d: -f1)
+if [[ -n "$norm_line" && -n "$sess_line" && -n "$meta_line" && -n "$debug_line" \
+   && "$norm_line" -lt "$sess_line" && "$norm_line" -lt "$meta_line" && "$norm_line" -lt "$debug_line" ]]; then
+  pass "AC9-a: normalization (line $norm_line) precedes session-config ($sess_line), metadata.json ($meta_line), and debug log ($debug_line)"
+else
+  fail "AC9-a: ordering broken (norm=$norm_line, sess=$sess_line, meta=$meta_line, debug=$debug_line)"
+fi
+# create_session() must NOT re-assign WITH_SELF_VERIFICATION (codex issue #1).
+fn_assigns=$(awk '
+  /^create_session\(\) \{/ { in_fn=1; depth=0 }
+  in_fn {
+    for (i=1;i<=length($0);i++) {
+      c=substr($0,i,1)
+      if (c=="{") depth++
+      else if (c=="}") { depth--; if (depth==0) in_fn=0 }
+    }
+    print
+  }
+' "$RUN" | grep -cE '^[[:space:]]*WITH_SELF_VERIFICATION=0[[:space:]]*$')
+if [[ "$fn_assigns" -eq 0 ]]; then
+  pass "AC9-b: create_session() no longer re-normalizes WITH_SELF_VERIFICATION"
+else
+  fail "AC9-b: create_session() still has $fn_assigns WITH_SELF_VERIFICATION=0 assignments"
+fi
+
 echo
 echo "=== RESULTS: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

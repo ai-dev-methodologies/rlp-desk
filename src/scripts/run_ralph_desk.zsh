@@ -59,6 +59,14 @@ MAX_NUDGES="${MAX_NUDGES:-3}"
 WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 WITH_SELF_VERIFICATION_REQUESTED="$WITH_SELF_VERIFICATION"  # preserves original user intent for traceability (governance §1f)
 SV_SKIPPED_REASON=""                                         # set when SV is disabled despite user request
+# RC-1: SV is Agent-mode only — disable for tmux runner before any metadata
+# is written so session-config / metadata.json / debug log all observe the
+# same normalized state. The startup banner echoes the disable inside
+# create_session() (see below).
+if (( WITH_SELF_VERIFICATION )); then
+  WITH_SELF_VERIFICATION=0
+  SV_SKIPPED_REASON="tmux_runner"
+fi
 AUTONOMOUS_MODE="${AUTONOMOUS_MODE:-0}"    # 1=don't stop on ambiguity, PRD is authoritative
 
 # --- Engine Selection (auto-detect from model format) ---
@@ -717,12 +725,11 @@ create_session() {
   # Truncate cost-log for fresh run (previous data in versioned campaign reports)
   > "$COST_LOG"
 
-  # SV flag is Agent-mode only — disable for tmux runner and record the intent
-  # (governance §1f: requested vs effective state is preserved separately for traceability)
-  if (( WITH_SELF_VERIFICATION )); then
+  # SV flag is Agent-mode only — already disabled for tmux runner at script
+  # startup (see early WITH_SELF_VERIFICATION normalization). Echo the disable
+  # here as part of the startup banner for operator visibility.
+  if [[ "$SV_SKIPPED_REASON" == "tmux_runner" ]]; then
     log "  NOTE: --with-self-verification is Agent-mode only; disabling for tmux runner"
-    WITH_SELF_VERIFICATION=0
-    SV_SKIPPED_REASON="tmux_runner"
   fi
 
   # Write session config (atomic write)

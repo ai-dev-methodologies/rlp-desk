@@ -197,6 +197,130 @@ assert_one "$RUN" 'Campaign BLOCKED for' \
 assert_one "$RUN" 'return 2' \
   "AC10-c: run.mjs exits 2 on blocked"
 
+# ------------------------------------------------------------------
+# AC11: --verify-mode CLI arg overrides env (codex review issue #2)
+# ------------------------------------------------------------------
+assert_one "$INIT" '\-\-verify-mode\)' \
+  "AC11-a: init parses --verify-mode arg"
+assert_one "$INIT" 'VERIFY_MODE_ARG:-\$\{VERIFY_MODE:-per-us\}' \
+  "AC11-b: init resolution priority arg → env → default"
+
+# Functional check: bad PRD + --verify-mode batch arg → exit 0 (arg wins).
+TMP_ARG=$(mktemp -d "${TMPDIR:-/tmp}/rlp-us013-arg-XXXX")
+mkdir -p "$TMP_ARG/.claude/ralph-desk/plans"
+SLUG_ARG="us013-arg-batch"
+cp "$FIX_BAD" "$TMP_ARG/.claude/ralph-desk/plans/prd-$SLUG_ARG.md"
+set +e
+ROOT="$TMP_ARG" \
+  zsh "$INIT" "$SLUG_ARG" "arg-vs-env priority test" --mode improve --verify-mode batch \
+  >"$TMP_ARG/init-stdout.log" 2>"$TMP_ARG/init-stderr.log"
+ec_arg=$?
+set -e
+rm -rf "$TMP_ARG"
+if [[ "$ec_arg" -eq 0 ]]; then
+  pass "AC11-c: --verify-mode batch arg overrides VERIFY_MODE=per-us default (exit 0)"
+else
+  fail "AC11-c: expected exit 0 with --verify-mode batch, got $ec_arg"
+fi
+
+# ------------------------------------------------------------------
+# AC12: lint ignores non-AC lines / undefined US (codex review issue #3)
+# ------------------------------------------------------------------
+TMP_PROSE=$(mktemp -d "${TMPDIR:-/tmp}/rlp-us013-prose-XXXX")
+cat > "$TMP_PROSE/prd-prose.md" <<'EOF'
+# PRD prose-only mention
+## Plan
+### US-001: First story
+Roadmap note: see also US-005 in the broader vision.
+- AC1: Given user opens app
+- AC2: Given the artifact from US-001 is loaded
+### US-002: Second story
+- AC1: Given foo
+EOF
+helper_body=$(awk '
+  /^_detect_cross_us_refs\(\) \{/ { capture=1; depth=0 }
+  capture {
+    print
+    for (i=1; i<=length($0); i++) {
+      c = substr($0, i, 1)
+      if (c == "{") depth++
+      else if (c == "}") { depth--; if (depth == 0) { capture=0; next } }
+    }
+  }
+' "$INIT")
+prose_out=$(zsh -c "$helper_body
+_detect_cross_us_refs '$TMP_PROSE/prd-prose.md'")
+rm -rf "$TMP_PROSE"
+if [[ -z "$prose_out" ]]; then
+  pass "AC12-a: roadmap prose 'see also US-005' does not trigger (non-AC line ignored)"
+else
+  fail "AC12-a: prose-only mention falsely flagged ($prose_out)"
+fi
+
+# Undefined-US guard: AC bullet that references a US not defined in the PRD.
+TMP_UNDEF=$(mktemp -d "${TMPDIR:-/tmp}/rlp-us013-undef-XXXX")
+cat > "$TMP_UNDEF/prd-undef.md" <<'EOF'
+# PRD undefined US
+## Plan
+### US-001: First story
+- AC1: Given the artifact from US-099 is missing (US-099 is not defined here)
+### US-002: Second story
+- AC1: Given foo
+EOF
+undef_out=$(zsh -c "$helper_body
+_detect_cross_us_refs '$TMP_UNDEF/prd-undef.md'")
+rm -rf "$TMP_UNDEF"
+if [[ -z "$undef_out" ]]; then
+  pass "AC12-b: undefined US-099 does not trigger (defined-only guard)"
+else
+  fail "AC12-b: undefined US falsely flagged ($undef_out)"
+fi
+
+# ------------------------------------------------------------------
+# AC13: BLOCKED reason is rendered in the campaign report
+# (codex review issue #4 — three-channel surfacing)
+# ------------------------------------------------------------------
+REPORTING="$ROOT_REPO/src/node/reporting/campaign-reporting.mjs"
+assert_one "$REPORTING" 'blockedReason = null' \
+  "AC13-a: generateCampaignReport accepts blockedReason"
+assert_one "$REPORTING" '`- Blocked reason: \$\{blockedReason\}`' \
+  "AC13-b: report renders Blocked reason line"
+assert_one "$LOOP" 'blockedReason: upgradeReason' \
+  "AC13-c: model-upgrade branch passes upgrade reason to report"
+assert_one "$LOOP" '^[[:space:]]*blockedReason,$' \
+  "AC13-d: verifier-blocked branch passes blockedReason to report"
+
+# Functional probe: build a tiny inline campaign-report with a blockedReason
+# and confirm it renders. Uses node --input-type=module to avoid a tmp .mjs.
+report_out=$(node --input-type=module -e "
+import { generateCampaignReport } from './src/node/reporting/campaign-reporting.mjs';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+const tmp = await mkdtemp(path.join(tmpdir(), 'us013-report-'));
+await mkdir(path.join(tmp, 'logs'), { recursive: true });
+await writeFile(path.join(tmp, 'prd.md'), '# PRD\n## Objective\nSmoke.\n');
+await writeFile(path.join(tmp, 'status.json'), JSON.stringify({slug:'s', iteration:1, phase:'blocked', verified_us:[]}));
+await writeFile(path.join(tmp, 'analytics.jsonl'), '');
+const reportFile = path.join(tmp, 'logs', 'campaign-report.md');
+await generateCampaignReport({
+  slug: 's',
+  reportFile,
+  prdFile: path.join(tmp, 'prd.md'),
+  statusFile: path.join(tmp, 'status.json'),
+  analyticsFile: path.join(tmp, 'analytics.jsonl'),
+  gitDiffProvider: async () => '',
+  blockedReason: 'verifier-blocked: AC3 unsatisfiable',
+});
+const txt = await readFile(reportFile, 'utf8');
+process.stdout.write(txt.includes('Blocked reason: verifier-blocked: AC3 unsatisfiable') ? 'OK' : 'MISSING');
+" 2>&1)
+if [[ "$report_out" == "OK" ]]; then
+  pass "AC13-e: campaign-report.md actually contains 'Blocked reason: ...' line"
+else
+  fail "AC13-e: report missing the blockedReason line (got: $report_out)"
+fi
+
 echo
 echo "=== RESULTS: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

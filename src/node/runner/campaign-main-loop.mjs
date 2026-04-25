@@ -753,6 +753,7 @@ export async function run(slug, options = {}) {
         analyticsFile: paths.analyticsFile,
         now: resolveNow(options.now),
         svSummary,
+        blockedReason,
       });
       return {
         status: 'blocked',
@@ -794,6 +795,7 @@ export async function run(slug, options = {}) {
         analyticsFile: paths.analyticsFile,
         now: resolveNow(options.now),
         svSummary,
+        blockedReason: upgradeReason,
       });
       return {
         status: 'blocked',

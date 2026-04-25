@@ -32,10 +32,19 @@ After every campaign rlp-desk writes the following artifacts under
 | `memos/<slug>-flywheel-signal.json` | When flywheel ran, the direction it picked. May contain a `next_mission_candidate` field that the wrapper can use to decide what to launch next. |
 | `logs/<slug>/metadata.json` | One-line summary of the campaign config, including `with_self_verification`, `with_self_verification_requested`, and `sv_skipped_reason` (RC-1). |
 
-The Node entry point `src/node/run.mjs` also surfaces the BLOCKED reason on
-**stderr** with **exit code 2** so wrappers can distinguish blocked outcomes
-from generic script failure (exit 1). PRD lint reject is exit 2 too — see
-`init_ralph_desk.zsh`.
+**Exit-code contract (per entry point — read carefully):**
+
+| Entry point | Exit 0 | Exit 2 | Exit 1 |
+|---|---|---|---|
+| `src/node/run.mjs` (Node, agent mode) | clean COMPLETE | BLOCKED (verifier or model-upgrade-exhausted), reason on stderr | unhandled error (e.g. unknown flag) |
+| `src/scripts/init_ralph_desk.zsh` | scaffold OK | PRD cross-US lint reject (per-us mode), violations on stderr | scaffold incomplete or input error |
+| `src/scripts/run_ralph_desk.zsh` (zsh, tmux mode) | clean exit (sentinel decides COMPLETE/BLOCKED) | not used | any failure path; wrappers must inspect the sentinel files to tell COMPLETE from BLOCKED |
+
+The Node entry surfaces the BLOCKED reason on **stderr** with **exit code 2**.
+The zsh runner does **not** distinguish exit codes for COMPLETE vs BLOCKED;
+inspect the sentinel files (`memos/<slug>-{complete,blocked}.md`) instead.
+PRD lint rejection (init exit 2) is the only path that uses exit 2 in the
+zsh side.
 
 ## Minimal wrapper recipe (zsh)
 
@@ -76,23 +85,34 @@ for SLUG in "${MISSIONS[@]}"; do
     zsh ~/.claude/ralph-desk/run_ralph_desk.zsh "$SLUG"
   rc=$?
 
-  case "$rc" in
-    0) print "$SLUG completed cleanly" ;;
-    2) print "$SLUG blocked (lint reject or verifier blocked) — stopping chain"; exit 2 ;;
-    *) print "$SLUG exited with $rc — stopping chain"; exit "$rc" ;;
-  esac
+  # zsh runner: rc tells you "did the script crash", not COMPLETE vs BLOCKED.
+  # Read the sentinel for the actual terminal state.
+  if [[ -f "$DESK/memos/$SLUG-complete.md" ]]; then
+    print "$SLUG completed cleanly"
+  elif [[ -f "$DESK/memos/$SLUG-blocked.md" ]]; then
+    print "$SLUG blocked — stopping chain"
+    cat "$DESK/memos/$SLUG-blocked.md"
+    exit 2
+  else
+    print "$SLUG ended without sentinel (rc=$rc) — stopping chain"
+    exit "${rc:-1}"
+  fi
 done
 ```
 
-Two design notes:
+Three design notes:
 
-- The wrapper checks the **sentinel files first**. This makes re-runs idempotent
-  — if the chain crashed mid-way and you re-launch the wrapper, finished
-  missions are skipped without rework.
-- The wrapper distinguishes **exit 2** from other non-zero exits because
-  rlp-desk uses 2 specifically for "PRD lint rejected" and "verifier blocked".
-  An automation system can route those to the operator while still alerting on
-  generic errors via exit 1.
+- The wrapper checks the **sentinel files first** — both before and after
+  invoking the runner. This makes re-runs idempotent (finished missions are
+  skipped) and accommodates the zsh runner's lack of a distinct
+  COMPLETE-vs-BLOCKED exit code.
+- For the **Node runner** (`src/node/run.mjs`, agent mode) the recipe can be
+  simpler: switch on `$rc` directly because Node uses exit 2 specifically for
+  blocked outcomes. The exit-code table above lists which entry point uses
+  which convention.
+- `init_ralph_desk.zsh`'s exit 2 (PRD lint reject) is the wrapper's only
+  pre-launch fail-fast signal. Treat it the same as a blocked sentinel — the
+  campaign will not start until the PRD is fixed.
 
 ## Flywheel-driven dynamic chain (optional)
 
