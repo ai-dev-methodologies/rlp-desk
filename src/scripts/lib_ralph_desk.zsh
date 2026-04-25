@@ -460,15 +460,19 @@ generate_campaign_report() {
 
   local final_status="UNKNOWN"
   local blocked_reason=""
+  local blocked_category=""
   if [[ -f "$COMPLETE_SENTINEL" ]]; then final_status="COMPLETE"
   elif [[ -f "$BLOCKED_SENTINEL" ]]; then
     final_status="BLOCKED"
-    # governance §1f BLOCKED Surfacing: surface the reason on the campaign
-    # report (channel #2). Sentinels written by the leader / write_blocked_sentinel
-    # carry a "Reason: <text>" line; tolerate either a one-line legacy sentinel
-    # (no Reason:) or a multi-line one.
+    # governance §1f BLOCKED Surfacing (4-channel): markdown sentinel +
+    # JSON sidecar + status + console + report. Pull both Reason and
+    # Category lines for the report. Tolerate legacy sentinels missing
+    # either field (back-compat).
     blocked_reason=$(grep -m1 -E '^[Rr]eason:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
       | sed -E 's/^[Rr]eason:[[:space:]]*//' \
+      || true)
+    blocked_category=$(grep -m1 -E '^[Cc]ategory:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
+      | sed -E 's/^[Cc]ategory:[[:space:]]*//' \
       || true)
   else final_status="TIMEOUT"; fi
 
@@ -536,6 +540,9 @@ ${untracked}"
     echo "- Terminal state: $final_status"
     if [[ -n "$blocked_reason" ]]; then
       echo "- Blocked reason: $blocked_reason"
+    fi
+    if [[ -n "$blocked_category" ]]; then
+      echo "- Blocked category: $blocked_category"
     fi
     echo "- Iterations run: $ITERATION / $MAX_ITER"
     echo "- Elapsed: ${elapsed}s"
@@ -712,26 +719,101 @@ Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$COMPLETE_SENTINEL"
   log "COMPLETE sentinel written: $COMPLETE_SENTINEL"
 }
 
+# P1-D Cross-US dependency detection: scan a verdict summary or worker
+# signal body for cross-US dependency tokens. Returns "cross_us_dep" when
+# any token matches, "metric_failure" otherwise. governance.md §1f locks
+# the token list — keep this in sync with that section.
+#   English: "depends on US-", "blocking US-", "awaits US-",
+#            "post-iter US-", "requires US-", "cross-US"
+#   Korean:  "US-NNN 산출물", "신규 US-", "post-iter"
+_classify_cross_us_or_metric() {
+  local text="$1"
+  if echo "$text" | grep -qE 'depends on US-|blocking US-|awaits US-|post-iter US-|requires US-[0-9]+|cross-US|US-[0-9]+ 산출물|신규 US-|post-iter'; then
+    echo "cross_us_dep"
+  else
+    echo "metric_failure"
+  fi
+}
+
+# P1-D Failure Taxonomy: derive (recoverable, suggested_action) from
+# reason_category. governance.md §1f defines the 6 reason_category values
+# (metric_failure, cross_us_dep, context_limit, infra_failure, repeat_axis,
+# mission_abort). wrapper MUST branch on reason_category; failure_category
+# is diagnostic only.
+_blocked_recoverable_for_category() {
+  case "$1" in
+    metric_failure|cross_us_dep|infra_failure) echo "true" ;;
+    context_limit|repeat_axis|mission_abort)   echo "false" ;;
+    *)                                          echo "false" ;;
+  esac
+}
+_blocked_action_for_category() {
+  case "$1" in
+    metric_failure|cross_us_dep) echo "retry_after_fix" ;;
+    infra_failure)               echo "restart" ;;
+    context_limit|repeat_axis)   echo "next_mission_chain" ;;
+    mission_abort)               echo "terminal_alert" ;;
+    *)                           echo "terminal_alert" ;;
+  esac
+}
+
 write_blocked_sentinel() {
   local reason="$1"
-  # Optional 2nd arg: us_id. Defaults to "ALL" when the failure is not
-  # scoped to a specific user story (e.g. API unavailable, context stale,
-  # consensus exhausted). The Node leader (writeSentinel) and the zsh
-  # runner now share the same first-line contract:
-  #   BLOCKED: <us_id>
-  # so external wrappers can `head -1 | awk '{print $2}'` regardless of
-  # which entry point produced the campaign.
+  # Optional 2nd arg: us_id (defaults to ALL).
   local us_id="${2:-${CURRENT_US:-ALL}}"
+  # Optional 3rd arg: reason_category (default metric_failure).
+  # See governance.md §1f Failure Taxonomy for the 6-value enum.
+  local category="${3:-metric_failure}"
+  local recoverable suggested_action json_path
+  recoverable=$(_blocked_recoverable_for_category "$category")
+  suggested_action=$(_blocked_action_for_category "$category")
+  json_path="${BLOCKED_SENTINEL%.md}.json"
+  local now_iso
+  now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # P1-D Write Order Contract (governance.md §1f):
+  # 1. JSON sidecar FIRST (wrapper-friendly, jq parseable).
+  # 2. markdown sentinel SECOND (legacy, watched by older wrappers).
+  # Invariant: markdown exists ⇒ JSON exists. Wrappers watch markdown,
+  # then read JSON; if JSON not yet visible (rare), retry up to 5×50ms.
+  # atomic_write provides per-file rename atomicity; cross-file ordering
+  # is enforced by the explicit two-call sequence below.
+  jq -n \
+    --arg sv "2.0" \
+    --arg slug "${SLUG:-unknown}" \
+    --arg us_id "$us_id" \
+    --argjson iter "${ITERATION:-0}" \
+    --arg utc "$now_iso" \
+    --arg category "$category" \
+    --arg detail "$reason" \
+    --argjson recoverable "$recoverable" \
+    --arg action "$suggested_action" \
+    '{
+      schema_version: $sv,
+      slug: $slug,
+      us_id: $us_id,
+      blocked_at_iter: $iter,
+      blocked_at_utc: $utc,
+      reason_category: $category,
+      reason_detail: $detail,
+      failure_category: null,
+      recoverable: $recoverable,
+      suggested_action: $action
+    }' | atomic_write "$json_path"
+
   echo "BLOCKED: $us_id
 Reason: $reason
+Category: $category
 
 # Campaign Blocked
 
 Blocked at iteration $ITERATION.
 
-Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$BLOCKED_SENTINEL"
-  log_error "Campaign BLOCKED: $reason"
+Timestamp: $now_iso" | atomic_write "$BLOCKED_SENTINEL"
+
+  log_error "Campaign BLOCKED: [$category] $reason"
   log "BLOCKED sentinel written: $BLOCKED_SENTINEL"
+  log "BLOCKED sidecar written: $json_path"
 }
 
 # =============================================================================

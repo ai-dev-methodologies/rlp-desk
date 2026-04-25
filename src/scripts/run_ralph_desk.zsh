@@ -1608,7 +1608,7 @@ poll_for_signal() {
       log_debug "[FLOW] iter=$ITERATION api_retry=${api_retry_count}/${_API_MAX_RETRIES} role=${role} reason=tmux_pane_api_error"
       if (( api_retry_count >= _API_MAX_RETRIES )); then
         log_error "API unavailable after ${_API_MAX_RETRIES} retries"
-        write_blocked_sentinel "API unavailable after ${_API_MAX_RETRIES} retries"
+        write_blocked_sentinel "API unavailable after ${_API_MAX_RETRIES} retries" "" "infra_failure"
         return 2
       fi
       # A5: If pane shows "queued messages" or rate-limit corruption, restart pane
@@ -2304,14 +2304,14 @@ main() {
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
       worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
       if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
-        write_blocked_sentinel "Worker codex failed to start in pane"
+        write_blocked_sentinel "Worker codex failed to start in pane" "" "infra_failure"
         update_status "blocked" "worker_start_failed"
         return 1
       fi
     else
       worker_launch="$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
       if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
-        write_blocked_sentinel "Worker claude failed to start in pane"
+        write_blocked_sentinel "Worker claude failed to start in pane" "" "infra_failure"
         update_status "blocked" "worker_start_failed"
         return 1
       fi
@@ -2354,7 +2354,7 @@ main() {
           log_debug "[GOV] iter=$ITERATION monitor_failure=$MONITOR_FAILURE_COUNT/3"
           if (( MONITOR_FAILURE_COUNT >= 3 )); then
             log_debug "[GOV] iter=$ITERATION circuit_breaker=monitor_failures detail=\"3 consecutive monitor failures\""
-            write_blocked_sentinel "3 consecutive monitor failures (worker not active)"
+            write_blocked_sentinel "3 consecutive monitor failures (worker not active)" "" "infra_failure"
             update_status "blocked" "monitor_failures"
             return 1
           fi
@@ -2362,7 +2362,7 @@ main() {
           update_status "worker" "poll_failed"
           log_debug "[FLOW] iter=$ITERATION poll_worker_dead=true worker_cmd=$worker_cmd"
           # Worker is truly dead/stuck — BLOCK and let user decide
-          write_blocked_sentinel "Worker process dead/stuck (poll failed). Pane preserved for inspection."
+          write_blocked_sentinel "Worker process dead/stuck (poll failed). Pane preserved for inspection." "" "infra_failure"
           update_status "blocked" "worker_dead"
           return 1
         fi
@@ -2449,7 +2449,7 @@ main() {
           elif (( consensus_rc != 0 )); then
             # Consensus verification failed entirely
             log_error "Consensus verification failed"
-            write_blocked_sentinel "Consensus verification failed after max rounds"
+            write_blocked_sentinel "Consensus verification failed after max rounds" "" "repeat_axis"
             update_status "blocked" "consensus_failed"
             return 1
           fi
@@ -2508,7 +2508,7 @@ main() {
             fi
             log_error "Verifier poll failed"
             # Verifier is dead/stuck — BLOCK and let user decide
-            write_blocked_sentinel "Verifier process dead/stuck (poll failed). Pane preserved for inspection."
+            write_blocked_sentinel "Verifier process dead/stuck (poll failed). Pane preserved for inspection." "" "infra_failure"
             update_status "blocked" "verifier_dead"
             return 1
           fi
@@ -2642,11 +2642,11 @@ main() {
               if (( _MODEL_UPGRADED )) && [[ -z "$(get_next_model "$_ceiling_model_str")" ]]; then
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"architecture escalation: Worker at ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures\""
                 log_error "Circuit breaker: architecture escalation — Worker upgraded to ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures"
-                write_blocked_sentinel "architecture escalation: Worker upgraded to ceiling model (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
+                write_blocked_sentinel "architecture escalation: Worker upgraded to ceiling model (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
               else
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"${EFFECTIVE_CB_THRESHOLD} consecutive verification failures\""
                 log_error "Circuit breaker: ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
-                write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
+                write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
               fi
               update_status "blocked" "consecutive_failures"
               return 1
@@ -2664,7 +2664,9 @@ main() {
             update_status "verifier" "request_info"
             ;;
           blocked)
-            write_blocked_sentinel "Verifier verdict: blocked - $verdict_summary"
+            local _verdict_cat
+            _verdict_cat=$(_classify_cross_us_or_metric "$verdict_summary")
+            write_blocked_sentinel "Verifier verdict: blocked - $verdict_summary" "" "$_verdict_cat"
             update_status "blocked" "verifier_blocked"
             return 1
             ;;
@@ -2676,7 +2678,9 @@ main() {
         ;;
       blocked)
         # --- governance.md s7 step 6: blocked -> write sentinel ---
-        write_blocked_sentinel "Worker reported blocked: $signal_summary"
+        local _signal_cat
+        _signal_cat=$(_classify_cross_us_or_metric "$signal_summary")
+        write_blocked_sentinel "Worker reported blocked: $signal_summary" "" "$_signal_cat"
         update_status "blocked" "worker_blocked"
         return 1
         ;;
@@ -2699,7 +2703,7 @@ main() {
     # --- governance.md s7 step 8: Circuit breaker - stale context check ---
     if ! check_stale_context; then
       log_debug "[GOV] iter=$ITERATION circuit_breaker=stale_context detail=\"context unchanged for 3 consecutive iterations\""
-      write_blocked_sentinel "Context unchanged for 3 consecutive iterations (stale)"
+      write_blocked_sentinel "Context unchanged for 3 consecutive iterations (stale)" "" "context_limit"
       update_status "blocked" "stale_context"
       return 1
     fi

@@ -569,3 +569,85 @@ Session metadata is stored in `logs/<slug>/session-config.json`:
 ```
 
 This file is used by the `status` and `clean` commands to find and interact with the running tmux session.
+
+## Blocked Sentinel JSON Schema (P1-D, governance §1f)
+
+When a campaign hits BLOCKED, the leader writes BOTH a markdown sentinel
+(`memos/<slug>-blocked.md`) and a JSON sidecar
+(`memos/<slug>-blocked.json`) so wrappers can `jq .reason_category` instead
+of regex'ing free text.
+
+### JSON sidecar schema
+
+```json
+{
+  "schema_version": "2.0",
+  "slug": "<slug>",
+  "us_id": "<us_id or ALL>",
+  "blocked_at_iter": 4,
+  "blocked_at_utc": "2026-04-25T12:34:56Z",
+  "reason_category": "metric_failure | cross_us_dep | context_limit | infra_failure | repeat_axis | mission_abort",
+  "reason_detail": "<full reason text>",
+  "failure_category": "spec | implementation | integration | flaky | null",
+  "recoverable": true,
+  "suggested_action": "next_mission_chain | restart | retry_after_fix | terminal_alert"
+}
+```
+
+### Wrapper contract (binding)
+
+- **`reason_category` is PRIMARY** — wrappers MUST branch on this field for
+  recovery decisions.
+- **`failure_category` is SECONDARY, diagnostic only** — do NOT branch on
+  it; logging/triage only.
+
+### Category → recovery action defaults
+
+| reason_category | recoverable | suggested_action      | meaning                                |
+|-----------------|-------------|-----------------------|----------------------------------------|
+| metric_failure  | true        | retry_after_fix       | AC missed; fix PRD/code, retry         |
+| cross_us_dep    | true        | retry_after_fix       | AC depends on a future US              |
+| infra_failure   | true        | restart               | CLI/network/spawn issue                |
+| context_limit   | false       | next_mission_chain    | mission stale; chain next axis         |
+| repeat_axis     | false       | next_mission_chain    | model ceiling reached on this axis     |
+| mission_abort   | false       | terminal_alert        | flywheel guard exhausted               |
+
+### Cross-US token list
+
+A `verifier-blocked` outcome is classified as `cross_us_dep` when its
+`reason_detail` matches ANY of:
+
+- English: `depends on US-`, `blocking US-`, `awaits US-`, `post-iter US-`,
+  `requires US-N`, `cross-US`
+- Korean: `US-N 산출물`, `신규 US-`, `post-iter`
+
+Otherwise it is `metric_failure`.
+
+### Write Order Contract (atomicity invariant)
+
+1. JSON sidecar is written FIRST (`fs.writeFile` / `atomic_write`).
+2. Markdown sentinel is written SECOND.
+3. **Invariant**: `markdown exists ⇒ JSON exists` (writer enforces order).
+4. Wrappers SHOULD watch the markdown sentinel, then read the JSON sidecar.
+   If JSON is not yet visible (rare race window), retry up to 5 × 50ms
+   before failing the read.
+
+`atomic_write` (zsh) and `fs.writeFile` (Node) provide per-file rename
+atomicity; cross-file ordering is enforced by the explicit two-call
+sequence in both implementations
+(`src/scripts/lib_ralph_desk.zsh` `write_blocked_sentinel`,
+`src/node/runner/campaign-main-loop.mjs` `writeSentinel`).
+
+### `next_mission_candidate` (flywheel signal, P0-A)
+
+The flywheel signal JSON (`memos/<slug>-flywheel-signal.json`) MAY include
+an optional `next_mission_candidate` field:
+
+- `null` (default) — no specific next mission suggested.
+- `"<slug>"` — flywheel recommends the consumer wrapper chain this slug
+  next.
+
+The leader propagates the field into `status.json`
+(`status.next_mission_candidate`). Wrappers poll either source. See
+`docs/multi-mission-orchestration.md` for the consumer-side polling
+pattern.

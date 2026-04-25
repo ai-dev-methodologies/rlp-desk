@@ -334,13 +334,85 @@ async function dispatchVerifier({
   return promptFile;
 }
 
-async function writeSentinel(filePath, status, usId, reason) {
-  // governance §1f BLOCKED Surfacing: a BLOCKED outcome must surface its reason
-  // on three channels at once (sentinel, campaign report, leader stderr).
-  // The reason is stored on a second line so legacy parsers that read only
-  // the first line continue to work.
+// P1-D Cross-US dependency token list (governance §1f). Keep in sync with
+// the zsh helper _classify_cross_us_or_metric in lib_ralph_desk.zsh.
+const CROSS_US_TOKEN_RE = /depends on US-|blocking US-|awaits US-|post-iter US-|requires US-\d+|cross-US|US-\d+ 산출물|신규 US-|post-iter/i;
+
+// P1-D Failure Taxonomy classifier. governance §1f locks the 6 reason_category
+// values + recoverable + suggested_action defaults per source. wrapper MUST
+// branch on reason_category; failure_category is diagnostic only.
+function _classifyBlock(source, { verdict, state, slug } = {}) {
+  let category;
+  let recoverable;
+  let action;
+  let failureCategory = null;
+  switch (source) {
+    case 'flywheel_inconclusive':
+    case 'flywheel_exhausted':
+      category = 'mission_abort';
+      recoverable = false;
+      action = 'terminal_alert';
+      break;
+    case 'model_upgrade':
+      category = 'repeat_axis';
+      recoverable = false;
+      action = 'next_mission_chain';
+      break;
+    case 'verifier': {
+      const text = `${verdict?.reason ?? ''} ${verdict?.summary ?? ''}`;
+      category = CROSS_US_TOKEN_RE.test(text) ? 'cross_us_dep' : 'metric_failure';
+      recoverable = true;
+      action = 'retry_after_fix';
+      failureCategory = verdict?.failure_category ?? null;
+      break;
+    }
+    default:
+      category = 'metric_failure';
+      recoverable = false;
+      action = 'terminal_alert';
+  }
+  return {
+    reason_category: category,
+    failure_category: failureCategory,
+    recoverable,
+    suggested_action: action,
+    iteration: state?.iteration ?? 0,
+    slug,
+  };
+}
+
+async function writeSentinel(filePath, status, usId, reason, classification = null) {
+  // governance §1f BLOCKED Surfacing: BLOCKED is surfaced on FOUR channels —
+  // sentinel (markdown + JSON sidecar), status, console (stderr), report.
+  // Legacy 1-line parsers still work because line 1 is unchanged.
   const lines = [`${status.toUpperCase()}: ${usId}`];
   if (reason) lines.push(`Reason: ${reason}`);
+  if (classification?.reason_category) {
+    lines.push(`Category: ${classification.reason_category}`);
+  }
+
+  // P1-D Write Order Contract:
+  //   1. JSON sidecar FIRST (atomic per-file rename via writeFile).
+  //   2. markdown sentinel SECOND.
+  // Invariant: markdown exists ⇒ JSON exists. Wrappers watch markdown,
+  // then read JSON; if JSON not yet visible (rare race), retry up to 5×50ms.
+  if (status === 'blocked' && classification) {
+    const jsonPath = filePath.replace(/\.md$/, '.json');
+    const jsonBody = {
+      schema_version: '2.0',
+      slug: classification.slug ?? null,
+      us_id: usId,
+      blocked_at_iter: classification.iteration ?? 0,
+      blocked_at_utc: new Date().toISOString(),
+      reason_category: classification.reason_category,
+      reason_detail: reason ?? null,
+      failure_category: classification.failure_category ?? null,
+      recoverable: classification.recoverable ?? false,
+      suggested_action: classification.suggested_action ?? 'terminal_alert',
+    };
+    await fs.writeFile(jsonPath, `${JSON.stringify(jsonBody, null, 2)}\n`, 'utf8');
+  }
+
   await fs.writeFile(filePath, `${lines.join('\n')}\n`, 'utf8');
 }
 
@@ -612,7 +684,7 @@ export async function run(slug, options = {}) {
         if (guardVerdict.verdict === 'inconclusive') {
           state.phase = 'blocked';
           const guardReason = 'flywheel-guard-escalate-inconclusive';
-          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, guardReason);
+          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, guardReason, _classifyBlock('flywheel_inconclusive', { state, slug }));
           await writeStatus(paths, state, options.onStatusChange, options.now);
           // governance §1f three-channel: sentinel + report + return value all
           // carry the same blocked reason. SV is intentionally not generated
@@ -626,11 +698,13 @@ export async function run(slug, options = {}) {
             analyticsFile: paths.analyticsFile,
             now: resolveNow(options.now),
             blockedReason: guardReason,
+            blockedCategory: 'mission_abort',
           });
           return {
             status: 'blocked',
             usId: state.current_us,
             reason: guardReason,
+            category: 'mission_abort',
             guardIssues: guardVerdict.issues,
             statusFile: paths.statusFile,
           };
@@ -640,7 +714,7 @@ export async function run(slug, options = {}) {
           if (state.flywheel_guard_count[state.current_us] >= 3) {
             state.phase = 'blocked';
             const exhaustReason = 'flywheel-guard-retries-exhausted';
-            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, exhaustReason);
+            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, exhaustReason, _classifyBlock('flywheel_exhausted', { state, slug }));
             await writeStatus(paths, state, options.onStatusChange, options.now);
             // governance §1f three-channel: see comment above.
             await generateCampaignReport({
@@ -651,11 +725,13 @@ export async function run(slug, options = {}) {
               analyticsFile: paths.analyticsFile,
               now: resolveNow(options.now),
               blockedReason: exhaustReason,
+              blockedCategory: 'mission_abort',
             });
             return {
               status: 'blocked',
               usId: state.current_us,
               reason: exhaustReason,
+              category: 'mission_abort',
               guardIssues: guardVerdict.issues,
               statusFile: paths.statusFile,
             };
@@ -756,7 +832,8 @@ export async function run(slug, options = {}) {
     if (verdict.verdict === 'blocked') {
       state.phase = 'blocked';
       const blockedReason = verdict.reason || verdict.summary || 'verifier-blocked';
-      await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason);
+      const blockedClassification = _classifyBlock('verifier', { verdict, state, slug });
+      await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason, blockedClassification);
       await appendIterationAnalytics(paths, state, usId, 'blocked', options);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
@@ -784,11 +861,13 @@ export async function run(slug, options = {}) {
         now: resolveNow(options.now),
         svSummary,
         blockedReason,
+        blockedCategory: blockedClassification.reason_category,
       });
       return {
         status: 'blocked',
         usId,
         reason: blockedReason,
+        category: blockedClassification.reason_category,
         statusFile: paths.statusFile,
       };
     }
@@ -799,7 +878,7 @@ export async function run(slug, options = {}) {
     if (upgradedModel === 'BLOCKED') {
       state.phase = 'blocked';
       const upgradeReason = `model-upgrade-exhausted (worker_model=${state.worker_model}, consecutive_failures=${state.consecutive_failures})`;
-      await writeSentinel(paths.blockedSentinel, 'blocked', usId, upgradeReason);
+      await writeSentinel(paths.blockedSentinel, 'blocked', usId, upgradeReason, _classifyBlock('model_upgrade', { state, slug }));
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
       if (options.withSelfVerification) {
@@ -826,11 +905,13 @@ export async function run(slug, options = {}) {
         now: resolveNow(options.now),
         svSummary,
         blockedReason: upgradeReason,
+        blockedCategory: 'repeat_axis',
       });
       return {
         status: 'blocked',
         usId,
         reason: upgradeReason,
+        category: 'repeat_axis',
         statusFile: paths.statusFile,
       };
     }

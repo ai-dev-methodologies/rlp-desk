@@ -213,8 +213,11 @@ async function runRunCommand(args, deps) {
   // governance §1f BLOCKED Surfacing: surface the blocked reason on stderr so
   // the operator (or wrapper script) does not have to grep memo files.
   if (result && result.status === 'blocked') {
+    // P1-D 4-channel surfacing: include category so wrappers can see
+    // reason_category alongside the textual reason without parsing JSON.
     const reason = result.reason ? ` — ${result.reason}` : '';
-    write(deps.stderr, `Campaign BLOCKED for ${slug} (US=${result.usId})${reason}`);
+    const cat = result.category ? `, category=${result.category}` : '';
+    write(deps.stderr, `Campaign BLOCKED for ${slug} (US=${result.usId}${cat})${reason}`);
     return 2;
   }
   write(deps.stdout, `Campaign started for ${slug}`);

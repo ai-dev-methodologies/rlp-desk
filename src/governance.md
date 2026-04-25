@@ -249,7 +249,49 @@ Verifier records WHY each judgment was made in `verify-verdict.json`:
 - Both are archived in `logs/<slug>/` per existing audit trail pattern
 
 ### BLOCKED Surfacing
-A BLOCKED outcome MUST surface its reason on three channels at once: the sentinel file (`<slug>-blocked.md`), the campaign report, AND the Leader's stderr console. Sentinel-only is silent failure; the operator (or wrapper script) must see WHY without grep'ing memo files. The Node leader propagates `verdict.reason || verdict.summary` into the sentinel reason field and into the return object so the entry script can echo it.
+A BLOCKED outcome MUST surface its reason on **FOUR channels at once**: (1) sentinel file (markdown `<slug>-blocked.md` + JSON sidecar `<slug>-blocked.json`), (2) status.json, (3) Leader's stderr console, (4) campaign report. Sentinel-only is silent failure; operators (and wrappers) must see WHY without grep'ing memo files. The leader propagates `verdict.reason || verdict.summary` into the sentinel reason field, the JSON sidecar, the return object, and the campaign report.
+
+### Failure Taxonomy (P1-D)
+BLOCKED writes a JSON sidecar (`<slug>-blocked.json`) alongside the markdown sentinel so wrappers can `jq .reason_category` instead of regex'ing free text. Schema:
+
+```json
+{
+  "schema_version": "2.0",
+  "slug": "<slug>",
+  "us_id": "<us_id or ALL>",
+  "blocked_at_iter": <int>,
+  "blocked_at_utc": "<iso8601>",
+  "reason_category": "metric_failure | cross_us_dep | context_limit | infra_failure | repeat_axis | mission_abort",
+  "reason_detail": "<full reason text>",
+  "failure_category": "spec | implementation | integration | flaky | null",
+  "recoverable": true | false,
+  "suggested_action": "next_mission_chain | restart | retry_after_fix | terminal_alert"
+}
+```
+
+**Wrapper contract (binding)**:
+- `reason_category` is **PRIMARY** — wrappers MUST branch on this field for recovery decisions.
+- `failure_category` is **SECONDARY, diagnostic only** — do NOT branch on it; logging/triage only.
+
+**Category → wrapper recovery action mapping** (defaults set by writer; wrappers may override but should follow):
+- `metric_failure` → `retry_after_fix` (fix PRD/code, retry; recoverable=true)
+- `cross_us_dep` → `retry_after_fix` (move AC to later US or switch to batch mode; recoverable=true)
+- `infra_failure` → `restart` (CLI/network/spawn issue; recoverable=true)
+- `context_limit` → `next_mission_chain` (current mission stale; recoverable=false)
+- `repeat_axis` → `next_mission_chain` (model ceiling reached on this axis; recoverable=false)
+- `mission_abort` → `terminal_alert` (flywheel guard exhausted; recoverable=false)
+
+**Cross-US token list (cross_us_dep classifier)** — verifier verdict / worker signal text matching ANY of these is classified as `cross_us_dep`:
+- English: `depends on US-`, `blocking US-`, `awaits US-`, `post-iter US-`, `requires US-N`, `cross-US`
+- Korean: `US-N 산출물`, `신규 US-`, `post-iter`
+
+**Write Order Contract (atomicity invariant)**:
+1. JSON sidecar written FIRST (`fs.writeFile` / `atomic_write`).
+2. markdown sentinel written SECOND.
+3. Invariant: **markdown exists ⇒ JSON exists** (writer enforces order).
+4. Wrappers SHOULD watch markdown sentinel, then read JSON sidecar. If JSON not yet visible (rare), retry up to 5 × 50ms before failing.
+
+`atomic_write` provides per-file rename atomicity; cross-file ordering is enforced by the explicit two-call sequence.
 
 ## 2. Roles
 

@@ -166,6 +166,7 @@ export async function generateCampaignReport({
   gitDiffProvider = defaultGitDiffProvider,
   svSummary = 'N/A — --with-self-verification not enabled',
   blockedReason = null,
+  blockedCategory = null,
 }) {
   await fs.mkdir(path.dirname(reportFile), { recursive: true });
   await versionFile(reportFile, reportVersionPath);
@@ -199,6 +200,7 @@ export async function generateCampaignReport({
     '## Execution Summary',
     `- Terminal state: ${terminalState}`,
     ...(blockedReason ? [`- Blocked reason: ${blockedReason}`] : []),
+    ...(blockedCategory ? [`- Blocked category: ${blockedCategory}`] : []),
     `- Iterations run: ${status.iteration ?? 0}`,
     `- Elapsed: ${elapsed}`,
     '',
