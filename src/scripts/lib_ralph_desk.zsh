@@ -468,7 +468,8 @@ generate_campaign_report() {
     # carry a "Reason: <text>" line; tolerate either a one-line legacy sentinel
     # (no Reason:) or a multi-line one.
     blocked_reason=$(grep -m1 -E '^[Rr]eason:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
-      | sed -E 's/^[Rr]eason:[[:space:]]*//')
+      | sed -E 's/^[Rr]eason:[[:space:]]*//' \
+      || true)
   else final_status="TIMEOUT"; fi
 
   local report_file="$LOGS_DIR/campaign-report.md"
@@ -713,6 +714,7 @@ Blocked at iteration $ITERATION.
 Reason: $reason
 
 Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$BLOCKED_SENTINEL"
+  log_error "Campaign BLOCKED: $reason"
   log "BLOCKED sentinel written: $BLOCKED_SENTINEL"
 }
 
