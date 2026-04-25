@@ -369,6 +369,54 @@ assert_one "$LIB" '"- Blocked reason: \$blocked_reason"' \
   "AC16-b: tmux report renders blocked reason line"
 
 # ------------------------------------------------------------------
+# AC19: zsh sentinel first-line contract matches Node sentinel
+# (codex pre-merge audit Risk D — docs/multi-mission-orchestration.md
+# claims `BLOCKED: <us_id>` first line for all entry points; zsh used
+# to write `# Campaign Blocked` markdown header instead, breaking
+# wrappers that parse `head -1 | awk '{print $2}'`.)
+# ------------------------------------------------------------------
+assert_one "$LIB" 'BLOCKED: \$us_id' \
+  "AC19-a: zsh write_blocked_sentinel emits 'BLOCKED: <us_id>' line"
+assert_one "$LIB" 'COMPLETE: \$us_id' \
+  "AC19-b: zsh write_complete_sentinel emits 'COMPLETE: <us_id>' line"
+# Behavioural: actually run write_blocked_sentinel and parse like a wrapper would.
+TMP_SENT=$(mktemp "${TMPDIR:-/tmp}/rlp-us013-sent-XXXX")
+ITERATION=7 BLOCKED_SENTINEL="$TMP_SENT" CURRENT_US="US-042" \
+  zsh -c "
+source '$LIB' 2>/dev/null
+log() { :; }
+log_error() { :; }
+atomic_write() { cat > \"\$1\"; }
+write_blocked_sentinel 'verifier-blocked: AC3 unsatisfiable'
+"
+got_first=$(head -1 "$TMP_SENT")
+got_us=$(head -1 "$TMP_SENT" | awk '{print $2}')
+got_reason=$(grep -m1 '^Reason:' "$TMP_SENT" | sed 's/^Reason: //')
+rm -f "$TMP_SENT"
+if [[ "$got_first" == "BLOCKED: US-042" && "$got_us" == "US-042" && "$got_reason" == "verifier-blocked: AC3 unsatisfiable" ]]; then
+  pass "AC19-c: wrapper parsing (head -1, awk \$2, grep ^Reason:) succeeds on zsh sentinel"
+else
+  fail "AC19-c: wrapper parsing failed (first='$got_first', us='$got_us', reason='$got_reason')"
+fi
+# Fallback: no CURRENT_US env -> sentinel emits 'BLOCKED: ALL'
+TMP_SENT2=$(mktemp "${TMPDIR:-/tmp}/rlp-us013-sent2-XXXX")
+ITERATION=7 BLOCKED_SENTINEL="$TMP_SENT2" \
+  zsh -c "
+source '$LIB' 2>/dev/null
+log() { :; }
+log_error() { :; }
+atomic_write() { cat > \"\$1\"; }
+write_blocked_sentinel 'API unavailable after 5 retries'
+"
+got_us2=$(head -1 "$TMP_SENT2" | awk '{print $2}')
+rm -f "$TMP_SENT2"
+if [[ "$got_us2" == "ALL" ]]; then
+  pass "AC19-d: CURRENT_US-less call falls back to 'BLOCKED: ALL'"
+else
+  fail "AC19-d: fallback failed (got '$got_us2', expected 'ALL')"
+fi
+
+# ------------------------------------------------------------------
 # AC17: write_blocked_sentinel surfaces BLOCKED on stderr
 # (governance §1f channel #3 — leader stderr).
 # ------------------------------------------------------------------
