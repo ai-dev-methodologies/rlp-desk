@@ -13,6 +13,7 @@
 *~
 .DS_Store
 .claude/ralph-desk/
+.claude/scheduled_tasks.lock
 .claude/settings.local.json
 docs/superpowers/
 .idea/
