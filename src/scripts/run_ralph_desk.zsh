@@ -68,6 +68,71 @@ if (( WITH_SELF_VERIFICATION )); then
   SV_SKIPPED_REASON="tmux_runner"
 fi
 AUTONOMOUS_MODE="${AUTONOMOUS_MODE:-0}"    # 1=don't stop on ambiguity, PRD is authoritative
+# P1-E Lane enforcement: WARN-only by default; --lane-strict opts into BLOCKED
+# escalation. governance §7¾. The opt-in defaults to "warn"; "strict" trips
+# BLOCKED with reason_category=infra_failure + recoverable=true (downgrade
+# from terminal_alert) so an inaccurate mtime audit cannot terminally kill a
+# campaign.
+LANE_MODE="${LANE_MODE:-warn}"
+# US-018 R6 P1-F Test density: WARN by default; --test-density-strict turns
+# init exit non-zero when any AC has < 3 tests (governance §7f).
+TEST_DENSITY_MODE="${TEST_DENSITY_MODE:-warn}"
+# US-021 R9 P2-I consecutive_blocks circuit breaker (governance §8). When the
+# same canonical block reason fires N times in a row the runner writes
+# .sisyphus/mission-abort.json and exits non-zero so contract defects don't
+# silently loop. infra_failure category and the very first iteration are exempt.
+BLOCK_CB_THRESHOLD="${BLOCK_CB_THRESHOLD:-3}"
+CONSECUTIVE_BLOCKS=0
+LAST_BLOCK_REASON=""
+
+# US-021 R9 P2-I: track repeated same-reason blocks. infra_failure category and
+# the very first iteration are exempt (mission setup blocks shouldn't trip
+# the abort). Returns 0 if loop should continue, 1 (after writing
+# mission-abort.json) if the threshold is reached.
+# US-023 R11 P2-K: guarantee at least one cost-log.jsonl entry per campaign.
+# An empty cost-log can mean either "no usage recorded" or "logging broken" —
+# we make the distinction observable by always emitting a final entry on exit
+# (idempotent via COST_LOG_FINAL_WRITTEN). Wired into the existing cleanup trap.
+COST_LOG_FINAL_WRITTEN=0
+_emit_final_cost_log() {
+  if [[ "${COST_LOG_FINAL_WRITTEN:-0}" -ne 0 ]]; then
+    return 0
+  fi
+  COST_LOG_FINAL_WRITTEN=1
+  if [[ -n "${ITERATION:-}" && -n "${LOGS_DIR:-}" ]]; then
+    write_cost_log "${ITERATION:-0}" 2>/dev/null || true
+  fi
+}
+
+_check_consecutive_blocks() {
+  local reason="$1"
+  local category="${2:-metric_failure}"
+  local iter="${3:-${ITERATION:-0}}"
+  if [[ "$category" == "infra_failure" ]] || (( iter <= 1 )); then
+    LAST_BLOCK_REASON=""
+    CONSECUTIVE_BLOCKS=0
+    return 0
+  fi
+  local canonical
+  canonical=$(_canonical_block_reason "$reason" 2>/dev/null)
+  if [[ "$canonical" == "$LAST_BLOCK_REASON" && -n "$canonical" ]]; then
+    CONSECUTIVE_BLOCKS=$((CONSECUTIVE_BLOCKS + 1))
+  else
+    CONSECUTIVE_BLOCKS=1
+    LAST_BLOCK_REASON="$canonical"
+  fi
+  if (( CONSECUTIVE_BLOCKS >= BLOCK_CB_THRESHOLD )); then
+    local abort_dir="$DESK/.sisyphus"
+    mkdir -p "$abort_dir" 2>/dev/null
+    local abort_file="$abort_dir/mission-abort.json"
+    printf '{"reason":"consecutive_blocks","count":%s,"last_reason":"%s","threshold":%s,"timestamp":"%s"}\n' \
+      "$CONSECUTIVE_BLOCKS" "$canonical" "$BLOCK_CB_THRESHOLD" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$abort_file"
+    log_error "Mission abort: same canonical block reason '$canonical' repeated $CONSECUTIVE_BLOCKS times (>= $BLOCK_CB_THRESHOLD)"
+    return 1
+  fi
+  return 0
+}
 
 # --- Engine Selection (auto-detect from model format) ---
 # claude models (haiku/sonnet/opus) with :effort → claude engine + effort
@@ -530,6 +595,7 @@ handle_worker_exit_codex() {
     dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
     log "  Codex worker completed with done-claim (us_id=$dc_us_id). Auto-generating signal."
     echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exit","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+    _emit_a4_fallback_audit "$dc_us_id" "$iter" "codex_exit_with_done_claim"
   else
     log "  WARNING: Codex worker exited without done-claim. Generating verify signal for current US."
     local current_us
@@ -538,6 +604,7 @@ handle_worker_exit_codex() {
     mem_us=$(sed -n 's/.*Next.*US-\([0-9]*\).*/US-\1/p' "$DESK/memos/${SLUG}-memory.md" 2>/dev/null | head -1)
     [[ -n "$mem_us" ]] && current_us="$mem_us"
     echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$current_us"'","summary":"auto-generated after codex exit (no done-claim)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+    _emit_a4_fallback_audit "$current_us" "$iter" "codex_exit_no_done_claim"
   fi
   return 0
 }
@@ -774,6 +841,7 @@ create_session() {
     "with_self_verification": '"$WITH_SELF_VERIFICATION"',
     "with_self_verification_requested": '"$WITH_SELF_VERIFICATION_REQUESTED"',
     "sv_skipped_reason": "'"$SV_SKIPPED_REASON"'",
+    "lane_mode": "'"$LANE_MODE"'",
     "autonomous_mode": '"$AUTONOMOUS_MODE"'
   }
 }' | atomic_write "$SESSION_CONFIG"
@@ -1586,6 +1654,7 @@ poll_for_signal() {
         log "  WARNING: done-claim exists for $dc_us_id but no iter-signal. Auto-generating signal (A4 fallback)."
         log_debug "[GOV] iter=$ITERATION done_claim_without_signal=true us_id=$dc_us_id action=auto_generate_signal"
         echo '{"iteration":'"$ITERATION"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated by A4 fallback (done-claim without signal)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+        _emit_a4_fallback_audit "$dc_us_id" "$ITERATION" "inline_polling_a4"
         return 0
       fi
     fi
@@ -1608,7 +1677,7 @@ poll_for_signal() {
       log_debug "[FLOW] iter=$ITERATION api_retry=${api_retry_count}/${_API_MAX_RETRIES} role=${role} reason=tmux_pane_api_error"
       if (( api_retry_count >= _API_MAX_RETRIES )); then
         log_error "API unavailable after ${_API_MAX_RETRIES} retries"
-        write_blocked_sentinel "API unavailable after ${_API_MAX_RETRIES} retries"
+        write_blocked_sentinel "API unavailable after ${_API_MAX_RETRIES} retries" "" "infra_failure"
         return 2
       fi
       # A5: If pane shows "queued messages" or rate-limit corruption, restart pane
@@ -2096,7 +2165,8 @@ main() {
   else
     LOCKFILE_ACQUIRED=1
   fi
-  trap cleanup EXIT INT TERM
+  # US-023 R11 P2-K: chain `_emit_final_cost_log` so cost-log.jsonl is never silently empty on exit.
+  trap '_emit_final_cost_log; cleanup' EXIT INT TERM
   mkdir -p "$LOGS_DIR" "$RUNTIME_DIR" 2>/dev/null
 
   # --- Analytics directory: always create (campaign.jsonl + metadata.json are always-on) ---
@@ -2134,8 +2204,9 @@ main() {
     --argjson with_sv "$WITH_SELF_VERIFICATION" \
     --argjson with_sv_requested "$WITH_SELF_VERIFICATION_REQUESTED" \
     --arg sv_skipped_reason "$SV_SKIPPED_REASON" \
+    --arg lane_mode "$LANE_MODE" \
     --argjson consensus "${VERIFY_CONSENSUS:-0}" \
-    '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, with_self_verification_requested: $with_sv_requested, sv_skipped_reason: $sv_skipped_reason, consensus: $consensus}' \
+    '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, with_self_verification_requested: $with_sv_requested, sv_skipped_reason: $sv_skipped_reason, lane_mode: $lane_mode, consensus: $consensus}' \
     > "$METADATA_FILE"
 
   # --- Startup ---
@@ -2234,7 +2305,8 @@ main() {
   create_session
 
   # Set trap for cleanup on exit/error
-  trap cleanup EXIT
+  # US-023 R11 P2-K: chain `_emit_final_cost_log` so cost-log.jsonl is never silently empty.
+  trap '_emit_final_cost_log; cleanup' EXIT
 
   # Initialize context hash for stale detection
   PREV_CONTEXT_HASH=$(compute_context_hash)
@@ -2304,14 +2376,14 @@ main() {
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
       worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
       if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
-        write_blocked_sentinel "Worker codex failed to start in pane"
+        write_blocked_sentinel "Worker codex failed to start in pane" "" "infra_failure"
         update_status "blocked" "worker_start_failed"
         return 1
       fi
     else
       worker_launch="$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
       if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
-        write_blocked_sentinel "Worker claude failed to start in pane"
+        write_blocked_sentinel "Worker claude failed to start in pane" "" "infra_failure"
         update_status "blocked" "worker_start_failed"
         return 1
       fi
@@ -2354,7 +2426,7 @@ main() {
           log_debug "[GOV] iter=$ITERATION monitor_failure=$MONITOR_FAILURE_COUNT/3"
           if (( MONITOR_FAILURE_COUNT >= 3 )); then
             log_debug "[GOV] iter=$ITERATION circuit_breaker=monitor_failures detail=\"3 consecutive monitor failures\""
-            write_blocked_sentinel "3 consecutive monitor failures (worker not active)"
+            write_blocked_sentinel "3 consecutive monitor failures (worker not active)" "" "infra_failure"
             update_status "blocked" "monitor_failures"
             return 1
           fi
@@ -2362,7 +2434,7 @@ main() {
           update_status "worker" "poll_failed"
           log_debug "[FLOW] iter=$ITERATION poll_worker_dead=true worker_cmd=$worker_cmd"
           # Worker is truly dead/stuck — BLOCK and let user decide
-          write_blocked_sentinel "Worker process dead/stuck (poll failed). Pane preserved for inspection."
+          write_blocked_sentinel "Worker process dead/stuck (poll failed). Pane preserved for inspection." "" "infra_failure"
           update_status "blocked" "worker_dead"
           return 1
         fi
@@ -2402,6 +2474,22 @@ main() {
         log "  Worker requests continue. Moving to next iteration."
         update_status "worker" "continue"
         ;;
+      verify_partial)
+        # US-019 R7 P1-G: Worker explicitly verified a subset of ACs and deferred the rest.
+        # Verifier evaluates only verified_acs. Malformed (empty verified_acs) downgrades to blocked.
+        local vp_count
+        vp_count=$(jq -r '.verified_acs // [] | length' "$SIGNAL_FILE" 2>/dev/null || echo 0)
+        if [[ "$vp_count" -eq 0 ]]; then
+          log "  Worker signal verify_partial but verified_acs is empty — downgrading to blocked (verify_partial_malformed)."
+          local vp_us_id
+          vp_us_id=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
+          write_blocked_sentinel "verify_partial_malformed: empty verified_acs" "${vp_us_id:-${CURRENT_US:-ALL}}" "mission_abort"
+          update_status "blocked" "verify_partial_malformed"
+          break
+        fi
+        log "  Worker signal verify_partial (verified_acs count=$vp_count). Routing to verify path."
+        signal_status="verify"
+        ;&
       verify)
         # --- governance.md s7 step 7: Execute Verifier ---
         # Read us_id from signal for per-US scoping
@@ -2449,7 +2537,7 @@ main() {
           elif (( consensus_rc != 0 )); then
             # Consensus verification failed entirely
             log_error "Consensus verification failed"
-            write_blocked_sentinel "Consensus verification failed after max rounds"
+            write_blocked_sentinel "Consensus verification failed after max rounds" "" "repeat_axis"
             update_status "blocked" "consensus_failed"
             return 1
           fi
@@ -2508,7 +2596,7 @@ main() {
             fi
             log_error "Verifier poll failed"
             # Verifier is dead/stuck — BLOCK and let user decide
-            write_blocked_sentinel "Verifier process dead/stuck (poll failed). Pane preserved for inspection."
+            write_blocked_sentinel "Verifier process dead/stuck (poll failed). Pane preserved for inspection." "" "infra_failure"
             update_status "blocked" "verifier_dead"
             return 1
           fi
@@ -2642,11 +2730,11 @@ main() {
               if (( _MODEL_UPGRADED )) && [[ -z "$(get_next_model "$_ceiling_model_str")" ]]; then
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"architecture escalation: Worker at ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures\""
                 log_error "Circuit breaker: architecture escalation — Worker upgraded to ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures"
-                write_blocked_sentinel "architecture escalation: Worker upgraded to ceiling model (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
+                write_blocked_sentinel "architecture escalation: Worker upgraded to ceiling model (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
               else
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"${EFFECTIVE_CB_THRESHOLD} consecutive verification failures\""
                 log_error "Circuit breaker: ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
-                write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
+                write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
               fi
               update_status "blocked" "consecutive_failures"
               return 1
@@ -2664,7 +2752,9 @@ main() {
             update_status "verifier" "request_info"
             ;;
           blocked)
-            write_blocked_sentinel "Verifier verdict: blocked - $verdict_summary"
+            local _verdict_cat
+            _verdict_cat=$(_classify_cross_us_or_metric "$verdict_summary")
+            write_blocked_sentinel "Verifier verdict: blocked - $verdict_summary" "" "$_verdict_cat"
             update_status "blocked" "verifier_blocked"
             return 1
             ;;
@@ -2676,7 +2766,9 @@ main() {
         ;;
       blocked)
         # --- governance.md s7 step 6: blocked -> write sentinel ---
-        write_blocked_sentinel "Worker reported blocked: $signal_summary"
+        local _signal_cat
+        _signal_cat=$(_classify_cross_us_or_metric "$signal_summary")
+        write_blocked_sentinel "Worker reported blocked: $signal_summary" "" "$_signal_cat"
         update_status "blocked" "worker_blocked"
         return 1
         ;;
@@ -2699,7 +2791,7 @@ main() {
     # --- governance.md s7 step 8: Circuit breaker - stale context check ---
     if ! check_stale_context; then
       log_debug "[GOV] iter=$ITERATION circuit_breaker=stale_context detail=\"context unchanged for 3 consecutive iterations\""
-      write_blocked_sentinel "Context unchanged for 3 consecutive iterations (stale)"
+      write_blocked_sentinel "Context unchanged for 3 consecutive iterations (stale)" "" "context_limit"
       update_status "blocked" "stale_context"
       return 1
     fi
@@ -2755,6 +2847,16 @@ while (( _cli_i <= $# )); do
       ;;
     --autonomous)
       AUTONOMOUS_MODE=1
+      ;;
+    --lane-strict)
+      # P1-E opt-in: lane mtime audit escalates to BLOCKED instead of WARN.
+      # See governance §7¾.
+      LANE_MODE="strict"
+      ;;
+    --test-density-strict)
+      # US-018 R6 P1-F opt-in: AC with < 3 tests fails init (exit 1) instead of WARN.
+      # See governance §7f.
+      TEST_DENSITY_MODE="strict"
       ;;
     --final-verifier-model)
       (( _cli_i++ ))

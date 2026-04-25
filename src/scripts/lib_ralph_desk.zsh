@@ -363,6 +363,135 @@ archive_iter_artifacts() {
   fi
 }
 
+# --- US-022 (R10 P2-J): Normalized PRD US-list extractor ---
+# Recognises `## US-005:`, `## US-005 -`, and bare `## US-005` headings.
+# Returns one US-NNN per line, sorted unique.
+_extract_prd_us_list() {
+  local prd_file="$1"
+  [[ -f "$prd_file" ]] || return 0
+  grep -oE '^##[[:space:]]+US-[0-9]+([[:space:]:-]|$)' "$prd_file" 2>/dev/null \
+    | grep -oE 'US-[0-9]+' \
+    | sort -u
+}
+
+# --- US-022 (R10 P2-J): Quarantine stale iter-signal.json from prior mission ---
+# Worker autonomy is preserved: the signal is moved (not deleted) to
+# .sisyphus/quarantine/iter-signal.<epoch>.json so the operator can recover.
+# Argument 4 (force) skips the PRD scope check and quarantines unconditionally
+# (used for tests / invasive cleanups).
+_quarantine_stale_signal() {
+  local signal_file="$1"
+  local prd_file="$2"
+  local desk="${3:-${DESK:-}}"
+  [[ -f "$signal_file" ]] || return 0
+  [[ -n "$desk" ]] || return 0
+  local stale_us
+  stale_us=$(jq -r '.us_id // empty' "$signal_file" 2>/dev/null)
+  [[ -z "$stale_us" || "$stale_us" == "ALL" || "$stale_us" == "null" ]] && return 0
+  if [[ -f "$prd_file" ]]; then
+    local prd_us_list
+    prd_us_list=$(_extract_prd_us_list "$prd_file")
+    if echo "$prd_us_list" | grep -qx "$stale_us"; then
+      return 0
+    fi
+  fi
+  local qdir="$desk/.sisyphus/quarantine"
+  mkdir -p "$qdir" 2>/dev/null
+  local qfile="$qdir/iter-signal.$(date +%s).json"
+  mv "$signal_file" "$qfile" 2>/dev/null && \
+    echo "[lane] cross-mission stale us_id ($stale_us) — quarantined to $qfile" >&2
+  return 0
+}
+
+# --- US-021 (R9 P2-I): Canonical block reason for consecutive_blocks counter ---
+# Strips wrapper prefixes (hygiene_violated:, wrapped:) so the counter compares
+# semantic reasons rather than surface labels. Truncates to 80 chars so noisy
+# tail content doesn't fragment the same logical reason into different keys.
+_canonical_block_reason() {
+  local raw="$1"
+  echo "$raw" | sed -E 's/^(hygiene_violated:[[:space:]]*|wrapped:[[:space:]]*)//' | cut -c1-80
+}
+
+# --- US-018 (R6 P1-F): Test density enforcement (≥3 tests/AC) ---
+# Counts ACs per US in the PRD (lines like `- AC1:`, `- AC2:`) and tests per US
+# in the test-spec (lines like `### Test ` or `**T-`). Emits a warning when any
+# US has < 3 tests / AC. Mode 'strict' returns non-zero so callers can `exit 1`.
+# Reference: governance §7f.
+_lint_test_density() {
+  local prd_file="$1"
+  local spec_file="$2"
+  local mode="${3:-warn}"
+  local fail=0
+
+  [[ -f "$prd_file" ]] || { echo "[lint] PRD missing: $prd_file" >&2; return 0; }
+  [[ -f "$spec_file" ]] || { echo "[lint] test-spec missing: $spec_file" >&2; return 0; }
+
+  local us_list
+  us_list=$(grep -oE '^##[[:space:]]+US-[0-9]+' "$prd_file" 2>/dev/null | grep -oE 'US-[0-9]+' | sort -u)
+  [[ -z "$us_list" ]] && return 0
+
+  local audit_dir="${LOGS_DIR:-/tmp}"
+  local audit_file="$audit_dir/test-density-audit.jsonl"
+  [[ -d "$audit_dir" ]] || audit_file="/tmp/test-density-audit.jsonl"
+
+  local us
+  for us in ${(f)us_list}; do
+    # ACs in this US block of the PRD
+    local ac_count
+    ac_count=$(awk -v us="$us" '
+      $0 ~ "^##[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+      in_us && /^##[[:space:]]+US-[0-9]+/ { in_us=0 }
+      in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ { c++ }
+      END { print c+0 }
+    ' "$prd_file")
+
+    local test_count
+    test_count=$(awk -v us="$us" '
+      $0 ~ "^##[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+      in_us && /^##[[:space:]]+US-[0-9]+/ { in_us=0 }
+      in_us && (/^###[[:space:]]+Test[[:space:]]/ || /^\*\*T-/) { c++ }
+      END { print c+0 }
+    ' "$spec_file")
+
+    [[ "$ac_count" -eq 0 ]] && continue
+
+    local required=$(( ac_count * 3 ))
+    if [[ "$test_count" -lt "$required" ]]; then
+      fail=1
+      local msg="Test density warning: $us has $test_count tests for $ac_count ACs (ratio=$test_count/$ac_count, required >=3 per AC = $required)"
+      echo "$msg" >&2
+      printf '{"event":"test_density_warning","us_id":"%s","ac_count":%s,"test_count":%s,"required":%s,"timestamp":"%s"}\n' \
+        "$us" "$ac_count" "$test_count" "$required" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$audit_file"
+    fi
+  done
+
+  if (( fail == 1 )); then
+    if [[ "$mode" == "strict" ]]; then
+      echo "[lint] Test density STRICT mode — exit 1 (run without --test-density-strict to continue)" >&2
+      return 1
+    fi
+    echo "[lint] Test density WARN — see $audit_file (use --test-density-strict to fail init)" >&2
+  fi
+  return 0
+}
+
+# --- US-017 (R5 P0-D): Append A4 fallback audit entry ---
+# Worker forgot to write iter-signal.json after done-claim → A4 fallback auto-generated a verify signal.
+# This helper records the event for debugging context loss tracking.
+# Per-mission ratio < 10% recommended (governance §1f).
+_emit_a4_fallback_audit() {
+  local us_id="${1:-UNKNOWN}"
+  local iter="${2:-0}"
+  local source_path="${3:-inline}"
+  local audit_dir="${LOGS_DIR:-/tmp}"
+  [[ -d "$audit_dir" ]] || return 0
+  local audit_file="$audit_dir/a4-fallback-audit.jsonl"
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  printf '{"event":"a4_fallback","iter":%s,"us_id":"%s","source":"%s","timestamp":"%s"}\n' \
+    "$iter" "$us_id" "$source_path" "$ts" >> "$audit_file"
+}
+
 # --- AC5: Write per-iteration cost estimate to cost-log.jsonl ---
 write_cost_log() {
   local iter="$1"
@@ -400,7 +529,15 @@ write_cost_log() {
     consensus_fields="${consensus_fields}"',"verifier_codex_duration_s":'"${ITER_VERIFIER_CODEX_DURATION_S}"
   fi
 
-  echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"worker_start_time":"'"$worker_start_time"'","worker_end_time":"'"$worker_end_time"'","worker_duration_s":'"$worker_duration_s"',"verifier_start_time":"'"$verifier_start_time"'","verifier_end_time":"'"$verifier_end_time"'","verifier_duration_s":'"$verifier_duration_s"''"$consensus_fields"',"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$COST_LOG"
+  # US-023 R11 P2-K: emit a `note` field so empty-inputs entries are distinguishable
+  # from broken logging. The audit pipeline can branch on `note == 'no_actual_usage_recorded'`
+  # to know that the iteration ran but token counts were not captured (tmux/estimated path).
+  local cost_note="${COST_LOG_NOTE:-}"
+  if [[ -z "$cost_note" ]] && (( prompt_bytes == 0 && claim_bytes == 0 && verdict_bytes == 0 )); then
+    cost_note="no_actual_usage_recorded"
+  fi
+
+  echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"worker_start_time":"'"$worker_start_time"'","worker_end_time":"'"$worker_end_time"'","worker_duration_s":'"$worker_duration_s"',"verifier_start_time":"'"$verifier_start_time"'","verifier_end_time":"'"$verifier_end_time"'","verifier_duration_s":'"$verifier_duration_s"''"$consensus_fields"',"note":"'"$cost_note"'","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$COST_LOG"
 }
 
 # --- Analytics: write per-iteration structured data to campaign.jsonl (always-on) ---
@@ -460,15 +597,19 @@ generate_campaign_report() {
 
   local final_status="UNKNOWN"
   local blocked_reason=""
+  local blocked_category=""
   if [[ -f "$COMPLETE_SENTINEL" ]]; then final_status="COMPLETE"
   elif [[ -f "$BLOCKED_SENTINEL" ]]; then
     final_status="BLOCKED"
-    # governance §1f BLOCKED Surfacing: surface the reason on the campaign
-    # report (channel #2). Sentinels written by the leader / write_blocked_sentinel
-    # carry a "Reason: <text>" line; tolerate either a one-line legacy sentinel
-    # (no Reason:) or a multi-line one.
+    # governance §1f BLOCKED Surfacing (4-channel): markdown sentinel +
+    # JSON sidecar + status + console + report. Pull both Reason and
+    # Category lines for the report. Tolerate legacy sentinels missing
+    # either field (back-compat).
     blocked_reason=$(grep -m1 -E '^[Rr]eason:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
       | sed -E 's/^[Rr]eason:[[:space:]]*//' \
+      || true)
+    blocked_category=$(grep -m1 -E '^[Cc]ategory:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
+      | sed -E 's/^[Cc]ategory:[[:space:]]*//' \
       || true)
   else final_status="TIMEOUT"; fi
 
@@ -536,6 +677,9 @@ ${untracked}"
     echo "- Terminal state: $final_status"
     if [[ -n "$blocked_reason" ]]; then
       echo "- Blocked reason: $blocked_reason"
+    fi
+    if [[ -n "$blocked_category" ]]; then
+      echo "- Blocked category: $blocked_category"
     fi
     echo "- Iterations run: $ITERATION / $MAX_ITER"
     echo "- Elapsed: ${elapsed}s"
@@ -697,25 +841,141 @@ generate_sv_report() {
 # --- governance.md s7: Only the Leader writes sentinels ---
 write_complete_sentinel() {
   local summary="$1"
-  echo "# Campaign Complete
+  # Optional 2nd arg: us_id (defaults to ALL). Same first-line contract
+  # as writeSentinel(complete) on the Node side so wrappers can parse
+  # `head -1 | awk '{print $2}'` consistently.
+  local us_id="${2:-${CURRENT_US:-ALL}}"
+  echo "COMPLETE: $us_id
+Summary: $summary
+
+# Campaign Complete
 
 Completed at iteration $ITERATION.
-$summary
 
 Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$COMPLETE_SENTINEL"
   log "COMPLETE sentinel written: $COMPLETE_SENTINEL"
 }
 
+# P1-D Cross-US dependency detection: scan a verdict summary or worker
+# signal body for cross-US dependency tokens. Returns "cross_us_dep" when
+# any token matches, "metric_failure" otherwise. governance.md §1f locks
+# the token list — keep this in sync with that section.
+#   English: "depends on US-", "blocking US-", "awaits US-",
+#            "post-iter US-", "requires US-", "cross-US"
+#   Korean:  "US-NNN 산출물", "신규 US-", "post-iter"
+_classify_cross_us_or_metric() {
+  local text="$1"
+  if echo "$text" | grep -qE 'depends on US-|blocking US-|awaits US-|post-iter US-|requires US-[0-9]+|cross-US|US-[0-9]+ 산출물|신규 US-|post-iter'; then
+    echo "cross_us_dep"
+  else
+    echo "metric_failure"
+  fi
+}
+
+# P1-D Failure Taxonomy: derive (recoverable, suggested_action) from
+# reason_category. governance.md §1f defines the 6 reason_category values
+# (metric_failure, cross_us_dep, context_limit, infra_failure, repeat_axis,
+# mission_abort). wrapper MUST branch on reason_category; failure_category
+# is diagnostic only.
+_blocked_recoverable_for_category() {
+  case "$1" in
+    metric_failure|cross_us_dep|infra_failure) echo "true" ;;
+    context_limit|repeat_axis|mission_abort)   echo "false" ;;
+    *)                                          echo "false" ;;
+  esac
+}
+_blocked_action_for_category() {
+  case "$1" in
+    metric_failure|cross_us_dep) echo "retry_after_fix" ;;
+    infra_failure)               echo "restart" ;;
+    context_limit|repeat_axis)   echo "next_mission_chain" ;;
+    mission_abort)               echo "terminal_alert" ;;
+    *)                           echo "terminal_alert" ;;
+  esac
+}
+
 write_blocked_sentinel() {
   local reason="$1"
-  echo "# Campaign Blocked
+  # Optional 2nd arg: us_id (defaults to ALL).
+  local us_id="${2:-${CURRENT_US:-ALL}}"
+  # Optional 3rd arg: reason_category (default metric_failure).
+  # See governance.md §1f Failure Taxonomy for the 6-value enum.
+  local category="${3:-metric_failure}"
+  local recoverable suggested_action json_path
+  recoverable=$(_blocked_recoverable_for_category "$category")
+  suggested_action=$(_blocked_action_for_category "$category")
+  json_path="${BLOCKED_SENTINEL%.md}.json"
+  local now_iso
+  now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # US-020 R8 P1-H: Blocked exit hygiene auto-check.
+  # Worker is required to update memory.md (Blocking History) and latest.md (Known Issues)
+  # before signalling blocked. We compare those file mtimes against the sentinel write time;
+  # if either is older than 5 minutes the worker skipped the hygiene step and we tag the
+  # JSON sidecar so audit pipelines (governance §1f, 5th channel) can see it.
+  local hygiene_violated=false
+  local hygiene_now hygiene_mem_mt hygiene_lat_mt
+  hygiene_now=$(date +%s 2>/dev/null || echo 0)
+  if [[ -n "${DESK:-}" && -n "${SLUG:-}" && "$hygiene_now" -gt 0 ]]; then
+    local mem_file="$DESK/memos/$SLUG-memory.md"
+    local lat_file="$DESK/context/$SLUG-latest.md"
+    for hf in "$mem_file" "$lat_file"; do
+      if [[ -f "$hf" ]]; then
+        local f_mt
+        f_mt=$(stat -f %m "$hf" 2>/dev/null || stat -c %Y "$hf" 2>/dev/null || echo 0)
+        if (( hygiene_now - f_mt > 300 )); then
+          hygiene_violated=true
+          break
+        fi
+      fi
+    done
+  fi
+
+  # P1-D Write Order Contract (governance.md §1f):
+  # 1. JSON sidecar FIRST (wrapper-friendly, jq parseable).
+  # 2. markdown sentinel SECOND (legacy, watched by older wrappers).
+  # Invariant: markdown exists ⇒ JSON exists. Wrappers watch markdown,
+  # then read JSON; if JSON not yet visible (rare), retry up to 5×50ms.
+  # atomic_write provides per-file rename atomicity; cross-file ordering
+  # is enforced by the explicit two-call sequence below.
+  jq -n \
+    --arg sv "2.0" \
+    --arg slug "${SLUG:-unknown}" \
+    --arg us_id "$us_id" \
+    --argjson iter "${ITERATION:-0}" \
+    --arg utc "$now_iso" \
+    --arg category "$category" \
+    --arg detail "$reason" \
+    --argjson recoverable "$recoverable" \
+    --arg action "$suggested_action" \
+    --argjson hygiene "$hygiene_violated" \
+    '{
+      schema_version: $sv,
+      slug: $slug,
+      us_id: $us_id,
+      blocked_at_iter: $iter,
+      blocked_at_utc: $utc,
+      reason_category: $category,
+      reason_detail: $detail,
+      failure_category: null,
+      recoverable: $recoverable,
+      suggested_action: $action,
+      meta: { blocked_hygiene_violated: $hygiene }
+    }' | atomic_write "$json_path"
+
+  echo "BLOCKED: $us_id
+Reason: $reason
+Category: $category
+
+# Campaign Blocked
 
 Blocked at iteration $ITERATION.
-Reason: $reason
 
-Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$BLOCKED_SENTINEL"
-  log_error "Campaign BLOCKED: $reason"
+Timestamp: $now_iso" | atomic_write "$BLOCKED_SENTINEL"
+
+  log_error "Campaign BLOCKED: [$category] $reason"
   log "BLOCKED sentinel written: $BLOCKED_SENTINEL"
+  log "BLOCKED sidecar written: $json_path"
 }
 
 # =============================================================================

@@ -64,6 +64,7 @@ function buildPaths(rootDir, slug) {
     flywheelSignalFile: path.join(deskRoot, 'memos', `${slug}-flywheel-signal.json`),
     flywheelGuardPromptFile: path.join(deskRoot, 'prompts', `${slug}.flywheel-guard.prompt.md`),
     flywheelGuardVerdictFile: path.join(deskRoot, 'memos', `${slug}-flywheel-guard-verdict.json`),
+    laneAuditFile: path.join(campaignLogDir, 'lane-audit.json'),
 };
 }
 
@@ -253,6 +254,10 @@ async function readCurrentState(paths, slug, options) {
     final_verifier_model: status.final_verifier_model ?? options.finalVerifierModel ?? 'opus',
     verified_us: status.verified_us ?? [],
     consecutive_failures: status.consecutive_failures ?? 0,
+    // US-021 R9 P2-I consecutive_blocks counter (governance §8). Tracks repeated
+    // same-canonical-reason worker blocks; verify_fail uses consecutive_failures.
+    consecutive_blocks: status.consecutive_blocks ?? 0,
+    last_block_reason: status.last_block_reason ?? '',
     current_us: status.current_us ?? null,
     session_name: status.session_name ?? null,
     leader_pane_id: status.leader_pane_id ?? null,
@@ -334,13 +339,170 @@ async function dispatchVerifier({
   return promptFile;
 }
 
-async function writeSentinel(filePath, status, usId, reason) {
-  // governance §1f BLOCKED Surfacing: a BLOCKED outcome must surface its reason
-  // on three channels at once (sentinel, campaign report, leader stderr).
-  // The reason is stored on a second line so legacy parsers that read only
-  // the first line continue to work.
+// P1-E Lane Enforcement (governance §7e). WARN-only by default; opt-in
+// strict escalates lane violations to BLOCKED with downgraded action
+// (recoverable=true, retry_after_fix). audit log file is initialized to
+// `[]` so the file always exists, simplifying wrapper polling.
+async function _initLaneAuditLog(paths) {
+  await fs.mkdir(path.dirname(paths.laneAuditFile), { recursive: true });
+  if (!(await exists(paths.laneAuditFile))) {
+    await fs.writeFile(paths.laneAuditFile, '[]\n', 'utf8');
+  }
+}
+
+// US-020 R8 P1-H Blocked exit hygiene (governance §1f, 5th channel).
+// Worker must update memory.md (Blocking History) and latest.md (Known Issues)
+// before signalling blocked. We compare mtimes against `now`; either file older
+// than 5 minutes means the worker skipped the hygiene step. Returns true when violated.
+async function _checkBlockedHygiene(paths, now = Date.now()) {
+  const threshold = 5 * 60 * 1000; // 5 minutes
+  const targets = [paths.memoryFile, paths.contextFile].filter(Boolean);
+  for (const file of targets) {
+    try {
+      const stat = await fs.stat(file);
+      if (now - stat.mtimeMs > threshold) {
+        return true;
+      }
+    } catch {
+      // Missing file counts as violated — worker had nothing to update.
+      return true;
+    }
+  }
+  return false;
+}
+
+async function _snapshotLaneMtimes(paths) {
+  // PRD / test-spec are read-only artifacts the worker MUST NOT modify.
+  // memos and context are leader-owned; worker writes them via signal
+  // files only, never by direct edit.
+  const targets = [paths.prdFile, paths.testSpecFile, paths.contextFile];
+  const snapshot = {};
+  for (const file of targets) {
+    try {
+      const stat = await fs.stat(file);
+      snapshot[file] = stat.mtimeMs;
+    } catch {
+      snapshot[file] = null;
+    }
+  }
+  return snapshot;
+}
+
+async function _checkLaneViolations(paths, snapshotBefore, snapshotAfter, state, options) {
+  const violations = [];
+  for (const [file, before] of Object.entries(snapshotBefore)) {
+    const after = snapshotAfter[file];
+    if (before !== null && after !== null && after !== before) {
+      violations.push({
+        file,
+        mtime_before: before,
+        mtime_after: after,
+        iter: state.iteration ?? 0,
+        lane_mode: options.laneStrict ? 'strict' : 'warn',
+      });
+    }
+  }
+  if (violations.length === 0) return null;
+  // Append to audit log (best-effort).
+  try {
+    const existing = JSON.parse(await fs.readFile(paths.laneAuditFile, 'utf8'));
+    await fs.writeFile(paths.laneAuditFile, `${JSON.stringify([...existing, ...violations], null, 2)}\n`, 'utf8');
+  } catch {
+    // log file corrupted or missing — re-initialize and write fresh entries.
+    await fs.writeFile(paths.laneAuditFile, `${JSON.stringify(violations, null, 2)}\n`, 'utf8');
+  }
+  return violations;
+}
+
+// P1-D Cross-US dependency token list (governance §1f). Keep in sync with
+// the zsh helper _classify_cross_us_or_metric in lib_ralph_desk.zsh.
+const CROSS_US_TOKEN_RE = /depends on US-|blocking US-|awaits US-|post-iter US-|requires US-\d+|cross-US|US-\d+ 산출물|신규 US-|post-iter/i;
+
+// P1-D Failure Taxonomy classifier. governance §1f locks the 6 reason_category
+// values + recoverable + suggested_action defaults per source. wrapper MUST
+// branch on reason_category; failure_category is diagnostic only.
+function _classifyBlock(source, { verdict, state, slug } = {}) {
+  let category;
+  let recoverable;
+  let action;
+  let failureCategory = null;
+  switch (source) {
+    case 'flywheel_inconclusive':
+    case 'flywheel_exhausted':
+      category = 'mission_abort';
+      recoverable = false;
+      action = 'terminal_alert';
+      break;
+    case 'model_upgrade':
+      category = 'repeat_axis';
+      recoverable = false;
+      action = 'next_mission_chain';
+      break;
+    case 'verifier': {
+      const text = `${verdict?.reason ?? ''} ${verdict?.summary ?? ''}`;
+      category = CROSS_US_TOKEN_RE.test(text) ? 'cross_us_dep' : 'metric_failure';
+      recoverable = true;
+      action = 'retry_after_fix';
+      failureCategory = verdict?.failure_category ?? null;
+      break;
+    }
+    default:
+      category = 'metric_failure';
+      recoverable = false;
+      action = 'terminal_alert';
+  }
+  return {
+    reason_category: category,
+    failure_category: failureCategory,
+    recoverable,
+    suggested_action: action,
+    iteration: state?.iteration ?? 0,
+    slug,
+  };
+}
+
+async function writeSentinel(filePath, status, usId, reason, classification = null, paths = null) {
+  // governance §1f BLOCKED Surfacing: BLOCKED is surfaced on FIVE channels —
+  // sentinel (markdown + JSON sidecar), status, console (stderr), report,
+  // and (US-020 R8 P1-H, 5th channel) memory.md/latest.md hygiene update.
+  // Legacy 1-line parsers still work because line 1 is unchanged.
   const lines = [`${status.toUpperCase()}: ${usId}`];
   if (reason) lines.push(`Reason: ${reason}`);
+  if (classification?.reason_category) {
+    lines.push(`Category: ${classification.reason_category}`);
+  }
+
+  // P1-D Write Order Contract:
+  //   1. JSON sidecar FIRST (atomic per-file rename via writeFile).
+  //   2. markdown sentinel SECOND.
+  // Invariant: markdown exists ⇒ JSON exists. Wrappers watch markdown,
+  // then read JSON; if JSON not yet visible (rare race), retry up to 5×50ms.
+  if (status === 'blocked' && classification) {
+    const jsonPath = filePath.replace(/\.md$/, '.json');
+    let hygieneViolated = false;
+    if (paths) {
+      try {
+        hygieneViolated = await _checkBlockedHygiene(paths);
+      } catch {
+        hygieneViolated = false;
+      }
+    }
+    const jsonBody = {
+      schema_version: '2.0',
+      slug: classification.slug ?? null,
+      us_id: usId,
+      blocked_at_iter: classification.iteration ?? 0,
+      blocked_at_utc: new Date().toISOString(),
+      reason_category: classification.reason_category,
+      reason_detail: reason ?? null,
+      failure_category: classification.failure_category ?? null,
+      recoverable: classification.recoverable ?? false,
+      suggested_action: classification.suggested_action ?? 'terminal_alert',
+      meta: { blocked_hygiene_violated: hygieneViolated },
+    };
+    await fs.writeFile(jsonPath, `${JSON.stringify(jsonBody, null, 2)}\n`, 'utf8');
+  }
+
   await fs.writeFile(filePath, `${lines.join('\n')}\n`, 'utf8');
 }
 
@@ -461,6 +623,9 @@ export async function run(slug, options = {}) {
     analyticsFile: paths.analyticsFile,
     statusFile: paths.statusFile,
   });
+  // P1-E Lane Enforcement: initialize audit log to `[]` so the file always
+  // exists. Wrappers can then poll/tail without ENOENT special-cases.
+  await _initLaneAuditLog(paths);
 
   if (await exists(paths.blockedSentinel)) {
     throw new Error(`Campaign ${slug} is blocked. Run clean first.`);
@@ -500,7 +665,49 @@ export async function run(slug, options = {}) {
 
   let fixContractPath = null;
 
+  // P1-E Lane Enforcement: snapshot lane mtimes before each iteration,
+  // compare at the top of the next iteration. Drift on read-only artifacts
+  // (PRD, test-spec, context) emits a lane_violation_warning event + audit
+  // log entry. governance §7e. Strict mode escalation hook is wired below
+  // (sentinel BLOCKED with infra_failure + recoverable=true downgrade).
+  let _laneSnapshot = await _snapshotLaneMtimes(paths);
+
   while (state.iteration <= maxIterations) {
+    // Audit drift from the prior iteration before doing anything new.
+    const _laneSnapshotAfter = await _snapshotLaneMtimes(paths);
+    const _laneViolations = await _checkLaneViolations(paths, _laneSnapshot, _laneSnapshotAfter, state, options);
+    if (_laneViolations) {
+      for (const v of _laneViolations) {
+        await appendIterationAnalytics(paths, state, state.current_us ?? 'ALL', 'lane_violation_warning', { ...options, lane_violation: v });
+      }
+      if (options.laneStrict) {
+        // Strict mode: escalate to BLOCKED with downgrade
+        // (recoverable=true, retry_after_fix). governance §7e justifies
+        // the downgrade — the mtime audit is best-effort and should not
+        // terminally kill a campaign.
+        state.phase = 'blocked';
+        const laneReason = `lane_violation: ${_laneViolations.length} read-only artifact(s) modified during prior iteration`;
+        const laneClassification = {
+          reason_category: 'infra_failure',
+          failure_category: null,
+          recoverable: true,
+          suggested_action: 'retry_after_fix',
+          iteration: state.iteration,
+          slug,
+        };
+        await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us ?? 'ALL', laneReason, laneClassification, paths);
+        await writeStatus(paths, state, options.onStatusChange, options.now);
+        return {
+          status: 'blocked',
+          usId: state.current_us ?? 'ALL',
+          reason: laneReason,
+          category: 'infra_failure',
+          statusFile: paths.statusFile,
+        };
+      }
+    }
+    _laneSnapshot = _laneSnapshotAfter;
+
     state.current_us = getNextUs(usList, state.verified_us, state.current_us);
     if (state.current_us === 'ALL') {
       const finalResult = await runFinalSequentialVerify({
@@ -580,6 +787,11 @@ export async function run(slug, options = {}) {
       });
 
       state.last_flywheel_decision = flywheelSignal.decision;
+      // P0-A multi-mission orchestration: optionally captured from flywheel signal.
+      // null when the flywheel did not suggest a next mission. Consumer wrappers
+      // poll status.next_mission_candidate to chain missions without code edits.
+      // See docs/multi-mission-orchestration.md.
+      state.next_mission_candidate = flywheelSignal.next_mission_candidate ?? null;
       await fs.unlink(paths.flywheelSignalFile).catch(() => {});
 
       // Flywheel Guard (independent validation of flywheel decision)
@@ -607,7 +819,7 @@ export async function run(slug, options = {}) {
         if (guardVerdict.verdict === 'inconclusive') {
           state.phase = 'blocked';
           const guardReason = 'flywheel-guard-escalate-inconclusive';
-          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, guardReason);
+          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, guardReason, _classifyBlock('flywheel_inconclusive', { state, slug }), paths);
           await writeStatus(paths, state, options.onStatusChange, options.now);
           // governance §1f three-channel: sentinel + report + return value all
           // carry the same blocked reason. SV is intentionally not generated
@@ -621,11 +833,13 @@ export async function run(slug, options = {}) {
             analyticsFile: paths.analyticsFile,
             now: resolveNow(options.now),
             blockedReason: guardReason,
+            blockedCategory: 'mission_abort',
           });
           return {
             status: 'blocked',
             usId: state.current_us,
             reason: guardReason,
+            category: 'mission_abort',
             guardIssues: guardVerdict.issues,
             statusFile: paths.statusFile,
           };
@@ -635,7 +849,7 @@ export async function run(slug, options = {}) {
           if (state.flywheel_guard_count[state.current_us] >= 3) {
             state.phase = 'blocked';
             const exhaustReason = 'flywheel-guard-retries-exhausted';
-            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, exhaustReason);
+            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, exhaustReason, _classifyBlock('flywheel_exhausted', { state, slug }), paths);
             await writeStatus(paths, state, options.onStatusChange, options.now);
             // governance §1f three-channel: see comment above.
             await generateCampaignReport({
@@ -646,11 +860,13 @@ export async function run(slug, options = {}) {
               analyticsFile: paths.analyticsFile,
               now: resolveNow(options.now),
               blockedReason: exhaustReason,
+              blockedCategory: 'mission_abort',
             });
             return {
               status: 'blocked',
               usId: state.current_us,
               reason: exhaustReason,
+              category: 'mission_abort',
               guardIssues: guardVerdict.issues,
               statusFile: paths.statusFile,
             };
@@ -709,6 +925,24 @@ export async function run(slug, options = {}) {
       }
     }
 
+    // US-019 R7 P1-G: verify_partial malformed downgrade.
+    // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier
+    // has nothing to evaluate and we must treat the signal as broken contract → blocked.
+    if (signal && signal.status === 'verify_partial') {
+      const acs = Array.isArray(signal.verified_acs) ? signal.verified_acs : null;
+      if (!acs || acs.length === 0) {
+        const malformedUs = signal.us_id ?? state.current_us;
+        const malformedClassification = {
+          reason_category: 'mission_abort',
+          recoverable: true,
+          suggested_action: 'retry_after_fix',
+          failure_category: 'spec',
+        };
+        await writeSentinel(paths.blockedSentinel, 'blocked', malformedUs, 'verify_partial_malformed', malformedClassification, paths);
+        return { status: 'blocked', usId: malformedUs, reason: 'verify_partial_malformed', category: 'mission_abort' };
+      }
+    }
+
     const usId = signal.us_id ?? state.current_us;
     const verifierModel = deriveVerifierModel(usId, options);
     state.phase = 'verifier';
@@ -751,7 +985,8 @@ export async function run(slug, options = {}) {
     if (verdict.verdict === 'blocked') {
       state.phase = 'blocked';
       const blockedReason = verdict.reason || verdict.summary || 'verifier-blocked';
-      await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason);
+      const blockedClassification = _classifyBlock('verifier', { verdict, state, slug });
+      await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason, blockedClassification, paths);
       await appendIterationAnalytics(paths, state, usId, 'blocked', options);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
@@ -779,11 +1014,13 @@ export async function run(slug, options = {}) {
         now: resolveNow(options.now),
         svSummary,
         blockedReason,
+        blockedCategory: blockedClassification.reason_category,
       });
       return {
         status: 'blocked',
         usId,
         reason: blockedReason,
+        category: blockedClassification.reason_category,
         statusFile: paths.statusFile,
       };
     }
@@ -794,7 +1031,7 @@ export async function run(slug, options = {}) {
     if (upgradedModel === 'BLOCKED') {
       state.phase = 'blocked';
       const upgradeReason = `model-upgrade-exhausted (worker_model=${state.worker_model}, consecutive_failures=${state.consecutive_failures})`;
-      await writeSentinel(paths.blockedSentinel, 'blocked', usId, upgradeReason);
+      await writeSentinel(paths.blockedSentinel, 'blocked', usId, upgradeReason, _classifyBlock('model_upgrade', { state, slug }), paths);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
       if (options.withSelfVerification) {
@@ -821,11 +1058,13 @@ export async function run(slug, options = {}) {
         now: resolveNow(options.now),
         svSummary,
         blockedReason: upgradeReason,
+        blockedCategory: 'repeat_axis',
       });
       return {
         status: 'blocked',
         usId,
         reason: upgradeReason,
+        category: 'repeat_axis',
         statusFile: paths.statusFile,
       };
     }
