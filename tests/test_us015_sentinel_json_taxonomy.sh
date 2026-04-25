@@ -135,19 +135,19 @@ rm -rf "$TMP_DIR"
 # Each must explicitly pass a category (no implicit default fallback).
 # ----------------------------------------------------------------------------
 zsh_callsites=$(grep -cE 'write_blocked_sentinel ' "$RUN")
-if [[ "$zsh_callsites" -eq 13 ]]; then
-  pass "AC4-a: 13 zsh write_blocked_sentinel callsites (12 P1-D + 1 R7 verify_partial_malformed)"
+if [[ "$zsh_callsites" -eq 14 ]]; then
+  pass "AC4-a: 14 zsh write_blocked_sentinel callsites (12 P1-D + 1 R7 verify_partial_malformed + 1 R12 lifecycle infra_failure)"
 else
-  fail "AC4-a: expected 13 callsites, got $zsh_callsites"
+  fail "AC4-a: expected 14 callsites, got $zsh_callsites"
 fi
 # All callsites must pass a category as 3rd arg. Look for the 6 known categories.
 sites_with_category=$(grep -cE 'write_blocked_sentinel.*"(metric_failure|cross_us_dep|context_limit|infra_failure|repeat_axis|mission_abort)"' "$RUN")
 sites_with_dynamic=$(grep -cE 'write_blocked_sentinel.*"\$_(verdict|signal)_cat"' "$RUN")
 total_categorized=$(( sites_with_category + sites_with_dynamic ))
-if [[ "$total_categorized" -eq 13 ]]; then
-  pass "AC4-b: all 13 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic)"
+if [[ "$total_categorized" -eq 14 ]]; then
+  pass "AC4-b: all 14 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic)"
 else
-  fail "AC4-b: only $total_categorized of 13 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic)"
+  fail "AC4-b: only $total_categorized of 14 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic)"
 fi
 
 # ----------------------------------------------------------------------------

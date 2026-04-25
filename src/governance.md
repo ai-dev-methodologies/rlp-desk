@@ -774,6 +774,19 @@ The base signal vocabulary (`continue | verify | blocked`) is binary at the iter
 
 The downgrade is intentionally recoverable: the malformed signal is a worker-side prompt regression, not an environment failure, and the operator can fix it in-place.
 
+## 7h. Tmux Session Lifecycle Resilience (US-024/025/026 R12+R13+R14 P0)
+
+Multi-mission queue/daemon (`RLP_BACKGROUND=1`) workflows can lose their tmux session between missions — terminal close, manual `tmux kill-session`, or tmux server restart all drop the session and every pane in it. Three independent guards now compose:
+
+### R12 — Pane lifecycle monitor (5s authoritative budget)
+`_verify_pane_alive` and `_verify_session_alive` (lib_ralph_desk.zsh) check `#{pane_dead}` and `tmux has-session`. The runner invokes `_r12_check_lifecycle` at three sites: (1) immediately after `create_session()`, (2) at the top of every iteration, (3) right after worker dispatch and before the wait-loop. The check polls 5 attempts with 1-second sleep (5-second hard budget). On expiry it writes a BLOCKED sentinel with `reason_category=infra_failure`, `recoverable=true`, `suggested_action=restart` and exits 1 — never an infinite loop.
+
+### R13 — Detached session protection (RLP_BACKGROUND only)
+When `tmux new-session -d` collides with an existing session and `RLP_BACKGROUND=1`, the runner appends `-bg-<epoch>-<pid>` to `SESSION_NAME` and runs a `tmux has-session` loop with random 4-digit suffixes until the name is unique. The new session also sets `destroy-unattached off` so the session survives every attached client disconnecting. **Limits**: this option is best-effort; it does NOT survive a manual `tmux kill-session` or a tmux server restart. R12 will detect those events at the next checkpoint.
+
+### R14 — Project-scoped runner lockfile (mkdir atomic)
+`RUNNER_LOCKFILE_PATH` keys on `ROOT_HASH` (`shasum || sha1sum || cksum` of the repo root), so two different projects can run runners in parallel while the same project root is single-runner. `RUNNER_LOCKDIR` (`${RUNNER_LOCKFILE_PATH}.d`) is acquired by `mkdir` for true filesystem-level atomicity — no check-then-write race. Stale pids (no longer responding to `kill -0`) are reaped automatically; live duplicates exit 1 with a recovery hint.
+
 ## 8. Circuit Breaker
 
 | Condition | Verdict |

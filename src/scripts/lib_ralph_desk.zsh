@@ -363,6 +363,23 @@ archive_iter_artifacts() {
   fi
 }
 
+# --- US-024 (R12 P0): tmux pane / session lifecycle verification ---
+# Returns 0 if pane is alive (#{pane_dead} == 0), non-zero otherwise.
+# Empty pane id is treated as dead so callers don't have to pre-check.
+_verify_pane_alive() {
+  local pane_id="$1"
+  [[ -z "$pane_id" ]] && return 1
+  local dead
+  dead=$(tmux display-message -p -t "$pane_id" '#{pane_dead}' 2>/dev/null)
+  [[ "$dead" == "0" ]]
+}
+# Returns 0 if the named tmux session is alive, non-zero otherwise.
+_verify_session_alive() {
+  local session="$1"
+  [[ -z "$session" ]] && return 1
+  tmux has-session -t "$session" 2>/dev/null
+}
+
 # --- US-022 (R10 P2-J): Normalized PRD US-list extractor ---
 # Recognises `## US-005:`, `## US-005 -`, and bare `## US-005` headings.
 # Returns one US-NNN per line, sorted unique.
