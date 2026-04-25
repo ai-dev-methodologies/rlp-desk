@@ -52,8 +52,8 @@ assert_one "$GOV" 'init_ralph_desk\.zsh' \
 # ------------------------------------------------------------------
 assert_one "$GOV" 'BLOCKED Surfacing' \
   "AC3-a: §1f BLOCKED Surfacing heading"
-assert_one "$GOV" 'FOUR channels at once' \
-  "AC3-b: §1f surfacing wording (four channels — RC P1-D extended from three to four)"
+assert_one "$GOV" 'FIVE channels at once' \
+  "AC3-b: §1f surfacing wording (five channels — US-020 R8 added 5th memory.md/latest.md hygiene channel)"
 
 # ------------------------------------------------------------------
 # AC4: L2 lint helper exists
@@ -185,8 +185,8 @@ assert_one "$LOOP" 'lines.push\(`Reason: \$\{reason\}`\)' \
   "AC9-b: sentinel writes Reason: line"
 assert_one "$LOOP" 'verdict\.reason \|\| verdict\.summary \|\| .verifier-blocked.' \
   "AC9-c: blocked branch derives reason from verdict"
-assert_one "$LOOP" "writeSentinel\\(paths.blockedSentinel, 'blocked', usId, blockedReason, blockedClassification\\)" \
-  "AC9-d: blocked branch passes reason + classification to writeSentinel (P1-D)"
+assert_one "$LOOP" "writeSentinel\\(paths.blockedSentinel, 'blocked', usId, blockedReason, blockedClassification, paths\\)" \
+  "AC9-d: blocked branch passes reason + classification + paths to writeSentinel (P1-D + R8 hygiene)"
 
 # ------------------------------------------------------------------
 # AC10: run.mjs surfaces BLOCKED on stderr with exit 2

@@ -135,19 +135,19 @@ rm -rf "$TMP_DIR"
 # Each must explicitly pass a category (no implicit default fallback).
 # ----------------------------------------------------------------------------
 zsh_callsites=$(grep -cE 'write_blocked_sentinel ' "$RUN")
-if [[ "$zsh_callsites" -eq 12 ]]; then
-  pass "AC4-a: 12 zsh write_blocked_sentinel callsites (matches Architect/grep)"
+if [[ "$zsh_callsites" -eq 13 ]]; then
+  pass "AC4-a: 13 zsh write_blocked_sentinel callsites (12 P1-D + 1 R7 verify_partial_malformed)"
 else
-  fail "AC4-a: expected 12 callsites, got $zsh_callsites"
+  fail "AC4-a: expected 13 callsites, got $zsh_callsites"
 fi
 # All callsites must pass a category as 3rd arg. Look for the 6 known categories.
 sites_with_category=$(grep -cE 'write_blocked_sentinel.*"(metric_failure|cross_us_dep|context_limit|infra_failure|repeat_axis|mission_abort)"' "$RUN")
 sites_with_dynamic=$(grep -cE 'write_blocked_sentinel.*"\$_(verdict|signal)_cat"' "$RUN")
 total_categorized=$(( sites_with_category + sites_with_dynamic ))
-if [[ "$total_categorized" -eq 12 ]]; then
-  pass "AC4-b: all 12 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic)"
+if [[ "$total_categorized" -eq 13 ]]; then
+  pass "AC4-b: all 13 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic)"
 else
-  fail "AC4-b: only $total_categorized of 12 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic)"
+  fail "AC4-b: only $total_categorized of 13 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic)"
 fi
 
 # ----------------------------------------------------------------------------
@@ -155,17 +155,17 @@ fi
 # ----------------------------------------------------------------------------
 node_callsites=$(grep -cE "writeSentinel\\(paths\\.blockedSentinel" "$LOOP")
 # 4 BLOCKED branches (verifier, model_upgrade, flywheel_inconclusive, flywheel_exhausted)
-# + 1 lane strict-mode BLOCKED (P1-E R4) = 5.
-if [[ "$node_callsites" -eq 5 ]]; then
-  pass "AC5-a: 5 Node writeSentinel(blockedSentinel) callsites (4 P1-D + 1 P1-E lane strict)"
+# + 1 lane strict-mode BLOCKED (P1-E R4) + 1 verify_partial_malformed (US-019 R7) = 6.
+if [[ "$node_callsites" -eq 6 ]]; then
+  pass "AC5-a: 6 Node writeSentinel(blockedSentinel) callsites (4 P1-D + 1 P1-E lane strict + 1 R7 verify_partial_malformed)"
 else
-  fail "AC5-a: expected 5 callsites, got $node_callsites"
+  fail "AC5-a: expected 6 callsites, got $node_callsites"
 fi
-sites_with_classify=$(grep -cE "writeSentinel\\(paths\\.blockedSentinel.*_classifyBlock|writeSentinel\\(paths\\.blockedSentinel.*blockedClassification|writeSentinel\\(paths\\.blockedSentinel.*laneClassification" "$LOOP")
-if [[ "$sites_with_classify" -eq 5 ]]; then
-  pass "AC5-b: all 5 Node callsites pass classification (P1-D 4 + P1-E lane 1)"
+sites_with_classify=$(grep -cE "writeSentinel\\(paths\\.blockedSentinel.*_classifyBlock|writeSentinel\\(paths\\.blockedSentinel.*blockedClassification|writeSentinel\\(paths\\.blockedSentinel.*laneClassification|writeSentinel\\(paths\\.blockedSentinel.*malformedClassification" "$LOOP")
+if [[ "$sites_with_classify" -eq 6 ]]; then
+  pass "AC5-b: all 6 Node callsites pass classification (P1-D 4 + P1-E lane 1 + R7 1)"
 else
-  fail "AC5-b: only $sites_with_classify of 5 Node callsites pass classification"
+  fail "AC5-b: only $sites_with_classify of 6 Node callsites pass classification"
 fi
 
 # ----------------------------------------------------------------------------

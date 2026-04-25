@@ -22,6 +22,7 @@ const RUN_DEFAULTS = {
   autonomous: false,
   withSelfVerification: false,
   laneStrict: false,
+  testDensityStrict: false,
   flywheel: 'off',
   flywheelModel: 'opus',
   flywheelGuard: 'off',
@@ -62,6 +63,7 @@ function buildHelpText() {
     '  --debug',
     '  --autonomous',
     '  --lane-strict',
+    '  --test-density-strict',
     '  --with-self-verification',
     '  --flywheel off|on-fail',
     '  --flywheel-model MODEL',
@@ -152,6 +154,10 @@ function parseRunOptions(args, cwd) {
       case '--lane-strict':
         // P1-E lane enforcement opt-in. Default WARN. governance §7¾.
         options.laneStrict = true;
+        break;
+      case '--test-density-strict':
+        // US-018 R6 P1-F test density enforcement opt-in. Default WARN. governance §7f.
+        options.testDensityStrict = true;
         break;
       case '--with-self-verification':
         options.withSelfVerification = true;

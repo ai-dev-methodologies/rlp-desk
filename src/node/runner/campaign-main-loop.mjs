@@ -254,6 +254,10 @@ async function readCurrentState(paths, slug, options) {
     final_verifier_model: status.final_verifier_model ?? options.finalVerifierModel ?? 'opus',
     verified_us: status.verified_us ?? [],
     consecutive_failures: status.consecutive_failures ?? 0,
+    // US-021 R9 P2-I consecutive_blocks counter (governance §8). Tracks repeated
+    // same-canonical-reason worker blocks; verify_fail uses consecutive_failures.
+    consecutive_blocks: status.consecutive_blocks ?? 0,
+    last_block_reason: status.last_block_reason ?? '',
     current_us: status.current_us ?? null,
     session_name: status.session_name ?? null,
     leader_pane_id: status.leader_pane_id ?? null,
@@ -346,6 +350,27 @@ async function _initLaneAuditLog(paths) {
   }
 }
 
+// US-020 R8 P1-H Blocked exit hygiene (governance §1f, 5th channel).
+// Worker must update memory.md (Blocking History) and latest.md (Known Issues)
+// before signalling blocked. We compare mtimes against `now`; either file older
+// than 5 minutes means the worker skipped the hygiene step. Returns true when violated.
+async function _checkBlockedHygiene(paths, now = Date.now()) {
+  const threshold = 5 * 60 * 1000; // 5 minutes
+  const targets = [paths.memoryFile, paths.contextFile].filter(Boolean);
+  for (const file of targets) {
+    try {
+      const stat = await fs.stat(file);
+      if (now - stat.mtimeMs > threshold) {
+        return true;
+      }
+    } catch {
+      // Missing file counts as violated — worker had nothing to update.
+      return true;
+    }
+  }
+  return false;
+}
+
 async function _snapshotLaneMtimes(paths) {
   // PRD / test-spec are read-only artifacts the worker MUST NOT modify.
   // memos and context are leader-owned; worker writes them via signal
@@ -436,9 +461,10 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
   };
 }
 
-async function writeSentinel(filePath, status, usId, reason, classification = null) {
-  // governance §1f BLOCKED Surfacing: BLOCKED is surfaced on FOUR channels —
-  // sentinel (markdown + JSON sidecar), status, console (stderr), report.
+async function writeSentinel(filePath, status, usId, reason, classification = null, paths = null) {
+  // governance §1f BLOCKED Surfacing: BLOCKED is surfaced on FIVE channels —
+  // sentinel (markdown + JSON sidecar), status, console (stderr), report,
+  // and (US-020 R8 P1-H, 5th channel) memory.md/latest.md hygiene update.
   // Legacy 1-line parsers still work because line 1 is unchanged.
   const lines = [`${status.toUpperCase()}: ${usId}`];
   if (reason) lines.push(`Reason: ${reason}`);
@@ -453,6 +479,14 @@ async function writeSentinel(filePath, status, usId, reason, classification = nu
   // then read JSON; if JSON not yet visible (rare race), retry up to 5×50ms.
   if (status === 'blocked' && classification) {
     const jsonPath = filePath.replace(/\.md$/, '.json');
+    let hygieneViolated = false;
+    if (paths) {
+      try {
+        hygieneViolated = await _checkBlockedHygiene(paths);
+      } catch {
+        hygieneViolated = false;
+      }
+    }
     const jsonBody = {
       schema_version: '2.0',
       slug: classification.slug ?? null,
@@ -464,6 +498,7 @@ async function writeSentinel(filePath, status, usId, reason, classification = nu
       failure_category: classification.failure_category ?? null,
       recoverable: classification.recoverable ?? false,
       suggested_action: classification.suggested_action ?? 'terminal_alert',
+      meta: { blocked_hygiene_violated: hygieneViolated },
     };
     await fs.writeFile(jsonPath, `${JSON.stringify(jsonBody, null, 2)}\n`, 'utf8');
   }
@@ -660,7 +695,7 @@ export async function run(slug, options = {}) {
           iteration: state.iteration,
           slug,
         };
-        await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us ?? 'ALL', laneReason, laneClassification);
+        await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us ?? 'ALL', laneReason, laneClassification, paths);
         await writeStatus(paths, state, options.onStatusChange, options.now);
         return {
           status: 'blocked',
@@ -784,7 +819,7 @@ export async function run(slug, options = {}) {
         if (guardVerdict.verdict === 'inconclusive') {
           state.phase = 'blocked';
           const guardReason = 'flywheel-guard-escalate-inconclusive';
-          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, guardReason, _classifyBlock('flywheel_inconclusive', { state, slug }));
+          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, guardReason, _classifyBlock('flywheel_inconclusive', { state, slug }), paths);
           await writeStatus(paths, state, options.onStatusChange, options.now);
           // governance §1f three-channel: sentinel + report + return value all
           // carry the same blocked reason. SV is intentionally not generated
@@ -814,7 +849,7 @@ export async function run(slug, options = {}) {
           if (state.flywheel_guard_count[state.current_us] >= 3) {
             state.phase = 'blocked';
             const exhaustReason = 'flywheel-guard-retries-exhausted';
-            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, exhaustReason, _classifyBlock('flywheel_exhausted', { state, slug }));
+            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, exhaustReason, _classifyBlock('flywheel_exhausted', { state, slug }), paths);
             await writeStatus(paths, state, options.onStatusChange, options.now);
             // governance §1f three-channel: see comment above.
             await generateCampaignReport({
@@ -890,6 +925,24 @@ export async function run(slug, options = {}) {
       }
     }
 
+    // US-019 R7 P1-G: verify_partial malformed downgrade.
+    // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier
+    // has nothing to evaluate and we must treat the signal as broken contract → blocked.
+    if (signal && signal.status === 'verify_partial') {
+      const acs = Array.isArray(signal.verified_acs) ? signal.verified_acs : null;
+      if (!acs || acs.length === 0) {
+        const malformedUs = signal.us_id ?? state.current_us;
+        const malformedClassification = {
+          reason_category: 'mission_abort',
+          recoverable: true,
+          suggested_action: 'retry_after_fix',
+          failure_category: 'spec',
+        };
+        await writeSentinel(paths.blockedSentinel, 'blocked', malformedUs, 'verify_partial_malformed', malformedClassification, paths);
+        return { status: 'blocked', usId: malformedUs, reason: 'verify_partial_malformed', category: 'mission_abort' };
+      }
+    }
+
     const usId = signal.us_id ?? state.current_us;
     const verifierModel = deriveVerifierModel(usId, options);
     state.phase = 'verifier';
@@ -933,7 +986,7 @@ export async function run(slug, options = {}) {
       state.phase = 'blocked';
       const blockedReason = verdict.reason || verdict.summary || 'verifier-blocked';
       const blockedClassification = _classifyBlock('verifier', { verdict, state, slug });
-      await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason, blockedClassification);
+      await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason, blockedClassification, paths);
       await appendIterationAnalytics(paths, state, usId, 'blocked', options);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
@@ -978,7 +1031,7 @@ export async function run(slug, options = {}) {
     if (upgradedModel === 'BLOCKED') {
       state.phase = 'blocked';
       const upgradeReason = `model-upgrade-exhausted (worker_model=${state.worker_model}, consecutive_failures=${state.consecutive_failures})`;
-      await writeSentinel(paths.blockedSentinel, 'blocked', usId, upgradeReason, _classifyBlock('model_upgrade', { state, slug }));
+      await writeSentinel(paths.blockedSentinel, 'blocked', usId, upgradeReason, _classifyBlock('model_upgrade', { state, slug }), paths);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
       if (options.withSelfVerification) {
