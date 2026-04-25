@@ -21,6 +21,7 @@ const RUN_DEFAULTS = {
   lockWorkerModel: false,
   autonomous: false,
   withSelfVerification: false,
+  laneStrict: false,
   flywheel: 'off',
   flywheelModel: 'opus',
   flywheelGuard: 'off',
@@ -60,6 +61,7 @@ function buildHelpText() {
     '  --iter-timeout N',
     '  --debug',
     '  --autonomous',
+    '  --lane-strict',
     '  --with-self-verification',
     '  --flywheel off|on-fail',
     '  --flywheel-model MODEL',
@@ -146,6 +148,10 @@ function parseRunOptions(args, cwd) {
         break;
       case '--autonomous':
         options.autonomous = true;
+        break;
+      case '--lane-strict':
+        // P1-E lane enforcement opt-in. Default WARN. governance §7¾.
+        options.laneStrict = true;
         break;
       case '--with-self-verification':
         options.withSelfVerification = true;

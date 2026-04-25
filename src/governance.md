@@ -673,6 +673,45 @@ If `cb_threshold` or more consecutive fix attempts fail for the same US:
 
 In tmux mode: Leader writes `<slug>-escalation.md` with the report and sets BLOCKED sentinel with reason "architecture-escalation."
 
+## 7e. Lane Enforcement (P1-E)
+
+Default mode is **WARN-only** (`LANE_MODE=warn`). The opt-in `--lane-strict`
+flag (or `LANE_MODE=strict`) escalates lane violations to BLOCKED, but the
+escalation is **downgraded** to `recoverable=true` + `suggested_action=retry_after_fix`
+(NOT `terminal_alert`) so an inaccurate mtime audit does not terminally
+kill a campaign.
+
+### Decision tree
+
+| Detection | Default (`warn`) | `--lane-strict` |
+|-----------|-----------------|-----------------|
+| PRD / test-spec / memory mtime changed during a worker iteration | analytics event `event_type=lane_violation_warning` + `log_warn` + audit log entry. Loop continues. | All of the WARN actions PLUS sentinel BLOCKED with `reason_category=infra_failure`, `recoverable=true`, `suggested_action=retry_after_fix`. |
+
+### Channels (Silent failure 0)
+
+WARN mode is NOT silent — violations always emit on three channels:
+1. analytics jsonl event (`lane_violation_warning`)
+2. leader stderr (`log_warn`)
+3. audit log file `~/.claude/ralph-desk/logs/<slug>/lane-audit.json`
+
+The audit log is initialized to `[]` at campaign start so the file always exists;
+each violation appends an entry `{file, mtime_before, mtime_after, iter, lane_mode}`.
+
+### Why downgrade in strict mode
+
+mtime audit is best-effort heuristic — it cannot accurately attribute the
+modifier (worker vs leader vs external editor). Running an inaccurate
+detector with `terminal_alert` would hand it the power to permanently
+terminate a campaign. The downgrade keeps `recoverable=true` so wrappers
+can re-launch after operator review.
+
+### Non-goals
+
+- chmod-based enforcement (would break test fixtures and consumer envs).
+- git_blame-based actor identification (best-effort hint only; verifier IL-2
+  is the real lane gate via worker process audit).
+- Auto-launching missions on violation (consumer wrapper responsibility).
+
 ## 8. Circuit Breaker
 
 | Condition | Verdict |

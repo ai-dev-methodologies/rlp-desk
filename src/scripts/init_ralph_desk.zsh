@@ -414,6 +414,10 @@ Read these files in order:
 - Do NOT go beyond the contracted scope, even if you can see more work in the PRD.
 - No file creation or modification outside the project root.
 - Do not modify this prompt file or any PRD/test-spec files.
+- **Lane discipline (governance §7e)**: PRD, test-spec, and campaign memory
+  are leader/owner artifacts. Worker MUST NOT edit them directly. Drift on
+  these files triggers a `lane_violation_warning` event in default mode, or
+  a sentinel BLOCKED with `infra_failure` + `recoverable=true` in `--lane-strict` mode.
 
 ## Forbidden Shortcuts (Verifier will check these)
 - Do not mock external services when L2 integration test is required by test-spec.

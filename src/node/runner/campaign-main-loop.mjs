@@ -64,6 +64,7 @@ function buildPaths(rootDir, slug) {
     flywheelSignalFile: path.join(deskRoot, 'memos', `${slug}-flywheel-signal.json`),
     flywheelGuardPromptFile: path.join(deskRoot, 'prompts', `${slug}.flywheel-guard.prompt.md`),
     flywheelGuardVerdictFile: path.join(deskRoot, 'memos', `${slug}-flywheel-guard-verdict.json`),
+    laneAuditFile: path.join(campaignLogDir, 'lane-audit.json'),
 };
 }
 
@@ -334,6 +335,60 @@ async function dispatchVerifier({
   return promptFile;
 }
 
+// P1-E Lane Enforcement (governance §7e). WARN-only by default; opt-in
+// strict escalates lane violations to BLOCKED with downgraded action
+// (recoverable=true, retry_after_fix). audit log file is initialized to
+// `[]` so the file always exists, simplifying wrapper polling.
+async function _initLaneAuditLog(paths) {
+  await fs.mkdir(path.dirname(paths.laneAuditFile), { recursive: true });
+  if (!(await exists(paths.laneAuditFile))) {
+    await fs.writeFile(paths.laneAuditFile, '[]\n', 'utf8');
+  }
+}
+
+async function _snapshotLaneMtimes(paths) {
+  // PRD / test-spec are read-only artifacts the worker MUST NOT modify.
+  // memos and context are leader-owned; worker writes them via signal
+  // files only, never by direct edit.
+  const targets = [paths.prdFile, paths.testSpecFile, paths.contextFile];
+  const snapshot = {};
+  for (const file of targets) {
+    try {
+      const stat = await fs.stat(file);
+      snapshot[file] = stat.mtimeMs;
+    } catch {
+      snapshot[file] = null;
+    }
+  }
+  return snapshot;
+}
+
+async function _checkLaneViolations(paths, snapshotBefore, snapshotAfter, state, options) {
+  const violations = [];
+  for (const [file, before] of Object.entries(snapshotBefore)) {
+    const after = snapshotAfter[file];
+    if (before !== null && after !== null && after !== before) {
+      violations.push({
+        file,
+        mtime_before: before,
+        mtime_after: after,
+        iter: state.iteration ?? 0,
+        lane_mode: options.laneStrict ? 'strict' : 'warn',
+      });
+    }
+  }
+  if (violations.length === 0) return null;
+  // Append to audit log (best-effort).
+  try {
+    const existing = JSON.parse(await fs.readFile(paths.laneAuditFile, 'utf8'));
+    await fs.writeFile(paths.laneAuditFile, `${JSON.stringify([...existing, ...violations], null, 2)}\n`, 'utf8');
+  } catch {
+    // log file corrupted or missing — re-initialize and write fresh entries.
+    await fs.writeFile(paths.laneAuditFile, `${JSON.stringify(violations, null, 2)}\n`, 'utf8');
+  }
+  return violations;
+}
+
 // P1-D Cross-US dependency token list (governance §1f). Keep in sync with
 // the zsh helper _classify_cross_us_or_metric in lib_ralph_desk.zsh.
 const CROSS_US_TOKEN_RE = /depends on US-|blocking US-|awaits US-|post-iter US-|requires US-\d+|cross-US|US-\d+ 산출물|신규 US-|post-iter/i;
@@ -533,6 +588,9 @@ export async function run(slug, options = {}) {
     analyticsFile: paths.analyticsFile,
     statusFile: paths.statusFile,
   });
+  // P1-E Lane Enforcement: initialize audit log to `[]` so the file always
+  // exists. Wrappers can then poll/tail without ENOENT special-cases.
+  await _initLaneAuditLog(paths);
 
   if (await exists(paths.blockedSentinel)) {
     throw new Error(`Campaign ${slug} is blocked. Run clean first.`);
@@ -572,7 +630,49 @@ export async function run(slug, options = {}) {
 
   let fixContractPath = null;
 
+  // P1-E Lane Enforcement: snapshot lane mtimes before each iteration,
+  // compare at the top of the next iteration. Drift on read-only artifacts
+  // (PRD, test-spec, context) emits a lane_violation_warning event + audit
+  // log entry. governance §7e. Strict mode escalation hook is wired below
+  // (sentinel BLOCKED with infra_failure + recoverable=true downgrade).
+  let _laneSnapshot = await _snapshotLaneMtimes(paths);
+
   while (state.iteration <= maxIterations) {
+    // Audit drift from the prior iteration before doing anything new.
+    const _laneSnapshotAfter = await _snapshotLaneMtimes(paths);
+    const _laneViolations = await _checkLaneViolations(paths, _laneSnapshot, _laneSnapshotAfter, state, options);
+    if (_laneViolations) {
+      for (const v of _laneViolations) {
+        await appendIterationAnalytics(paths, state, state.current_us ?? 'ALL', 'lane_violation_warning', { ...options, lane_violation: v });
+      }
+      if (options.laneStrict) {
+        // Strict mode: escalate to BLOCKED with downgrade
+        // (recoverable=true, retry_after_fix). governance §7e justifies
+        // the downgrade — the mtime audit is best-effort and should not
+        // terminally kill a campaign.
+        state.phase = 'blocked';
+        const laneReason = `lane_violation: ${_laneViolations.length} read-only artifact(s) modified during prior iteration`;
+        const laneClassification = {
+          reason_category: 'infra_failure',
+          failure_category: null,
+          recoverable: true,
+          suggested_action: 'retry_after_fix',
+          iteration: state.iteration,
+          slug,
+        };
+        await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us ?? 'ALL', laneReason, laneClassification);
+        await writeStatus(paths, state, options.onStatusChange, options.now);
+        return {
+          status: 'blocked',
+          usId: state.current_us ?? 'ALL',
+          reason: laneReason,
+          category: 'infra_failure',
+          statusFile: paths.statusFile,
+        };
+      }
+    }
+    _laneSnapshot = _laneSnapshotAfter;
+
     state.current_us = getNextUs(usList, state.verified_us, state.current_us);
     if (state.current_us === 'ALL') {
       const finalResult = await runFinalSequentialVerify({

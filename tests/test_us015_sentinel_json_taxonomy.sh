@@ -154,16 +154,18 @@ fi
 # AC5: Node side — 4 BLOCKED branches all pass classification
 # ----------------------------------------------------------------------------
 node_callsites=$(grep -cE "writeSentinel\\(paths\\.blockedSentinel" "$LOOP")
-if [[ "$node_callsites" -eq 4 ]]; then
-  pass "AC5-a: 4 Node writeSentinel(blockedSentinel) callsites"
+# 4 BLOCKED branches (verifier, model_upgrade, flywheel_inconclusive, flywheel_exhausted)
+# + 1 lane strict-mode BLOCKED (P1-E R4) = 5.
+if [[ "$node_callsites" -eq 5 ]]; then
+  pass "AC5-a: 5 Node writeSentinel(blockedSentinel) callsites (4 P1-D + 1 P1-E lane strict)"
 else
-  fail "AC5-a: expected 4 callsites, got $node_callsites"
+  fail "AC5-a: expected 5 callsites, got $node_callsites"
 fi
-sites_with_classify=$(grep -cE "writeSentinel\\(paths\\.blockedSentinel.*_classifyBlock|writeSentinel\\(paths\\.blockedSentinel.*blockedClassification" "$LOOP")
-if [[ "$sites_with_classify" -eq 4 ]]; then
-  pass "AC5-b: all 4 Node callsites pass _classifyBlock or blockedClassification"
+sites_with_classify=$(grep -cE "writeSentinel\\(paths\\.blockedSentinel.*_classifyBlock|writeSentinel\\(paths\\.blockedSentinel.*blockedClassification|writeSentinel\\(paths\\.blockedSentinel.*laneClassification" "$LOOP")
+if [[ "$sites_with_classify" -eq 5 ]]; then
+  pass "AC5-b: all 5 Node callsites pass classification (P1-D 4 + P1-E lane 1)"
 else
-  fail "AC5-b: only $sites_with_classify of 4 Node callsites pass classification"
+  fail "AC5-b: only $sites_with_classify of 5 Node callsites pass classification"
 fi
 
 # ----------------------------------------------------------------------------

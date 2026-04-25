@@ -68,6 +68,12 @@ if (( WITH_SELF_VERIFICATION )); then
   SV_SKIPPED_REASON="tmux_runner"
 fi
 AUTONOMOUS_MODE="${AUTONOMOUS_MODE:-0}"    # 1=don't stop on ambiguity, PRD is authoritative
+# P1-E Lane enforcement: WARN-only by default; --lane-strict opts into BLOCKED
+# escalation. governance §7¾. The opt-in defaults to "warn"; "strict" trips
+# BLOCKED with reason_category=infra_failure + recoverable=true (downgrade
+# from terminal_alert) so an inaccurate mtime audit cannot terminally kill a
+# campaign.
+LANE_MODE="${LANE_MODE:-warn}"
 
 # --- Engine Selection (auto-detect from model format) ---
 # claude models (haiku/sonnet/opus) with :effort → claude engine + effort
@@ -774,6 +780,7 @@ create_session() {
     "with_self_verification": '"$WITH_SELF_VERIFICATION"',
     "with_self_verification_requested": '"$WITH_SELF_VERIFICATION_REQUESTED"',
     "sv_skipped_reason": "'"$SV_SKIPPED_REASON"'",
+    "lane_mode": "'"$LANE_MODE"'",
     "autonomous_mode": '"$AUTONOMOUS_MODE"'
   }
 }' | atomic_write "$SESSION_CONFIG"
@@ -2134,8 +2141,9 @@ main() {
     --argjson with_sv "$WITH_SELF_VERIFICATION" \
     --argjson with_sv_requested "$WITH_SELF_VERIFICATION_REQUESTED" \
     --arg sv_skipped_reason "$SV_SKIPPED_REASON" \
+    --arg lane_mode "$LANE_MODE" \
     --argjson consensus "${VERIFY_CONSENSUS:-0}" \
-    '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, with_self_verification_requested: $with_sv_requested, sv_skipped_reason: $sv_skipped_reason, consensus: $consensus}' \
+    '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, with_self_verification_requested: $with_sv_requested, sv_skipped_reason: $sv_skipped_reason, lane_mode: $lane_mode, consensus: $consensus}' \
     > "$METADATA_FILE"
 
   # --- Startup ---
@@ -2759,6 +2767,11 @@ while (( _cli_i <= $# )); do
       ;;
     --autonomous)
       AUTONOMOUS_MODE=1
+      ;;
+    --lane-strict)
+      # P1-E opt-in: lane mtime audit escalates to BLOCKED instead of WARN.
+      # See governance §7¾.
+      LANE_MODE="strict"
       ;;
     --final-verifier-model)
       (( _cli_i++ ))
