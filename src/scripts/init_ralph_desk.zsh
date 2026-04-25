@@ -1122,6 +1122,86 @@ if [[ $INIT_FAIL -eq 1 ]]; then
   exit 1
 fi
 
+# --- PRD cross-US dependency lint (governance §7a) ---
+# When VERIFY_MODE=per-us (default), each AC must reference only the same US or
+# earlier verified US' artifacts. Detect future-US references and exit 2 so the
+# wrapper can distinguish lint reject (2) from generic init failure (1).
+#
+# Detector helper — scans the PRD line-by-line, partitions content by `### US-NNN`
+# headers, and emits violations when an AC inside US-N references US-R with R > N.
+# Patterns are intentionally narrow (Korean + English idioms from the 2026-04-25
+# bug report) to avoid false positives on benign cross-references in prose.
+_detect_cross_us_refs() {
+  local prd_file="$1"
+  # POSIX/BSD-awk compatible: match(s, regex) sets RSTART/RLENGTH only.
+  #
+  # Strategy: partition the PRD into US-N blocks via `### US-NNN` headers, then
+  # within each block flag any `US-([0-9]+)` token whose number R > N as a
+  # cross-US violation. Prior verified US (R < N) and self-references (R == N)
+  # are allowed. This is intentionally strict: LLM-drafted PRDs systematically
+  # smuggle future-US dependencies into AC text, and a narrower keyword regex
+  # (see prior revision) misses common natural-language phrasings.
+  #
+  # False-positive trade-off: a benign "see also US-005" inside US-001 prose
+  # will trigger. The fix is to either move the comment, switch to
+  # VERIFY_MODE=batch, or keep cross-US discussion outside the US block.
+  awk '
+    BEGIN { current = 0 }
+    {
+      if ($0 ~ /^### US-[0-9]+/) {
+        if (match($0, "US-[0-9]+") > 0) {
+          tok = substr($0, RSTART + 3, RLENGTH - 3)
+          current = tok + 0
+        }
+        next
+      }
+      if (current == 0) next
+      line = $0
+      while (match(line, "US-[0-9]+") > 0) {
+        slice = substr(line, RSTART, RLENGTH)
+        ref_tok = substr(slice, 4)  # drop the leading "US-"
+        ref = ref_tok + 0
+        if (ref > current) {
+          printf("US-%03d:%d:%s\n", current, NR, $0)
+        }
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "$prd_file"
+}
+
+PRD_FILE_LINT="$DESK/plans/prd-$SLUG.md"
+LINT_VERIFY_MODE="${VERIFY_MODE:-per-us}"
+if [[ -f "$PRD_FILE_LINT" ]]; then
+  LINT_VIOLATIONS=$(_detect_cross_us_refs "$PRD_FILE_LINT")
+  if [[ -n "$LINT_VIOLATIONS" ]]; then
+    if [[ "$LINT_VERIFY_MODE" == "per-us" ]]; then
+      echo ""
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+      echo "ERROR: PRD contains cross-US dependency AC incompatible with --verify-mode per-us" >&2
+      echo "" >&2
+      echo "$LINT_VIOLATIONS" | while IFS=: read -r us_id lineno body; do
+        echo "  $PRD_FILE_LINT:$lineno  ($us_id references a higher-numbered US)" >&2
+        echo "    > ${body# }" >&2
+      done
+      echo "" >&2
+      echo "Fix options:" >&2
+      echo "  - Move the cross-US AC into the higher-numbered US (the one being referenced)." >&2
+      echo "  - OR re-run with VERIFY_MODE=batch to allow cross-US AC." >&2
+      echo "  - See governance.md §7a for the cross-US dependency rule." >&2
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+      exit 2
+    else
+      echo ""
+      echo "WARN: PRD has cross-US dependency AC. Allowed under VERIFY_MODE=$LINT_VERIFY_MODE,"
+      echo "      but blocking under per-us. Locations:"
+      echo "$LINT_VIOLATIONS" | while IFS=: read -r us_id lineno _body; do
+        echo "  $PRD_FILE_LINT:$lineno  ($us_id)"
+      done
+    fi
+  fi
+fi
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Scaffold ready: $SLUG"
