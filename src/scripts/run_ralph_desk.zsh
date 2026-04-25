@@ -104,6 +104,30 @@ _emit_final_cost_log() {
   fi
 }
 
+# US-024 R12 P0: tmux pane/session lifecycle monitor.
+# Single authoritative timeout: 5 attempts × 1s sleep = 5s budget.
+# Invoked at 3 sites: create_session post-finish, main loop iter entry, and
+# every send-keys/paste post-action before the wait-loop. Writes infra_failure
+# BLOCKED sentinel and exits 1 when any pane or the session is dead beyond budget.
+_r12_check_lifecycle() {
+  local site="${1:-unknown}"
+  local _attempts=0
+  while ! _verify_session_alive "$SESSION_NAME" || \
+         ! _verify_pane_alive "$LEADER_PANE" || \
+         ! _verify_pane_alive "$WORKER_PANE" || \
+         ! _verify_pane_alive "$VERIFIER_PANE"; do
+    (( _attempts++ ))
+    if (( _attempts >= 5 )); then
+      log_error "[r12:$site] tmux session/pane dead after 5x1s polling (5s authoritative budget). session=$SESSION_NAME panes leader=$LEADER_PANE worker=$WORKER_PANE verifier=$VERIFIER_PANE"
+      tmux list-panes -a -F '#{session_name}:#{pane_id} dead=#{pane_dead}' 2>&1 | head -20 >> "${DEBUG_LOG:-/dev/null}"
+      write_blocked_sentinel "tmux session/pane dead during $site" "${CURRENT_US:-ALL}" "infra_failure"
+      exit 1
+    fi
+    sleep 1
+  done
+  return 0
+}
+
 _check_consecutive_blocks() {
   local reason="$1"
   local category="${2:-metric_failure}"
@@ -207,6 +231,12 @@ _API_RETRY_INTERVAL_S="${_API_RETRY_INTERVAL_S:-30}"
 
 # --- Derived Paths ---
 DESK="$ROOT/.claude/ralph-desk"
+# US-026 R14 P0: project-root-hashed runner lockfile prevents duplicate runner spawns
+# on the same project root while allowing parallel runs across different projects.
+# shasum is mac-default; sha1sum on Linux; cksum is POSIX-final fallback.
+ROOT_HASH=$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum 2>/dev/null || cksum; } | awk '{print substr($1,1,8)}')
+RUNNER_LOCKFILE_PATH="$DESK/logs/.rlp-desk-runner-$ROOT_HASH.lock"
+RUNNER_LOCKDIR="${RUNNER_LOCKFILE_PATH}.d"
 PROMPTS_DIR="$DESK/prompts"
 CONTEXT_DIR="$DESK/context"
 MEMOS_DIR="$DESK/memos"
@@ -760,7 +790,34 @@ create_session() {
   else
     # Outside tmux: wrap current terminal into a new tmux session and attach
     # tmux pattern: user sees panes immediately, no separate attach needed
-    tmux new-session -d -s "$SESSION_NAME" -x 200 -y 50 -c "$ROOT"
+    # US-025 R13 P0: verify tmux new-session exit code; if collision + RLP_BACKGROUND,
+    # disambiguate with -bg-<epoch>-<pid> suffix and a residual has-session loop.
+    if ! tmux new-session -d -s "$SESSION_NAME" -x 200 -y 50 -c "$ROOT" 2>/dev/null; then
+      if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        if [[ "${RLP_BACKGROUND:-0}" == "1" ]]; then
+          SESSION_NAME="${SESSION_NAME}-bg-$(date +%s)-$$"
+          while tmux has-session -t "$SESSION_NAME" 2>/dev/null; do
+            SESSION_NAME="${SESSION_NAME}-$(awk 'BEGIN{srand();print int(1000+rand()*9000)}')"
+          done
+          tmux new-session -d -s "$SESSION_NAME" -x 200 -y 50 -c "$ROOT" || {
+            log_error "tmux new-session retry failed for $SESSION_NAME"
+            exit 1
+          }
+        else
+          log_error "tmux new-session failed: session $SESSION_NAME already exists (set RLP_BACKGROUND=1 to auto-rename)"
+          exit 1
+        fi
+      else
+        log_error "tmux new-session failed and session does not exist: $SESSION_NAME"
+        exit 1
+      fi
+    fi
+    # destroy-unattached off keeps the session alive when no tmux client is attached.
+    # Best-effort only: it does NOT survive manual `tmux kill-session` or tmux server restart.
+    # If either happens, R12 (lifecycle monitor) detects it and writes infra_failure BLOCKED.
+    if [[ "${RLP_BACKGROUND:-0}" == "1" ]]; then
+      tmux set-option -t "$SESSION_NAME" destroy-unattached off 2>/dev/null
+    fi
     LEADER_PANE=$(tmux display-message -p -t "$SESSION_NAME" '#{pane_id}')
     WORKER_PANE=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
@@ -785,6 +842,9 @@ create_session() {
   log "  Leader pane:   $LEADER_PANE"
   log "  Worker pane:   $WORKER_PANE"
   log "  Verifier pane: $VERIFIER_PANE"
+
+  # US-024 R12 P0: lifecycle check site #1 — verify all panes/session alive after creation.
+  _r12_check_lifecycle "create_session"
 
   # AC12: Capture baseline commit before writing session config
   BASELINE_COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "none")
@@ -1475,6 +1535,15 @@ cleanup() {
     log_debug "cleanup: lockfile not owned by this process, skipping removal"
   fi
 
+  # US-026 R14 P0: remove project-scoped runner lockfile if owned by this slug
+  if [[ -f "$RUNNER_LOCKFILE_PATH" ]]; then
+    local own_slug
+    own_slug=$(jq -r '.slug' "$RUNNER_LOCKFILE_PATH" 2>/dev/null)
+    if [[ "$own_slug" == "$SLUG" ]]; then
+      rm -rf "$RUNNER_LOCKDIR" "$RUNNER_LOCKFILE_PATH" 2>/dev/null
+    fi
+  fi
+
   # Kill claude processes then kill panes
   log_debug "cleanup: WORKER_PANE=${WORKER_PANE:-unset} VERIFIER_PANE=${VERIFIER_PANE:-unset}"
   if [[ -n "${WORKER_PANE:-}" ]]; then
@@ -2148,6 +2217,29 @@ run_consensus_verification() {
 # =============================================================================
 
 main() {
+  # --- US-026 R14 P0: project-scoped runner lockfile (mkdir atomic) ---
+  # Prevents duplicate runners on the same project root regardless of slug.
+  # Different ROOT_HASH allows independent parallel runners across projects.
+  mkdir -p "$(dirname "$RUNNER_LOCKFILE_PATH")" 2>/dev/null
+  if ! mkdir "$RUNNER_LOCKDIR" 2>/dev/null; then
+    local existing existing_slug
+    existing=$(jq -r '.pid' "$RUNNER_LOCKFILE_PATH" 2>/dev/null || echo 0)
+    existing_slug=$(jq -r '.slug // "unknown"' "$RUNNER_LOCKFILE_PATH" 2>/dev/null || echo unknown)
+    if [[ "$existing" -gt 0 ]] && kill -0 "$existing" 2>/dev/null; then
+      echo "duplicate rlp-desk runner detected on this project root. existing pid=$existing slug=$existing_slug, this attempt slug=$SLUG. exiting." >&2
+      echo "  Recover with: rm -rf '$RUNNER_LOCKDIR' '$RUNNER_LOCKFILE_PATH' (only if pid $existing is confirmed dead)" >&2
+      exit 1
+    fi
+    rm -rf "$RUNNER_LOCKDIR"
+    mkdir "$RUNNER_LOCKDIR" 2>/dev/null || {
+      echo "failed to acquire runner lock after stale cleanup; another wrapper raced ahead. exit 1" >&2
+      exit 1
+    }
+    echo "stale runner lockfile cleaned (pid $existing dead) — acquired" >&2
+  fi
+  printf '{"pid":%s,"slug":"%s","root":"%s","started_at":"%s"}\n' \
+    "$$" "$SLUG" "$ROOT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUNNER_LOCKFILE_PATH"
+
   # --- Lockfile: prevent duplicate execution ---
   local lockfile="$LOCKFILE_PATH"
   mkdir -p "$(dirname "$lockfile")" 2>/dev/null
@@ -2315,6 +2407,8 @@ main() {
   local HARD_CEILING=$(( ITER_TIMEOUT * 3 ))  # logged but NOT enforced — Worker extends indefinitely when active
 
   for (( ITERATION = 1; ITERATION <= MAX_ITER; ITERATION++ )); do
+    # US-024 R12 P0: lifecycle check site #2 — verify session/panes alive at iter entry.
+    _r12_check_lifecycle "iter_start"
     log ""
     log "========== Iteration $ITERATION / $MAX_ITER =========="
     local ITER_START_TIME
@@ -2390,6 +2484,8 @@ main() {
     fi
 
     # --- governance.md s7 step 5+6: Poll for Worker completion ---
+    # US-024 R12 P0: lifecycle check site #3 — verify panes alive after worker dispatch, before wait-loop.
+    _r12_check_lifecycle "post_send"
     log "  Polling for iter-signal.json..."
     local worker_poll_done=0
     while (( ! worker_poll_done )); do
