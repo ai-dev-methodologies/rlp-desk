@@ -248,6 +248,9 @@ Verifier records WHY each judgment was made in `verify-verdict.json`:
 - Without reasoning, Verifier's verdict is an unsubstantiated judgment
 - Both are archived in `logs/<slug>/` per existing audit trail pattern
 
+### BLOCKED Surfacing
+A BLOCKED outcome MUST surface its reason on three channels at once: the sentinel file (`<slug>-blocked.md`), the campaign report, AND the Leader's stderr console. Sentinel-only is silent failure; the operator (or wrapper script) must see WHY without grep'ing memo files. The Node leader propagates `verdict.reason || verdict.summary` into the sentinel reason field and into the return object so the entry script can echo it.
+
 ## 2. Roles
 
 ### Leader (current session)
@@ -543,6 +546,8 @@ Worker completes US-001 → signal verify (us_id: "US-001")
 - Final full verify ensures nothing was broken by later changes
 
 **Batch mode** (`--verify-mode batch`) preserves legacy behavior: Worker signals `verify` only after all work is done, and the Verifier checks all AC at once.
+
+**Cross-US dependency rule (per-us only):** In per-us mode each AC must reference only the same US or earlier verified US' artifacts. Future-US references (e.g. "post-iter US-(N+M) batch", "new US-(M) artifact") make the AC unsatisfiable inside a single per-us iteration and are rejected at init time (`init_ralph_desk.zsh` exits 2). Fold cross-US verification into the last measurement US, or run with `--verify-mode batch`.
 
 ## 7b. Cross-Engine Consensus Verification
 

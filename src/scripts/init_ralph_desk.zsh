@@ -11,12 +11,16 @@ set -euo pipefail
 #   ~/.claude/ralph-desk/init_ralph_desk.zsh <slug> [objective] [--mode fresh|improve]
 # =============================================================================
 
-SLUG="${1:?Usage: $0 <slug> [objective] [--mode fresh|improve] [--server-cmd CMD] [--server-port PORT] [--server-health URL]}"
+SLUG="${1:?Usage: $0 <slug> [objective] [--mode fresh|improve] [--verify-mode per-us|batch] [--server-cmd CMD] [--server-port PORT] [--server-health URL]}"
 MODE=""
 OBJECTIVE="TBD - fill in the objective"
 SERVER_CMD=""
 SERVER_PORT=""
 SERVER_HEALTH=""
+# --verify-mode is parsed here so the PRD cross-US lint matches the mode the
+# user actually plans to run with. Falls back to the VERIFY_MODE env var (which
+# the wrapper may already export) and finally to the per-us default.
+VERIFY_MODE_ARG=""
 
 # Parse remaining arguments
 shift
@@ -28,6 +32,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --mode=*)
       MODE="${1#--mode=}"
+      shift
+      ;;
+    --verify-mode)
+      VERIFY_MODE_ARG="${2:?--verify-mode requires an argument: per-us|batch}"
+      shift 2
+      ;;
+    --verify-mode=*)
+      VERIFY_MODE_ARG="${1#--verify-mode=}"
       shift
       ;;
     --server-cmd)
@@ -1120,6 +1132,109 @@ if [[ $INIT_FAIL -eq 1 ]]; then
   echo "ERROR: Scaffold incomplete. Some required files were not created."
   echo "Re-run init or check filesystem permissions."
   exit 1
+fi
+
+# --- PRD cross-US dependency lint (governance §7a) ---
+# When VERIFY_MODE=per-us (default), each AC must reference only the same US or
+# earlier verified US' artifacts. Detect future-US references and exit 2 so the
+# wrapper can distinguish lint reject (2) from generic init failure (1).
+#
+# Detector helper — scans the PRD line-by-line, partitions content by `### US-NNN`
+# headers, and emits violations when an AC inside US-N references US-R with R > N.
+# Patterns are intentionally narrow (Korean + English idioms from the 2026-04-25
+# bug report) to avoid false positives on benign cross-references in prose.
+_detect_cross_us_refs() {
+  local prd_file="$1"
+  # POSIX/BSD-awk compatible: match(s, regex) sets RSTART/RLENGTH only.
+  #
+  # Strategy: partition the PRD into US-N blocks via `### US-NNN` headers,
+  # then within each block flag any `US-([0-9]+)` token whose number R > N
+  # as a cross-US violation, but ONLY on lines that look like AC content
+  # (bullet starting with `-` / `*` or one of Given/When/Then markers). Prose,
+  # roadmap mentions, and sub-headings are skipped. The referenced US must
+  # also be defined in the same PRD — pure typos / forward-pointing
+  # placeholders without a target US are not flagged.
+  #
+  # Two passes: pass 1 collects defined US numbers; pass 2 emits violations.
+  # Pre-existing PRDs with benign cross-US prose ("see also US-005") inside
+  # narrative paragraphs no longer trip the lint.
+  awk '
+    function is_ac_line(s) {
+      # bullet styles or Given/When/Then keywords (Korean and English).
+      return (s ~ /^[[:space:]]*[-*][[:space:]]/) \
+          || (s ~ /(^|[[:space:]])[Gg]iven[:[:space:]]/) \
+          || (s ~ /(^|[[:space:]])[Ww]hen[:[:space:]]/) \
+          || (s ~ /(^|[[:space:]])[Tt]hen[:[:space:]]/)
+    }
+    BEGIN { current = 0; pass = 0 }
+    pass == 0 && $0 ~ /^### US-[0-9]+/ {
+      if (match($0, "US-[0-9]+") > 0) {
+        tok = substr($0, RSTART + 3, RLENGTH - 3)
+        defined[tok + 0] = 1
+      }
+      next
+    }
+    pass == 0 { next }
+    pass == 1 {
+      if ($0 ~ /^### US-[0-9]+/) {
+        if (match($0, "US-[0-9]+") > 0) {
+          tok = substr($0, RSTART + 3, RLENGTH - 3)
+          current = tok + 0
+        }
+        next
+      }
+      if (current == 0) next
+      if (!is_ac_line($0)) next
+      line = $0
+      while (match(line, "US-[0-9]+") > 0) {
+        slice = substr(line, RSTART, RLENGTH)
+        ref_tok = substr(slice, 4)
+        ref = ref_tok + 0
+        if (ref > current && defined[ref]) {
+          # FNR (file-local) gives the PRD line number; NR would accumulate
+          # across both awk passes and report inflated line numbers.
+          printf("US-%03d:%d:%s\n", current, FNR, $0)
+        }
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' pass=0 "$prd_file" pass=1 "$prd_file"
+}
+
+PRD_FILE_LINT="$DESK/plans/prd-$SLUG.md"
+# Mode resolution priority (highest first):
+#   1. --verify-mode CLI arg passed to init
+#   2. VERIFY_MODE env var (already exported by the wrapper for run)
+#   3. governance default: per-us
+LINT_VERIFY_MODE="${VERIFY_MODE_ARG:-${VERIFY_MODE:-per-us}}"
+if [[ -f "$PRD_FILE_LINT" ]]; then
+  LINT_VIOLATIONS=$(_detect_cross_us_refs "$PRD_FILE_LINT")
+  if [[ -n "$LINT_VIOLATIONS" ]]; then
+    if [[ "$LINT_VERIFY_MODE" == "per-us" ]]; then
+      echo ""
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+      echo "ERROR: PRD contains cross-US dependency AC incompatible with --verify-mode per-us" >&2
+      echo "" >&2
+      echo "$LINT_VIOLATIONS" | while IFS=: read -r us_id lineno body; do
+        echo "  $PRD_FILE_LINT:$lineno  ($us_id references a higher-numbered US)" >&2
+        echo "    > ${body# }" >&2
+      done
+      echo "" >&2
+      echo "Fix options:" >&2
+      echo "  - Move the cross-US AC into the higher-numbered US (the one being referenced)." >&2
+      echo "  - OR re-run with VERIFY_MODE=batch to allow cross-US AC." >&2
+      echo "  - See governance.md §7a for the cross-US dependency rule." >&2
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+      exit 2
+    else
+      echo ""
+      echo "WARN: PRD has cross-US dependency AC. Allowed under VERIFY_MODE=$LINT_VERIFY_MODE,"
+      echo "      but blocking under per-us. Locations:"
+      echo "$LINT_VIOLATIONS" | while IFS=: read -r us_id lineno _body; do
+        echo "  $PRD_FILE_LINT:$lineno  ($us_id)"
+      done
+    fi
+  fi
 fi
 
 echo ""

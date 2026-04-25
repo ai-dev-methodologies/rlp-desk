@@ -334,9 +334,14 @@ async function dispatchVerifier({
   return promptFile;
 }
 
-async function writeSentinel(filePath, status, usId) {
-  const content = `${status.toUpperCase()}: ${usId}\n`;
-  await fs.writeFile(filePath, content, 'utf8');
+async function writeSentinel(filePath, status, usId, reason) {
+  // governance §1f BLOCKED Surfacing: a BLOCKED outcome must surface its reason
+  // on three channels at once (sentinel, campaign report, leader stderr).
+  // The reason is stored on a second line so legacy parsers that read only
+  // the first line continue to work.
+  const lines = [`${status.toUpperCase()}: ${usId}`];
+  if (reason) lines.push(`Reason: ${reason}`);
+  await fs.writeFile(filePath, `${lines.join('\n')}\n`, 'utf8');
 }
 
 async function runFinalSequentialVerify({
@@ -601,12 +606,26 @@ export async function run(slug, options = {}) {
 
         if (guardVerdict.verdict === 'inconclusive') {
           state.phase = 'blocked';
-          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us);
+          const guardReason = 'flywheel-guard-escalate-inconclusive';
+          await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, guardReason);
           await writeStatus(paths, state, options.onStatusChange, options.now);
+          // governance §1f three-channel: sentinel + report + return value all
+          // carry the same blocked reason. SV is intentionally not generated
+          // here because the guard fires before the iteration runs to
+          // completion; the campaign report uses the default SV message.
+          await generateCampaignReport({
+            slug,
+            reportFile: paths.reportFile,
+            prdFile: paths.prdFile,
+            statusFile: paths.statusFile,
+            analyticsFile: paths.analyticsFile,
+            now: resolveNow(options.now),
+            blockedReason: guardReason,
+          });
           return {
             status: 'blocked',
             usId: state.current_us,
-            reason: 'flywheel-guard-escalate-inconclusive',
+            reason: guardReason,
             guardIssues: guardVerdict.issues,
             statusFile: paths.statusFile,
           };
@@ -615,12 +634,23 @@ export async function run(slug, options = {}) {
         if (guardVerdict.verdict === 'fail') {
           if (state.flywheel_guard_count[state.current_us] >= 3) {
             state.phase = 'blocked';
-            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us);
+            const exhaustReason = 'flywheel-guard-retries-exhausted';
+            await writeSentinel(paths.blockedSentinel, 'blocked', state.current_us, exhaustReason);
             await writeStatus(paths, state, options.onStatusChange, options.now);
+            // governance §1f three-channel: see comment above.
+            await generateCampaignReport({
+              slug,
+              reportFile: paths.reportFile,
+              prdFile: paths.prdFile,
+              statusFile: paths.statusFile,
+              analyticsFile: paths.analyticsFile,
+              now: resolveNow(options.now),
+              blockedReason: exhaustReason,
+            });
             return {
               status: 'blocked',
               usId: state.current_us,
-              reason: 'flywheel-guard-retries-exhausted',
+              reason: exhaustReason,
               guardIssues: guardVerdict.issues,
               statusFile: paths.statusFile,
             };
@@ -720,7 +750,8 @@ export async function run(slug, options = {}) {
 
     if (verdict.verdict === 'blocked') {
       state.phase = 'blocked';
-      await writeSentinel(paths.blockedSentinel, 'blocked', usId);
+      const blockedReason = verdict.reason || verdict.summary || 'verifier-blocked';
+      await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason);
       await appendIterationAnalytics(paths, state, usId, 'blocked', options);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
@@ -747,10 +778,12 @@ export async function run(slug, options = {}) {
         analyticsFile: paths.analyticsFile,
         now: resolveNow(options.now),
         svSummary,
+        blockedReason,
       });
       return {
         status: 'blocked',
         usId,
+        reason: blockedReason,
         statusFile: paths.statusFile,
       };
     }
@@ -760,7 +793,8 @@ export async function run(slug, options = {}) {
     const upgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
     if (upgradedModel === 'BLOCKED') {
       state.phase = 'blocked';
-      await writeSentinel(paths.blockedSentinel, 'blocked', usId);
+      const upgradeReason = `model-upgrade-exhausted (worker_model=${state.worker_model}, consecutive_failures=${state.consecutive_failures})`;
+      await writeSentinel(paths.blockedSentinel, 'blocked', usId, upgradeReason);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
       if (options.withSelfVerification) {
@@ -786,10 +820,12 @@ export async function run(slug, options = {}) {
         analyticsFile: paths.analyticsFile,
         now: resolveNow(options.now),
         svSummary,
+        blockedReason: upgradeReason,
       });
       return {
         status: 'blocked',
         usId,
+        reason: upgradeReason,
         statusFile: paths.statusFile,
       };
     }

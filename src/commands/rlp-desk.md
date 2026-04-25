@@ -31,6 +31,11 @@ Ask about these items one by one (or in small groups):
    - If the project is new/empty, skip this step and note "greenfield project."
 3. **User Stories** — discrete units with testable acceptance criteria. Propose a breakdown, ask the user to confirm/modify.
    - Apply INVEST criteria: each US must be Independent, Negotiable, Valuable, Estimable, Small, Testable.
+   - **Dependency Rule (per-us mode)**:
+     - Each AC may reference only the same US or earlier verified US' artifacts.
+     - Forbidden in per-us mode: future-US references such as "post-iter US-(N+M) batch", "new US-(M) artifact", "windowed M\d+ verdict produced by US-(M)".
+     - If cross-US measurement is unavoidable, fold the verifying AC into the last measurement US and do not reference it from earlier US.
+     - Batch verify-mode (`--verify-mode batch`) allows cross-US AC because all stories are verified together; this rule applies only when `--verify-mode per-us` is used.
    - **Task Sizing (governance §1c)**: Size each US within the Worker's comfortable zone — smaller than what the Worker can handle, not at its ceiling. Max 3-4 ACs, max 2 files. If a US feels "just barely doable" for the target model, split it further.
    - Each AC MUST use Given/When/Then format with **domain language only** (no class names, API paths, DB tables):
      ```
