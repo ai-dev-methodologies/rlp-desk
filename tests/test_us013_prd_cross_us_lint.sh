@@ -9,6 +9,7 @@ GOV="$ROOT_REPO/src/governance.md"
 SKILL="$ROOT_REPO/src/commands/rlp-desk.md"
 LOOP="$ROOT_REPO/src/node/runner/campaign-main-loop.mjs"
 RUN="$ROOT_REPO/src/node/run.mjs"
+LIB="$ROOT_REPO/src/scripts/lib_ralph_desk.zsh"
 FIX_BAD="$ROOT_REPO/tests/fixtures/prd-cross-us-bad.md"
 FIX_GOOD="$ROOT_REPO/tests/fixtures/prd-cross-us-good.md"
 
@@ -362,11 +363,88 @@ fi
 # AC16: tmux campaign report renders blocked reason from sentinel
 # (codex final review issue #2).
 # ------------------------------------------------------------------
-LIB="$ROOT_REPO/src/scripts/lib_ralph_desk.zsh"
 assert_one "$LIB" 'blocked_reason=\$\(grep -m1' \
   "AC16-a: tmux report extracts Reason: from BLOCKED_SENTINEL"
 assert_one "$LIB" '"- Blocked reason: \$blocked_reason"' \
   "AC16-b: tmux report renders blocked reason line"
+
+# ------------------------------------------------------------------
+# AC17: write_blocked_sentinel surfaces BLOCKED on stderr
+# (governance §1f channel #3 — leader stderr).
+# ------------------------------------------------------------------
+TMP_AC17=$(mktemp -d "${TMPDIR:-/tmp}/rlp-us013-ac17-XXXX")
+set +e
+zsh -f -c "
+DEBUG=0
+source '$LIB'
+ITERATION=3
+BLOCKED_SENTINEL='$TMP_AC17/blocked.md'
+write_blocked_sentinel 'AC17 verifier blocked smoke'
+" >"$TMP_AC17/stdout.log" 2>"$TMP_AC17/stderr.log"
+ec17=$?
+set -e
+if [[ "$ec17" -eq 0 ]] && grep -q 'BLOCKED' "$TMP_AC17/stderr.log"; then
+  pass "AC17: write_blocked_sentinel emits BLOCKED to stderr"
+else
+  fail "AC17: expected stderr containing BLOCKED (exit=$ec17, stderr=$(cat "$TMP_AC17/stderr.log" 2>/dev/null))"
+fi
+rm -rf "$TMP_AC17"
+
+# ------------------------------------------------------------------
+# AC18: legacy one-line sentinel without Reason: does not abort report
+# generation under set -euo pipefail.
+# ------------------------------------------------------------------
+TMP_AC18=$(mktemp -d "${TMPDIR:-/tmp}/rlp-us013-ac18-XXXX")
+mkdir -p "$TMP_AC18/logs" "$TMP_AC18/plans"
+cat > "$TMP_AC18/plans/prd-legacy.md" <<'EOF'
+## Objective
+Legacy sentinel compatibility smoke.
+EOF
+cat > "$TMP_AC18/harness.zsh" <<EOF
+#!/usr/bin/env zsh -f
+set -euo pipefail
+DEBUG=0
+source '$LIB'
+CAMPAIGN_REPORT_GENERATED=0
+COMPLETE_SENTINEL='$TMP_AC18/complete.md'
+BLOCKED_SENTINEL='$TMP_AC18/blocked.md'
+LOGS_DIR='$TMP_AC18/logs'
+SLUG='legacy'
+START_TIME=\$(( \$(date +%s) - 5 ))
+DESK='$TMP_AC18'
+COST_LOG='$TMP_AC18/logs/cost-log.jsonl'
+ITERATION=1
+MAX_ITER=2
+VERIFIED_US=''
+CONSECUTIVE_FAILURES=0
+WORKER_MODEL='test-worker'
+WORKER_ENGINE='tmux'
+VERIFIER_MODEL='test-verifier'
+VERIFIER_ENGINE='tmux'
+CONSENSUS_MODE='single'
+CONSENSUS_MODEL='none'
+FINAL_CONSENSUS_MODEL='none'
+WITH_SELF_VERIFICATION=0
+WITH_SELF_VERIFICATION_REQUESTED=0
+ROOT='$ROOT_REPO'
+BASELINE_COMMIT='none'
+printf '%s\n' 'legacy blocked sentinel without reason line' > "\$BLOCKED_SENTINEL"
+generate_campaign_report
+EOF
+set +e
+zsh -f "$TMP_AC18/harness.zsh" >"$TMP_AC18/stdout.log" 2>"$TMP_AC18/stderr.log"
+ec18=$?
+set -e
+report18="$TMP_AC18/logs/campaign-report.md"
+if [[ "$ec18" -eq 0 ]] \
+  && [[ -f "$report18" ]] \
+  && grep -q 'Terminal state: BLOCKED' "$report18" \
+  && ! grep -q 'Blocked reason:' "$report18"; then
+  pass "AC18: legacy sentinel without Reason does not abort and omits blank blocked reason"
+else
+  fail "AC18: legacy sentinel report failed (exit=$ec18, stderr=$(cat "$TMP_AC18/stderr.log" 2>/dev/null))"
+fi
+rm -rf "$TMP_AC18"
 
 echo
 echo "=== RESULTS: $PASS passed, $FAIL failed ==="
