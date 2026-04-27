@@ -297,13 +297,54 @@ BLOCKED writes a JSON sidecar (`<slug>-blocked.json`) alongside the markdown sen
 - English: `depends on US-`, `blocking US-`, `awaits US-`, `post-iter US-`, `requires US-N`, `cross-US`
 - Korean: `US-N 산출물`, `신규 US-`, `post-iter`
 
-**Write Order Contract (atomicity invariant)**:
-1. JSON sidecar written FIRST (`fs.writeFile` / `atomic_write`).
-2. markdown sentinel written SECOND.
-3. Invariant: **markdown exists ⇒ JSON exists** (writer enforces order).
-4. Wrappers SHOULD watch markdown sentinel, then read JSON sidecar. If JSON not yet visible (rare), retry up to 5 × 50ms before failing.
+**Write Order Contract (atomicity invariant)** — v5.7 §4.24 reversed:
+1. **markdown sentinel written FIRST** via `writeSentinelExclusive` (`fs.open(path, 'wx')` — O_EXCL first-writer-wins). The md acts as the race lock.
+2. **JSON sidecar written SECOND**, only by the winning writer.
+3. Invariant: **markdown exists ⇒ JSON exists** (winner writes both; losers see EEXIST and return without touching JSON, preserving the winner's content).
+4. Wrappers SHOULD watch markdown sentinel, then read JSON sidecar. If JSON not yet visible (rare ≤50ms), retry up to 5 × 50ms before failing.
 
-`atomic_write` provides per-file rename atomicity; cross-file ordering is enforced by the explicit two-call sequence.
+`writeSentinelExclusive` (in `src/node/shared/fs.mjs`) provides per-file first-writer-wins; cross-file ordering is enforced by the explicit md-then-JSON sequence inside `writeSentinel`.
+
+## 1g. Sentinel Guarantee Invariant (file-guarantee contract)
+
+**Every terminal exit of `runCampaign()` MUST leave exactly one sentinel on disk: `<slug>-blocked.md` XOR `<slug>-complete.md`.**
+
+This invariant is the foundation of the fresh-context architecture. If a campaign exits without any sentinel, future iterations cannot determine campaign state — Worker/Verifier are dispatched into a campaign whose history they cannot reconstruct.
+
+### Enforcement (3-layer defense)
+
+1. **Per-poll-site sentinel write** (`_handlePollFailure` helper at `src/node/runner/campaign-main-loop.mjs`). Every `pollForSignal` call site (Worker, VerifierPerUS, VerifierFinal, Flywheel, Guard) is wrapped in `try { … } catch (error) { return _handlePollFailure(error, { role, … }); }`. The helper classifies via `BLOCK_TAGS` typed enum, calls `writeSentinel` (idempotent via O_EXCL), and returns `{status:'blocked', …}` so the caller exits the loop cleanly.
+
+2. **Run-level try/finally backstop** (`_ensureTerminalSentinel`). After the campaign body executes, a `finally` block checks `exists(blockedSentinel) XOR exists(completeSentinel)`. If neither (paused state `continue` excepted), writes a synthetic BLOCKED `infra_failure/leader_exited_without_terminal_state` so even unhandled exceptions cannot escape silently.
+
+3. **Schema validator at READ boundary** (`validateArtifact`). After every `pollForSignal` returns parsed JSON, validates `(slug, iteration ≥ floor, signal_type matches read context, us_id ∈ usList ∪ {ALL})`. Throws `MalformedArtifactError({field, expected, got})` → caught by same `_handlePollFailure` → BLOCKED `contract_violation/malformed_artifact` (recoverable).
+
+### Per-role failure-category enum
+
+`_classifyBlock` (in `campaign-main-loop.mjs`) maps each `BLOCK_TAGS` value to one of the locked taxonomy categories:
+
+| Tag | reason_category | recoverable | Example trigger |
+|-----|----------------|-------------|-----------------|
+| `WORKER_EXITED` | `infra_failure` | false | Worker pane returned to shell without writing signal |
+| `VERIFIER_EXITED` | `infra_failure` | false | Per-US Verifier exited without writing verdict |
+| `FINAL_VERIFIER_EXITED` | `infra_failure` | false | Final ALL-verifier exited without writing verdict |
+| `FLYWHEEL_EXITED` | `infra_failure` | false | Flywheel pane crashed |
+| `GUARD_EXITED` | `infra_failure` | false | Guard pane crashed |
+| `PROMPT_BLOCKED` | `infra_failure` | false | Default-No prompt — auto-Enter would CANCEL |
+| `<role>_TIMEOUT` | `infra_failure` | false | pollForSignal timed out without exit detected |
+| `MALFORMED_ARTIFACT` | `contract_violation` | true | Worker/Verifier wrote schema-violating JSON |
+| `LEADER_EXITED_WITHOUT_TERMINAL_STATE` | `infra_failure` | false | Backstop fired (uncaught exception or paths outside controlled scope) |
+
+### Auditing
+
+Operators can verify the invariant for any campaign by running:
+
+```sh
+zsh tests/sv-gate-fast.sh   # 30s mechanical check (greps + units)
+zsh tests/sv-gate-full.sh   # 5min including REAL tmux + REAL campaign E2E
+```
+
+The fast gate fails immediately if any pollForSignal call site lacks a `_handlePollFailure` wiring or the writeSentinelExclusive primitive is bypassed.
 
 ## 2. Roles
 
@@ -553,6 +594,14 @@ for iteration in 1..max_iter:
          • fail + retries exhausted → BLOCKED
          • inconclusive → BLOCKED (escalate to user)
        - Guard count tracked per-US in status.json
+     - **Mode support (v0.12.0+, v5.7 §4.3)**: flywheel runs identically in
+       --mode agent and --mode tmux when routed through the Node leader
+       (`node ~/.claude/ralph-desk/node/run.mjs run --mode tmux`). The legacy
+       `run_ralph_desk.zsh` runner rejects --flywheel/--flywheel-guard with
+       exit 2 + migration banner; users must use the Node entry. Same applies
+       to --with-self-verification: SV report generation is supported in
+       tmux mode via the Node leader's generateSVReport() (no longer
+       agent-mode-only).
 
   ⑦ Execute Verifier (see §7a for per-US and §7b for consensus details)
      - Build prompt (scoped to us_id if per-us mode) → log

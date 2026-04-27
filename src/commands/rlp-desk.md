@@ -280,40 +280,51 @@ Parse the `--mode` flag. If absent or `agent`, use the Agent() path below. If `t
 
 #### Tmux Mode (`--mode tmux`)
 
-When `--mode tmux` is specified:
+When `--mode tmux` is specified (v0.12.0+ — v5.7 §4.1 routes to Node leader for flywheel + SV support):
 
 1. **Validate scaffold** — same as Agent() mode: check `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
 2. **Check sentinels** — same as Agent() mode.
-3. **Check prerequisites** — verify `tmux` and `jq` are installed. If not, report what is missing and stop.
-4. **Locate runner script** — find `run_ralph_desk.zsh` at `~/.claude/ralph-desk/run_ralph_desk.zsh`. If not found, tell the user to reinstall (`npm install` or `install.sh`).
-5. **Launch** — shell out to the runner script with env vars derived from flags:
+3. **Check prerequisites** — verify `tmux`, `jq`, and `node` (>= 16) are installed. If not, report what is missing and stop.
+4. **Locate Node leader** — find `~/.claude/ralph-desk/node/run.mjs`. If not found, tell the user to reinstall (`npm install` or `bash install.sh`).
+5. **Launch** — shell out to the Node leader. **All dynamic args (slug + model values) MUST be passed through shell single-quote escaping** (v5.7 §4.12 G11) so bracketed model ids like `claude-opus-4-7[1m]` survive zsh parsing:
+
 ```bash
-LOOP_NAME="<slug>" \
-ROOT="$PWD" \
-MAX_ITER=<--max-iter value> \
-WORKER_MODEL=<--worker-model value> \
-LOCK_WORKER_MODEL=<1 if --lock-worker-model, else 0> \
-VERIFIER_MODEL=<--verifier-model value, default: sonnet> \
-FINAL_VERIFIER_MODEL=<--final-verifier-model value, default: opus> \
-VERIFY_MODE=<--verify-mode value, default: per-us> \
-CONSENSUS_MODE=<--consensus value, default: off> \
-CONSENSUS_MODEL=<--consensus-model value, default: gpt-5.5:medium> \
-FINAL_CONSENSUS_MODEL=<--final-consensus-model value, default: gpt-5.5:high> \
-CB_THRESHOLD=<--cb-threshold value, default: 6> \
-ITER_TIMEOUT=<--iter-timeout value, default: 600> \
-DEBUG=<1 if --debug, else 0> \
-WITH_SELF_VERIFICATION=<1 if --with-self-verification, else 0> \
-  zsh ~/.claude/ralph-desk/run_ralph_desk.zsh
+node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
+  --mode tmux \
+  --max-iter <N> \
+  --worker-model '<value>' \
+  [--lock-worker-model] \
+  --verifier-model '<value>' \
+  --final-verifier-model '<value>' \
+  --consensus <off|all|final-only> \
+  --consensus-model '<value>' \
+  --final-consensus-model '<value>' \
+  --verify-mode <per-us|batch> \
+  --cb-threshold <N> \
+  --iter-timeout <N> \
+  [--debug] [--autonomous] \
+  [--lane-strict]              # was env LANE_MODE=strict \
+  [--test-density-strict]      # was env TEST_DENSITY_MODE=strict \
+  [--with-self-verification] \
+  [--flywheel on-fail --flywheel-model '<value>'] \
+  [--flywheel-guard on --flywheel-guard-model '<value>']
 ```
-6. **If the script exits with error (exit code 1)** — report the error to the user and STOP. Do NOT attempt to work around it. Do NOT create tmux sessions yourself. Do NOT re-launch the script in a different way. Just tell the user what went wrong and suggest using Agent mode instead.
-7. **If successful** — tell the user the tmux session has been started. The shell script takes over as the deterministic Leader. No Agent() calls are made in tmux mode.
+
+**Quoting contract (v5.7 §4.1)**: every `'<value>'` placeholder above must be replaced with the user's flag value wrapped in single quotes via the equivalent of `shellQuote(value)` — `"'" + value.replace(/'/g, "'\\''") + "'"` for POSIX correctness. The slug, all model values, and any future dynamic flag must follow this rule. A slug or model containing brackets / spaces / single quotes / dollar signs / backticks must NOT break the leader invocation.
+
+**Env-var translation (v5.7 §4.1)**: the slash command historically built `LANE_MODE=strict zsh ...` and `TEST_DENSITY_MODE=strict zsh ...` from CLI flags. The Node leader uses CLI flags instead — translate `--lane-strict` and `--test-density-strict` into the corresponding flags. Direct env-var users (running zsh directly) are unaffected.
+
+6. **If the Node leader exits with error** — report the error to the user and STOP. Do NOT attempt to work around it. Do NOT create tmux sessions yourself. Do NOT re-launch in a different way. Tell the user what went wrong and suggest `--mode agent` as alternative.
+7. **If successful** — tell the user the tmux session has been started. The Node leader takes over as the deterministic Leader. No Agent() calls are made in tmux mode.
 
 **IMPORTANT RULES:**
-- Tmux mode requires the user to already be inside a tmux session. If the runner script rejects because $TMUX is not set, do NOT try to create a tmux session yourself. Tell the user: "Start tmux first, then retry."
-- MUST launch the runner with `run_in_background: true` so `/rlp-desk` returns control immediately while preserving live tmux visibility.
+- Tmux mode requires the user to already be inside a tmux session. If the leader rejects because $TMUX is not set, do NOT try to create a tmux session yourself. Tell the user: "Start tmux first, then retry."
+- MUST launch with `run_in_background: true` so `/rlp-desk` returns control immediately while preserving live tmux visibility.
 - Run-in-background is used so the shell can keep the command visible and keep the pane layout stable for status checks and completion flow.
 - Do NOT kill panes after completion. Panes stay alive for inspection. User cleans up with `/rlp-desk clean <slug> --kill-session`.
-- `--with-self-verification` is accepted in tmux mode. After campaign completion, `run_ralph_desk.zsh` spawns `claude CLI` to generate the SV report from campaign artifacts (done-claims, verify-verdicts, campaign-report). SV reports are written to `~/.claude/ralph-desk/analytics/<slug>/`. Requires `claude` CLI available in PATH; if not found, an error is appended to the campaign report.
+- `--with-self-verification` is fully supported in tmux mode (v5.7 §4.7). The Node leader's `generateSVReport()` writes `self-verification-report.md` + `self-verification-data.json` under `<project>/.claude/ralph-desk/analytics/<slug>/` (project-local, v5.7 §4.11.b).
+- `--flywheel on-fail` and `--flywheel-guard on` are fully supported in tmux mode (v5.7 §4.1). The Node leader handles pane creation, sendKeys dispatch, signal polling, and Guard retry semantics identically to agent mode.
+- Legacy `zsh ~/.claude/ralph-desk/run_ralph_desk.zsh` (deprecated in 0.12.0) still runs for non-flywheel/non-SV invocations but emits a deprecation `[notice]`. Calling it with `FLYWHEEL` or `WITH_SELF_VERIFICATION` env vars exits 2 with a migration banner pointing to the Node leader.
 
 **tmux UX model (5 items):**
 - The session returns immediately after launch (`run_in_background: true`) so the command returns control to the parent CLI.
@@ -323,6 +334,18 @@ WITH_SELF_VERIFICATION=<1 if --with-self-verification, else 0> \
 - Agent mode remains unchanged, and no tmux-specific behavior is mixed into Agent mode.
 
 #### Agent Mode (`--mode agent` or default)
+
+**Why Agent mode is structurally immune to Bug 4/5 (mid-execution prompt hang
+& A4 premature dispatch):** Worker/Verifier are dispatched as `Agent(...,
+mode="bypassPermissions", ...)`. The subagent runs non-interactively under
+the platform's bypass — it has no tmux pane, no TUI surface, and cannot
+surface a `[y/N]` prompt to the parent Leader. The auto-dismiss /
+prompt-stall / no-progress timeouts in `run_ralph_desk.zsh` (v5.7 §4.13.b /
+§4.16 / §4.17) are therefore tmux-only by design. **Tradeoff**: because
+`Agent()` has no timeout API, agent-mode iterations are not bounded — if
+the platform's `bypassPermissions` ever fails to suppress an interactive
+prompt at the SDK level, the call hangs indefinitely with no rlp-desk-side
+watchdog. Use `--mode tmux` if you need bounded execution time.
 
 ### Preparation
 1. Validate scaffold: `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.

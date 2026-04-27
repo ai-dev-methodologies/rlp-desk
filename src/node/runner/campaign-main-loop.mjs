@@ -5,8 +5,16 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { buildClaudeCmd, buildCodexCmd, parseModelFlag } from '../cli/command-builder.mjs';
+import { shellQuote } from '../util/shell-quote.mjs';
+import { OPUS_1M_BETA, isOpusModel } from '../constants.mjs';
 import { initCampaign } from '../init/campaign-initializer.mjs';
-import { TimeoutError, pollForSignal as defaultPollForSignal } from '../polling/signal-poller.mjs';
+import { writeSentinelExclusive } from '../shared/fs.mjs';
+import {
+  TimeoutError,
+  WorkerExitedError,
+  PromptBlockedError,
+  pollForSignal as defaultPollForSignal,
+} from '../polling/signal-poller.mjs';
 import {
   assembleVerifierPrompt,
   assembleWorkerPrompt,
@@ -57,7 +65,11 @@ function buildPaths(rootDir, slug) {
     prdFile: path.join(deskRoot, 'plans', `prd-${slug}.md`),
     testSpecFile: path.join(deskRoot, 'plans', `test-spec-${slug}.md`),
     analyticsFile: path.join(campaignLogDir, 'campaign.jsonl'),
-    analyticsDir: path.join(os.homedir(), '.claude', 'ralph-desk', 'analytics', slug),
+    // v5.7 §4.11.b: project-local analytics so Worker/Verifier prompts that
+    // reference this path stay inside cwd-tree (no `--add-dir` whitelist needed
+    // for cross-cwd writes). Cross-project rollup uses ~/.claude/ralph-desk/registry.jsonl
+    // (Leader-only, never appears in Worker prompts) — see §4.11.c.
+    analyticsDir: path.join(deskRoot, 'analytics', slug),
     reportFile: path.join(campaignLogDir, 'campaign-report.md'),
     statusFile: path.join(campaignLogDir, 'runtime', 'status.json'),
     flywheelPromptFile: path.join(deskRoot, 'prompts', `${slug}.flywheel.prompt.md`),
@@ -418,7 +430,37 @@ async function _checkLaneViolations(paths, snapshotBefore, snapshotAfter, state,
 // the zsh helper _classify_cross_us_or_metric in lib_ralph_desk.zsh.
 const CROSS_US_TOKEN_RE = /depends on US-|blocking US-|awaits US-|post-iter US-|requires US-\d+|cross-US|US-\d+ 산출물|신규 US-|post-iter/i;
 
-// P1-D Failure Taxonomy classifier. governance §1f locks the 6 reason_category
+// v5.7 §4.25 — typed enum for _classifyBlock tags. Replaces ad-hoc string
+// literals scattered across writeSentinel call sites. Typo-safe via Object.freeze.
+export const BLOCK_TAGS = Object.freeze({
+  // Verdict-driven (Verifier 'fail')
+  VERIFIER: 'verifier',
+  // Flywheel/Guard verdicts
+  FLYWHEEL_INCONCLUSIVE: 'flywheel_inconclusive',
+  FLYWHEEL_EXHAUSTED: 'flywheel_exhausted',
+  // Model upgrade chain exhausted
+  MODEL_UPGRADE: 'model_upgrade',
+  // Worker/Verifier/Flywheel/Guard pane exited without artifacts (file-guarantee)
+  WORKER_EXITED: 'worker_exited_without_artifacts',
+  VERIFIER_EXITED: 'verifier_exited_without_artifacts',
+  FINAL_VERIFIER_EXITED: 'final_verifier_exited_without_artifacts',
+  FLYWHEEL_EXITED: 'flywheel_pane_exited_without_artifacts',
+  GUARD_EXITED: 'guard_pane_exited_without_artifacts',
+  // Auto-Enter unsafe (default-No prompt)
+  PROMPT_BLOCKED: 'prompt_blocked',
+  // Persistent timeout without exit (different from EXITED)
+  WORKER_TIMEOUT: 'worker_timeout',
+  VERIFIER_TIMEOUT: 'verifier_timeout',
+  FINAL_VERIFIER_TIMEOUT: 'final_verifier_timeout',
+  FLYWHEEL_TIMEOUT: 'flywheel_timeout',
+  GUARD_TIMEOUT: 'guard_timeout',
+  // Schema validator (P1)
+  MALFORMED_ARTIFACT: 'malformed_artifact',
+  // Backstop (run() try/finally)
+  LEADER_EXITED_WITHOUT_TERMINAL_STATE: 'leader_exited_without_terminal_state',
+});
+
+// P1-D Failure Taxonomy classifier. governance §1f locks the reason_category
 // values + recoverable + suggested_action defaults per source. wrapper MUST
 // branch on reason_category; failure_category is diagnostic only.
 function _classifyBlock(source, { verdict, state, slug } = {}) {
@@ -427,18 +469,18 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
   let action;
   let failureCategory = null;
   switch (source) {
-    case 'flywheel_inconclusive':
-    case 'flywheel_exhausted':
+    case BLOCK_TAGS.FLYWHEEL_INCONCLUSIVE:
+    case BLOCK_TAGS.FLYWHEEL_EXHAUSTED:
       category = 'mission_abort';
       recoverable = false;
       action = 'terminal_alert';
       break;
-    case 'model_upgrade':
+    case BLOCK_TAGS.MODEL_UPGRADE:
       category = 'repeat_axis';
       recoverable = false;
       action = 'next_mission_chain';
       break;
-    case 'verifier': {
+    case BLOCK_TAGS.VERIFIER: {
       const text = `${verdict?.reason ?? ''} ${verdict?.summary ?? ''}`;
       category = CROSS_US_TOKEN_RE.test(text) ? 'cross_us_dep' : 'metric_failure';
       recoverable = true;
@@ -446,6 +488,54 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
       failureCategory = verdict?.failure_category ?? null;
       break;
     }
+    // v5.7 §4.22 §4.24 — pane-exit-without-artifacts variants. All
+    // infra_failure, not recoverable (Worker/Verifier/Flywheel/Guard pane
+    // process is gone; campaign cannot proceed). failure_category preserved
+    // for telemetry.
+    case BLOCK_TAGS.WORKER_EXITED:
+    case BLOCK_TAGS.VERIFIER_EXITED:
+    case BLOCK_TAGS.FINAL_VERIFIER_EXITED:
+    case BLOCK_TAGS.FLYWHEEL_EXITED:
+    case BLOCK_TAGS.GUARD_EXITED:
+      category = 'infra_failure';
+      recoverable = false;
+      action = 'investigate_pane_logs';
+      failureCategory = source;
+      break;
+    // v5.7 §4.17 — auto-Enter on default-No would CANCEL; refuse and BLOCK.
+    case BLOCK_TAGS.PROMPT_BLOCKED:
+      category = 'infra_failure';
+      recoverable = false;
+      action = 'manual_prompt_response';
+      failureCategory = 'prompt_blocked';
+      break;
+    // Persistent timeout (no exit detected) — different from EXITED.
+    case BLOCK_TAGS.WORKER_TIMEOUT:
+    case BLOCK_TAGS.VERIFIER_TIMEOUT:
+    case BLOCK_TAGS.FINAL_VERIFIER_TIMEOUT:
+    case BLOCK_TAGS.FLYWHEEL_TIMEOUT:
+    case BLOCK_TAGS.GUARD_TIMEOUT:
+      category = 'infra_failure';
+      recoverable = false;
+      action = 'increase_iter_timeout_or_investigate';
+      failureCategory = source;
+      break;
+    // v5.7 §4.25 P1 — schema validator caught a malformed/incoherent artifact.
+    // Recoverable: next iteration's Worker prompt can include the schema
+    // error (P2 feedback loop closure) and try again.
+    case BLOCK_TAGS.MALFORMED_ARTIFACT:
+      category = 'contract_violation';
+      recoverable = true;
+      action = 'retry_with_schema_feedback';
+      failureCategory = 'malformed_artifact';
+      break;
+    // Backstop: run() exited without terminal sentinel.
+    case BLOCK_TAGS.LEADER_EXITED_WITHOUT_TERMINAL_STATE:
+      category = 'infra_failure';
+      recoverable = false;
+      action = 'investigate_leader_logs';
+      failureCategory = 'leader_exited_without_terminal_state';
+      break;
     default:
       category = 'metric_failure';
       recoverable = false;
@@ -461,22 +551,198 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
   };
 }
 
+// v5.7 §4.25 — uniform poll-failure → BLOCKED handler, used by every
+// `pollForSignal` call site (Worker, VerifierPerUS, VerifierFinal, Flywheel,
+// Guard). Mirrors the canonical Worker pattern previously inlined at line
+// ~1037-1110. Idempotent via writeSentinelExclusive (first-writer-wins).
+//
+// Returns the early-exit object the call site should `return` to its
+// orchestrator. Callers MUST `return` it (not throw), so the run() loop
+// terminates cleanly with phase=blocked.
+async function _handlePollFailure(error, ctx) {
+  const {
+    paths,
+    state,
+    slug,
+    options,
+    role, // 'worker' | 'verifier' | 'final_verifier' | 'flywheel' | 'guard'
+    usIdOverride,
+  } = ctx;
+  const usId = usIdOverride ?? state.current_us;
+
+  let tag;
+  let reason;
+  if (error instanceof WorkerExitedError) {
+    tag = ({
+      worker: BLOCK_TAGS.WORKER_EXITED,
+      verifier: BLOCK_TAGS.VERIFIER_EXITED,
+      final_verifier: BLOCK_TAGS.FINAL_VERIFIER_EXITED,
+      flywheel: BLOCK_TAGS.FLYWHEEL_EXITED,
+      guard: BLOCK_TAGS.GUARD_EXITED,
+    })[role] ?? BLOCK_TAGS.WORKER_EXITED;
+    reason = `${error.reason ?? 'pane exited without artifacts'}: ${error.message}`;
+  } else if (error instanceof PromptBlockedError) {
+    tag = BLOCK_TAGS.PROMPT_BLOCKED;
+    reason = `${error.reason ?? 'default-No prompt'}: ${error.message}`;
+  } else if (error instanceof MalformedArtifactError) {
+    tag = BLOCK_TAGS.MALFORMED_ARTIFACT;
+    reason = `Malformed artifact at ${error.field}: expected ${error.expected}, got ${error.got}`;
+  } else if (error instanceof TimeoutError) {
+    tag = ({
+      worker: BLOCK_TAGS.WORKER_TIMEOUT,
+      verifier: BLOCK_TAGS.VERIFIER_TIMEOUT,
+      final_verifier: BLOCK_TAGS.FINAL_VERIFIER_TIMEOUT,
+      flywheel: BLOCK_TAGS.FLYWHEEL_TIMEOUT,
+      guard: BLOCK_TAGS.GUARD_TIMEOUT,
+    })[role] ?? BLOCK_TAGS.WORKER_TIMEOUT;
+    reason = `${role} pollForSignal timed out: ${error.message}`;
+  } else {
+    // Unknown error — treat as infra_failure so backstop doesn't have to
+    // synthesize. Re-throw after writing so caller's outer try/finally
+    // (run() backstop) sees something but doesn't double-write.
+    tag = BLOCK_TAGS.LEADER_EXITED_WITHOUT_TERMINAL_STATE;
+    reason = `Unexpected error in ${role} poll: ${error?.message ?? error}`;
+  }
+
+  state.phase = 'blocked';
+  const classification = _classifyBlock(tag, { state, slug });
+  await writeSentinel(paths.blockedSentinel, 'blocked', usId, reason, classification, paths);
+  await writeStatus(paths, state, options.onStatusChange, options.now);
+  await generateCampaignReport({
+    slug,
+    reportFile: paths.reportFile,
+    prdFile: paths.prdFile,
+    statusFile: paths.statusFile,
+    analyticsFile: paths.analyticsFile,
+    now: resolveNow(options.now),
+    blockedReason: reason,
+    blockedCategory: classification.reason_category,
+  });
+
+  return {
+    status: 'blocked',
+    usId,
+    reason,
+    category: classification.reason_category,
+    statusFile: paths.statusFile,
+  };
+}
+
+// v5.7 §4.25 P1 — schema validator. Throws MalformedArtifactError if the
+// parsed artifact violates the contract. Caller catches via _handlePollFailure.
+// Hooks AFTER pollForSignal returns parsed JSON, BEFORE state mutation.
+//
+// Validates:
+//   - slug matches campaign slug (or absent — backwards compat)
+//   - iteration is integer ≥ state.iteration_floor (worker may advance, never regress)
+//   - signal_type matches read context ('signal' | 'verdict' | 'flywheel_signal' | 'flywheel_guard_verdict')
+//     The signal_type field is OPTIONAL for backwards compat — existing artifacts
+//     don't include it. Future writers should.
+//   - us_id ∈ usList ∪ {'ALL'} (closed-set)
+export class MalformedArtifactError extends Error {
+  constructor(message, info = {}) {
+    super(message);
+    this.name = 'MalformedArtifactError';
+    this.field = info.field ?? null;
+    this.expected = info.expected ?? null;
+    this.got = info.got ?? null;
+    this.raw = info.raw ?? null;
+  }
+}
+
+function validateArtifact(parsed, ctx) {
+  const { expectedSlug, expectedSignalType, allowedUsIds } = ctx;
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new MalformedArtifactError('Artifact is not a JSON object', {
+      field: '<root>',
+      expected: 'object',
+      got: Array.isArray(parsed) ? 'array' : typeof parsed,
+      raw: parsed,
+    });
+  }
+  if (parsed.slug !== undefined && expectedSlug && parsed.slug !== expectedSlug) {
+    throw new MalformedArtifactError('slug mismatch', {
+      field: 'slug',
+      expected: expectedSlug,
+      got: parsed.slug,
+      raw: parsed,
+    });
+  }
+  if (parsed.iteration !== undefined) {
+    if (!Number.isInteger(parsed.iteration)) {
+      throw new MalformedArtifactError('iteration must be integer', {
+        field: 'iteration',
+        expected: 'integer',
+        got: typeof parsed.iteration,
+        raw: parsed,
+      });
+    }
+    // v5.7 §4.25 P1 — iteration validation is STRUCTURAL ONLY (must be integer).
+    // Originally proposed as a strict lower bound (worker can never regress
+    // below state.iteration_floor), this caused false BLOCKs in real campaigns
+    // because (a) workers may carry over a previous iteration value across
+    // multiple iterations without updating the field, and (b) the leader's
+    // state.iteration is authoritative regardless of what the worker writes.
+    // The leader owns iteration tracking; the worker's value is informational
+    // only. State-consistency enforcement is a higher-layer concern (analytics
+    // post-mortem), not a contract-violation BLOCK trigger. We deliberately
+    // accept any integer here; iterationFloor parameter is retained in ctx for
+    // backwards compatibility with call sites but no longer gates this check.
+  }
+  if (parsed.signal_type !== undefined && expectedSignalType && parsed.signal_type !== expectedSignalType) {
+    throw new MalformedArtifactError('signal_type mismatch', {
+      field: 'signal_type',
+      expected: expectedSignalType,
+      got: parsed.signal_type,
+      raw: parsed,
+    });
+  }
+  if (parsed.us_id !== undefined && Array.isArray(allowedUsIds) && allowedUsIds.length > 0) {
+    if (!allowedUsIds.includes(parsed.us_id)) {
+      throw new MalformedArtifactError(
+        `us_id ${parsed.us_id} not in allowed set [${allowedUsIds.join(', ')}]`,
+        {
+          field: 'us_id',
+          expected: `one of [${allowedUsIds.join(', ')}]`,
+          got: parsed.us_id,
+          raw: parsed,
+        },
+      );
+    }
+  }
+  return parsed;
+}
+
 async function writeSentinel(filePath, status, usId, reason, classification = null, paths = null) {
   // governance §1f BLOCKED Surfacing: BLOCKED is surfaced on FIVE channels —
   // sentinel (markdown + JSON sidecar), status, console (stderr), report,
   // and (US-020 R8 P1-H, 5th channel) memory.md/latest.md hygiene update.
   // Legacy 1-line parsers still work because line 1 is unchanged.
+  //
+  // v5.7 §4.24 — Write Order Contract REVERSED for first-writer-wins:
+  //   1. markdown sentinel FIRST via writeSentinelExclusive (O_EXCL lock).
+  //      Whoever wins this is the canonical writer for this campaign exit.
+  //   2. JSON sidecar SECOND, only if we won the md write.
+  // Invariant: md exists ⇒ JSON exists (within ≤50ms; watchers retry).
+  // If two paths race to write blocked.md/complete.md, exactly ONE wins;
+  // the loser sees `wrote=false, reason=already_exists` and returns silently
+  // (the campaign is already classified). Cross-path category collisions
+  // resolve by first-fired timestamp (existing return-on-first-error pattern).
   const lines = [`${status.toUpperCase()}: ${usId}`];
   if (reason) lines.push(`Reason: ${reason}`);
   if (classification?.reason_category) {
     lines.push(`Category: ${classification.reason_category}`);
   }
+  const mdBody = `${lines.join('\n')}\n`;
 
-  // P1-D Write Order Contract:
-  //   1. JSON sidecar FIRST (atomic per-file rename via writeFile).
-  //   2. markdown sentinel SECOND.
-  // Invariant: markdown exists ⇒ JSON exists. Wrappers watch markdown,
-  // then read JSON; if JSON not yet visible (rare race), retry up to 5×50ms.
+  const result = await writeSentinelExclusive(filePath, mdBody);
+  if (!result.wrote) {
+    // Another path already wrote the sentinel for this campaign. Idempotent
+    // no-op — we are NOT the canonical writer; do not overwrite the JSON
+    // sidecar either or we'll desynchronize from the winning md.
+    return result;
+  }
+
   if (status === 'blocked' && classification) {
     const jsonPath = filePath.replace(/\.md$/, '.json');
     let hygieneViolated = false;
@@ -503,7 +769,7 @@ async function writeSentinel(filePath, status, usId, reason, classification = nu
     await fs.writeFile(jsonPath, `${JSON.stringify(jsonBody, null, 2)}\n`, 'utf8');
   }
 
-  await fs.writeFile(filePath, `${lines.join('\n')}\n`, 'utf8');
+  return result;
 }
 
 async function runFinalSequentialVerify({
@@ -514,6 +780,7 @@ async function runFinalSequentialVerify({
   verifierPaneId,
   pollForSignal,
   runIntegrationCheck,
+  iterTimeoutMs,
 }) {
   const verifierModel = state.final_verifier_model;
 
@@ -532,6 +799,7 @@ async function runFinalSequentialVerify({
     const verdict = await pollForSignal(paths.verdictFile, {
       mode: parseModelFlag(verifierModel, 'verifier').engine,
       paneId: verifierPaneId,
+      timeoutMs: iterTimeoutMs,
     });
 
     if (verdict.verdict !== 'pass') {
@@ -568,8 +836,31 @@ async function runFinalSequentialVerify({
   };
 }
 
-function buildFlywheelTriggerCmd({ flywheelPromptFile, flywheelModel, rootDir }) {
-  return `cd ${JSON.stringify(rootDir)} && DISABLE_OMC=1 claude --model ${flywheelModel} --no-mcp -p "$(cat ${JSON.stringify(flywheelPromptFile)})"`;
+// v5.7 §4.11.a (refactored per code-review HIGH): single source-of-truth for
+// the home rlp-desk dir and the autonomous claude command shape. Was duplicated
+// across buildFlywheelTriggerCmd/buildGuardTriggerCmd byte-for-byte.
+const HOME_DESK_DIR = path.join(os.homedir(), '.claude', 'ralph-desk');
+
+function buildAutonomousClaudeCmd({ promptFile, model, rootDir, homeDeskDir = HOME_DESK_DIR }) {
+  // §4.9: ANTHROPIC_BETA prefix for Opus 1M context.
+  const betaPrefix = isOpusModel(model)
+    ? `ANTHROPIC_BETA=${shellQuote(OPUS_1M_BETA)} `
+    : '';
+  // §4.11.a: --add-dir whitelist (home rlp-desk + campaign cwd) for true autonomy.
+  const addDirParts = [];
+  if (homeDeskDir) addDirParts.push(`--add-dir ${shellQuote(homeDeskDir)}`);
+  if (rootDir) addDirParts.push(`--add-dir ${shellQuote(rootDir)}`);
+  const addDir = addDirParts.length ? ' ' + addDirParts.join(' ') : '';
+  return `cd ${JSON.stringify(rootDir)} && DISABLE_OMC=1 ${betaPrefix}claude --model ${shellQuote(model)} --no-mcp${addDir} -p "$(cat ${JSON.stringify(promptFile)})"`;
+}
+
+// Thin wrappers retained for call-site clarity + possible per-role customization.
+function buildFlywheelTriggerCmd({ flywheelPromptFile, flywheelModel, rootDir, homeDeskDir }) {
+  return buildAutonomousClaudeCmd({ promptFile: flywheelPromptFile, model: flywheelModel, rootDir, homeDeskDir });
+}
+
+function buildGuardTriggerCmd({ guardPromptFile, guardModel, rootDir, homeDeskDir }) {
+  return buildAutonomousClaudeCmd({ promptFile: guardPromptFile, model: guardModel, rootDir, homeDeskDir });
 }
 
 async function dispatchFlywheel({ paths, sendKeys, flywheelPaneId, flywheelModel, rootDir }) {
@@ -579,10 +870,6 @@ async function dispatchFlywheel({ paths, sendKeys, flywheelPaneId, flywheelModel
     rootDir,
   });
   await sendKeys(flywheelPaneId, triggerCmd);
-}
-
-function buildGuardTriggerCmd({ guardPromptFile, guardModel, rootDir }) {
-  return `cd ${JSON.stringify(rootDir)} && DISABLE_OMC=1 claude --model ${guardModel} --no-mcp -p "$(cat ${JSON.stringify(guardPromptFile)})"`;
 }
 
 async function dispatchGuard({ paths, sendKeys, guardPaneId, guardModel, rootDir }) {
@@ -610,12 +897,83 @@ export function shouldRunGuard(flywheelGuard, state, usId) {
 export async function run(slug, options = {}) {
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
   const paths = buildPaths(rootDir, slug);
+  // v5.7 §4.24 §1g — runtime invariant: every terminal exit of run() MUST
+  // leave exactly one sentinel on disk (blocked.md XOR complete.md). The
+  // try/finally below is the last-resort backstop that writes a synthetic
+  // BLOCKED if the body throws or returns without a terminal sentinel.
+  // Idempotent via writeSentinelExclusive — a real BLOCKED already in place
+  // is not overwritten.
+  let runResult;
+  let runThrew;
+  try {
+    runResult = await _runCampaignBody(slug, options, paths, rootDir);
+    return runResult;
+  } catch (error) {
+    runThrew = error;
+    throw error;
+  } finally {
+    await _ensureTerminalSentinel({
+      paths,
+      slug,
+      result: runResult,
+      threwError: runThrew,
+    });
+  }
+}
+
+async function _ensureTerminalSentinel({ paths, slug, result, threwError }) {
+  // 'continue' is paused, not terminal. Real terminal: 'blocked' or 'complete'.
+  // If neither sentinel exists at exit, leader exited unexpectedly. Write
+  // synthetic BLOCKED `infra_failure/leader_exited_without_terminal_state`.
+  if (result && result.status === 'continue') {
+    return;
+  }
+  let blockedExists = false;
+  let completeExists = false;
+  try { blockedExists = await exists(paths.blockedSentinel); } catch {}
+  try { completeExists = await exists(paths.completeSentinel); } catch {}
+  if (blockedExists || completeExists) {
+    return;
+  }
+  const reason = threwError
+    ? `Leader exited unexpectedly (no terminal sentinel): ${threwError?.message ?? threwError}`
+    : 'Leader exited without writing terminal sentinel';
+  const classification = {
+    slug,
+    iteration: 0,
+    reason_category: 'infra_failure',
+    failure_category: 'leader_exited_without_terminal_state',
+    recoverable: false,
+    suggested_action: 'investigate_leader_logs',
+  };
+  try {
+    await writeSentinel(
+      paths.blockedSentinel,
+      'blocked',
+      'ALL',
+      reason,
+      classification,
+      paths,
+    );
+  } catch (sentinelError) {
+    // Best-effort. If even the backstop write fails, log to stderr so the
+    // operator has SOME signal. Do NOT swallow the original error.
+    console.error('[run] failed to write backstop BLOCKED sentinel:', sentinelError);
+  }
+}
+
+async function _runCampaignBody(slug, options, paths, rootDir) {
   const sendKeys = options.sendKeys ?? defaultSendKeys;
   const createPane = options.createPane ?? defaultCreatePane;
   const createSession = options.createSession ?? defaultCreateSession;
   const pollForSignal = options.pollForSignal ?? defaultPollForSignal;
   const runIntegrationCheck = options.runIntegrationCheck ?? (async () => ({ exitCode: 0, summary: 'integration skipped' }));
   const maxIterations = options.maxIterations ?? 100;
+  // v5.7 §4.19: campaign-level pollForSignal timeout (Node leader fix).
+  // The CLI parses --iter-timeout but never forwarded it to pollForSignal,
+  // so every campaign hit the 5s signal-poller default and exited
+  // immediately. Default 600s (10 min) per CLI documentation; convert to ms.
+  const iterTimeoutMs = ((options.iterTimeout ?? 600) * 1000);
 
   await ensureDirs(paths);
   await ensureScaffold(paths);
@@ -710,15 +1068,26 @@ export async function run(slug, options = {}) {
 
     state.current_us = getNextUs(usList, state.verified_us, state.current_us);
     if (state.current_us === 'ALL') {
-      const finalResult = await runFinalSequentialVerify({
-        paths,
-        state,
-        usList,
-        sendKeys,
-        verifierPaneId: state.verifier_pane_id,
-        pollForSignal,
-        runIntegrationCheck,
-      });
+      let finalResult;
+      try {
+        finalResult = await runFinalSequentialVerify({
+          paths,
+          state,
+          usList,
+          sendKeys,
+          verifierPaneId: state.verifier_pane_id,
+          pollForSignal,
+          runIntegrationCheck,
+          iterTimeoutMs,
+        });
+      } catch (error) {
+        // v5.7 §4.25 — uniform poll-failure handling for final verifier.
+        return _handlePollFailure(error, {
+          paths, state, slug, options,
+          role: 'final_verifier',
+          usIdOverride: 'ALL',
+        });
+      }
 
       if (finalResult.status === 'complete') {
         state.phase = 'complete';
@@ -781,10 +1150,25 @@ export async function run(slug, options = {}) {
         rootDir,
       });
 
-      const flywheelSignal = await pollForSignal(paths.flywheelSignalFile, {
-        mode: 'claude',
-        paneId: state.flywheel_pane_id ?? state.verifier_pane_id,
-      });
+      let flywheelSignal;
+      try {
+        flywheelSignal = await pollForSignal(paths.flywheelSignalFile, {
+          mode: 'claude',
+          paneId: state.flywheel_pane_id ?? state.verifier_pane_id,
+          timeoutMs: iterTimeoutMs,
+        });
+        validateArtifact(flywheelSignal, {
+          expectedSlug: slug,
+          iterationFloor: state.iteration,
+          expectedSignalType: 'flywheel_signal',
+          allowedUsIds: [...usList, 'ALL'],
+        });
+      } catch (error) {
+        return _handlePollFailure(error, {
+          paths, state, slug, options,
+          role: 'flywheel',
+        });
+      }
 
       state.last_flywheel_decision = flywheelSignal.decision;
       // P0-A multi-mission orchestration: optionally captured from flywheel signal.
@@ -804,10 +1188,25 @@ export async function run(slug, options = {}) {
 
         await dispatchGuard({ paths, sendKeys, guardPaneId, guardModel, rootDir });
 
-        const guardVerdict = await pollForSignal(paths.flywheelGuardVerdictFile, {
-          mode: 'claude',
-          paneId: guardPaneId,
-        });
+        let guardVerdict;
+        try {
+          guardVerdict = await pollForSignal(paths.flywheelGuardVerdictFile, {
+            mode: 'claude',
+            paneId: guardPaneId,
+            timeoutMs: iterTimeoutMs,
+          });
+          validateArtifact(guardVerdict, {
+            expectedSlug: slug,
+            iterationFloor: state.iteration,
+            expectedSignalType: 'flywheel_guard_verdict',
+            allowedUsIds: [...usList, 'ALL'],
+          });
+        } catch (error) {
+          return _handlePollFailure(error, {
+            paths, state, slug, options,
+            role: 'guard',
+          });
+        }
 
         if (!state.flywheel_guard_count[state.current_us]) {
           state.flywheel_guard_count[state.current_us] = 0;
@@ -911,9 +1310,18 @@ export async function run(slug, options = {}) {
       signal = await pollForSignal(paths.signalFile, {
         mode: parseModelFlag(state.worker_model).engine,
         paneId: state.worker_pane_id,
+        timeoutMs: iterTimeoutMs,
+      });
+      validateArtifact(signal, {
+        expectedSlug: slug,
+        iterationFloor: state.iteration,
+        expectedSignalType: 'signal',
+        allowedUsIds: [...usList, 'ALL'],
       });
     } catch (error) {
       if (error instanceof TimeoutError && parseModelFlag(state.worker_model).engine === 'codex') {
+        // v5.7 — codex CLI exits cleanly after writing signal; if pollForSignal
+        // timed out for codex, synthesize a verify signal so the loop continues.
         signal = {
           iteration: state.iteration,
           status: 'verify',
@@ -921,7 +1329,12 @@ export async function run(slug, options = {}) {
           summary: 'auto-generated after codex exit fallback',
         };
       } else {
-        throw error;
+        // v5.7 §4.25 — uniform handling for WorkerExitedError, PromptBlockedError,
+        // MalformedArtifactError, TimeoutError, and unknown errors.
+        return _handlePollFailure(error, {
+          paths, state, slug, options,
+          role: 'worker',
+        });
       }
     }
 
@@ -959,10 +1372,26 @@ export async function run(slug, options = {}) {
       verifierModel,
     });
 
-    const verdict = await pollForSignal(paths.verdictFile, {
-      mode: parseModelFlag(verifierModel, 'verifier').engine,
-      paneId: state.verifier_pane_id,
-    });
+    let verdict;
+    try {
+      verdict = await pollForSignal(paths.verdictFile, {
+        mode: parseModelFlag(verifierModel, 'verifier').engine,
+        paneId: state.verifier_pane_id,
+        timeoutMs: iterTimeoutMs,
+      });
+      validateArtifact(verdict, {
+        expectedSlug: slug,
+        iterationFloor: state.iteration,
+        expectedSignalType: 'verdict',
+        allowedUsIds: [...usList, 'ALL'],
+      });
+    } catch (error) {
+      return _handlePollFailure(error, {
+        paths, state, slug, options,
+        role: 'verifier',
+        usIdOverride: usId,
+      });
+    }
 
     if (verdict.verdict === 'pass') {
       state.consecutive_failures = 0;

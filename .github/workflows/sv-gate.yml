@@ -1,0 +1,55 @@
+name: SV Gate (Fast)
+
+# v5.7 §4.25 — mechanical SV gate enforces the file-guarantee invariant
+# (governance §1g). Runs on every PR touching code paths covered by the gate.
+# Full gate (REAL campaign E2E) requires live API key + tmux + ~5 min — run
+# locally before merging.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/node/**'
+      - 'src/scripts/**'
+      - 'src/commands/rlp-desk.md'
+      - 'src/governance.md'
+      - 'tests/**'
+      - 'package.json'
+  pull_request:
+    paths:
+      - 'src/node/**'
+      - 'src/scripts/**'
+      - 'src/commands/rlp-desk.md'
+      - 'src/governance.md'
+      - 'tests/**'
+      - 'package.json'
+
+jobs:
+  sv-gate-fast:
+    name: SV Gate Fast (~30s)
+    runs-on: macos-latest  # macOS provides zsh + tmux + node out of the box
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify zsh + tmux available
+        run: |
+          zsh --version
+          tmux -V
+
+      - name: Run SV Gate Fast
+        run: zsh tests/sv-gate-fast.sh
+
+      - name: Upload SV gate logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sv-gate-fast-logs
+          path: |
+            tests/**/*.log
+          if-no-files-found: ignore

@@ -34,31 +34,56 @@ src/model-upgrade-table.md      → ~/.claude/ralph-desk/model-upgrade-table.md
 src/scripts/init_ralph_desk.zsh → ~/.claude/ralph-desk/init_ralph_desk.zsh
 src/scripts/run_ralph_desk.zsh  → ~/.claude/ralph-desk/run_ralph_desk.zsh
 src/scripts/lib_ralph_desk.zsh  → ~/.claude/ralph-desk/lib_ralph_desk.zsh
+src/node/**                     → ~/.claude/ralph-desk/node/   (recursive, v0.12.0+)
 ```
+
+**v0.12.0+ note (v5.7 §4.10)**: installed files are write-protected (`chmod 0o444`)
++ banner-headed (`<!-- DO NOT EDIT ... -->` for `.md`, `# ...` for shell, `// ...`
+for `.mjs`/`.js`). Re-running `npm install rlp-desk` (or `bash install.sh`) is the
+canonical channel — never edit installed files directly. For temporary debug see
+`~/.claude/ralph-desk/UNLOCK.md`.
 
 **Reference docs (always sync):**
 ```
 README.md                       → ~/.claude/ralph-desk/README.md
 install.sh                      → ~/.claude/ralph-desk/install.sh
-docs/architecture.md            → ~/.claude/ralph-desk/docs/architecture.md
-docs/getting-started.md         → ~/.claude/ralph-desk/docs/getting-started.md
-docs/protocol-reference.md      → ~/.claude/ralph-desk/docs/protocol-reference.md
-docs/TODO-verification-next.md  → ~/.claude/ralph-desk/docs/TODO-verification-next.md
-docs/multi-mission-orchestration.md → ~/.claude/ralph-desk/docs/multi-mission-orchestration.md
-docs/internal/*                 → ~/.claude/ralph-desk/docs/internal/
-docs/blueprints/*               → ~/.claude/ralph-desk/docs/blueprints/
+docs/rlp-desk/architecture.md            → ~/.claude/ralph-desk/docs/rlp-desk/architecture.md
+docs/rlp-desk/getting-started.md         → ~/.claude/ralph-desk/docs/rlp-desk/getting-started.md
+docs/rlp-desk/protocol-reference.md      → ~/.claude/ralph-desk/docs/rlp-desk/protocol-reference.md
+docs/rlp-desk/TODO-verification-next.md  → ~/.claude/ralph-desk/docs/rlp-desk/TODO-verification-next.md
+docs/rlp-desk/multi-mission-orchestration.md → ~/.claude/ralph-desk/docs/rlp-desk/multi-mission-orchestration.md
+docs/rlp-desk/internal/*                 → ~/.claude/ralph-desk/docs/rlp-desk/internal/
+docs/rlp-desk/blueprints/*               → ~/.claude/ralph-desk/docs/rlp-desk/blueprints/
+docs/rlp-desk/plans/*                    → ~/.claude/ralph-desk/docs/rlp-desk/plans/
 ```
 
-**Verification (mandatory after sync):**
+**Verification (mandatory after sync — v5.7 §4.5)**:
+
+Post-v0.12.0, installed files have an injected banner (line 1 for `.md`/`.mjs`/`.js`,
+line 2 for shebanged `.zsh`/`.sh`) plus `chmod 0o444`. A naive `diff -q` will report
+a banner-line difference. Use the banner-aware verification below instead.
+
 ```bash
-diff -q src/commands/rlp-desk.md ~/.claude/commands/rlp-desk.md
-diff -q src/governance.md ~/.claude/ralph-desk/governance.md
-diff -q src/scripts/init_ralph_desk.zsh ~/.claude/ralph-desk/init_ralph_desk.zsh
-diff -q src/scripts/run_ralph_desk.zsh ~/.claude/ralph-desk/run_ralph_desk.zsh
-diff -q src/scripts/lib_ralph_desk.zsh ~/.claude/ralph-desk/lib_ralph_desk.zsh
-diff -q README.md ~/.claude/ralph-desk/README.md
+# 1. Banner + chmod sanity (every installed runtime file)
+for f in ~/.claude/commands/rlp-desk.md \
+         ~/.claude/ralph-desk/governance.md \
+         ~/.claude/ralph-desk/node/run.mjs ; do
+  test -f "$f" || { echo "MISSING: $f"; exit 1; }
+  head -2 "$f" | grep -qE 'DO NOT EDIT' || { echo "NO BANNER: $f"; exit 1; }
+  [[ "$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" == "444" ]] \
+    || echo "WARN: $f not 0o444 (filesystem may not honor chmod)"
+done
+
+# 2. Body equality (strip banner before diff)
+strip_banner() { tail -n +2 "$1" | grep -v -E '^(<!-- |# |// )DO NOT EDIT' || true; }
+diff <(cat src/governance.md) <(strip_banner ~/.claude/ralph-desk/governance.md) | head
+
+# 3. Recursive Node tree check (v5.7 §4.5)
+diff -rq src/node ~/.claude/ralph-desk/node | grep -v 'DO NOT EDIT'
 ```
-All must show no output (identical). Any diff = sync incomplete.
+
+All checks must report no body difference. Banner + chmod are install artifacts;
+the source of truth remains the `src/` tree.
 
 ### Release Notes Rule
 - Release notes MUST only contain **user-facing features and fixes**.

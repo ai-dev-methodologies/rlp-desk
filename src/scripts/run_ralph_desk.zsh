@@ -59,14 +59,36 @@ MAX_NUDGES="${MAX_NUDGES:-3}"
 WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 WITH_SELF_VERIFICATION_REQUESTED="$WITH_SELF_VERIFICATION"  # preserves original user intent for traceability (governance §1f)
 SV_SKIPPED_REASON=""                                         # set when SV is disabled despite user request
-# RC-1: SV is Agent-mode only — disable for tmux runner before any metadata
-# is written so session-config / metadata.json / debug log all observe the
-# same normalized state. The startup banner echoes the disable inside
-# create_session() (see below).
-if (( WITH_SELF_VERIFICATION )); then
-  WITH_SELF_VERIFICATION=0
-  SV_SKIPPED_REASON="tmux_runner"
+
+# v5.7 §4.2 — deprecation gate.
+# As of 0.12.0, --flywheel, --flywheel-guard, and --with-self-verification are
+# routed through the Node leader (src/node/run.mjs run --mode tmux). The zsh
+# runner is retained for backward compatibility ONLY for non-flywheel /
+# non-SV invocations. Calling it with FLYWHEEL or WITH_SELF_VERIFICATION env
+# vars is hard-rejected so users don't get silent no-op (Bug 2 / Bug 3).
+if [[ -n "${FLYWHEEL:-}" || -n "${FLYWHEEL_GUARD:-}" || "${WITH_SELF_VERIFICATION:-0}" == "1" ]]; then
+  print -u2 "ERROR: --flywheel and --with-self-verification require the Node leader."
+  print -u2 "       run_ralph_desk.zsh no longer supports them as of 0.12.0."
+  print -u2 ""
+  print -u2 "Use: node \"\${DESK_DIR:-\$HOME/.claude/ralph-desk}/node/run.mjs\" run \"\$LOOP_NAME\" --mode tmux \\"
+  if [[ -n "${FLYWHEEL:-}" ]]; then
+    print -u2 "       --flywheel \"$FLYWHEEL\" \\"
+  fi
+  if [[ -n "${FLYWHEEL_MODEL:-}" ]]; then
+    print -u2 "       --flywheel-model \"$FLYWHEEL_MODEL\" \\"
+  fi
+  if [[ -n "${FLYWHEEL_GUARD:-}" ]]; then
+    print -u2 "       --flywheel-guard \"$FLYWHEEL_GUARD\" \\"
+  fi
+  if [[ -n "${FLYWHEEL_GUARD_MODEL:-}" ]]; then
+    print -u2 "       --flywheel-guard-model \"$FLYWHEEL_GUARD_MODEL\" \\"
+  fi
+  if [[ "${WITH_SELF_VERIFICATION:-0}" == "1" ]]; then
+    print -u2 "       --with-self-verification"
+  fi
+  exit 2
 fi
+print -u2 "[notice] run_ralph_desk.zsh is deprecated as of 0.12.0. Prefer: node node/run.mjs run --mode tmux ..."
 AUTONOMOUS_MODE="${AUTONOMOUS_MODE:-0}"    # 1=don't stop on ambiguity, PRD is authoritative
 # P1-E Lane enforcement: WARN-only by default; --lane-strict opts into BLOCKED
 # escalation. governance §7¾. The opt-in defaults to "warn"; "strict" trips
@@ -244,9 +266,13 @@ LOGS_DIR="$DESK/logs/$SLUG"
 RUNTIME_DIR="$LOGS_DIR/runtime"
 PRD_FILE="$DESK/plans/prd-$SLUG.md"
 TEST_SPEC_FILE="$DESK/plans/test-spec-$SLUG.md"
-# --- Analytics Directory (user-level, cross-project) ---
+# --- Analytics Directory (v5.7 §4.11.b: project-local) ---
+# Was previously $HOME/.claude/ralph-desk/analytics/<slug>--<hash> (cross-project
+# rollup). With v0.12.0 the canonical location is project-local; cross-project
+# rollup is the Leader's responsibility via ~/.claude/ralph-desk/registry.jsonl
+# (Worker/Verifier prompts never reference the registry path — see §4.11.c).
 ANALYTICS_SLUG_HASH=$(echo -n "$ROOT" | md5 -q 2>/dev/null || md5sum <<< "$ROOT" | cut -d' ' -f1)
-ANALYTICS_DIR="$HOME/.claude/ralph-desk/analytics/${SLUG}--${ANALYTICS_SLUG_HASH:0:8}"
+ANALYTICS_DIR="$DESK/analytics/${SLUG}--${ANALYTICS_SLUG_HASH:0:8}"
 CAMPAIGN_JSONL="$ANALYTICS_DIR/campaign.jsonl"
 METADATA_FILE="$ANALYTICS_DIR/metadata.json"
 WORKER_PROMPT_BASE="$PROMPTS_DIR/${SLUG}.worker.prompt.md"
@@ -852,12 +878,11 @@ create_session() {
   # Truncate cost-log for fresh run (previous data in versioned campaign reports)
   > "$COST_LOG"
 
-  # SV flag is Agent-mode only — already disabled for tmux runner at script
-  # startup (see early WITH_SELF_VERIFICATION normalization). Echo the disable
-  # here as part of the startup banner for operator visibility.
-  if [[ "$SV_SKIPPED_REASON" == "tmux_runner" ]]; then
-    log "  NOTE: --with-self-verification is Agent-mode only; disabling for tmux runner"
-  fi
+  # v5.7 §4.2: WITH_SELF_VERIFICATION=1 is hard-rejected at script entry now,
+  # so by the time we reach create_session() the flag is guaranteed to be 0.
+  # The legacy "NOTE: Agent-mode only; disabling" log line was removed because
+  # the deprecation banner at startup is more honest (we exit 2, we don't
+  # silently disable).
 
   # Write session config (atomic write)
   echo '{
@@ -1157,10 +1182,313 @@ check_heartbeat_exited() {
 # Idle Pane Nudging (tmux pattern)
 # =============================================================================
 
+# --- v5.7 §4.13.a: Mid-execution permission-prompt auto-dismiss (Bug 4 fix) ---
+# claude CLI v2.1.114+ surfaces TUI-layer prompts ("Do you want to create...")
+# even with --dangerously-skip-permissions on certain Write paths. Without this
+# helper, Workers/Verifiers hang until IDLE_NUDGE_THRESHOLD timeout.
+#
+# Window-bounded match (codex Critic v5.7): require both a prompt phrase AND a
+# TUI affordance marker on the SAME, PREVIOUS, or NEXT line. Whole-capture dual
+# grep would let unrelated text trigger Enter (R-V5-9 false-positive).
+# Per-pane 3-second debounce prevents rapid double-Enter.
+zmodload zsh/datetime 2>/dev/null || true
+_now_s() { print -- "${EPOCHSECONDS:-$(date +%s)}"; }
+
+typeset -gA LAST_AUTO_APPROVE_TS
+# v5.7 §4.16: track when each pane FIRST entered a prompt-stuck state.
+# Cleared on first capture without prompt visible. Used for bounded
+# prompt-stall escalation (BLOCKED `prompt_stall`) so alive-but-stuck
+# Workers can't infinite-wait (codex Critic HIGH finding).
+typeset -gA PANE_PROMPT_STUCK_SINCE
+typeset -gA PANE_DISMISS_FAILED_COUNT
+PROMPT_STALL_TIMEOUT="${PROMPT_STALL_TIMEOUT:-300}"  # 5 min default
+PROMPT_DISMISS_FAIL_LIMIT="${PROMPT_DISMISS_FAIL_LIMIT:-20}"  # ~100s of fruitless dismiss attempts
+
+# v5.7 §4.17: generic no-progress timeout (codex Critic HIGH — closes the gap
+# where an undetected prompt or alive-but-frozen Worker bypasses Layer 4).
+# Independent of prompt detection: if pane content stops changing for this many
+# seconds AND signal file still missing, write BLOCKED `infra_failure` reason
+# `worker_no_progress` so silent infinite-wait is impossible.
+PROGRESS_NO_CHANGE_TIMEOUT="${PROGRESS_NO_CHANGE_TIMEOUT:-600}"  # 10 min default
+typeset -gA PANE_LAST_CHANGE_TS  # epoch when content last changed
+typeset -gA PANE_LAST_CONTENT_FOR_PROGRESS  # captured content for diff
+
+# v5.7 §4.17: default-No prompt detection. Pressing Enter on these means
+# CANCEL/REJECT, not approve — so we BLOCK with traceability instead of
+# silently auto-dismissing the wrong way.
+typeset -g _DEFAULT_NO_RE='\[y/N\]|\(yes/no, default no\)|default[: ]+no|^[[:space:]]*N\)'
+
+# v5.7 §4.16: broadened prompt detection (codex Critic MEDIUM).
+# v5.7 §4.20 (E2E real-claude-CLI finding): claude v2.1.114+ uses new trust
+# prompt format ("Quick safety check: Is this a project you ... trust?")
+# and a numbered picker with `❯` cursor adjacent to the digit ("❯1.Yes").
+# Old patterns ("Do you trust") missed it entirely → Worker hung 5min until
+# iter-timeout. Adds: Quick safety check|trust this (folder|directory) for
+# PROMPT_RE; ❯\s*\d+\. (zero-or-more space) and `Enter to confirm` / `1\.
+# (Yes|No)` for AFFORDANCE_RE.
+typeset -g _PROMPT_RE='Do you (want to|trust)|Confirm execution|Are you sure|Continue\?|Proceed\?|Allow this|Approve this|Press y to|Choose an option|Select \[|Quick safety check|trust this (folder|directory)|Is this a project you'
+typeset -g _AFFORDANCE_RE='\(y/n\)|\[Y/n\]|\[y/N\]|\(yes/no|❯[[:space:]]*[0-9]+\.|(^|[[:space:]])1\) (Yes|No)|(^|[[:space:]])[YyNn]\)|press (y|enter) to|Enter to confirm'
+
+# v5.7 §4.18 (E2E real-tmux + omc benchmarking): "active task" markers used
+# to distinguish a Worker that is busy producing output (and may legitimately
+# print "(y/n)" inside its body text) from a Worker that is *idle at an
+# unrecognized prompt*. Mirrors omc-team's `paneHasActiveTask` heuristic
+# (src/team/tmux-session.ts:659). When ANY of these markers is in the recent
+# pane tail, the Worker is alive — auto_dismiss must NOT fast-fail on a
+# suspected-unknown prompt because the affordance text is just transcript.
+typeset -g _ACTIVE_TASK_RE='esc to interrupt|background terminal running|^[[:space:]]*[·✻][[:space:]]+[A-Za-z]+(\.{3}|…)'
+
+auto_dismiss_prompts() {
+  local pane_id="$1"
+  local now
+  now=$(_now_s)
+  local last=${LAST_AUTO_APPROVE_TS[$pane_id]:-0}
+
+  local capture
+  # v5.7 §4.21 (E2E real-claude-CLI finding): claude v2.x trust prompt wraps
+  # to ~30 lines on narrow panes. -S -10 missed the question header. -50
+  # covers the full prompt.
+  capture=$(tmux capture-pane -t "$pane_id" -p -S -50 2>/dev/null) || return 0
+
+  # v5.7 §4.21 (E2E real-claude-CLI finding): claude v2.x trust prompt is
+  # multi-line and wraps narrowly, so per-line PROMPT_RE+AFFORDANCE adjacency
+  # misses it. Special-case the signature ("Quick safety check ... Enter to
+  # confirm" with `❯N.Yes` cursor on option 1). This is default-Yes — Enter
+  # approves trust.
+  # §4.21.b: tmux narrow-pane wrap breaks the question phrase across lines
+  # (`Quick safety\n check`). Normalize all whitespace to single spaces so
+  # substring matching works regardless of pane width.
+  local _norm_capture="${capture//[$'\n\r\t']/ }"
+  while [[ "$_norm_capture" == *"  "* ]]; do _norm_capture="${_norm_capture//  / }"; done
+  if { [[ "$_norm_capture" == *"Quick safety check"* ]] || [[ "$_norm_capture" == *"trust this folder"* ]] || [[ "$_norm_capture" == *"trust this directory"* ]]; } \
+     && [[ "$_norm_capture" == *"Enter to confirm"* ]] \
+     && [[ "$_norm_capture" =~ '❯ ?[0-9]+\. ?Yes' ]]; then
+    if (( now - last >= 3 )); then
+      log "  Claude v2.x trust prompt detected in pane $pane_id, auto-approving (Enter)"
+      log_debug "[FLOW] claude_trust_prompt_auto_approved=true pane=$pane_id"
+      tmux send-keys -t "$pane_id" Enter 2>/dev/null
+      LAST_AUTO_APPROVE_TS[$pane_id]=$now
+    fi
+    return 0
+  fi
+  # Older claude trust prompt format (omc-team parity).
+  if [[ "$_norm_capture" == *"Do you trust the contents of this directory"* ]] \
+     && { [[ "$_norm_capture" =~ 'Yes,[[:space:]]*continue' ]] || [[ "$_norm_capture" == *"Press enter to continue"* ]]; }; then
+    if (( now - last >= 3 )); then
+      log "  Claude (legacy) trust prompt detected in pane $pane_id, auto-approving (Enter)"
+      log_debug "[FLOW] claude_trust_prompt_auto_approved=true pane=$pane_id"
+      tmux send-keys -t "$pane_id" Enter 2>/dev/null
+      LAST_AUTO_APPROVE_TS[$pane_id]=$now
+    fi
+    return 0
+  fi
+
+  local -a lines
+  lines=("${(@f)capture}")
+  local i n=${#lines[@]} prompt_visible=0
+  # v5.7 §4.23 (E2E real-claude-CLI finding): tmux narrow-pane wrap breaks
+  # multi-line prompts (e.g. "Do you want to\nmake this edit to\nfile.md?\n
+  # ❯ 1. Yes") so PROMPT+AFFORDANCE±1 line-adjacency misses them. Fix: run
+  # the match against the LAST 15 normalized lines (whitespace collapsed)
+  # — where the active prompt sits — as a single string. PROMPT_RE +
+  # AFFORDANCE_RE both present → auto-Enter unless DEFAULT_NO_RE present
+  # (BLOCK). §4.17.b is preserved: full-capture default-No scan protects
+  # against scrollback contamination.
+  local _tail_start=$((n > 15 ? n - 14 : 1))
+  local _tail_normalized=""
+  for ((i=_tail_start; i <= n; i++)); do
+    _tail_normalized+="${lines[i]} "
+  done
+  while [[ "$_tail_normalized" == *"  "* ]]; do _tail_normalized="${_tail_normalized//  / }"; done
+  local default_no_seen=0
+  local sample_pattern="${_tail_normalized:0:120}"
+  if [[ "$_tail_normalized" =~ $_PROMPT_RE ]] && [[ "$_tail_normalized" =~ $_AFFORDANCE_RE ]]; then
+    prompt_visible=1
+  fi
+  # Default-No scan: full capture, not just tail (scrollback contamination guard).
+  if [[ "$capture" =~ $_DEFAULT_NO_RE ]]; then
+    default_no_seen=1
+  fi
+
+  if (( default_no_seen )); then
+    # v5.7 §4.17 + §4.17.b: default-No prompts ([y/N], "default: no") cannot
+    # be auto-Enter'd safely — pressing Enter would CANCEL the operation.
+    # If the pane has ANY default-No prompt visible (even alongside older
+    # default-Yes prompts in scrollback), BLOCK with traceability.
+    log_error "Default-No prompt detected in pane $pane_id — cannot safely auto-dismiss"
+    log_debug "[GOV] default_no_prompt_detected=true pane=$pane_id action=block"
+    write_blocked_sentinel \
+      "Pane shows a default-No / explicit-No-default permission prompt. Auto-Enter would CANCEL the operation rather than approve it. Operator must manually respond with 'y' or extend prompt-handling logic. Pattern: $sample_pattern" \
+      "${CURRENT_US:-ALL}" \
+      "infra_failure"
+    return 0
+  fi
+
+  if (( prompt_visible )); then
+    # All visible prompts are default-Yes-equivalent — safe to auto-Enter.
+    if [[ -z "${PANE_PROMPT_STUCK_SINCE[$pane_id]:-}" ]]; then
+      PANE_PROMPT_STUCK_SINCE[$pane_id]=$now
+    fi
+    if (( now - last >= 3 )); then
+      log "  Permission prompt detected in pane $pane_id, auto-approving (Enter)"
+      log_debug "[FLOW] permission_prompt_auto_approved=true pane=$pane_id"
+      tmux send-keys -t "$pane_id" Enter 2>/dev/null
+      LAST_AUTO_APPROVE_TS[$pane_id]=$now
+      PANE_DISMISS_FAILED_COUNT[$pane_id]=$((${PANE_DISMISS_FAILED_COUNT[$pane_id]:-0} + 1))
+    fi
+    return 0
+  fi
+
+  # v5.7 §4.18: unknown-prompt fast-fail (E2E + omc benchmarking finding).
+  # If pane has an affordance marker (y/n bracket etc.) but NO recognized
+  # PROMPT_RE phrasing, the Worker is likely awaiting an unknown variant of
+  # a yes/no prompt. omc-team's principle (tmux-session.ts:639): never
+  # auto-Enter on unknown prompts — pressing Enter could approve OR cancel
+  # depending on default. BLOCK immediately so the operator can extend the
+  # PROMPT_RE catalog, instead of waiting 10 min for the freeze timeout.
+  #
+  # False-positive guard: skip if any "active task" marker is present
+  # (esc to interrupt / background terminal / spinner) — that means the
+  # Worker is producing output and the affordance text is just transcript.
+  local active=0
+  local affordance_seen=0
+  local sample=""
+  for ((i=1; i <= n; i++)); do
+    if [[ "${lines[i]}" =~ $_ACTIVE_TASK_RE ]]; then
+      active=1
+      break
+    fi
+  done
+  if (( ! active )); then
+    # Only check the last 5 non-empty lines (where an idle prompt would sit).
+    local -a tail_lines
+    tail_lines=()
+    local k
+    for ((k=n; k >= 1 && ${#tail_lines[@]} < 5; k--)); do
+      [[ -z "${lines[k]}" ]] && continue
+      tail_lines=("${lines[k]}" "${tail_lines[@]}")
+    done
+    for line in "${tail_lines[@]}"; do
+      if [[ "$line" =~ $_AFFORDANCE_RE ]]; then
+        affordance_seen=1
+        sample="${line:0:120}"
+        break
+      fi
+    done
+  fi
+  if (( affordance_seen )); then
+    # Re-check default-No (could be the active prompt's bracket — must BLOCK).
+    local default_no_in_tail=0
+    for line in "${tail_lines[@]}"; do
+      if [[ "$line" =~ $_DEFAULT_NO_RE ]]; then
+        default_no_in_tail=1
+        break
+      fi
+    done
+    local reason
+    if (( default_no_in_tail )); then
+      reason="Pane shows a default-No affordance ([y/N], 'default: no') but the surrounding prompt phrasing is not in PROMPT_RE. Auto-Enter would CANCEL. Operator must respond manually or extend PROMPT_RE. Sample: $sample"
+    else
+      reason="Pane shows a y/n affordance marker without a recognized prompt phrasing — likely an unknown CLI prompt variant. Refusing to guess auto-Enter (which could be the wrong default). Operator must respond manually or extend PROMPT_RE. Sample: $sample"
+    fi
+    log_error "Unknown-prompt affordance detected in pane $pane_id — fast-fail BLOCK"
+    log_debug "[GOV] unknown_prompt_detected=true pane=$pane_id action=block default_no=$default_no_in_tail"
+    write_blocked_sentinel "$reason" "${CURRENT_US:-ALL}" "infra_failure"
+    return 0
+  fi
+  # No prompt visible — clear stall tracking so re-entry is fresh.
+  if [[ -n "${PANE_PROMPT_STUCK_SINCE[$pane_id]:-}" ]]; then
+    log_debug "[FLOW] prompt_cleared=true pane=$pane_id"
+    # zsh: unset assoc-array member via reset to empty + delete key.
+    PANE_PROMPT_STUCK_SINCE[$pane_id]=""
+    PANE_DISMISS_FAILED_COUNT[$pane_id]=""
+    unset "PANE_PROMPT_STUCK_SINCE[$pane_id]"
+    unset "PANE_DISMISS_FAILED_COUNT[$pane_id]"
+  fi
+}
+
+# v5.7 §4.16: bounded prompt-stall escalation (codex Critic HIGH finding).
+# Closes the "alive process → extend indefinitely" gap: if a pane stays in
+# prompt-visible state for PROMPT_STALL_TIMEOUT (default 5min) OR
+# auto_dismiss has tried PROMPT_DISMISS_FAIL_LIMIT times without progress,
+# write BLOCKED `prompt_stall` so the campaign exits with traceability
+# instead of infinite-waiting.
+#
+# Returns 0 if pane is fine; returns 1 (and writes BLOCKED sentinel) if
+# stall threshold exceeded — caller should propagate the failure.
+check_prompt_stall() {
+  local pane_id="$1"
+  local us_id="${2:-${CURRENT_US:-ALL}}"
+  local stuck_since=${PANE_PROMPT_STUCK_SINCE[$pane_id]:-0}
+  (( stuck_since == 0 )) && return 0
+  local now
+  now=$(_now_s)
+  local stuck_for=$(( now - stuck_since ))
+  local fail_count=${PANE_DISMISS_FAILED_COUNT[$pane_id]:-0}
+
+  if (( stuck_for >= PROMPT_STALL_TIMEOUT )) || (( fail_count >= PROMPT_DISMISS_FAIL_LIMIT )); then
+    log_error "Pane $pane_id stuck on prompt for ${stuck_for}s ($fail_count dismiss attempts) — escalating to BLOCKED"
+    log_debug "[GOV] iter=${ITERATION:-0} prompt_stall_escalated=true pane=$pane_id stuck_for=${stuck_for}s dismiss_attempts=$fail_count threshold=${PROMPT_STALL_TIMEOUT}s"
+    write_blocked_sentinel \
+      "Pane stuck on TUI prompt for ${stuck_for}s after ${fail_count} dismiss attempts. Auto-dismiss patterns may need to be widened (see ~/.claude/ralph-desk/known-prompts.txt convention) or the underlying claude CLI prompt is genuinely unsupported. No documentation produced for this iteration." \
+      "$us_id" \
+      "infra_failure"
+    return 1
+  fi
+  return 0
+}
+
+# v5.7 §4.17 (codex Critic HIGH): generic no-progress timeout — independent
+# of prompt detection. Closes the gap where an undetected prompt or alive-
+# but-frozen Worker can bypass Layer 4 and infinite-wait.
+#
+# Strategy: capture pane content each call, hash/compare to last; if
+# unchanged for PROGRESS_NO_CHANGE_TIMEOUT (default 10min), write BLOCKED.
+# Returns 0 if pane is making progress (or first call); 1 (and writes
+# BLOCKED) if no-progress threshold exceeded.
+check_no_progress() {
+  local pane_id="$1"
+  local us_id="${2:-${CURRENT_US:-ALL}}"
+  local now
+  now=$(_now_s)
+  local capture
+  capture=$(tmux capture-pane -t "$pane_id" -p -S -20 2>/dev/null) || return 0
+
+  local last_content="${PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]:-}"
+  if [[ "$capture" != "$last_content" ]]; then
+    PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]="$capture"
+    PANE_LAST_CHANGE_TS[$pane_id]=$now
+    return 0
+  fi
+
+  local last_change=${PANE_LAST_CHANGE_TS[$pane_id]:-0}
+  if (( last_change == 0 )); then
+    PANE_LAST_CHANGE_TS[$pane_id]=$now
+    return 0
+  fi
+
+  local frozen_for=$(( now - last_change ))
+  if (( frozen_for >= PROGRESS_NO_CHANGE_TIMEOUT )); then
+    log_error "Pane $pane_id has not changed for ${frozen_for}s — alive but frozen. Escalating to BLOCKED."
+    log_debug "[GOV] iter=${ITERATION:-0} no_progress_escalated=true pane=$pane_id frozen_for=${frozen_for}s threshold=${PROGRESS_NO_CHANGE_TIMEOUT}s"
+    write_blocked_sentinel \
+      "Pane content has been unchanged for ${frozen_for}s (>= ${PROGRESS_NO_CHANGE_TIMEOUT}s threshold). Worker process may be alive but stuck on an undetected prompt, hung network call, or genuine deadlock. No documentation produced; manual inspection required." \
+      "$us_id" \
+      "infra_failure"
+    return 1
+  fi
+  return 0
+}
+
 # --- governance.md s7 step 5+6: Nudge idle panes ---
 check_and_nudge_idle_pane() {
   local pane_id="$1"
   local nudge_count_var="$2"
+
+  # v5.7 §4.13.a: auto-dismiss permission prompts before idle check.
+  # Otherwise Worker hangs at "Do you want to create..." until nudge timeout.
+  auto_dismiss_prompts "$pane_id"
+
   local current_content
   current_content=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -3)
 
@@ -1716,15 +2044,46 @@ poll_for_signal() {
 
     # A4 fallback: done-claim exists but no signal → Worker forgot iter-signal
     # ONLY for Worker polling — Verifier waits for verdict file, not done-claim
+    #
+    # v5.7 §4.14 (Bug 5 fix, CRITICAL): if Worker pane shows a pending TUI
+    # permission prompt (`Do you want to ...` with `(y/n)` / `❯ 1.` affordance),
+    # Worker is NOT done — it's stuck mid-write after the first done-claim pass.
+    # Suspending A4 fallback in this case prevents premature Verifier dispatch
+    # against partial Worker output. auto_dismiss_prompts() will already have
+    # tried to clear the prompt; if it's still visible the worker is in a
+    # multi-prompt sequence and needs more time, not an A4 short-circuit.
     if [[ "$role" != *erifier* && -f "$DONE_CLAIM_FILE" && ! -f "$signal_file" ]]; then
-      local dc_us_id
-      dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
-      if [[ -n "$dc_us_id" && "$dc_us_id" != "null" ]]; then
-        log "  WARNING: done-claim exists for $dc_us_id but no iter-signal. Auto-generating signal (A4 fallback)."
-        log_debug "[GOV] iter=$ITERATION done_claim_without_signal=true us_id=$dc_us_id action=auto_generate_signal"
-        echo '{"iteration":'"$ITERATION"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated by A4 fallback (done-claim without signal)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
-        _emit_a4_fallback_audit "$dc_us_id" "$ITERATION" "inline_polling_a4"
-        return 0
+      local _a4_capture
+      _a4_capture=$(tmux capture-pane -t "$pane_id" -p -S -50 2>/dev/null || true)
+      local -a _a4_lines
+      _a4_lines=("${(@f)_a4_capture}")
+      local _a4_i _a4_n=${#_a4_lines[@]} _a4_blocked=0
+      for ((_a4_i=1; _a4_i <= _a4_n; _a4_i++)); do
+        if [[ "${_a4_lines[_a4_i]}" =~ $_PROMPT_RE ]]; then
+          local _a4_prev="${_a4_lines[_a4_i-1]:-}"
+          local _a4_cur="${_a4_lines[_a4_i]}"
+          local _a4_next="${_a4_lines[_a4_i+1]:-}"
+          if [[ "$_a4_prev" =~ $_AFFORDANCE_RE || "$_a4_cur" =~ $_AFFORDANCE_RE || "$_a4_next" =~ $_AFFORDANCE_RE ]]; then
+            _a4_blocked=1
+            break
+          fi
+        fi
+      done
+      if (( _a4_blocked )); then
+        log "  Worker pane has pending permission prompt — A4 fallback suspended (Bug 5 guard)"
+        log_debug "[GOV] iter=$ITERATION a4_fallback_suspended=true reason=worker_prompt_pending pane=$pane_id"
+        # Continue polling; do NOT auto-generate signal. auto_dismiss_prompts will
+        # try to dismiss on the next loop iteration.
+      else
+        local dc_us_id
+        dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
+        if [[ -n "$dc_us_id" && "$dc_us_id" != "null" ]]; then
+          log "  WARNING: done-claim exists for $dc_us_id but no iter-signal. Auto-generating signal (A4 fallback)."
+          log_debug "[GOV] iter=$ITERATION done_claim_without_signal=true us_id=$dc_us_id action=auto_generate_signal"
+          echo '{"iteration":'"$ITERATION"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated by A4 fallback (done-claim without signal)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+          _emit_a4_fallback_audit "$dc_us_id" "$ITERATION" "inline_polling_a4"
+          return 0
+        fi
       fi
     fi
 
@@ -1825,14 +2184,27 @@ poll_for_signal() {
       return 1
     fi
 
-    # Auto-approve permission prompts during poll
-    local poll_capture
-    poll_capture=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
-    if echo "$poll_capture" | grep -q "Do you want to" 2>/dev/null; then
-      log "  Permission prompt detected during poll, auto-approving..."
-      log_debug "[FLOW] iter=$ITERATION permission_prompt_auto_approved=true"
-      tmux send-keys -t "$pane_id" C-m
-      sleep 0.5
+    # v5.7 §4.13.a: window-bounded prompt auto-dismiss (replaces broad inline grep).
+    # check_and_nudge_idle_pane also calls auto_dismiss_prompts internally, but
+    # we keep this explicit call so dismiss happens BEFORE the idle/nudge check
+    # and is logged with iter context.
+    auto_dismiss_prompts "$pane_id"
+
+    # v5.7 §4.16: bounded prompt-stall escalation. If pane has been prompt-stuck
+    # for PROMPT_STALL_TIMEOUT (5min default) or dismiss attempts exceed
+    # PROMPT_DISMISS_FAIL_LIMIT, write BLOCKED `infra_failure` and exit the poll.
+    # Closes the "alive process = infinite extend" gap (codex Critic HIGH).
+    if ! check_prompt_stall "$pane_id"; then
+      return 2  # signal: hard-failed, do not retry
+    fi
+
+    # v5.7 §4.17 (codex Critic HIGH): generic no-progress timeout. Catches
+    # undetected prompts, hung network calls, or any other alive-but-frozen
+    # state. PROGRESS_NO_CHANGE_TIMEOUT defaults to 10 minutes. Independent
+    # of regex prompt detection — fires whenever pane content is byte-equal
+    # for too long even when Worker process is "alive".
+    if ! check_no_progress "$pane_id"; then
+      return 2  # hard-failed, infra_failure recorded
     fi
 
     # Idle pane nudging (tmux pattern)

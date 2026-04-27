@@ -42,7 +42,21 @@ build_claude_cmd() {
   local output_log="${4:-}"
   local effort="${5:-}"
 
-  local base="DISABLE_OMC=1 $CLAUDE_BIN --model $model --mcp-config '{\"mcpServers\":{}}' --strict-mcp-config --dangerously-skip-permissions"
+  # Bug 1 (v5.7 §4.12): zsh ${(qq)var} wraps in single quotes with proper internal escape.
+  # Defends against bracketed model ids like 'claude-opus-4-7[1m]' (zsh char-class glob),
+  # spaces, embedded quotes, etc. Plain "$model" would let zsh expand brackets as glob.
+  #
+  # v5.7 §4.9: auto-enable Opus 1M context window via ANTHROPIC_BETA env. Mirror
+  # of src/node/constants.mjs OPUS_1M_BETA. Update both on header rotation.
+  local _opus_beta=""
+  case "$model" in
+    opus|claude-opus-*) _opus_beta="ANTHROPIC_BETA='context-1m-2025-08-07' " ;;
+  esac
+  # v5.7 §4.11.a: --add-dir whitelist for autonomous mode. ROOT (campaign cwd)
+  # plus home rlp-desk tree authorized for read/write without TUI prompts.
+  local _home_desk="$HOME/.claude/ralph-desk"
+  local _add_dirs="--add-dir ${(qq)_home_desk} --add-dir ${(qq)ROOT}"
+  local base="DISABLE_OMC=1 ${_opus_beta}$CLAUDE_BIN --model ${(qq)model} --mcp-config '{\"mcpServers\":{}}' --strict-mcp-config --dangerously-skip-permissions ${_add_dirs}"
   if [[ -n "$effort" ]]; then
     base="$base --effort $effort"
   fi
