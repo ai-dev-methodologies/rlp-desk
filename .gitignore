@@ -15,7 +15,6 @@
 .claude/ralph-desk/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
-docs/superpowers/
 .idea/
 .omc/
 .omx/
@@ -23,7 +22,7 @@ docs/superpowers/
 .vscode/
 .worktrees/
 Thumbs.db
-docs/internal/
+docs/rlp-desk/internal/
 node_modules/
 package-lock.json
 write

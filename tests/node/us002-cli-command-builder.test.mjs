@@ -6,10 +6,15 @@ test('US-002 AC2.1 happy: buildClaudeCmd tui includes claude flags and effort', 
 
   const command = buildClaudeCmd('tui', 'opus', { effort: 'max' });
 
+  // v5.7 §4.12 (Bug 1): model and effort values are shellQuoted (POSIX
+  // single-quote wrap) to defend against bracketed model ids like
+  // 'claude-opus-4-7[1m]' that zsh would otherwise expand as a glob.
+  // v5.7 §4.9 (Opus 1M): ANTHROPIC_BETA env is auto-prepended for Opus.
   assert.ok(command.startsWith('DISABLE_OMC=1'));
+  assert.match(command, /^DISABLE_OMC=1 ANTHROPIC_BETA='context-1m-2025-08-07' claude /);
   assert.match(
     command,
-    /--model opus --mcp-config '\{"mcpServers":\{\}\}' --strict-mcp-config --dangerously-skip-permissions --effort max$/,
+    /--model 'opus' --mcp-config '\{"mcpServers":\{\}\}' --strict-mcp-config --dangerously-skip-permissions --effort 'max'$/,
   );
 });
 
@@ -20,7 +25,7 @@ test('US-002 AC2.1 boundary: buildClaudeCmd omits effort when it is empty', asyn
 
   assert.match(
     command,
-    /^DISABLE_OMC=1 claude --model sonnet --mcp-config '\{"mcpServers":\{\}\}' --strict-mcp-config --dangerously-skip-permissions$/,
+    /^DISABLE_OMC=1 claude --model 'sonnet' --mcp-config '\{"mcpServers":\{\}\}' --strict-mcp-config --dangerously-skip-permissions$/,
   );
   assert.doesNotMatch(command, /--effort/);
 });

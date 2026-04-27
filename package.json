@@ -4,7 +4,13 @@
   "description": "Fresh-context iterative loops for Claude Code — autonomous task completion with independent verification",
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "uninstall": "node scripts/uninstall.js"
+    "uninstall": "node scripts/uninstall.js",
+    "test:node": "node --test 'tests/node/*.mjs' 'tests/node/*.test.mjs'",
+    "test:zsh": "for f in tests/test_*.sh; do echo \"=== $f ===\"; zsh \"$f\" || exit 1; done",
+    "test:fast": "npm run test:node",
+    "test:full": "npm run test:fast && npm run test:zsh",
+    "sv-gate:fast": "zsh tests/sv-gate-fast.sh",
+    "sv-gate:full": "zsh tests/sv-gate-full.sh"
   },
   "files": [
     "src/commands/",
