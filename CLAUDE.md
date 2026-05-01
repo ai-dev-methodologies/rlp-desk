@@ -26,16 +26,22 @@
 ### Local File Sync (ABSOLUTE — no exceptions)
 After every commit that changes ANY src/ file, sync ALL distributable files to local install. Not just the changed ones — ALL of them. Then verify with `diff -q`.
 
-**Runtime files (always sync):**
+**Runtime files (always sync via `npm install` / postinstall.js — Node canonical):**
 ```
 src/commands/rlp-desk.md        → ~/.claude/commands/rlp-desk.md
 src/governance.md               → ~/.claude/ralph-desk/governance.md
 src/model-upgrade-table.md      → ~/.claude/ralph-desk/model-upgrade-table.md
-src/scripts/init_ralph_desk.zsh → ~/.claude/ralph-desk/init_ralph_desk.zsh
-src/scripts/run_ralph_desk.zsh  → ~/.claude/ralph-desk/run_ralph_desk.zsh
-src/scripts/lib_ralph_desk.zsh  → ~/.claude/ralph-desk/lib_ralph_desk.zsh
 src/node/**                     → ~/.claude/ralph-desk/node/   (recursive, v0.12.0+)
 ```
+
+**Legacy shell wrappers (synced ONLY via `bash install.sh` curl path)**:
+`src/scripts/{init,run,lib}_ralph_desk.zsh` ship in the npm tarball but are
+**not** installed by `postinstall.js` (Node-canonical design from v5.7+;
+`npm install` actively removes them — see `tests/node/us008-cli-entrypoint.test.mjs:47`
+for the contract). They remain in the source tree for shell-only environments
+that install via `bash install.sh` (curl from GitHub). v0.13.0 path migration
+(`.rlp-desk/`) is mirrored in those scripts so legacy shell users get the same
+behavior. Treat zsh wrappers as opt-in, not part of the canonical sync.
 
 **v0.12.0+ note (v5.7 §4.10)**: installed files are write-protected (`chmod 0o444`)
 + banner-headed (`<!-- DO NOT EDIT ... -->` for `.md`, `# ...` for shell, `// ...`

@@ -278,3 +278,71 @@ test('US-008 AC8.4 negative: postinstall treats malformed Node versions as unsup
   assert.match(stdout, /requires Node\.js >= 16/i);
   assert.equal(await readText(path.join(deskDir, 'init_ralph_desk.zsh')), '#!/bin/zsh\necho keep-init\n');
 });
+
+test('main run command warns when claude worker model used in tmux mode', async () => {
+  const { main } = await import('../../src/node/run.mjs');
+  const stderrChunks = [];
+  const stdoutChunks = [];
+  const stderr = { write: (s) => { stderrChunks.push(String(s)); } };
+  const stdout = { write: (s) => { stdoutChunks.push(String(s)); } };
+  const fakeRun = async () => ({ status: 'continue' });
+
+  const prevEnv = process.env.NODE_ENV;
+  delete process.env.NODE_ENV;
+  try {
+    await main(
+      ['run', 'demo', '--mode', 'tmux', '--worker-model', 'sonnet'],
+      { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
+    );
+  } finally {
+    if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;
+  }
+
+  const combined = stderrChunks.join('');
+  assert.match(combined, /Claude worker in tmux mode/);
+  assert.match(combined, /\.rlp-desk/);
+});
+
+test('main run command does not warn when codex worker model used in tmux mode', async () => {
+  const { main } = await import('../../src/node/run.mjs');
+  const stderrChunks = [];
+  const stdoutChunks = [];
+  const stderr = { write: (s) => { stderrChunks.push(String(s)); } };
+  const stdout = { write: (s) => { stdoutChunks.push(String(s)); } };
+  const fakeRun = async () => ({ status: 'continue' });
+
+  const prevEnv = process.env.NODE_ENV;
+  delete process.env.NODE_ENV;
+  try {
+    await main(
+      ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.5:high'],
+      { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
+    );
+  } finally {
+    if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;
+  }
+
+  assert.doesNotMatch(stderrChunks.join(''), /Claude worker in tmux mode/);
+});
+
+test('main run command does not warn when claude worker is used in agent mode', async () => {
+  const { main } = await import('../../src/node/run.mjs');
+  const stderrChunks = [];
+  const stdoutChunks = [];
+  const stderr = { write: (s) => { stderrChunks.push(String(s)); } };
+  const stdout = { write: (s) => { stdoutChunks.push(String(s)); } };
+  const fakeRun = async () => ({ status: 'continue' });
+
+  const prevEnv = process.env.NODE_ENV;
+  delete process.env.NODE_ENV;
+  try {
+    await main(
+      ['run', 'demo', '--mode', 'agent', '--worker-model', 'sonnet'],
+      { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
+    );
+  } finally {
+    if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;
+  }
+
+  assert.doesNotMatch(stderrChunks.join(''), /Claude worker in tmux mode/);
+});

@@ -133,3 +133,39 @@ test('US-002 AC2.5 negative: parseModelFlag rejects extra segments for spark ali
 
   assert.throws(() => parseModelFlag('spark:medium:extra'), /invalid format/i);
 });
+
+// v0.13.0 US-001: isClaudeEngine helper for tmux+claude warning + observability
+test('isClaudeEngine returns true for bare claude model names', async () => {
+  const { isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
+  assert.equal(isClaudeEngine('haiku'), true);
+  assert.equal(isClaudeEngine('sonnet'), true);
+  assert.equal(isClaudeEngine('opus'), true);
+});
+
+test('isClaudeEngine returns true for claude- prefixed model ids', async () => {
+  const { isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
+  assert.equal(isClaudeEngine('claude-opus-4-7'), true);
+  assert.equal(isClaudeEngine('claude-sonnet-4-6'), true);
+});
+
+test('isClaudeEngine honors model:effort syntax with claude prefix', async () => {
+  const { isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
+  assert.equal(isClaudeEngine('haiku:max'), true);
+  assert.equal(isClaudeEngine('opus:high'), true);
+});
+
+test('isClaudeEngine returns false for codex models', async () => {
+  const { isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
+  assert.equal(isClaudeEngine('gpt-5.5:high'), false);
+  assert.equal(isClaudeEngine('gpt-5.5:xhigh'), false);
+  assert.equal(isClaudeEngine('spark'), false);
+  assert.equal(isClaudeEngine('spark:medium'), false);
+  assert.equal(isClaudeEngine('gpt-5.3-codex-spark:high'), false);
+});
+
+test('isClaudeEngine returns false for unknown/empty input', async () => {
+  const { isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
+  assert.equal(isClaudeEngine(''), false);
+  assert.equal(isClaudeEngine(undefined), false);
+  assert.equal(isClaudeEngine(null), false);
+});

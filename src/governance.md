@@ -509,7 +509,7 @@ Characteristics:
 
 ### Project-local
 ```
-.claude/ralph-desk/
+.rlp-desk/
 ├── prompts/
 │   ├── <slug>.worker.prompt.md      # Worker base prompt (regenerated on re-execution)
 │   └── <slug>.verifier.prompt.md    # Verifier base prompt (regenerated on re-execution)

@@ -5,6 +5,24 @@ const CLAUDE_BIN = 'claude';
 const CODEX_BIN = 'codex';
 const CLAUDE_MODELS = new Set(['haiku', 'sonnet', 'opus']);
 
+// v0.13.0: surface engine classification for tmux+claude warning + observability.
+export function isClaudeEngine(modelFlag) {
+  if (typeof modelFlag !== 'string' || modelFlag.length === 0) {
+    return false;
+  }
+
+  const head = modelFlag.split(':', 1)[0];
+  if (!head) {
+    return false;
+  }
+
+  if (CLAUDE_MODELS.has(head)) {
+    return true;
+  }
+
+  return head.startsWith('claude-');
+}
+
 function assertTuiMode(mode, builderName) {
   if (mode !== 'tui') {
     throw new Error(`${builderName} unknown mode '${mode}'`);

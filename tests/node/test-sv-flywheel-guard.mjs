@@ -6,7 +6,7 @@ import path from 'node:path';
 
 async function setupTestProject(slug) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sv-fg-'));
-  const desk = path.join(rootDir, '.claude', 'ralph-desk');
+  const desk = path.join(rootDir, '.rlp-desk');
   await fs.mkdir(path.join(desk, 'prompts'), { recursive: true });
   await fs.mkdir(path.join(desk, 'memos'), { recursive: true });
   await fs.mkdir(path.join(desk, 'plans'), { recursive: true });
@@ -81,7 +81,7 @@ test('SV-1 LOW: --flywheel-guard off → flywheel runs, no guard dispatched', as
   });
 
   // Set consecutive_failures > 0 to trigger flywheel
-  const statusFile = path.join(rootDir, '.claude', 'ralph-desk', 'logs', slug, 'runtime', 'status.json');
+  const statusFile = path.join(rootDir, '.rlp-desk', 'logs', slug, 'runtime', 'status.json');
   await fs.mkdir(path.dirname(statusFile), { recursive: true });
   await fs.writeFile(statusFile, JSON.stringify({
     iteration: 1,
@@ -133,7 +133,7 @@ test('SV-2 MEDIUM-1: guard catches look-ahead bias → flywheel retries → corr
     flywheelGuard: 'on',
   });
 
-  const statusFile = path.join(rootDir, '.claude', 'ralph-desk', 'logs', slug, 'runtime', 'status.json');
+  const statusFile = path.join(rootDir, '.rlp-desk', 'logs', slug, 'runtime', 'status.json');
   await fs.mkdir(path.dirname(statusFile), { recursive: true });
   await fs.writeFile(statusFile, JSON.stringify({
     iteration: 1,
@@ -175,7 +175,7 @@ test('SV-3 MEDIUM-2: guard catches metric mismatch → escalation (blocked)', as
     flywheelGuard: 'on',
   });
 
-  const statusFile = path.join(rootDir, '.claude', 'ralph-desk', 'logs', slug, 'runtime', 'status.json');
+  const statusFile = path.join(rootDir, '.rlp-desk', 'logs', slug, 'runtime', 'status.json');
   await fs.mkdir(path.dirname(statusFile), { recursive: true });
   await fs.writeFile(statusFile, JSON.stringify({
     iteration: 1,
@@ -222,7 +222,7 @@ test('SV-4 MEDIUM-3: guard catches repeat pattern → flywheel retries with diff
     flywheelGuard: 'on',
   });
 
-  const statusFile = path.join(rootDir, '.claude', 'ralph-desk', 'logs', slug, 'runtime', 'status.json');
+  const statusFile = path.join(rootDir, '.rlp-desk', 'logs', slug, 'runtime', 'status.json');
   await fs.mkdir(path.dirname(statusFile), { recursive: true });
   await fs.writeFile(statusFile, JSON.stringify({
     iteration: 1,
@@ -265,7 +265,7 @@ test('SV-5 CRITICAL: guard fails 3x → BLOCKED with retries-exhausted reason', 
     flywheelGuard: 'on',
   });
 
-  const statusFile = path.join(rootDir, '.claude', 'ralph-desk', 'logs', slug, 'runtime', 'status.json');
+  const statusFile = path.join(rootDir, '.rlp-desk', 'logs', slug, 'runtime', 'status.json');
   await fs.mkdir(path.dirname(statusFile), { recursive: true });
   await fs.writeFile(statusFile, JSON.stringify({
     iteration: 1,
@@ -282,7 +282,7 @@ test('SV-5 CRITICAL: guard fails 3x → BLOCKED with retries-exhausted reason', 
   assert.ok(result.guardIssues.length > 0, 'at least one guard issue');
 
   // Verify blocked sentinel was written
-  const blockedFile = path.join(rootDir, '.claude', 'ralph-desk', 'memos', `${slug}-blocked.md`);
+  const blockedFile = path.join(rootDir, '.rlp-desk', 'memos', `${slug}-blocked.md`);
   const blockedContent = await fs.readFile(blockedFile, 'utf8');
   assert.match(blockedContent, /BLOCKED/);
 

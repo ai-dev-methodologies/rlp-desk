@@ -252,7 +252,15 @@ _API_MAX_RETRIES="${_API_MAX_RETRIES:-5}"
 _API_RETRY_INTERVAL_S="${_API_RETRY_INTERVAL_S:-30}"
 
 # --- Derived Paths ---
-DESK="$ROOT/.claude/ralph-desk"
+DESK="$ROOT/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}"
+# v0.13.0: legacy detection — refuse to run when .claude/ralph-desk/ is still
+# present. init mode auto-migrates; run mode protects in-flight campaigns.
+if [[ -d "$ROOT/.claude/ralph-desk" ]]; then
+  print -u2 "ERROR: Legacy .claude/ralph-desk/ detected at $ROOT/.claude/ralph-desk."
+  print -u2 "Run mode does not auto-migrate to protect in-flight campaigns."
+  print -u2 "Run: mv .claude/ralph-desk ${RLP_DESK_RUNTIME_DIR:-.rlp-desk} then re-run."
+  exit 1
+fi
 # US-026 R14 P0: project-root-hashed runner lockfile prevents duplicate runner spawns
 # on the same project root while allowing parallel runs across different projects.
 # shasum is mac-default; sha1sum on Linux; cksum is POSIX-final fallback.

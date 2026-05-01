@@ -23,15 +23,15 @@ const TMP_BASE = path.join(projectRoot, '.tmp', 'lying-worker-test');
 async function tmpCampaign(name) {
   await fs.mkdir(TMP_BASE, { recursive: true });
   const root = await fs.mkdtemp(path.join(TMP_BASE, `${name}-`));
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'memos'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'logs', 'sum'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'plans'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'context'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'prompts'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'memos'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'logs', 'sum'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'plans'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'context'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'prompts'), { recursive: true });
 
-  const memos = path.join(root, '.claude/ralph-desk/memos');
-  const plans = path.join(root, '.claude/ralph-desk/plans');
-  const prompts = path.join(root, '.claude/ralph-desk/prompts');
+  const memos = path.join(root, '.rlp-desk/memos');
+  const plans = path.join(root, '.rlp-desk/plans');
+  const prompts = path.join(root, '.rlp-desk/prompts');
   await fs.writeFile(path.join(memos, 'sum-memory.md'), '# memory\nNext Iteration Contract: define\n');
   await fs.writeFile(path.join(plans, 'prd-sum.md'), '# PRD\n## US-001: simple sum\n### AC1\nfoo\n');
   await fs.writeFile(path.join(plans, 'test-spec-sum.md'), '# Test Spec\n## US-001\nbar\n');
@@ -68,12 +68,12 @@ test('lying worker (Worker exits without signal) → BLOCKED infra_failure/worke
   assert.equal(result.status, 'blocked');
   assert.equal(result.category, 'infra_failure');
 
-  const blockedMd = path.join(root, '.claude/ralph-desk/memos/sum-blocked.md');
+  const blockedMd = path.join(root, '.rlp-desk/memos/sum-blocked.md');
   const mdBody = await fs.readFile(blockedMd, 'utf8');
   assert.match(mdBody, /BLOCKED:/);
   assert.match(mdBody, /Category: infra_failure/);
 
-  const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+  const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
   const jsonBody = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.equal(jsonBody.reason_category, 'infra_failure');
   assert.equal(jsonBody.failure_category, 'worker_exited_without_artifacts');
@@ -114,7 +114,7 @@ test('lying verifier (per-US verifier exits without verdict) → BLOCKED', async
   assert.equal(result.category, 'infra_failure');
   assert.ok(callCount >= 2, 'both worker and verifier polls were attempted');
 
-  const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+  const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
   const jsonBody = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.equal(jsonBody.failure_category, 'verifier_exited_without_artifacts');
 });

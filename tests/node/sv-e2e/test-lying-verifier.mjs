@@ -16,11 +16,11 @@ const TMP_BASE = path.join(projectRoot, '.tmp', 'sv-e2e-lying-verifier');
 async function tmpCampaign(name) {
   await fs.mkdir(TMP_BASE, { recursive: true });
   const root = await fs.mkdtemp(path.join(TMP_BASE, `${name}-`));
-  const memos = path.join(root, '.claude/ralph-desk/memos');
-  const logs = path.join(root, '.claude/ralph-desk/logs/sum');
-  const plans = path.join(root, '.claude/ralph-desk/plans');
-  const ctx = path.join(root, '.claude/ralph-desk/context');
-  const prompts = path.join(root, '.claude/ralph-desk/prompts');
+  const memos = path.join(root, '.rlp-desk/memos');
+  const logs = path.join(root, '.rlp-desk/logs/sum');
+  const plans = path.join(root, '.rlp-desk/plans');
+  const ctx = path.join(root, '.rlp-desk/context');
+  const prompts = path.join(root, '.rlp-desk/prompts');
   for (const d of [memos, logs, plans, ctx, prompts]) await fs.mkdir(d, { recursive: true });
   await fs.writeFile(path.join(memos, 'sum-memory.md'), '# memory\n');
   await fs.writeFile(path.join(plans, 'prd-sum.md'), '# PRD\n## US-001: simple sum\n### AC1\nfoo\n');
@@ -54,7 +54,7 @@ test('per-US verifier exits without verdict → BLOCKED verifier_exited_without_
 
   assert.equal(result.status, 'blocked');
   assert.equal(result.category, 'infra_failure');
-  const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+  const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
   const json = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.equal(
     json.failure_category,
@@ -68,7 +68,7 @@ test('final verifier (US-ALL) exits without verdict → BLOCKED final_verifier_e
   // dispatch fires. Simplest: pre-write a prior verified_us state via
   // status.json so the loop's first action is final-verify.
   const root = await tmpCampaign('final-verifier');
-  const statusPath = path.join(root, '.claude/ralph-desk/logs/sum/runtime/status.json');
+  const statusPath = path.join(root, '.rlp-desk/logs/sum/runtime/status.json');
   await fs.mkdir(path.dirname(statusPath), { recursive: true });
   await fs.writeFile(
     statusPath,
@@ -113,7 +113,7 @@ test('final verifier (US-ALL) exits without verdict → BLOCKED final_verifier_e
 
   assert.equal(result.status, 'blocked');
   assert.equal(result.category, 'infra_failure');
-  const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+  const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
   const json = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.equal(
     json.failure_category,

@@ -15,11 +15,11 @@ const TMP_BASE = path.join(projectRoot, '.tmp', 'leader-exit-test');
 
 async function tmpCampaign(name) {
   const root = await fs.mkdtemp(path.join(TMP_BASE, `${name}-`));
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'memos'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'logs', 'sum'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'plans'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'context'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude', 'ralph-desk', 'prompts'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'memos'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'logs', 'sum'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'plans'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'context'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk', 'prompts'), { recursive: true });
   return root;
 }
 
@@ -35,7 +35,7 @@ test('backstop: missing scaffold → run() throws but blocked.md is written', as
     threw = e;
   }
   assert.ok(threw, 'run() must throw on missing scaffold');
-  const blockedPath = path.join(root, '.claude/ralph-desk/memos/sum-blocked.md');
+  const blockedPath = path.join(root, '.rlp-desk/memos/sum-blocked.md');
   const blockedExists = await fs
     .access(blockedPath)
     .then(() => true)
@@ -49,9 +49,9 @@ test('backstop: missing scaffold → run() throws but blocked.md is written', as
 test('backstop: pollForSignal throws unhandled error → blocked.md written', async () => {
   const root = await tmpCampaign('poll-throws');
   // Set up minimal scaffold so the body advances to dispatchWorker.
-  const memos = path.join(root, '.claude/ralph-desk/memos');
-  const plans = path.join(root, '.claude/ralph-desk/plans');
-  const prompts = path.join(root, '.claude/ralph-desk/prompts');
+  const memos = path.join(root, '.rlp-desk/memos');
+  const plans = path.join(root, '.rlp-desk/plans');
+  const prompts = path.join(root, '.rlp-desk/prompts');
   await fs.writeFile(path.join(memos, 'sum-memory.md'), '# memory\n');
   await fs.writeFile(path.join(plans, 'prd-sum.md'), '# PRD\n## US-001: simple sum\n### AC1\nfoo\n');
   await fs.writeFile(path.join(plans, 'test-spec-sum.md'), '# Test Spec\n## US-001\nbar\n');
@@ -74,7 +74,7 @@ test('backstop: pollForSignal throws unhandled error → blocked.md written', as
     },
   });
   assert.equal(result.status, 'blocked', 'run() returns blocked, not throws');
-  const blockedPath = path.join(root, '.claude/ralph-desk/memos/sum-blocked.md');
+  const blockedPath = path.join(root, '.rlp-desk/memos/sum-blocked.md');
   const blockedExists = await fs
     .access(blockedPath)
     .then(() => true)
@@ -86,9 +86,9 @@ test('backstop: pollForSignal throws unhandled error → blocked.md written', as
 
 test('backstop: existing blocked.md is NOT overwritten (idempotent)', async () => {
   const root = await tmpCampaign('preexisting');
-  const memos = path.join(root, '.claude/ralph-desk/memos');
-  const plans = path.join(root, '.claude/ralph-desk/plans');
-  const prompts = path.join(root, '.claude/ralph-desk/prompts');
+  const memos = path.join(root, '.rlp-desk/memos');
+  const plans = path.join(root, '.rlp-desk/plans');
+  const prompts = path.join(root, '.rlp-desk/prompts');
   await fs.writeFile(path.join(memos, 'sum-memory.md'), '# memory\n');
   await fs.writeFile(path.join(plans, 'prd-sum.md'), '# PRD\n## US-001: simple sum\n### AC1\nfoo\n');
   await fs.writeFile(path.join(plans, 'test-spec-sum.md'), '# Test Spec\n## US-001\nbar\n');

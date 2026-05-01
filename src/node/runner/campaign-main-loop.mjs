@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -8,6 +9,7 @@ import { buildClaudeCmd, buildCodexCmd, parseModelFlag } from '../cli/command-bu
 import { shellQuote } from '../util/shell-quote.mjs';
 import { OPUS_1M_BETA, isOpusModel } from '../constants.mjs';
 import { initCampaign } from '../init/campaign-initializer.mjs';
+import { LEGACY_DESK_REL, resolveDeskRoot } from '../util/desk-root.mjs';
 import { writeSentinelExclusive } from '../shared/fs.mjs';
 import {
   TimeoutError,
@@ -41,8 +43,23 @@ const MODEL_UPGRADES = {
   'gpt-5.3-codex-spark:xhigh': 'BLOCKED',
 };
 
-function buildPaths(rootDir, slug) {
-  const deskRoot = path.join(rootDir, '.claude', 'ralph-desk');
+// v0.13.0: legacy .claude/ralph-desk/ guidance for run mode (no auto-mv).
+export function detectLegacyDeskInRunMode(rootDir, env = process.env) {
+  const legacyPath = path.join(rootDir, LEGACY_DESK_REL);
+  if (!fsSync.existsSync(legacyPath)) {
+    return null;
+  }
+
+  const newPath = resolveDeskRoot(rootDir, env);
+  const newRel = path.relative(rootDir, newPath) || path.basename(newPath);
+  const message =
+    `Legacy ${LEGACY_DESK_REL}/ detected. Run mode does not auto-migrate to protect in-flight campaigns. ` +
+    `Run: mv ${LEGACY_DESK_REL} ${newRel} then re-run.`;
+  return { legacyPath, newPath, message };
+}
+
+function buildPaths(rootDir, slug, env = process.env) {
+  const deskRoot = resolveDeskRoot(rootDir, env);
   const campaignLogDir = path.join(deskRoot, 'logs', slug);
 
   return {
@@ -448,6 +465,10 @@ export const BLOCK_TAGS = Object.freeze({
   GUARD_EXITED: 'guard_pane_exited_without_artifacts',
   // Auto-Enter unsafe (default-No prompt)
   PROMPT_BLOCKED: 'prompt_blocked',
+  // v0.13.0: Claude Code self-modification permission prompt (cannot be
+  // dismissed by --dangerously-skip-permissions). Surfaced separately so
+  // wrappers know to switch worker engine, not retry.
+  PERMISSION_PROMPT: 'permission_prompt',
   // Persistent timeout without exit (different from EXITED)
   WORKER_TIMEOUT: 'worker_timeout',
   VERIFIER_TIMEOUT: 'verifier_timeout',
@@ -508,6 +529,13 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
       recoverable = false;
       action = 'manual_prompt_response';
       failureCategory = 'prompt_blocked';
+      break;
+    // v0.13.0: Claude Code self-modification gate — switch worker engine.
+    case BLOCK_TAGS.PERMISSION_PROMPT:
+      category = 'infra_failure';
+      recoverable = false;
+      action = 'switch_worker_to_codex_or_use_agent_mode';
+      failureCategory = 'permission_prompt';
       break;
     // Persistent timeout (no exit detected) — different from EXITED.
     case BLOCK_TAGS.WORKER_TIMEOUT:
@@ -582,8 +610,16 @@ async function _handlePollFailure(error, ctx) {
     })[role] ?? BLOCK_TAGS.WORKER_EXITED;
     reason = `${error.reason ?? 'pane exited without artifacts'}: ${error.message}`;
   } else if (error instanceof PromptBlockedError) {
-    tag = BLOCK_TAGS.PROMPT_BLOCKED;
-    reason = `${error.reason ?? 'default-No prompt'}: ${error.message}`;
+    // v0.13.0: error.category is set by signal-poller when Claude Code
+    // self-modification prompt is detected. Distinct tag drives a different
+    // failure_category + suggested_action than the default-No prompt path.
+    if (error.category === 'permission_prompt') {
+      tag = BLOCK_TAGS.PERMISSION_PROMPT;
+      reason = `${error.reason ?? 'permission prompt'}: ${error.message}`;
+    } else {
+      tag = BLOCK_TAGS.PROMPT_BLOCKED;
+      reason = `${error.reason ?? 'default-No prompt'}: ${error.message}`;
+    }
   } else if (error instanceof MalformedArtifactError) {
     tag = BLOCK_TAGS.MALFORMED_ARTIFACT;
     reason = `Malformed artifact at ${error.field}: expected ${error.expected}, got ${error.got}`;
@@ -896,7 +932,19 @@ export function shouldRunGuard(flywheelGuard, state, usId) {
 
 export async function run(slug, options = {}) {
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
-  const paths = buildPaths(rootDir, slug);
+  const env = options.env ?? process.env;
+
+  // v0.13.0: refuse to run when legacy .claude/ralph-desk/ is present.
+  // init mode auto-migrates; run mode protects in-flight campaigns and
+  // surfaces a clear manual command to the operator.
+  const legacy = detectLegacyDeskInRunMode(rootDir, env);
+  if (legacy) {
+    const err = new Error(legacy.message);
+    err.code = 'LEGACY_DESK_DETECTED';
+    throw err;
+  }
+
+  const paths = buildPaths(rootDir, slug, env);
   // v5.7 §4.24 §1g — runtime invariant: every terminal exit of run() MUST
   // leave exactly one sentinel on disk (blocked.md XOR complete.md). The
   // try/finally below is the last-resort backstop that writes a synthetic

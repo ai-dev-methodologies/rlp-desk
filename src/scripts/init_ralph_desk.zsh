@@ -5,7 +5,9 @@ set -euo pipefail
 # Ralph Desk Project Initializer for Claude Code
 #
 # User-level tool: ~/.claude/ralph-desk/init_ralph_desk.zsh
-# Creates project-local scaffold in: .claude/ralph-desk/
+# Creates project-local scaffold in: .rlp-desk/ (v0.13.0+; auto-migrates from
+# legacy .claude/ralph-desk/ to avoid Claude Code's hardcoded sensitive-file
+# policy that hung worker sentinel writes).
 #
 # Usage:
 #   ~/.claude/ralph-desk/init_ralph_desk.zsh <slug> [objective] [--mode fresh|improve]
@@ -74,8 +76,25 @@ while [[ $# -gt 0 ]]; do
 done
 
 ROOT="${ROOT:-$PWD}"
-DESK="$ROOT/.claude/ralph-desk"
+# v0.13.0: project-local runtime moved out of .claude/ to avoid Claude Code's
+# hardcoded sensitive policy that hung worker sentinel writes. Honor
+# RLP_DESK_RUNTIME_DIR env override so future platform changes can be dodged
+# without a release.
+DESK="$ROOT/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}"
 RUNNER_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# v0.13.0: legacy .claude/ralph-desk/ auto-migration on init.
+LEGACY_DESK="$ROOT/.claude/ralph-desk"
+if [[ -d "$LEGACY_DESK" ]]; then
+  if [[ -d "$DESK" ]]; then
+    echo "ERROR: both directories exist (legacy=$LEGACY_DESK, new=$DESK)." >&2
+    echo "Remove one before re-running init." >&2
+    exit 1
+  fi
+  echo "[v0.13.0] migrating $LEGACY_DESK -> $DESK"
+  mkdir -p "$(dirname "$DESK")"
+  mv "$LEGACY_DESK" "$DESK"
+fi
 
 # --- Re-execution versioning helpers ---
 # Handles ONLY debug.log and campaign-report.md versioning.
@@ -1083,36 +1102,44 @@ split_test_spec_by_us "$DESK/plans/test-spec-$SLUG.md" "$SLUG"
 # --- .gitignore for runtime artifacts ---
 GITIGNORE="$ROOT/.gitignore"
 MARKER="# RLP Desk runtime artifacts"
+DESK_REL="${RLP_DESK_RUNTIME_DIR:-.rlp-desk}"
 if [[ -f "$GITIGNORE" ]]; then
-  if ! grep -qF "$MARKER" "$GITIGNORE"; then
-    echo "" >> "$GITIGNORE"
-    cat >> "$GITIGNORE" <<'GIEOF'
-# RLP Desk runtime artifacts
-.claude/ralph-desk/
-GIEOF
-    echo "  + .gitignore (rlp-desk rules appended)"
+  # v0.13.0: drop legacy ".claude/ralph-desk/" line if present.
+  if grep -qE '^\.claude/ralph-desk/$' "$GITIGNORE"; then
+    sed -i.bak -E '/^\.claude\/ralph-desk\/$/d' "$GITIGNORE"
+    rm -f "${GITIGNORE}.bak"
+    echo "  · .gitignore (legacy .claude/ralph-desk/ rule removed)"
+  fi
+  if ! grep -qE "^${DESK_REL}/$" "$GITIGNORE"; then
+    if ! grep -qF "$MARKER" "$GITIGNORE"; then
+      echo "" >> "$GITIGNORE"
+      echo "$MARKER" >> "$GITIGNORE"
+    fi
+    echo "${DESK_REL}/" >> "$GITIGNORE"
+    echo "  + .gitignore (rlp-desk rule for ${DESK_REL}/ appended)"
   else
-    echo "  · .gitignore (rlp-desk rules already present)"
+    echo "  · .gitignore (${DESK_REL}/ already present)"
   fi
 else
-  cat > "$GITIGNORE" <<'GIEOF'
+  cat > "$GITIGNORE" <<GIEOF
 # RLP Desk runtime artifacts
-.claude/ralph-desk/
+${DESK_REL}/
 GIEOF
-  echo "  + .gitignore (created with rlp-desk rules)"
+  echo "  + .gitignore (created with rlp-desk rule for ${DESK_REL}/)"
 fi
 
-# --- Claude Code sensitive-file permissions for .claude/ralph-desk/ ---
-# Worker/Verifier need Read/Edit/Write access to .claude/ralph-desk/ files.
-# --dangerously-skip-permissions does NOT cover "sensitive file" access for .claude/ paths.
-# Without these, every file operation triggers an interactive permission prompt that blocks automation.
+# --- Claude Code sensitive-file permissions for .rlp-desk/ ---
+# Worker/Verifier need Read/Edit/Write access to .rlp-desk/ files. With the
+# project-local tree outside .claude/, Claude Code's hardcoded sensitive
+# policy no longer triggers, but explicit permissions still help when the
+# user has configured stricter defaults.
 SETTINGS_FILE="$ROOT/.claude/settings.local.json"
-PERM_MARKER="Read(.claude/ralph-desk/**)"
+PERM_MARKER="Read(${DESK_REL}/**)"
 
 if [[ -f "$SETTINGS_FILE" ]] && grep -qF "$PERM_MARKER" "$SETTINGS_FILE" 2>/dev/null; then
   echo "  · .claude/settings.local.json (rlp-desk permissions already present)"
 else
-  PERMS='["Read(.claude/ralph-desk/**)", "Edit(.claude/ralph-desk/**)", "Write(.claude/ralph-desk/**)"]'
+  PERMS=$(printf '["Read(%s/**)", "Edit(%s/**)", "Write(%s/**)"]' "$DESK_REL" "$DESK_REL" "$DESK_REL")
 
   if [[ -f "$SETTINGS_FILE" ]]; then
     if command -v jq &>/dev/null; then
@@ -1124,17 +1151,17 @@ else
       echo "  + .claude/settings.local.json (rlp-desk permissions merged)"
     else
       echo "  ⚠ jq not found. Add to .claude/settings.local.json manually:"
-      echo "    permissions.allow: Read/Edit/Write(.claude/ralph-desk/**)"
+      echo "    permissions.allow: Read/Edit/Write(${DESK_REL}/**)"
     fi
   else
     mkdir -p "$(dirname "$SETTINGS_FILE")"
-    cat > "$SETTINGS_FILE" <<'SETEOF'
+    cat > "$SETTINGS_FILE" <<SETEOF
 {
   "permissions": {
     "allow": [
-      "Read(.claude/ralph-desk/**)",
-      "Edit(.claude/ralph-desk/**)",
-      "Write(.claude/ralph-desk/**)"
+      "Read(${DESK_REL}/**)",
+      "Edit(${DESK_REL}/**)",
+      "Write(${DESK_REL}/**)"
     ]
   }
 }
@@ -1142,11 +1169,8 @@ SETEOF
     echo "  + .claude/settings.local.json (created with rlp-desk permissions)"
   fi
   echo ""
-  echo "  NOTE: Added Read/Edit/Write permissions for .claude/ralph-desk/ to"
+  echo "  NOTE: Added Read/Edit/Write permissions for ${DESK_REL}/ to"
   echo "        .claude/settings.local.json (local, not committed to git)."
-  echo "        This prevents Worker/Verifier from being blocked by Claude Code's"
-  echo "        sensitive-file prompts during automated loop execution."
-  echo "        See: https://github.com/ai-dev-methodologies/rlp-desk#project-structure"
 fi
 
 # --- Post-init validation gate ---

@@ -1,8 +1,79 @@
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 
+import { LEGACY_DESK_REL, resolveDeskRoot } from '../util/desk-root.mjs';
+
 const GITIGNORE_MARKER = '# RLP Desk runtime artifacts';
-const GITIGNORE_RULE = '.claude/ralph-desk/';
+const GITIGNORE_RULE = '.rlp-desk/';
+const LEGACY_GITIGNORE_RULE = '.claude/ralph-desk/';
+const MIGRATION_LOCK_FILE = '.rlp-desk-migration.lock';
+const STALE_LOCK_MS = 5 * 60 * 1000;
+
+export function migrateLegacyDesk(rootDir, env = process.env) {
+  const legacyPath = path.join(rootDir, LEGACY_DESK_REL);
+  const newPath = resolveDeskRoot(rootDir, env);
+  const lockPath = path.join(rootDir, MIGRATION_LOCK_FILE);
+
+  // Pre-lock cheap check: skip the lock entirely when there is nothing to do.
+  // Re-check the same conditions inside the lock — a competing process may
+  // have moved or created files between this check and the lock acquisition.
+  if (!fsSync.existsSync(legacyPath)) {
+    return { action: 'noop', reason: fsSync.existsSync(newPath) ? 'new-only' : 'neither-exists' };
+  }
+
+  let lockFd;
+  try {
+    lockFd = fsSync.openSync(lockPath, 'wx');
+  } catch (error) {
+    if (error.code === 'EEXIST') {
+      try {
+        const stats = fsSync.statSync(lockPath);
+        const age = Date.now() - stats.mtimeMs;
+        if (age > STALE_LOCK_MS) {
+          fsSync.unlinkSync(lockPath);
+          lockFd = fsSync.openSync(lockPath, 'wx');
+        } else {
+          throw new Error(`Migration already in progress (lock at ${lockPath}, age ${Math.round(age / 1000)}s)`);
+        }
+      } catch (statError) {
+        if (statError.code === 'ENOENT') {
+          lockFd = fsSync.openSync(lockPath, 'wx');
+        } else {
+          throw statError;
+        }
+      }
+    } else {
+      throw error;
+    }
+  }
+
+  try {
+    fsSync.writeSync(lockFd, String(process.pid));
+
+    // Re-check inside the lock — another process may have already migrated
+    // while we were waiting for the lock.
+    const legacyExistsLocked = fsSync.existsSync(legacyPath);
+    const newExistsLocked = fsSync.existsSync(newPath);
+
+    if (!legacyExistsLocked) {
+      return { action: 'noop', reason: newExistsLocked ? 'new-only' : 'neither-exists' };
+    }
+
+    if (newExistsLocked) {
+      throw new Error(
+        `Migration aborted: both directories exist. Remove one before re-run. legacy=${legacyPath}, new=${newPath}`,
+      );
+    }
+
+    fsSync.mkdirSync(path.dirname(newPath), { recursive: true });
+    fsSync.renameSync(legacyPath, newPath);
+    return { action: 'migrated', from: legacyPath, to: newPath };
+  } finally {
+    try { fsSync.closeSync(lockFd); } catch (_) { /* noop */ }
+    try { fsSync.unlinkSync(lockPath); } catch (_) { /* noop */ }
+  }
+}
 
 export async function initCampaign(slug, objective, options = {}) {
   const normalizedSlug = normalizeSlug(slug);
@@ -10,17 +81,21 @@ export async function initCampaign(slug, objective, options = {}) {
   const mode = options.mode ?? 'agent';
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
   const tmuxEnv = options.tmuxEnv ?? process.env.TMUX ?? '';
-  const deskRoot = path.join(rootDir, '.claude', 'ralph-desk');
+  const env = options.env ?? process.env;
 
   if (mode === 'tmux' && !tmuxEnv) {
     throw new Error('tmux required');
   }
 
+  migrateLegacyDesk(rootDir, env);
+
+  const deskRoot = resolveDeskRoot(rootDir, env);
+
   if (mode === 'fresh') {
     await fs.rm(deskRoot, { recursive: true, force: true });
   }
 
-  const paths = buildPaths(rootDir, normalizedSlug);
+  const paths = buildPaths(rootDir, normalizedSlug, env);
   await ensureDirectories(paths);
   await ensureGitignore(rootDir);
 
@@ -55,8 +130,8 @@ function normalizeSlug(value) {
   return slug;
 }
 
-function buildPaths(rootDir, slug) {
-  const deskRoot = path.join(rootDir, '.claude', 'ralph-desk');
+function buildPaths(rootDir, slug, env = process.env) {
+  const deskRoot = resolveDeskRoot(rootDir, env);
   const promptsDir = path.join(deskRoot, 'prompts');
   const plansDir = path.join(deskRoot, 'plans');
   const memosDir = path.join(deskRoot, 'memos');
@@ -105,13 +180,28 @@ async function ensureGitignore(rootDir) {
     }
   }
 
-  if (content.includes(GITIGNORE_MARKER) && content.includes(GITIGNORE_RULE)) {
-    return;
+  let updated = content;
+  let changed = false;
+
+  // v0.13.0: drop the legacy .claude/ralph-desk/ rule if present.
+  if (updated.includes(LEGACY_GITIGNORE_RULE)) {
+    const legacyLineRegex = new RegExp(
+      `^${LEGACY_GITIGNORE_RULE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\r?\\n`,
+      'gm',
+    );
+    updated = updated.replace(legacyLineRegex, '');
+    changed = true;
   }
 
-  const prefix = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
-  const block = `${prefix}${GITIGNORE_MARKER}\n${GITIGNORE_RULE}\n`;
-  await fs.writeFile(gitignorePath, `${content}${block}`, 'utf8');
+  if (!(updated.includes(GITIGNORE_MARKER) && updated.includes(GITIGNORE_RULE))) {
+    const prefix = updated.length > 0 && !updated.endsWith('\n') ? '\n' : '';
+    updated = `${updated}${prefix}${GITIGNORE_MARKER}\n${GITIGNORE_RULE}\n`;
+    changed = true;
+  }
+
+  if (changed) {
+    await fs.writeFile(gitignorePath, updated, 'utf8');
+  }
 }
 
 async function writeIfMissing(targetPath, content) {

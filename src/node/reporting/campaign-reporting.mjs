@@ -3,6 +3,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { resolveDeskRoot } from '../util/desk-root.mjs';
+
 const execFileAsync = promisify(execFile);
 const REQUIRED_ANALYTICS_FIELDS = [
   'iter',
@@ -596,7 +598,9 @@ export async function generateSVReport({
 
 export async function readStatus(slug, options = {}) {
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
-  const statusFile = path.join(rootDir, '.claude', 'ralph-desk', 'logs', slug, 'runtime', 'status.json');
+  const env = options.env ?? process.env;
+  const deskRoot = resolveDeskRoot(rootDir, env);
+  const statusFile = path.join(deskRoot, 'logs', slug, 'runtime', 'status.json');
 
   if (!(await exists(statusFile))) {
     return `No active campaign for ${slug}.`;

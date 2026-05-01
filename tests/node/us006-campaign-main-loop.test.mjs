@@ -21,7 +21,7 @@ async function createTempDir(t) {
 }
 
 function deskPath(rootDir, ...segments) {
-  return path.join(rootDir, '.claude', 'ralph-desk', ...segments);
+  return path.join(rootDir, '.rlp-desk', ...segments);
 }
 
 async function readJson(filePath) {

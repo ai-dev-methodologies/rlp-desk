@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { initCampaign } from './init/campaign-initializer.mjs';
 import { readStatus } from './reporting/campaign-reporting.mjs';
 import { run as runCampaignMain } from './runner/campaign-main-loop.mjs';
+import { isClaudeEngine } from './cli/command-builder.mjs';
 
 const RUN_DEFAULTS = {
   mode: 'agent',
@@ -194,8 +195,9 @@ async function runInit(args, deps) {
 
   const slug = args[0];
   const objective = args.slice(1).join(' ').trim() || 'TBD - fill in the objective';
-  await deps.initCampaign(slug, objective, { rootDir: deps.cwd });
-  write(deps.stdout, `Initialized ${slug} in ${path.join(deps.cwd, '.claude', 'ralph-desk')}`);
+  const result = await deps.initCampaign(slug, objective, { rootDir: deps.cwd });
+  const deskRoot = result?.paths?.deskRoot ?? path.join(deps.cwd, '.rlp-desk');
+  write(deps.stdout, `Initialized ${slug} in ${deskRoot}`);
   return 0;
 }
 
@@ -221,6 +223,33 @@ async function runRunCommand(args, deps) {
 
   const slug = args[0];
   const options = parseRunOptions(args.slice(1), deps.cwd);
+
+  // v0.13.0: warn when Claude worker runs in tmux mode. Claude Code's
+  // hardcoded sensitive policy used to hang sentinel writes inside
+  // <project>/.claude/. After v0.13.0, sentinels live in
+  // <project>/.rlp-desk/, but if the user pinned RLP_DESK_RUNTIME_DIR
+  // back inside .claude/, the hang can return — surface the warning so
+  // they can switch to gpt-5.5:* or --mode agent quickly.
+  if (
+    !process.env.RLP_DESK_QUIET_WARNINGS
+    && process.env.NODE_ENV !== 'test'
+    && options.mode === 'tmux'
+    && isClaudeEngine(options.workerModel)
+  ) {
+    write(
+      deps.stderr,
+      'WARNING: Claude worker in tmux mode may hang on .claude/ sentinel writes.',
+    );
+    write(
+      deps.stderr,
+      'After v0.13.0, sentinels live in <project>/.rlp-desk/ which avoids this.',
+    );
+    write(
+      deps.stderr,
+      'If hang persists, switch to --worker-model gpt-5.5:high (codex) or --mode agent.',
+    );
+  }
+
   const result = await deps.runCampaign(slug, options);
   // governance §1f BLOCKED Surfacing: surface the blocked reason on stderr so
   // the operator (or wrapper script) does not have to grep memo files.

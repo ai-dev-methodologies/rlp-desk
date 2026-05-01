@@ -135,7 +135,7 @@ After all items are confirmed:
    Present the score table to the user before proceeding.
 2. Present the full contract summary.
 3. **Self-Verification** — Ask: "Enable self-verification? Worker records step-by-step evidence, Verifier cross-validates process. Recommended for MEDIUM+ risk." Default: yes for HIGH/CRITICAL, no for LOW/MEDIUM.
-4. **Re-execution check**: After slug is confirmed, check if `.claude/ralph-desk/plans/prd-<slug>.md` already exists. If a PRD already exists for this slug, ask: "A PRD already exists for this slug. Improve the existing PRD or start fresh (delete and recreate)?"
+4. **Re-execution check**: After slug is confirmed, check if `.rlp-desk/plans/prd-<slug>.md` already exists. If a PRD already exists for this slug, ask: "A PRD already exists for this slug. Improve the existing PRD or start fresh (delete and recreate)?"
    - "improve" → pass `--mode improve` to init
    - "start fresh" → pass `--mode fresh` to init
    - If no PRD exists: standard first-run (no --mode needed)
@@ -282,7 +282,7 @@ Parse the `--mode` flag. If absent or `agent`, use the Agent() path below. If `t
 
 When `--mode tmux` is specified (v0.12.0+ — v5.7 §4.1 routes to Node leader for flywheel + SV support):
 
-1. **Validate scaffold** — same as Agent() mode: check `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
+1. **Validate scaffold** — same as Agent() mode: check `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
 2. **Check sentinels** — same as Agent() mode.
 3. **Check prerequisites** — verify `tmux`, `jq`, and `node` (>= 16) are installed. If not, report what is missing and stop.
 4. **Locate Node leader** — find `~/.claude/ralph-desk/node/run.mjs`. If not found, tell the user to reinstall (`npm install` or `bash install.sh`).
@@ -348,11 +348,11 @@ prompt at the SDK level, the call hangs indefinitely with no rlp-desk-side
 watchdog. Use `--mode tmux` if you need bounded execution time.
 
 ### Preparation
-1. Validate scaffold: `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` etc.
+1. Validate scaffold: `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
 2. **Codex CLI pre-validation**: If `--consensus` is not `off` OR `--worker-model` uses codex format (contains `:`) OR `--verifier-model` / `--final-verifier-model` / `--consensus-model` / `--final-consensus-model` uses codex format, check that `codex` CLI exists in PATH. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
 3. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
 4. Clean previous `done-claim.json`, `verify-verdict.json`.
-5. **Always**: write baseline log entry to `.claude/ralph-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
+5. **Always**: write baseline log entry to `.rlp-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
 6. If `--debug`: also create/clear `~/.claude/ralph-desk/analytics/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> ~/.claude/ralph-desk/analytics/<slug>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.
    - **4-category log system**: all debug_log entries use exactly one of: `[GOV]` (governance checks: IL enforcement, CB triggers, scope lock, verdict evaluation), `[DECIDE]` (leader decisions: model selection, fix contracts, escalation), `[OPTION]` (configuration snapshot at loop start: thresholds, modes, models), `[FLOW]` (execution progress: worker/verifier dispatch, signal reads, phase transitions)
    - **Re-execution versioning**: If `debug.log` already exists at `--debug` start, rename it to `debug-v{N}.log` (N = next available integer ≥ 1) before creating a fresh `debug.log`.
@@ -378,14 +378,14 @@ For each iteration (1 to max_iter):
 
 **① Check sentinels**
 ```bash
-test -f .claude/ralph-desk/memos/<slug>-complete.md  # → done
-test -f .claude/ralph-desk/memos/<slug>-blocked.md   # → stop
+test -f .rlp-desk/memos/<slug>-complete.md  # → done
+test -f .rlp-desk/memos/<slug>-blocked.md   # → stop
 ```
 
 **①½ Prep-stage cleanup**
 ```bash
-rm -f .claude/ralph-desk/memos/<slug>-done-claim.json
-rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
+rm -f .rlp-desk/memos/<slug>-done-claim.json
+rm -f .rlp-desk/memos/<slug>-verify-verdict.json
 ```
 
 **② Read memory.md** → Stop Status, Next Iteration Contract
@@ -401,15 +401,15 @@ rm -f .claude/ralph-desk/memos/<slug>-verify-verdict.json
 
 **④ Build worker prompt (Prompt Assembly Protocol)**
 1. Capture `WORKING_DIR` once: use `$PWD` from when `/rlp-desk run` was invoked. Store for all prompt construction.
-2. Read `.claude/ralph-desk/prompts/<slug>.worker.prompt.md` — use its content **verbatim**. Do NOT rewrite, paraphrase, or regenerate paths. The prompt file contains correct absolute paths from init.
+2. Read `.rlp-desk/prompts/<slug>.worker.prompt.md` — use its content **verbatim**. Do NOT rewrite, paraphrase, or regenerate paths. The prompt file contains correct absolute paths from init.
 2a. **Per-US PRD injection** (when targeting a specific `us_id`, not "ALL"):
-   - Check if `.claude/ralph-desk/plans/prd-<slug>-{us_id}.md` exists (created by init split)
+   - Check if `.rlp-desk/plans/prd-<slug>-{us_id}.md` exists (created by init split)
    - If yes: in the assembled prompt text, replace the full PRD reference (`prd-<slug>.md`) with the per-US file path (`prd-<slug>-{us_id}.md`) — so Worker reads only the relevant US section
    - If no per-US file: fall back to full PRD (`prd-<slug>.md`) with no change needed
    - Note: this absolute-path substitution is permitted — only absolute→relative rewrites are forbidden.
 3. Prepend meta comment: `## WORKING_DIR: {absolute path}` — Worker must use this as its working directory.
 4. Append iteration number + memory contract.
-5. Write to `.claude/ralph-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail).
+5. Write to `.rlp-desk/logs/<slug>/iter-NNN.worker-prompt.md` (audit trail).
 - Note: Worker ALWAYS records execution_steps in done-claim.json per governance §1f. No flag needed.
 - **Rewriting paths from absolute to relative WILL break worktree campaigns. Only additions (WORKING_DIR header, iteration context) are allowed.**
 
@@ -660,7 +660,7 @@ When `--consensus` is not `off`, also track in `status.json`:
 ---
 
 ## `status <slug>`
-Read `.claude/ralph-desk/logs/<slug>/runtime/status.json` and display a detailed report:
+Read `.rlp-desk/logs/<slug>/runtime/status.json` and display a detailed report:
 
 ```
 Campaign: <slug>
@@ -683,22 +683,22 @@ Read the last `verify-verdict.json` to show the most recent verdict summary and 
 
 ## `clean <slug> [--kill-session]`
 Remove:
-- `.claude/ralph-desk/memos/<slug>-complete.md`
-- `.claude/ralph-desk/memos/<slug>-blocked.md`
-- `.claude/ralph-desk/memos/<slug>-done-claim.json`
-- `.claude/ralph-desk/memos/<slug>-verify-verdict.json`
-- `.claude/ralph-desk/memos/<slug>-iter-signal.json`
-- `.claude/ralph-desk/logs/<slug>/circuit-breaker.json`
-- `.claude/ralph-desk/logs/<slug>/runtime/session-config.json`
-- `.claude/ralph-desk/logs/<slug>/runtime/worker-heartbeat.json`
-- `.claude/ralph-desk/logs/<slug>/runtime/verifier-heartbeat.json`
-- `.claude/ralph-desk/memos/<slug>-escalation.md`
+- `.rlp-desk/memos/<slug>-complete.md`
+- `.rlp-desk/memos/<slug>-blocked.md`
+- `.rlp-desk/memos/<slug>-done-claim.json`
+- `.rlp-desk/memos/<slug>-verify-verdict.json`
+- `.rlp-desk/memos/<slug>-iter-signal.json`
+- `.rlp-desk/logs/<slug>/circuit-breaker.json`
+- `.rlp-desk/logs/<slug>/runtime/session-config.json`
+- `.rlp-desk/logs/<slug>/runtime/worker-heartbeat.json`
+- `.rlp-desk/logs/<slug>/runtime/verifier-heartbeat.json`
+- `.rlp-desk/memos/<slug>-escalation.md`
 Note: `campaign-report.md`, `campaign-report-v{N}.md`, `iter-NNN-done-claim.json`, and `iter-NNN-verify-verdict.json` are intentionally preserved across clean for historical comparison. Analytics files (`debug.log`, `campaign.jsonl`, `self-verification-data.json`, `self-verification-report-NNN.md`) at `~/.claude/ralph-desk/analytics/<slug>/` are NOT affected by project-level clean.
 
 If `--kill-session` is passed, clean up Worker/Verifier tmux panes using session-config.json:
 ```bash
 # Read pane IDs from session-config.json (safe — targets only Worker/Verifier panes)
-SESSION_CONFIG=".claude/ralph-desk/logs/<slug>/runtime/session-config.json"
+SESSION_CONFIG=".rlp-desk/logs/<slug>/runtime/session-config.json"
 if [ -f "$SESSION_CONFIG" ] && command -v jq &>/dev/null; then
   WORKER_PANE=$(jq -r '.panes.worker // empty' "$SESSION_CONFIG")
   VERIFIER_PANE=$(jq -r '.panes.verifier // empty' "$SESSION_CONFIG")
@@ -738,8 +738,8 @@ Data sources:
 
 Resume a previously interrupted campaign. Equivalent to `run <slug>` but explicitly restores state:
 
-1. Read `.claude/ralph-desk/logs/<slug>/runtime/status.json` for `verified_us`, `iteration`, `consecutive_failures`
-2. Read `.claude/ralph-desk/memos/<slug>-memory.md` for completed stories and next iteration contract
+1. Read `.rlp-desk/logs/<slug>/runtime/status.json` for `verified_us`, `iteration`, `consecutive_failures`
+2. Read `.rlp-desk/memos/<slug>-memory.md` for completed stories and next iteration contract
 3. Check for sentinels (`complete.md`, `blocked.md`) — if present, inform user and stop
 4. If no sentinels, invoke `run <slug>` with the same options from the previous session (stored in status.json fields: `worker_model`, `verifier_model`, `final_verifier_model`, `verify_mode`, `consensus_mode`)
 5. The runner automatically restores `verified_us` from memory or status.json on startup

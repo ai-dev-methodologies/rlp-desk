@@ -16,14 +16,14 @@ const TMP_BASE = path.join(projectRoot, '.tmp', 'artifact-schema-test');
 async function tmpCampaign(name) {
   await fs.mkdir(TMP_BASE, { recursive: true });
   const root = await fs.mkdtemp(path.join(TMP_BASE, `${name}-`));
-  await fs.mkdir(path.join(root, '.claude/ralph-desk/memos'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude/ralph-desk/logs/sum'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude/ralph-desk/plans'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude/ralph-desk/context'), { recursive: true });
-  await fs.mkdir(path.join(root, '.claude/ralph-desk/prompts'), { recursive: true });
-  const memos = path.join(root, '.claude/ralph-desk/memos');
-  const plans = path.join(root, '.claude/ralph-desk/plans');
-  const prompts = path.join(root, '.claude/ralph-desk/prompts');
+  await fs.mkdir(path.join(root, '.rlp-desk/memos'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk/logs/sum'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk/plans'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk/context'), { recursive: true });
+  await fs.mkdir(path.join(root, '.rlp-desk/prompts'), { recursive: true });
+  const memos = path.join(root, '.rlp-desk/memos');
+  const plans = path.join(root, '.rlp-desk/plans');
+  const prompts = path.join(root, '.rlp-desk/prompts');
   await fs.writeFile(path.join(memos, 'sum-memory.md'), '# memory\n');
   await fs.writeFile(path.join(plans, 'prd-sum.md'), '# PRD\n## US-001: simple sum\n### AC1\nfoo\n');
   await fs.writeFile(path.join(plans, 'test-spec-sum.md'), '# Test Spec\n## US-001\nbar\n');
@@ -68,7 +68,7 @@ test('schema: wrong slug → BLOCKED malformed_artifact', async () => {
   });
   assert.equal(result.status, 'blocked');
   assert.equal(result.category, 'contract_violation');
-  const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+  const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
   const json = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.equal(json.failure_category, 'malformed_artifact');
   assert.equal(json.recoverable, true);
@@ -89,7 +89,7 @@ test('schema: iteration value (any integer) does NOT trigger malformed_artifact'
     us_id: 'US-001',
   });
   if (result.status === 'blocked') {
-    const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+    const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
     try {
       const json = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
       assert.notEqual(
@@ -121,7 +121,7 @@ test('schema: us_id outside allowed set → BLOCKED malformed_artifact', async (
   });
   assert.equal(result.status, 'blocked');
   assert.equal(result.category, 'contract_violation');
-  const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+  const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
   const json = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.match(json.reason_detail, /us_id.*US-001.*ALL.*US-999/);
 });
@@ -150,7 +150,7 @@ test('schema: valid signal (no signal_type for backwards compat) → no crash', 
   // Result varies (continue or blocked depending on subsequent verifier path),
   // but it MUST NOT be malformed_artifact.
   if (result.status === 'blocked') {
-    const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+    const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
     try {
       const json = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
       assert.notEqual(

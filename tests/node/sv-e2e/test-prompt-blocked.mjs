@@ -17,11 +17,11 @@ const TMP_BASE = path.join(projectRoot, '.tmp', 'sv-e2e-prompt-blocked');
 async function tmpCampaign(name) {
   await fs.mkdir(TMP_BASE, { recursive: true });
   const root = await fs.mkdtemp(path.join(TMP_BASE, `${name}-`));
-  const memos = path.join(root, '.claude/ralph-desk/memos');
-  const logs = path.join(root, '.claude/ralph-desk/logs/sum');
-  const plans = path.join(root, '.claude/ralph-desk/plans');
-  const ctx = path.join(root, '.claude/ralph-desk/context');
-  const prompts = path.join(root, '.claude/ralph-desk/prompts');
+  const memos = path.join(root, '.rlp-desk/memos');
+  const logs = path.join(root, '.rlp-desk/logs/sum');
+  const plans = path.join(root, '.rlp-desk/plans');
+  const ctx = path.join(root, '.rlp-desk/context');
+  const prompts = path.join(root, '.rlp-desk/prompts');
   for (const d of [memos, logs, plans, ctx, prompts]) await fs.mkdir(d, { recursive: true });
   await fs.writeFile(path.join(memos, 'sum-memory.md'), '# memory\n');
   await fs.writeFile(path.join(plans, 'prd-sum.md'), '# PRD\n## US-001: simple sum\n### AC1\nfoo\n');
@@ -55,7 +55,7 @@ test('default-No prompt detected during worker poll → BLOCKED prompt_blocked',
 
   assert.equal(result.status, 'blocked');
   assert.equal(result.category, 'infra_failure');
-  const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+  const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
   const json = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.equal(json.failure_category, 'prompt_blocked');
   assert.match(json.reason_detail, /default-No|prompt/i);
@@ -88,7 +88,7 @@ test('default-No prompt detected during verifier poll → BLOCKED prompt_blocked
 
   assert.equal(result.status, 'blocked');
   assert.equal(result.category, 'infra_failure');
-  const blockedJson = path.join(root, '.claude/ralph-desk/memos/sum-blocked.json');
+  const blockedJson = path.join(root, '.rlp-desk/memos/sum-blocked.json');
   const json = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.equal(json.failure_category, 'prompt_blocked');
 });

@@ -143,6 +143,26 @@ export async function pollForSignal(
     // v5.7 §4.17 (Node parity): default-No prompts must NOT be auto-Entered;
     // they raise a PromptBlockedError so the caller writes BLOCKED and aborts.
     if (paneId) {
+      // v0.13.0: detect Claude Code self-modification permission prompts in
+      // pane stdout BEFORE attempting auto-dismiss. These cannot be dismissed
+      // by --dangerously-skip-permissions and would otherwise hang the worker
+      // for the full pollForSignal timeout.
+      try {
+        const paneContent = await capturePane(paneId);
+        const { detectPermissionPrompt } = await import('../runner/prompt-detector.mjs');
+        if (detectPermissionPrompt(paneContent)) {
+          throw new PromptBlockedError(
+            `Permission prompt detected on pane ${paneId} (Claude Code self-modification gate)`,
+            { paneId, category: 'permission_prompt', snippet: paneContent.split(/\r?\n/).slice(-10).join('\n') },
+          );
+        }
+      } catch (err) {
+        if (err instanceof PromptBlockedError) {
+          throw err;
+        }
+        // capture failure is non-fatal; fall through to auto-dismiss path.
+      }
+
       await autoDismissPrompts(paneId, {
         capturePane,
         sendKeys,

@@ -18,7 +18,7 @@ async function createTempDir(t) {
 }
 
 function deskPath(rootDir, ...segments) {
-  return path.join(rootDir, '.claude', 'ralph-desk', ...segments);
+  return path.join(rootDir, '.rlp-desk', ...segments);
 }
 
 async function exists(targetPath) {
@@ -86,7 +86,7 @@ test('US-005 AC5.1 boundary: initCampaign sanitizes special-character slugs and 
 
   await writeFile(
     gitignorePath,
-    ['# Existing rules', '# RLP Desk runtime artifacts', '.claude/ralph-desk/', ''].join('\n'),
+    ['# Existing rules', '# RLP Desk runtime artifacts', '.rlp-desk/', ''].join('\n'),
   );
 
   const result = await initCampaign('Test Campaign!@#', 'Ship the Node rewrite', {
@@ -101,7 +101,8 @@ test('US-005 AC5.1 boundary: initCampaign sanitizes special-character slugs and 
 
   const gitignoreContent = await readFile(gitignorePath);
   assert.equal(gitignoreContent.match(/# RLP Desk runtime artifacts/g)?.length ?? 0, 1);
-  assert.equal(gitignoreContent.match(/\.claude\/ralph-desk\//g)?.length ?? 0, 1);
+  assert.equal(gitignoreContent.match(/\.rlp-desk\//g)?.length ?? 0, 1);
+  assert.equal(gitignoreContent.match(/\.claude\/ralph-desk\//g)?.length ?? 0, 0);
 });
 
 test('US-005 AC5.1 negative: initCampaign completes a partial scaffold instead of leaving missing files behind', async (t) => {
