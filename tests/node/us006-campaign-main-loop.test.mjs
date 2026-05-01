@@ -163,6 +163,12 @@ test('US-006 AC6.1 boundary: run can create a real tmux session with four panes 
     mode: 'tmux',
     sessionName,
     workerModel: 'gpt-5.5:medium',
+    // v0.13.1: explicit empty env forces detached new-session branch even
+    // when the test runner is itself inside an attached tmux. Production
+    // users invoking from inside tmux take the in-current-window split
+    // branch (mirrors zsh L815-823); this test exercises the CI/headless
+    // path that creates a real isolated session for assertion + cleanup.
+    env: {},
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },

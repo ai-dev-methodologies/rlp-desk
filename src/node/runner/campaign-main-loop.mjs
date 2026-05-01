@@ -245,8 +245,27 @@ function nextWorkerModel(currentModel, consecutiveFailures) {
   return model;
 }
 
-async function defaultCreateSession({ sessionName, workingDir }) {
-  const { stdout } = await execFileAsync('tmux', [
+export async function defaultCreateSession({ sessionName, workingDir, env = process.env, execFile: execFileImpl } = {}) {
+  const exec = execFileImpl ?? execFileAsync;
+  // v0.13.1: when invoked from inside an attached tmux session, the user
+  // expects worker/verifier/flywheel panes to split off the CURRENT pane in
+  // the CURRENT window (mirrors zsh runner src/scripts/run_ralph_desk.zsh
+  // L815-823). The detached `new-session` fallback below is preserved for
+  // non-tmux invocation (CI, plain shells).
+  if (env && env.TMUX) {
+    const { stdout: paneOut } = await exec('tmux', [
+      'display-message', '-p', '-F', '#{pane_id}',
+    ]);
+    const { stdout: sessOut } = await exec('tmux', [
+      'display-message', '-p', '-F', '#{session_name}',
+    ]);
+    return {
+      sessionName: sessOut.trim() || sessionName,
+      leaderPaneId: paneOut.trim(),
+    };
+  }
+
+  const { stdout } = await exec('tmux', [
     'new-session',
     '-d',
     '-P',
@@ -1052,6 +1071,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     const session = await createSession({
       sessionName: options.sessionName ?? `rlp-${slug}`,
       workingDir: rootDir,
+      env: options.env ?? process.env,
     });
     state.session_name = session.sessionName;
     state.leader_pane_id = session.leaderPaneId;

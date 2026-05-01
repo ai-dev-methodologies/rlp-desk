@@ -153,6 +153,31 @@ for (const [k, v] of Object.entries(expected)) {
 "
 '
 
+# v0.13.1 UX regression: defaultCreateSession must mirror zsh L815-823.
+# Lesson: v0.13.0 SV scope did not include "real user UX vs zsh parity"
+# regression — that's how the bug shipped. These scenarios close the gap.
+
+run_scenario "L4.1 UX: defaultCreateSession in attached tmux uses current pane (no detached new-session)" \
+  "CRITICAL" \
+  "node --test tests/node/test-default-create-session.mjs"
+
+run_scenario "L4.2 UX: defaultCreateSession outside tmux falls back to detached new-session (CI parity)" \
+  "CRITICAL" \
+  '
+node --input-type=module -e "
+import { defaultCreateSession } from \"./src/node/runner/campaign-main-loop.mjs\";
+const calls = [];
+const r = await defaultCreateSession({
+  sessionName: \"sv-detached\", workingDir: \"/tmp\", env: {},
+  execFile: async (bin, args) => { calls.push(args); return { stdout: \"%9\\n\", stderr: \"\" }; },
+});
+if (r.leaderPaneId !== \"%9\" || r.sessionName !== \"sv-detached\" || calls[0][0] !== \"new-session\") {
+  console.error(\"detached branch wrong:\", r, calls);
+  process.exit(1);
+}
+"
+'
+
 # Verifier summary
 
 emit ""
