@@ -60,35 +60,15 @@ WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 WITH_SELF_VERIFICATION_REQUESTED="$WITH_SELF_VERIFICATION"  # preserves original user intent for traceability (governance §1f)
 SV_SKIPPED_REASON=""                                         # set when SV is disabled despite user request
 
-# v5.7 §4.2 — deprecation gate.
-# As of 0.12.0, --flywheel, --flywheel-guard, and --with-self-verification are
-# routed through the Node leader (src/node/run.mjs run --mode tmux). The zsh
-# runner is retained for backward compatibility ONLY for non-flywheel /
-# non-SV invocations. Calling it with FLYWHEEL or WITH_SELF_VERIFICATION env
-# vars is hard-rejected so users don't get silent no-op (Bug 2 / Bug 3).
-if [[ -n "${FLYWHEEL:-}" || -n "${FLYWHEEL_GUARD:-}" || "${WITH_SELF_VERIFICATION:-0}" == "1" ]]; then
-  print -u2 "ERROR: --flywheel and --with-self-verification require the Node leader."
-  print -u2 "       run_ralph_desk.zsh no longer supports them as of 0.12.0."
-  print -u2 ""
-  print -u2 "Use: node \"\${DESK_DIR:-\$HOME/.claude/ralph-desk}/node/run.mjs\" run \"\$LOOP_NAME\" --mode tmux \\"
-  if [[ -n "${FLYWHEEL:-}" ]]; then
-    print -u2 "       --flywheel \"$FLYWHEEL\" \\"
-  fi
-  if [[ -n "${FLYWHEEL_MODEL:-}" ]]; then
-    print -u2 "       --flywheel-model \"$FLYWHEEL_MODEL\" \\"
-  fi
-  if [[ -n "${FLYWHEEL_GUARD:-}" ]]; then
-    print -u2 "       --flywheel-guard \"$FLYWHEEL_GUARD\" \\"
-  fi
-  if [[ -n "${FLYWHEEL_GUARD_MODEL:-}" ]]; then
-    print -u2 "       --flywheel-guard-model \"$FLYWHEEL_GUARD_MODEL\" \\"
-  fi
-  if [[ "${WITH_SELF_VERIFICATION:-0}" == "1" ]]; then
-    print -u2 "       --with-self-verification"
-  fi
-  exit 2
-fi
-print -u2 "[notice] run_ralph_desk.zsh is deprecated as of 0.12.0. Prefer: node node/run.mjs run --mode tmux ..."
+# v0.14.0 — zsh runner restored as primary tmux mode path.
+# v5.7 §4.2's deprecation gate (rejected --flywheel/--flywheel-guard/
+# --with-self-verification) is removed: the Node port shipped without
+# zsh-equivalent safety nets (heartbeat, copy-mode guard, prompt-stall,
+# no-progress, stale-context, claude model upgrade chain, etc.), so the
+# Node leader is now reserved for `--mode agent` (LLM-driven) only.
+# `--mode tmux` invocations from src/node/run.mjs delegate here as a
+# subprocess via env vars. zsh continues to honor FLYWHEEL,
+# FLYWHEEL_GUARD, WITH_SELF_VERIFICATION.
 AUTONOMOUS_MODE="${AUTONOMOUS_MODE:-0}"    # 1=don't stop on ambiguity, PRD is authoritative
 # P1-E Lane enforcement: WARN-only by default; --lane-strict opts into BLOCKED
 # escalation. governance §7¾. The opt-in defaults to "warn"; "strict" trips

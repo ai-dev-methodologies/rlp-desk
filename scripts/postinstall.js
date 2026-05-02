@@ -19,6 +19,14 @@ const runtimeSources = [
   ["src/model-upgrade-table.md", path.join(deskDir, "model-upgrade-table.md")],
   ["README.md", path.join(deskDir, "README.md")],
   ["install.sh", path.join(deskDir, "install.sh")],
+  // v0.14.0: zsh runner is the canonical --mode tmux backend again.
+  // src/node/run.mjs spawns it as a subprocess for tmux mode invocations.
+  // injectBannerAndLock preserves the shebang and adds a `# DO NOT EDIT`
+  // line on line 2 so the verification scripts in CLAUDE.md still
+  // recognize the file as installed.
+  ["src/scripts/init_ralph_desk.zsh", path.join(deskDir, "init_ralph_desk.zsh")],
+  ["src/scripts/run_ralph_desk.zsh", path.join(deskDir, "run_ralph_desk.zsh")],
+  ["src/scripts/lib_ralph_desk.zsh", path.join(deskDir, "lib_ralph_desk.zsh")],
   // v5.7 §4.15: all rlp-desk docs (user-facing + dev meta) under docs/rlp-desk/.
   ["docs/rlp-desk/architecture.md", path.join(docsDir, "rlp-desk", "architecture.md")],
   ["docs/rlp-desk/getting-started.md", path.join(docsDir, "rlp-desk", "getting-started.md")],
@@ -26,11 +34,12 @@ const runtimeSources = [
   ["docs/rlp-desk/TODO-verification-next.md", path.join(docsDir, "rlp-desk", "TODO-verification-next.md")],
   ["docs/rlp-desk/multi-mission-orchestration.md", path.join(docsDir, "rlp-desk", "multi-mission-orchestration.md")],
 ];
-const legacyFiles = [
-  path.join(deskDir, "init_ralph_desk.zsh"),
-  path.join(deskDir, "run_ralph_desk.zsh"),
-  path.join(deskDir, "lib_ralph_desk.zsh"),
-];
+// v0.14.0: legacy-deletion list cleared. The Node-canonical era (v5.7+)
+// removed zsh after install; v0.14.0 reverts that — the zsh runner is the
+// production --mode tmux path. Keep the empty array so the surrounding loop
+// (`for (const legacyFile of legacyFiles)`) remains a no-op without churning
+// the call site.
+const legacyFiles = [];
 
 function getNodeVersion() {
   return process.env.RLP_DESK_NODE_VERSION_OVERRIDE || process.version;

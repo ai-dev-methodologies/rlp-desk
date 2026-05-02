@@ -44,7 +44,13 @@ async function runNode(args, options = {}) {
   });
 }
 
-test('US-008 AC8.1 happy: postinstall installs the Node runtime under ~/.claude/ralph-desk and removes legacy zsh scripts', async (t) => {
+test('US-008 AC8.1 happy: postinstall installs the Node runtime AND the zsh tmux runner under ~/.claude/ralph-desk (v0.14.0)', async (t) => {
+  // v0.14.0 inversion: the previous contract removed legacy zsh files because
+  // the Node leader was meant to be the only --mode tmux backend. That broke
+  // BOS-style production tmux flows (no heartbeat / copy-mode guard /
+  // prompt-stall in Node), so the zsh runner is now restored as the canonical
+  // --mode tmux path. postinstall must therefore SYNC the three zsh files,
+  // not delete them.
   const fakeHome = await createTempDir(t);
   const { stdout } = await runNode(['scripts/postinstall.js'], {
     env: {
@@ -55,13 +61,28 @@ test('US-008 AC8.1 happy: postinstall installs the Node runtime under ~/.claude/
   const deskDir = path.join(fakeHome, '.claude', 'ralph-desk');
   assert.equal(await exists(path.join(deskDir, 'node', 'run.mjs')), true);
   assert.equal(await exists(path.join(deskDir, 'node', 'runner', 'campaign-main-loop.mjs')), true);
-  assert.equal(await exists(path.join(deskDir, 'run_ralph_desk.zsh')), false);
-  assert.equal(await exists(path.join(deskDir, 'init_ralph_desk.zsh')), false);
-  assert.equal(await exists(path.join(deskDir, 'lib_ralph_desk.zsh')), false);
+  // init/run scripts ship a shebang and the banner lands on line 2; the
+  // library file (lib_ralph_desk.zsh) is sourced and has no shebang, so its
+  // banner lives on line 1. Both shapes are acceptable.
+  const shebangedZsh = ['init_ralph_desk.zsh', 'run_ralph_desk.zsh'];
+  const sourcedZsh = ['lib_ralph_desk.zsh'];
+  for (const zshName of shebangedZsh) {
+    const zshPath = path.join(deskDir, zshName);
+    assert.equal(await exists(zshPath), true, `${zshName} must be installed`);
+    const head = (await readText(zshPath)).split('\n').slice(0, 2).join('\n');
+    assert.match(head, /^#!\/bin\/zsh/, `${zshName} must keep its zsh shebang on line 1`);
+    assert.match(head, /DO NOT EDIT/, `${zshName} must have the install banner on line 2`);
+  }
+  for (const zshName of sourcedZsh) {
+    const zshPath = path.join(deskDir, zshName);
+    assert.equal(await exists(zshPath), true, `${zshName} must be installed`);
+    const head = (await readText(zshPath)).split('\n')[0];
+    assert.match(head, /^# DO NOT EDIT/, `${zshName} must have the install banner on line 1 (sourced library, no shebang)`);
+  }
   assert.match(stdout, /RLP Desk v/);
 });
 
-test('US-008 AC8.1 boundary: postinstall replaces a mixed installation with the Node runtime on reinstall', async (t) => {
+test('US-008 AC8.1 boundary: postinstall syncs zsh files from source on reinstall (replaces stale content)', async (t) => {
   const fakeHome = await createTempDir(t);
   const deskDir = path.join(fakeHome, '.claude', 'ralph-desk');
   await fs.mkdir(deskDir, { recursive: true });
@@ -75,7 +96,12 @@ test('US-008 AC8.1 boundary: postinstall replaces a mixed installation with the 
     },
   });
 
-  assert.equal(await exists(path.join(deskDir, 'run_ralph_desk.zsh')), false);
+  // v0.14.0: zsh runner is preserved AND replaced from source — stale
+  // hand-written content does not survive reinstall.
+  assert.equal(await exists(path.join(deskDir, 'run_ralph_desk.zsh')), true);
+  const runnerBody = await readText(path.join(deskDir, 'run_ralph_desk.zsh'));
+  assert.doesNotMatch(runnerBody, /^echo old$/m, 'reinstall must overwrite the stale stub');
+  assert.match(runnerBody, /Ralph Desk Tmux Runner/, 'reinstall must copy the source body');
   assert.equal(await exists(path.join(deskDir, 'node', 'run.mjs')), true);
   assert.equal(await exists(path.join(deskDir, 'node', 'stale.txt')), false);
 });
@@ -99,12 +125,15 @@ test('US-008 AC8.1 negative: uninstall removes the installed Node runtime files'
   assert.equal(await exists(path.join(deskDir, 'node', 'run.mjs')), false);
 });
 
-test('US-008 AC8.2 happy: the run command parses tmux example flags and launches the campaign with the expected configuration', async () => {
+test('US-008 AC8.2 happy: the run command parses agent example flags and launches the campaign with the expected configuration', async () => {
+  // v0.14.0: --mode tmux now delegates to the zsh runner (see the zsh routing
+  // test below). Flag-parsing coverage moved to --mode agent which still goes
+  // through the Node leader (deps.runCampaign).
   const cli = await import('../../src/node/run.mjs');
   let received = null;
 
   const exitCode = await cli.main(
-    ['run', 'test', '--mode', 'tmux', '--worker-model', 'gpt-5.5:medium', '--debug'],
+    ['run', 'test', '--mode', 'agent', '--worker-model', 'gpt-5.5:medium', '--debug'],
     {
       cwd: repoRoot,
       stdout: { write() {} },
@@ -121,7 +150,7 @@ test('US-008 AC8.2 happy: the run command parses tmux example flags and launches
     slug: 'test',
     options: {
       rootDir: repoRoot,
-      mode: 'tmux',
+      mode: 'agent',
       workerModel: 'gpt-5.5:medium',
       verifierModel: 'sonnet',
       finalVerifierModel: 'opus',
@@ -144,6 +173,89 @@ test('US-008 AC8.2 happy: the run command parses tmux example flags and launches
       flywheelGuardModel: 'opus',
     },
   });
+});
+
+test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env vars (v0.14.0 routing)', async (t) => {
+  // Use a fresh temp dir so detectLegacyDeskInRunMode does not trip on the
+  // repo's own .claude/ralph-desk/ tree.
+  const tempCwd = await createTempDir(t);
+  const cli = await import('../../src/node/run.mjs');
+  let spawned = null;
+  let runCalled = false;
+
+  const exitCode = await cli.main(
+    [
+      'run', 'demo',
+      '--mode', 'tmux',
+      '--worker-model', 'gpt-5.5:high',
+      '--verifier-model', 'sonnet',
+      '--max-iter', '5',
+      '--iter-timeout', '900',
+      '--cb-threshold', '4',
+      '--consensus', 'final-only',
+      '--lock-worker-model',
+      '--autonomous',
+      '--lane-strict',
+      '--test-density-strict',
+    ],
+    {
+      cwd: tempCwd,
+      stdout: { write() {} },
+      stderr: { write() {} },
+      runCampaign: async () => {
+        runCalled = true;
+        return { status: 'continue' };
+      },
+      fileExists: () => true,
+      zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+      spawnZsh: async (zshPath, env, cwd) => {
+        spawned = { zshPath, env, cwd };
+        return 0;
+      },
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(runCalled, false, 'tmux mode must not call the Node leader');
+  assert.equal(spawned.zshPath, '/fake/run_ralph_desk.zsh');
+  assert.equal(spawned.cwd, tempCwd);
+  assert.equal(spawned.env.LOOP_NAME, 'demo');
+  assert.equal(spawned.env.WORKER_MODEL, 'gpt-5.5:high');
+  assert.equal(spawned.env.VERIFIER_MODEL, 'sonnet');
+  assert.equal(spawned.env.MAX_ITER, '5');
+  assert.equal(spawned.env.ITER_TIMEOUT, '900');
+  assert.equal(spawned.env.CB_THRESHOLD, '4');
+  assert.equal(spawned.env.CONSENSUS_MODE, 'final-only');
+  assert.equal(spawned.env.LOCK_WORKER_MODEL, '1');
+  assert.equal(spawned.env.AUTONOMOUS_MODE, '1');
+  assert.equal(spawned.env.LANE_MODE, 'strict');
+  assert.equal(spawned.env.TEST_DENSITY_MODE, 'strict');
+  assert.equal(spawned.env.ROOT, tempCwd);
+});
+
+test('US-008 AC8.2 tmux missing zsh runner: surfaces actionable error and exits non-zero', async (t) => {
+  const tempCwd = await createTempDir(t);
+  const cli = await import('../../src/node/run.mjs');
+  let stderr = '';
+
+  const exitCode = await cli.main(
+    ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.5:high'],
+    {
+      cwd: tempCwd,
+      stdout: { write() {} },
+      stderr: { write(chunk) { stderr += chunk; } },
+      runCampaign: async () => ({ status: 'continue' }),
+      fileExists: () => false,
+      zshRunnerPath: () => '/missing/run_ralph_desk.zsh',
+      spawnZsh: async () => {
+        throw new Error('spawn must not be reached when runner is missing');
+      },
+    },
+  );
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /zsh runner not found/);
+  assert.match(stderr, /\/missing\/run_ralph_desk\.zsh/);
 });
 
 test('US-008 AC8.2 boundary: the run command applies the documented defaults when optional flags are omitted', async () => {
@@ -292,7 +404,16 @@ test('main run command warns when claude worker model used in tmux mode', async 
   try {
     await main(
       ['run', 'demo', '--mode', 'tmux', '--worker-model', 'sonnet'],
-      { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
+      {
+        runCampaign: fakeRun,
+        stderr,
+        stdout,
+        cwd: process.cwd(),
+        // v0.14.0: prevent the routing from spawning a real zsh process.
+        fileExists: () => true,
+        zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+        spawnZsh: async () => 0,
+      },
     );
   } finally {
     if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;
@@ -316,7 +437,16 @@ test('main run command does not warn when codex worker model used in tmux mode',
   try {
     await main(
       ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.5:high'],
-      { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
+      {
+        runCampaign: fakeRun,
+        stderr,
+        stdout,
+        cwd: process.cwd(),
+        // v0.14.0: prevent the routing from spawning a real zsh process.
+        fileExists: () => true,
+        zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+        spawnZsh: async () => 0,
+      },
     );
   } finally {
     if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;

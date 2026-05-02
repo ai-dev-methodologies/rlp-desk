@@ -20,6 +20,11 @@ const files = [
   path.join(deskDir, "model-upgrade-table.md"),
   path.join(deskDir, "README.md"),
   path.join(deskDir, "install.sh"),
+  // v0.14.0: zsh tmux runner is part of the install set again — clean it up
+  // on uninstall so users do not end up with orphaned 0o444 files.
+  path.join(deskDir, "init_ralph_desk.zsh"),
+  path.join(deskDir, "run_ralph_desk.zsh"),
+  path.join(deskDir, "lib_ralph_desk.zsh"),
 ];
 
 for (const targetPath of files) {

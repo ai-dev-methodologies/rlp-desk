@@ -949,6 +949,12 @@ export function shouldRunGuard(flywheelGuard, state, usId) {
   return true;
 }
 
+// v0.14.0: production --mode tmux is routed to the zsh runner by
+// src/node/run.mjs (see runTmuxViaZsh). The Node leader below owns the
+// --mode agent (LLM-driven) flow. In-tree tests still exercise this path
+// with `mode: 'tmux'` as a label while injecting fake
+// createSession/sendKeys/pollForSignal — that is intentional and is NOT a
+// regression of the routing contract.
 export async function run(slug, options = {}) {
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
   const env = options.env ?? process.env;

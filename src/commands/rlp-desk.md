@@ -278,9 +278,18 @@ Cross-project aggregation: scan `~/.claude/ralph-desk/analytics/` and read each 
 
 Parse the `--mode` flag. If absent or `agent`, use the Agent() path below. If `tmux`, use the Tmux path.
 
+> **v0.14.0 stability tiers:**
+> - `--mode tmux` is the **stable, production** path. The Node leader (`run.mjs`)
+>   now routes tmux invocations to `~/.claude/ralph-desk/run_ralph_desk.zsh`
+>   as a subprocess — that runner has the full safety net (heartbeat,
+>   copy-mode guard, prompt-stall, no-progress detection, claude model
+>   upgrade chain). Recommend this for autonomous campaigns.
+> - `--mode agent` is **alpha** (Node-native LLM-driven Leader). The runner
+>   emits a stderr warning when this mode is invoked.
+
 #### Tmux Mode (`--mode tmux`)
 
-When `--mode tmux` is specified (v0.12.0+ — v5.7 §4.1 routes to Node leader for flywheel + SV support):
+When `--mode tmux` is specified (v0.14.0+: `run.mjs` accepts the same flags as before but spawns `run_ralph_desk.zsh` as a subprocess and inherits stdio. Flywheel and self-verification flags are not honored under tmux mode — they require `--mode agent`):
 
 1. **Validate scaffold** — same as Agent() mode: check `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
 2. **Check sentinels** — same as Agent() mode.
@@ -322,9 +331,8 @@ node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
 - MUST launch with `run_in_background: true` so `/rlp-desk` returns control immediately while preserving live tmux visibility.
 - Run-in-background is used so the shell can keep the command visible and keep the pane layout stable for status checks and completion flow.
 - Do NOT kill panes after completion. Panes stay alive for inspection. User cleans up with `/rlp-desk clean <slug> --kill-session`.
-- `--with-self-verification` is fully supported in tmux mode (v5.7 §4.7). The Node leader's `generateSVReport()` writes `self-verification-report.md` + `self-verification-data.json` under `<project>/.claude/ralph-desk/analytics/<slug>/` (project-local, v5.7 §4.11.b).
-- `--flywheel on-fail` and `--flywheel-guard on` are fully supported in tmux mode (v5.7 §4.1). The Node leader handles pane creation, sendKeys dispatch, signal polling, and Guard retry semantics identically to agent mode.
-- Legacy `zsh ~/.claude/ralph-desk/run_ralph_desk.zsh` (deprecated in 0.12.0) still runs for non-flywheel/non-SV invocations but emits a deprecation `[notice]`. Calling it with `FLYWHEEL` or `WITH_SELF_VERIFICATION` env vars exits 2 with a migration banner pointing to the Node leader.
+- v0.14.0: `--with-self-verification`, `--flywheel`, and `--flywheel-guard` are **not honored** under `--mode tmux` — the zsh runner has no SV/flywheel implementation. The Node leader emits a stderr WARNING listing the dropped flags. For SV/flywheel, use `--mode agent` (alpha).
+- The slash command always invokes `node ~/.claude/ralph-desk/node/run.mjs run --mode tmux ...`. Do NOT invoke `~/.claude/ralph-desk/run_ralph_desk.zsh` directly — the Node router resolves the runner path, runs legacy detection, and surfaces actionable errors when the runner is missing.
 
 **tmux UX model (5 items):**
 - The session returns immediately after launch (`run_in_background: true`) so the command returns control to the parent CLI.
@@ -333,7 +341,13 @@ node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
 - On completion, the command returns a completion notification before the loop ends.
 - Agent mode remains unchanged, and no tmux-specific behavior is mixed into Agent mode.
 
-#### Agent Mode (`--mode agent` or default)
+#### Agent Mode (`--mode agent` or default — **alpha**)
+
+> **v0.14.0:** Agent mode is the alpha LLM-driven path. The Node port shipped
+> without zsh-equivalent safety nets (heartbeat, copy-mode guard, prompt-stall
+> timeout, no-progress detection, claude model upgrade chain). The runner
+> emits a stderr WARNING when agent mode is invoked. For production
+> autonomous campaigns, prefer `--mode tmux`.
 
 **Why Agent mode is structurally immune to Bug 4/5 (mid-execution prompt hang
 & A4 premature dispatch):** Worker/Verifier are dispatched as `Agent(...,

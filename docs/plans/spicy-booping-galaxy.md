@@ -1,8 +1,181 @@
-# Plan — Claude worker `.claude/` sensitive prompt hang 수정
+# Plan — v0.14.0 Recovery: 원래 의도대로 동작 회복 (zsh primary for tmux)
+
+> **상위 우선순위 plan. 아래 v0.13.0 plan은 history reference로 보존.**
+> **Trigger**: 사용자 평가 — "rlp-desk가 못 쓸 폐급, 통제 불가능 수준". v0.13.0/v0.13.1 fix는 빙산 일각.
+> **Target version**: 0.14.0
+> **승인된 strategy**: 경로 A (zsh restoration as tmux primary; Node leader는 `--mode agent`만 담당)
+
+---
+
+## A. Context (v0.14.0)
+
+### 문제 진단
+
+2026-04-12 Node port 시점부터 v0.13.x까지, **Node leader가 zsh runner의 핵심 안전망 11개를 누락한 채 ship**. 사용자(BOS) 평가는 "통제 불가능". v0.13.0/v0.13.1 patch는 다음 2개만 해결:
+1. `.claude/` sensitive prompt hang
+2. detached session UX 회귀
+
+**여전히 누락된 것** (file:line 인용):
+| # | 기능 | zsh location | Node 상태 |
+|---|------|--------------|----------|
+| 1 | Copy-mode 가드 send-keys | `safe_send_keys` L976-1083 | 없음 (pane-manager.mjs:50-53 단순 send-keys) |
+| 2 | Heartbeat 주기적 쓰기 + staleness 감지 | L1735-1750, L1158 | 없음 |
+| 3 | No-progress 10분 byte-stasis 감지 | `check_no_progress` L2372-2420 | 없음 |
+| 4 | Prompt-stall 5분 timeout | `check_prompt_stall` L2298-2370 | 없음 |
+| 5 | Stale-context 3 consecutive unchanged iter | `check_stale_context` lib L1162-1179 | 없음 |
+| 6 | Claude 모델 upgrade chain (haiku→sonnet→opus) | `get_next_model` lib L136-155 | 없음 (codex chain만) |
+| 7 | LOCK_WORKER_MODEL flag 처리 | lib L197 | 없음 |
+| 8 | Codex update prompt auto-dismiss | L1007-1011 | 없음 |
+| 9 | Pane lifecycle cleanup | `cleanup_panes` L3310-3320 | 없음 (`_ensureTerminalSentinel` 부분만) |
+| 10 | 사용자 pane-kill graceful detection | L134-150 | 없음 |
+| 11 | Cleanup trap (C-c → /exit → kill-pane) | L1864-2014 | 부분만 |
+
+### 핵심 결정
+
+**zsh를 tmux mode primary path로 복원, Node leader는 `--mode agent`(LLM-driven orchestration) 단독 담당**.
+
+**근거**:
+- zsh runner는 v0.12.0 deprecation 전까지 6주+ production 검증.
+- Node port의 누락 11개를 모두 port = 5-7일 + 새 회귀 위험. zsh 복원 = 1-2일 + 검증된 코드.
+- Node leader는 LLM이 worker/verifier를 spawn하는 agent mode에 고유 가치 — tmux 기계적 orchestration은 zsh가 더 잘함.
+- 사용자 즉시 회복 우선.
+
+---
+
+## B. Approach (6 Phases)
+
+### Phase 1 — zsh deprecation 게이트 해제 (Day 1, 2시간)
+
+**파일**: `src/scripts/run_ralph_desk.zsh`
+- L69-90: `--flywheel`/`--with-self-verification`/`--flywheel-guard` hard-reject 블록 제거. zsh가 이 flag들을 다시 honor.
+- L91 "deprecated" 메시지 제거.
+- `RALPH_DESK_VERSION` 0.14.0으로 갱신.
+
+### Phase 2 — Node `--mode tmux` → zsh subprocess 라우팅 (Day 1, 4시간)
+
+**파일**: `src/node/run.mjs`
+- `parseRunOptions()` 후 `runRunCommand()` 진입에서 `mode === 'tmux'` 분기:
+  - `~/.claude/ralph-desk/run_ralph_desk.zsh` 경로 확인 (postinstall이 sync 보장).
+  - 모든 옵션을 env vars로 변환 (`LOOP_NAME`, `WORKER_MODEL`, `FLYWHEEL`, `FLYWHEEL_GUARD`, `WITH_SELF_VERIFICATION`, `MAX_ITER`, `ITER_TIMEOUT`, `CB_THRESHOLD`, `CONSENSUS_*`, `LOCK_WORKER_MODEL` 등).
+  - `child_process.spawn('zsh', [zshPath], { env, stdio: 'inherit' })`로 위임.
+  - exit code 그대로 propagate.
+- legacy detection (`detectLegacyDeskInRunMode`) 호출은 zsh spawn 전에 유지.
+- claude+tmux warning 유지 (zsh도 같은 worker engine 분기에서 적용).
+
+**파일**: `src/node/runner/campaign-main-loop.mjs`
+- `run()` 진입에서 `options.mode === 'tmux'`일 때 가드: `throw new Error('tmux mode is delegated to zsh — invoke via run.mjs router')`. dead-code 표시 + 회귀 방지.
+
+### Phase 3 — postinstall + install.sh가 zsh를 항상 sync (Day 1, 1시간)
+
+**파일**: `scripts/postinstall.js`
+- 현재 `legacyFiles` 배열로 zsh 3개 삭제 → **유지·sync로 변경**.
+- `runtimeSources`에 `src/scripts/{init,run,lib}_ralph_desk.zsh` → `~/.claude/ralph-desk/` 추가 (또는 `scripts/` 하위 — install.sh와 일관성 결정).
+- banner-aware sync.
+
+**파일**: `tests/node/us008-cli-entrypoint.test.mjs:47`
+- 기존 "removes legacy zsh scripts" 테스트 invert: zsh 3개가 install 후 존재 + spawnable 검증.
+
+### Phase 4 — Node `--mode agent` 라벨링 (Day 2, 2시간)
+
+**파일**: `src/node/run.mjs`, `src/commands/rlp-desk.md`, `README.md`
+- `--mode agent` 진입 시 stderr 경고: "agent mode is alpha — for production use --mode tmux".
+- README mode 표:
+  - `tmux` (stable, zsh-backed)
+  - `agent` (alpha, Node-native)
+- v0.13.0/0.13.1 fix(`.claude/` 마이그레이션, prompt-detector, claude+tmux warning)는 모두 agent mode에서 잔존 — Node 단독 가치 보존.
+
+### Phase 5 — 검증 시나리오 (Day 2-3, 1일)
+
+**Self-verification gate (`tests/sv-self-verify-0.14.sh`)** — v0.13 시나리오 + 신규:
+- L5.1 (CRITICAL) BOS 회귀: claude worker + tmux mode + 1 iter 완주 (실제 tmux session 생성, kill-session cleanup).
+- L5.2 (CRITICAL) zsh subprocess routing: `--mode tmux` 호출이 `child_process.spawn('zsh', ...)`로 위임됐는지 mock 검증.
+- L5.3 (CRITICAL) flag → env var conversion 단언 (모든 supported flag 1개씩).
+- L5.4 (MEDIUM) zsh deprecation 게이트 제거 검증 (L69-90).
+- L5.5 (MEDIUM) postinstall이 zsh 3개를 install (us008 invert).
+- L5.6 (MEDIUM) `--mode agent` warning 출력 검증.
+- L5.7 (UX) attached tmux 안에서 leader+worker+verifier panes 사용자 현재 window에 표시 (zsh L815-823 동작).
+
+### Phase 6 — Ship (Day 3)
+
+CLAUDE.md release workflow 그대로:
+1. self-verification gate 17/17 PASS.
+2. ralplan + codex review (기존 mandate).
+3. version bump 0.14.0.
+4. CHANGELOG: "Restore zsh as primary tmux runner. Node tmux delegates to validated zsh codepath. Node agent mode marked alpha."
+5. commit + push + gh release + npm publish.
+6. local sync banner-aware verify.
+
+---
+
+## C. v0.13.x에서 보존되는 것
+
+- `.claude/ralph-desk/` → `.rlp-desk/` 경로 마이그레이션 (init mode auto-mv, run mode 안내) — zsh도 v0.13.0에서 이미 반영됨.
+- `RLP_DESK_RUNTIME_DIR` env override.
+- prompt-detector + signal-poller permission_prompt 감지 — agent mode 전용.
+- BLOCK_TAGS.PERMISSION_PROMPT 상수.
+- claude+tmux warning (run.mjs 진입 시).
+
+---
+
+## D. v0.15.0+ 점진 port 백로그 (deferred)
+
+**P0 (2주 내, agent mode parity 위해)**:
+- heartbeat 메커니즘
+- copy-mode 가드 send-keys
+- prompt-stall 5분 timeout
+- no-progress 10분 byte-stasis
+
+**P1**:
+- stale-context 감지
+- claude 모델 upgrade chain (haiku→sonnet→opus)
+- LOCK_WORKER_MODEL flag
+
+**P2**:
+- codex update prompt auto-dismiss
+- pane lifecycle cleanup
+- user-kill graceful detection
+- cleanup trap full parity
+
+---
+
+## E. Critical Files
+
+```
+src/scripts/run_ralph_desk.zsh          # Phase 1 — deprecation 게이트 해제
+src/scripts/lib_ralph_desk.zsh          # 변경 없음 (zsh helpers 그대로)
+src/scripts/init_ralph_desk.zsh         # 변경 없음 (v0.13.0 마이그레이션 그대로)
+src/node/run.mjs                        # Phase 2 — tmux mode 라우터
+src/node/runner/campaign-main-loop.mjs  # Phase 2 — tmux mode 가드
+scripts/postinstall.js                  # Phase 3 — zsh sync 복원
+tests/node/us008-cli-entrypoint.test.mjs # Phase 3 — invert
+src/commands/rlp-desk.md                # Phase 4 — mode 표 갱신
+README.md                                # Phase 4 — stable/alpha 표시
+package.json                             # Phase 6 — 0.14.0
+tests/sv-self-verify-0.14.sh             # Phase 5 — 신규 SV gate
+```
+
+---
+
+## F. 검증 (E2E)
+
+1. **BOS 회귀 (CRITICAL)**: BOS 프로젝트 worktree에서 `node ~/.claude/ralph-desk/node/run.mjs run bos-phase-1 --mode tmux --worker-model sonnet --max-iter 1 --iter-timeout 600` → tmux session 생성, leader/worker/verifier panes 사용자 현재 window에 split, 1 iter sentinel write 성공, no permission prompt hang.
+2. **Local sync**: `npm install` 후 `~/.claude/ralph-desk/run_ralph_desk.zsh` 존재 + banner.
+3. **Backward compat**: v0.13.x mid-campaign 사용자 — `mv .claude/ralph-desk .rlp-desk` 안내 그대로.
+
+---
+
+## G. 기각된 대안
+
+- **B (Node 전면 port)**: 11 features × 평균 3시간 + parity 회귀테스트 = 5-7일 + 신규 버그 위험. v0.15.0+ 점진 port로 deferred.
+- **C (단독 라벨링)**: experimental 라벨만으로는 "통제 불가능" 즉시 해소 불가. 경로 A에 흡수.
+
+---
+
+# v0.13.0 (HISTORY) — Claude worker `.claude/` sensitive prompt hang 수정
 
 > **Source bug report**: `/Users/kyjin/dev/doul/bos/docs/exec-plans/active/2026-05-01-rlp-desk-bug-report.md`
 > **Severity**: HIGH — `--mode tmux` + `--worker-model sonnet/haiku/opus` 조합에서 모든 campaign blocking
-> **Target version**: 0.13.0 (breaking — project-local sentinel 경로 이동)
+> **Target version**: 0.13.0 (breaking — project-local sentinel 경로 이동) — **SHIPPED**, but coverage was a sliver of the real failure surface (see v0.14.0 plan above).
 
 ---
 

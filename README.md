@@ -238,7 +238,7 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--mode agent\|tmux` | agent | agent=LLM Leader, tmux=shell Leader |
+| `--mode agent\|tmux` | agent | tmux=zsh Leader (stable, production), agent=Node Leader (alpha) |
 | `--worker-model MODEL` | haiku | Worker model. `name`=claude, `name:reasoning`=codex |
 | `--lock-worker-model` | off | Disable auto model upgrade on failure |
 | `--verifier-model MODEL` | sonnet | per-US verification model (lighter) |
@@ -277,10 +277,17 @@ The brainstorm phase evaluates complexity (US count, file scope, logic, dependen
 
 RLP Desk supports two execution modes. Both honor the same governance protocol.
 
+> **v0.14.0 status:** `--mode tmux` (zsh-backed) is the **stable, production** path
+> with the full safety net (heartbeat, copy-mode guard, prompt-stall timeout,
+> no-progress detection, claude model upgrade chain). `--mode agent` is **alpha**
+> and ships without those features — the runner emits a stderr warning when
+> agent mode is invoked. For long campaigns and BOS-style autonomous loops,
+> use `--mode tmux`.
+
 ### Environment Compatibility
 
-| Environment | Agent Mode | Tmux Mode |
-|-------------|-----------|-----------|
+| Environment | Agent Mode (alpha) | Tmux Mode (stable) |
+|-------------|--------------------|--------------------|
 | Claude Code (any terminal) | **Works** | Requires tmux |
 | Inside tmux session | **Works** | **Works** — panes split in current window |
 | Outside tmux session | **Works** | **Rejected** — "start tmux first" |
@@ -289,9 +296,9 @@ RLP Desk supports two execution modes. Both honor the same governance protocol.
 
 | Need | Use |
 |------|-----|
-| Reliable autonomous loop (no interruption) | `--mode tmux` |
-| Interactive development, quick tasks | `--mode agent` (default) |
-| Long campaigns, CI, overnight runs | `--mode tmux` |
+| Production / autonomous campaigns | `--mode tmux` (stable) |
+| Long campaigns, CI, overnight runs | `--mode tmux` (stable) |
+| Quick interactive exploration inside Claude Code | `--mode agent` (alpha — Node-native) |
 
 ### Agent Mode (default) — "Smart Mode"
 
