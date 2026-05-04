@@ -1,5 +1,227 @@
-# Plan — v0.14.0 Recovery: 원래 의도대로 동작 회복 (zsh primary for tmux)
+# Plan — v0.14.1: Codex verifier idle을 frozen으로 오인하는 버그 수정
 
+> **상위 우선순위 plan. 아래 v0.14.0 / v0.13.0 plan은 history reference로 보존.**
+> **Trigger**: BOS Bug Report #3 (`/Users/kyjin/dev/doul/bos/docs/exec-plans/active/2026-05-04-rlp-desk-bug-report-3-verifier-noprogress.md`). codex verifier가 verdict 작성 + idle UI ("Worked for 5m 36s ──") 표시 시 main polling loop의 byte-stasis 감지가 BLOCKED 판정 → 8 iter (148분) 손실.
+> **Target version**: 0.14.1
+> **Severity**: HIGH (Bug Report 분류).
+> **승인된 strategy**: 작성 시점 미정 — 본 plan에 단일 추천안 명시 후 ExitPlanMode로 승인 요청.
+
+---
+
+## A. Context (v0.14.1)
+
+### 문제 진단
+
+v0.14.0 출시 후 production path는 `--mode tmux` → `run_ralph_desk.zsh`. 신규 버그는 zsh runner의 main polling loop에서 발생. codex (gpt-5.5:high) verifier가:
+1. verdict file (`<slug>-verify-verdict.json`) 작성 완료
+2. 이후 codex CLI는 다음 입력 대기 idle UI 노출 (예: `─ Worked for 5m 36s ──`, `› Summarize recent commits`, `gpt-5.5 high · Context 66% left`)
+3. pane content 변화 0 → main loop의 `check_no_progress()` (`PROGRESS_NO_CHANGE_TIMEOUT`=600s) 가 frozen 판정
+4. BLOCKED `verifier_dead` (sentinel category=infra_failure) 작성 → 캠페인 종료
+5. **그 시점에 verdict 파일은 이미 디스크에 있었다** → 무효화
+
+Node leader (`--mode agent`, alpha)에도 동일 결함 존재: `signal-poller.mjs` + `prompt-dismisser.mjs` 에 codex idle 패턴 부재. agent mode에서 동일 시나리오로 회귀할 위험.
+
+### Explore 결과 (file:line 인용)
+
+**zsh runner**:
+- `src/scripts/run_ralph_desk.zsh:1437-1469` — `check_no_progress()`. `PROGRESS_NO_CHANGE_TIMEOUT` (기본 600s) 이상 pane bytes 동일 시 BLOCKED. **verdict 파일 검사 없음**.
+- `src/scripts/run_ralph_desk.zsh:1407-1427` — `check_prompt_stall()`. `_PROMPT_RE`/`_AFFORDANCE_RE` 만 검사. **codex idle UI 패턴 없음**.
+- `src/scripts/run_ralph_desk.zsh:2185, 2194` — main polling loop가 `check_prompt_stall` + `check_no_progress` 호출.
+- `src/scripts/run_ralph_desk.zsh:2269-2306` — codex verifier 전용 폴링: verdict file 존재 + jq valid JSON + 30s grace + `pane_current_command` shell-back 조기 종료. **그러나 위 main loop의 check_no_progress 가 동시에 작동 → 동일 600s에 BLOCKED 발화**.
+- `src/scripts/run_ralph_desk.zsh:272` — `VERDICT_FILE="${MEMOS_DIR}/${SLUG}-verify-verdict.json"`.
+- `src/scripts/run_ralph_desk.zsh:382, 407, 536, 560` — codex working/thinking/Exploring/Running/reading/searching/editing/writing 키워드만 인식. idle UI 미인식.
+
+**Node leader**:
+- `src/node/runner/prompt-dismisser.mjs:18-26` — `PROMPT_RE` + `AFFORDANCE_RE` 모두 claude 패턴. codex 특화 0개.
+- `src/node/runner/prompt-detector.mjs:6-11` — claude permission 시그니처 only.
+- `src/node/polling/signal-poller.mjs:118-242` — `pollForSignal(signalFile, { timeoutMs })`. signal file이 없고 pane이 shell로 돌아오면 `WorkerExitedError`. timeout 시 `TimeoutError`. **verdict 파일 자체를 polling 함** — verdict 작성 후 codex idle 시점이라도 file 존재하면 즉시 반환. 즉 Bug #3는 Node 측에서는 발생 빈도가 낮으나, 여전히 timeout 600s 안에 read 못하면 (예: codex가 verdict를 매우 늦게 atomic-write) 회귀 가능.
+- `src/node/runner/campaign-main-loop.mjs:1449-1468` — verifier 폴링 호출.
+- `src/node/runner/campaign-main-loop.mjs:471-501` — `BLOCK_TAGS`: `VERIFIER_TIMEOUT`, `VERIFIER_EXITED`, `PROMPT_BLOCKED`, `PERMISSION_PROMPT`.
+
+### 핵심 결정 (추천안)
+
+**zsh runner와 Node leader 양쪽에 "verdict file 우선 검사 + codex idle UI 인식" 이중 방어 추가**. Bug Report Fix-A + Fix-B를 두 경로에 적용. Fix-C(`--verifier-noprogress-timeout` 옵션 분리)는 보류 — Fix-A 가 효력을 보이면 불필요.
+
+**근거**:
+- v0.14.0 production path(zsh)에서 즉시 효과. BOS 캠페인 즉시 회복.
+- agent mode(Node, alpha)에도 같은 회귀 위험이 있으므로 동시 적용으로 일관된 contract.
+- 1줄 추가(verdict file 존재 검사)는 risk가 매우 낮고, codex idle 패턴 추가는 기존 패턴 정규식에 alternation 추가로 끝.
+- workaround W1(`--verifier-model sonnet`) 은 BOS 권고이지만 codex consensus 가치를 깎으므로 fix 가 우선.
+
+---
+
+## B. Approach (5 Phases)
+
+### Phase 1 — zsh: verdict-aware no-progress + codex idle 인식 (Day 1, 2시간)
+
+**파일**: `src/scripts/run_ralph_desk.zsh`
+
+1. **`check_no_progress()` (L1437-1469)** 진입부에 verdict-aware short-circuit 추가:
+   ```zsh
+   check_no_progress() {
+     # v0.14.1 Fix-A: codex verifier가 verdict 작성 후 idle UI 노출 시 byte-stasis가
+     # frozen으로 오인됨. main verdict 파일이 이미 valid JSON이면 verifier는 done이며
+     # main loop 다음 phase(verdict 수확)가 처리해야 한다 — frozen으로 분류 X.
+     if [[ "${PHASE:-}" == "verifier" || "${PHASE:-}" == "final_verifier" ]] \
+        && [[ -f "$VERDICT_FILE" ]] \
+        && jq -e . "$VERDICT_FILE" >/dev/null 2>&1; then
+       return 0   # verdict already written; let polling loop harvest
+     fi
+     # ... 기존 byte-stasis 로직 유지 ...
+   }
+   ```
+   - `PHASE` 변수 노출이 미흡하면, current pane id 가 `$VERIFIER_PANE` 인지로 분기.
+   - consensus 모드에서는 `${SLUG}-verify-verdict-claude.json` / `${SLUG}-verify-verdict-codex.json` 도 OR 검사.
+
+2. **`check_prompt_stall()` (L1407-1427)** 의 `_PROMPT_RE` / `_AFFORDANCE_RE` 에 codex idle 패턴 추가하지 **않는다** — 이건 prompt가 아니라 idle 상태. 대신 신규 helper `is_codex_idle_ui()` 추가:
+   ```zsh
+   is_codex_idle_ui() {
+     local pane_text="$1"
+     # codex post-work idle: "─ Worked for Xm Ys ──", "› " prefix, "Context X% left"
+     echo "$pane_text" | grep -qE '─ Worked for [0-9]+m [0-9]+s ─' \
+       || echo "$pane_text" | grep -qE 'Context [0-9]+% left'
+   }
+   ```
+   `check_no_progress()` 의 byte-stasis 단계에서 verdict file이 부재해도 codex idle UI 가 감지되면 추가 grace 기간(예: +120s) 부여. timeout 사용자에게 명확하도록 stderr 노티스 1회.
+
+3. **codex verifier 폴링 (L2269-2306)** 의 grace period(현재 30s) 는 그대로 유지.
+
+### Phase 2 — Node leader: signal-poller + prompt-dismisser 보강 (Day 1, 3시간)
+
+**파일**: `src/node/runner/prompt-dismisser.mjs`, `src/node/polling/signal-poller.mjs`, `src/node/runner/prompt-detector.mjs`
+
+1. **`prompt-dismisser.mjs`** 에 codex idle 인식용 정규식 분리 (기존 PROMPT_RE 와는 다른 카테고리):
+   ```js
+   // v0.14.1: codex post-work idle UI markers. Not a permission prompt — work
+   // is done; the CLI is just waiting for next user input. Emitting these as
+   // "prompt blocked" would be wrong — the right response is to let the
+   // verifier-side polling harvest the already-written verdict file.
+   export const CODEX_IDLE_RE = /─\s*Worked for \d+m \d+s\s*─|Context \d+% left/;
+   export function isCodexIdleUi(paneText) { return CODEX_IDLE_RE.test(paneText); }
+   ```
+
+2. **`signal-poller.mjs`** (L210-226 의 pane-shell-back 분기 직전):
+   ```js
+   // v0.14.1 Fix-A: re-read signal file once more before declaring exit.
+   // Codex may write verdict + return to idle UI almost simultaneously; if
+   // the verdict landed on disk after our last readFile, we must not
+   // misclassify the idle UI as WorkerExited.
+   try {
+     const raw = await readFile(signalFile, 'utf8');
+     const parsed = JSON.parse(raw);
+     return parsed;
+   } catch { /* still missing — fall through to existing exit logic */ }
+   ```
+   현재 코드 패스가 이미 readFile loop을 하므로 차이가 작을 수 있음 — 정확한 위치는 구현 시점에 결정.
+
+3. **timeout 직전(L deadline 비교)** 에 verdict file 마지막 점검 추가 (Bug Report Fix-A 의 Node 버전):
+   ```js
+   if (Date.now() >= deadline) {
+     try {
+       const last = await readFile(signalFile, 'utf8');
+       return JSON.parse(last);
+     } catch {}
+     throw new TimeoutError(`Timed out waiting for valid JSON signal at ${signalFile}`);
+   }
+   ```
+
+4. **`prompt-detector.mjs`** 는 권한 프롬프트 전용이므로 codex idle 추가하지 않음. 대신 `prompt-dismisser` 의 `isCodexIdleUi()` 를 signal-poller가 임포트해서, codex mode 일 때 idle 감지 시 deadline 연장 (예: 마지막 byte-change 가 600s 전이라도 idle UI 보이면 추가 120s grace).
+
+### Phase 3 — 테스트 (Day 1, 3시간)
+
+**신규 / 갱신**:
+- `tests/node/test-prompt-dismisser.mjs` (신규 또는 기존 보강): `CODEX_IDLE_RE` / `isCodexIdleUi()` 단위 테스트. 실제 BOS 캡처 텍스트 fixture로 verify (≥3 케이스).
+- `tests/node/test-signal-poller.mjs` (us003 보강): "verdict written between polls + codex idle UI" 시나리오 — `readFile` mock이 첫 호출 ENOENT, 두 번째 호출 valid JSON 반환. timeout 직전 last-read 가 verdict 회수하는지 검증.
+- `tests/node/us003-signal-poller.test.mjs` 의 기존 flake 테스트는 손대지 않음(타이밍 flake — 별도 이슈).
+- zsh 측: `tests/test_us0XX_codex_idle_no_progress.sh` 신규. mock pane 텍스트 + verdict file 시뮬레이션으로 `check_no_progress()` 가 `PHASE=verifier && verdict exists` 일 때 BLOCKED 발화 안 함을 zsh 단위 테스트로 검증.
+
+### Phase 4 — SV gate 갱신 (Day 1, 1시간)
+
+**파일**: `tests/sv-self-verify-0.14.sh` 보강 또는 신규 `tests/sv-self-verify-0.14.1.sh`.
+신규 시나리오:
+- L6.1 (CRITICAL) verdict-aware no-progress: `PHASE=verifier` + verdict 파일 존재 시 `check_no_progress` 가 BLOCKED 안 함.
+- L6.2 (CRITICAL) Node `signal-poller` last-chance verdict read: deadline 직전 verdict 작성된 경우 timeout 대신 verdict 반환.
+- L6.3 (MEDIUM) `isCodexIdleUi()` 단위 테스트 PASS.
+- L6.4 (MEDIUM) BOS-shape 캡처 텍스트("Worked for 5m 36s ──", "Context 66% left") 가 idle 로 인식.
+- L6.5 (LOW) v0.14.0 contract 회귀 가드: `--mode tmux` 가 여전히 zsh subprocess로 위임 (us008 happy 재실행).
+
+### Phase 5 — Ship (Day 2, CLAUDE.md mandate)
+
+1. self-verification gate 100% PASS.
+2. ralplan + codex review (governance.md 변경 없으면 ralplan 생략 가능, 단 governance docs에 codex idle 인식 정책 1단락 추가 시 mandatory).
+3. version bump 0.14.1.
+4. CHANGELOG: "Fix codex verifier idle UI being mis-classified as no-progress; verdict-aware short-circuit in zsh runner; symmetric guard in Node signal-poller (agent mode)."
+5. commit + push + gh release + npm publish (각 단계 사용자 승인 필수, CLAUDE.md `Commit & Publish Gate`).
+6. local sync banner-aware verify.
+
+---
+
+## C. v0.14.0 / v0.13.x 에서 보존되는 것
+
+- v0.14.0 routing contract: `--mode tmux` → zsh subprocess. 변경 없음.
+- v0.13.0 path migration (`.rlp-desk/`).
+- v0.13.0 prompt-detector + signal-poller permission_prompt 감지.
+- v0.13.1 detached vs attached tmux 분기.
+- agent-mode alpha 라벨링.
+
+---
+
+## D. Critical Files
+
+```
+src/scripts/run_ralph_desk.zsh                # Phase 1 — verdict-aware check_no_progress + is_codex_idle_ui()
+src/node/runner/prompt-dismisser.mjs          # Phase 2 — CODEX_IDLE_RE + isCodexIdleUi()
+src/node/polling/signal-poller.mjs            # Phase 2 — last-chance verdict read on deadline + idle-UI grace
+src/node/runner/prompt-detector.mjs           # Phase 2 — 변경 없음 (확인용)
+src/node/runner/campaign-main-loop.mjs        # 변경 거의 없음 — pollForSignal 호출은 그대로
+tests/node/test-prompt-dismisser.mjs          # 신규/보강
+tests/node/test-signal-poller.mjs             # 보강
+tests/test_us0XX_codex_idle_no_progress.sh    # 신규 (zsh 단위)
+tests/sv-self-verify-0.14.1.sh 또는 0.14.sh 보강 # Phase 4
+package.json                                   # Phase 5 — 0.14.1
+docs/plans/spicy-booping-galaxy.md             # 본 파일 (최종 plan 기록)
+```
+
+Verdict file paths (참조 only, 변경 없음):
+- zsh: `${MEMOS_DIR}/${SLUG}-verify-verdict.json` (run_ralph_desk.zsh:272)
+- Node: `paths.verdictFile = <deskRoot>/memos/<slug>-verify-verdict.json` (campaign-main-loop.mjs:78)
+- Consensus: `<slug>-verify-verdict-claude.json`, `<slug>-verify-verdict-codex.json`
+
+---
+
+## E. Verification (E2E)
+
+1. **BOS 회귀 (CRITICAL)**: BOS Phase 1 캠페인을 `--worker-model sonnet --verifier-model gpt-5.5:high --consensus final-only` 로 재실행. US-003 verifier idle UI 시점에 BLOCKED 발화 안 함, verdict 정상 회수 + 다음 iteration 진입 확인.
+2. **Local sync**: `node scripts/postinstall.js` 후 banner-aware diff 0 mismatches.
+3. **Backward compat**:
+   - claude-only verifier (`--verifier-model opus`): 회귀 없음 — verdict-aware short-circuit 도 trip 안 함 (claude는 idle 시점 자체가 다름).
+   - `--mode agent`: 동일 fix 적용으로 회귀 없음.
+   - 진짜 frozen worker (verdict 부재 + pane 600s 변화 없음): 기존대로 BLOCKED 정상 발화.
+4. **Inspection 세션 정리**: 사용자 측 `tmux session doul-bos-583` (worker pane `%1681` node 잔존) 은 이번 fix 이후 재실행 결정 시점에 사용자가 직접 정리 (`/rlp-desk clean <slug> --kill-session`).
+
+---
+
+## F. 기각된 대안
+
+- **Fix-C (`--verifier-noprogress-timeout` 옵션 분리)**: 사용자 노출 surface 증가. Fix-A 가 효력을 보이면 불필요. v0.15.0+ 에 별도 백로그.
+- **Workaround W1 영구화 (claude 만 verifier 허용)**: codex consensus 가치 손실. 부정.
+- **agent mode 만 fix, tmux 보류**: production path 가 zsh이므로 BOS 회복 안 됨. 부정.
+- **prompt-detector에 codex idle 추가**: detector 는 permission prompt 전용 — 의미적으로 어긋남. dismisser쪽 분리 함수가 정확.
+
+---
+
+## G. Risk Notes
+
+- `PHASE` 변수가 zsh runner 전반에 노출되어 있는지 확인 필요(미노출 시 verifier pane id로 분기 변경).
+- consensus 모드 시 두 verdict 파일 OR 검사로 단일 verifier 작성된 시점에 short-circuit 안 됨 — 이 부분은 Phase 1 구현 시 명시 검증.
+- `jq -e .` 검사가 codex가 partial-write 중인 verdict (파일 생성 후 atomic mv 전)에 false-positive 안 발생하는지 확인 — `atomic_write` 가 이미 mv 사용이라 안전.
+- Node 측 last-chance read 가 race condition (deadline 전 다른 thread가 file 작성) 에서도 동작하는지 확인 — fs.readFile 은 atomic 이므로 OK.
+
+---
+
+# v0.14.0 (HISTORY) — Restore zsh as primary tmux runner
+
+> **Status**: SHIPPED 2026-05-03. v0.14.0 npm + GitHub release 게시 완료.
 > **상위 우선순위 plan. 아래 v0.13.0 plan은 history reference로 보존.**
 > **Trigger**: 사용자 평가 — "rlp-desk가 못 쓸 폐급, 통제 불가능 수준". v0.13.0/v0.13.1 fix는 빙산 일각.
 > **Target version**: 0.14.0

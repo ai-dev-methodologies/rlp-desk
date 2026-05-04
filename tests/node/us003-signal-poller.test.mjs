@@ -270,3 +270,7 @@ test('US-003 AC3.4 negative: pollForSignal does not start codex exit checks unti
   assert.deepEqual(result, payload);
   assert.equal(paneChecks, 1);
 });
+
+// v0.14.1 Bug Report #3 (BOS 2026-05-04): the post-deadline last-chance
+// verdict read lives in its own file so the v0.14.1 SV gate can target it
+// deterministically. See tests/node/test-signal-poller-last-chance.mjs.

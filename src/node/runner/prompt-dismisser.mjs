@@ -35,6 +35,18 @@ const DEFAULT_NO_RE = /\[y\/N\]|\(yes\/no,\s*default\s+no\)|[Dd]efault[: ]+[Nn]o
 // output that may legitimately contain "(y/n)"-shaped substrings.
 const ACTIVE_TASK_RE =
   /esc to interrupt|background terminal running|^\s*[·✻]\s+[A-Za-z]+(\.{3}|…)/m;
+
+// v0.14.1: codex post-work idle UI markers. NOT a permission prompt — the
+// codex CLI has finished its task and is waiting for the next user input.
+// Pattern: a divider line "─ Worked for Xm Ys ─", a "› " input prompt, and
+// a status bar "Context X% left". Sources: BOS Bug Report #3 (2026-05-04).
+// Treat this as "task done, idle awaiting input"; callers should harvest
+// the verdict file rather than escalate as `prompt_blocked`.
+export const CODEX_IDLE_RE = /─\s*Worked for \d+m \d+s\s*─|Context \d+%\s*left/;
+export function isCodexIdleUi(paneText) {
+  if (typeof paneText !== 'string' || paneText.length === 0) return false;
+  return CODEX_IDLE_RE.test(paneText);
+}
 const DEBOUNCE_MS = 3000;
 
 const lastApprovalAt = new Map();

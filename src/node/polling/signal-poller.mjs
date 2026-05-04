@@ -238,5 +238,19 @@ export async function pollForSignal(
     await delay(pollIntervalMs);
   }
 
+  // v0.14.1: last-chance verdict read before declaring timeout. Codex CLI
+  // can finish work + atomic-mv the verdict + return to its idle UI all
+  // within a single poll interval; if our previous readFile happened to
+  // race with the rename, we would have seen ENOENT/SyntaxError. Try once
+  // more synchronously before throwing — the file is now either present
+  // and parseable (success) or genuinely missing (real timeout).
+  // Bug Report #3 (BOS 2026-05-04).
+  try {
+    const rawContent = await readFile(signalFile);
+    return JSON.parse(rawContent);
+  } catch {
+    // fall through to TimeoutError
+  }
+
   throw new TimeoutError(`Timed out waiting for valid JSON signal at ${signalFile}`);
 }

@@ -1201,6 +1201,13 @@ PROGRESS_NO_CHANGE_TIMEOUT="${PROGRESS_NO_CHANGE_TIMEOUT:-600}"  # 10 min defaul
 typeset -gA PANE_LAST_CHANGE_TS  # epoch when content last changed
 typeset -gA PANE_LAST_CONTENT_FOR_PROGRESS  # captured content for diff
 
+# v0.14.1: codex post-work idle UI grace. When a verifier pane shows codex's
+# "─ Worked for Xm Ys ─" idle line at byte-stasis time, grant one extra
+# CODEX_IDLE_GRACE_S (default 120s) before BLOCK. Per-pane bookkeeping to
+# avoid granting it repeatedly. Bug Report #3 (BOS 2026-05-04).
+CODEX_IDLE_GRACE_S="${CODEX_IDLE_GRACE_S:-120}"
+typeset -gA PANE_CODEX_IDLE_GRACED
+
 # v5.7 §4.17: default-No prompt detection. Pressing Enter on these means
 # CANCEL/REJECT, not approve — so we BLOCK with traceability instead of
 # silently auto-dismissing the wrong way.
@@ -1426,6 +1433,32 @@ check_prompt_stall() {
   return 0
 }
 
+# v0.14.1: codex post-work idle UI detector. The codex CLI shows a status
+# line like "─ Worked for 5m 36s ──" + a "› " prompt + "Context X% left"
+# after it finishes the verifier task and is waiting for the next user
+# input. This is NOT a permission prompt — it is a successful idle state.
+# The byte-stasis check below mistook this for "frozen" and BLOCKED a
+# verifier whose verdict file was already on disk.
+is_codex_idle_ui() {
+  local pane_text="$1"
+  print -- "$pane_text" | grep -qE '─ Worked for [0-9]+m [0-9]+s ─' && return 0
+  print -- "$pane_text" | grep -qE 'Context [0-9]+% left' && return 0
+  return 1
+}
+
+# v0.14.1: verdict-aware short-circuit. When the pane being polled is the
+# verifier pane AND a valid verdict file already exists on disk, the
+# verifier has finished its work — the harvest step (run_single_verifier
+# / consensus loop) is the one that should observe the verdict, not the
+# generic no-progress watcher. Returning 0 here lets the outer loop keep
+# polling instead of escalating BLOCKED. Bug Report #3 (BOS 2026-05-04).
+_verifier_pane_has_verdict() {
+  local pane_id="$1"
+  [[ "$pane_id" == "${VERIFIER_PANE:-}" || "$pane_id" == "${FINAL_VERIFIER_PANE:-}" ]] || return 1
+  [[ -n "${VERDICT_FILE:-}" && -f "$VERDICT_FILE" ]] || return 1
+  jq -e . "$VERDICT_FILE" >/dev/null 2>&1 && return 0 || return 1
+}
+
 # v5.7 §4.17 (codex Critic HIGH): generic no-progress timeout — independent
 # of prompt detection. Closes the gap where an undetected prompt or alive-
 # but-frozen Worker can bypass Layer 4 and infinite-wait.
@@ -1442,6 +1475,16 @@ check_no_progress() {
   local capture
   capture=$(tmux capture-pane -t "$pane_id" -p -S -20 2>/dev/null) || return 0
 
+  # v0.14.1 Fix-A: codex verifier writes verdict, then sits at "─ Worked
+  # for Xm Ys ─" idle UI. byte-stasis would BLOCK after 600s even though
+  # the verdict is on disk. If the verifier pane already has a valid
+  # verdict file, defer to the harvest step.
+  if _verifier_pane_has_verdict "$pane_id"; then
+    PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]="$capture"
+    PANE_LAST_CHANGE_TS[$pane_id]=$now
+    return 0
+  fi
+
   local last_content="${PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]:-}"
   if [[ "$capture" != "$last_content" ]]; then
     PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]="$capture"
@@ -1457,6 +1500,20 @@ check_no_progress() {
 
   local frozen_for=$(( now - last_change ))
   if (( frozen_for >= PROGRESS_NO_CHANGE_TIMEOUT )); then
+    # v0.14.1 Fix-B: even without a verdict file, codex sometimes parks at
+    # its idle UI mid-run (e.g. partial-write window before atomic mv).
+    # Grant one-time +CODEX_IDLE_GRACE_S grace before escalating so we do
+    # not BLOCK at the exact second the verdict is being mv'd into place.
+    if is_codex_idle_ui "$capture"; then
+      local already_graced="${PANE_CODEX_IDLE_GRACED[$pane_id]:-0}"
+      if (( already_graced == 0 )); then
+        PANE_CODEX_IDLE_GRACED[$pane_id]=1
+        PANE_LAST_CHANGE_TS[$pane_id]=$now
+        log "Pane $pane_id at codex idle UI for ${frozen_for}s — granting +${CODEX_IDLE_GRACE_S}s grace before BLOCK escalation"
+        log_debug "[GOV] iter=${ITERATION:-0} codex_idle_grace=true pane=$pane_id grace_s=${CODEX_IDLE_GRACE_S}"
+        return 0
+      fi
+    fi
     log_error "Pane $pane_id has not changed for ${frozen_for}s — alive but frozen. Escalating to BLOCKED."
     log_debug "[GOV] iter=${ITERATION:-0} no_progress_escalated=true pane=$pane_id frozen_for=${frozen_for}s threshold=${PROGRESS_NO_CHANGE_TIMEOUT}s"
     write_blocked_sentinel \
