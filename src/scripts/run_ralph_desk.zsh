@@ -3004,13 +3004,17 @@ main() {
             update_status "blocked" "monitor_failures"
             return 1
           fi
-          log "  WARNING: Worker poll failed (monitor failure $MONITOR_FAILURE_COUNT/3)"
+          log "  WARNING: Worker poll failed (monitor failure $MONITOR_FAILURE_COUNT/3) — will retry"
           update_status "worker" "poll_failed"
-          log_debug "[FLOW] iter=$ITERATION poll_worker_dead=true worker_cmd=$worker_cmd"
-          # Worker is truly dead/stuck — BLOCK and let user decide
-          write_blocked_sentinel "Worker process dead/stuck (poll failed). Pane preserved for inspection." "" "infra_failure"
-          update_status "blocked" "worker_dead"
-          return 1
+          log_debug "[FLOW] iter=$ITERATION poll_worker_dead=true worker_cmd=$worker_cmd retry=true"
+          # v0.14.3 P0-5 (Bug Report #5): previously this branch wrote BLOCKED
+          # unconditionally even at counter 1/3, so a single transient
+          # worker-dead detection halted the campaign in 5s instead of
+          # honoring the 3-strike circuit breaker above (L3001-3006). Removed
+          # the unconditional sentinel write; the loop now continues so the
+          # next polling tick can either confirm the dead state (counter
+          # eventually reaches 3 → BLOCKED) or recover (worker resumes →
+          # MONITOR_FAILURE_COUNT reset on success at L3025).
         fi
       fi
     done
