@@ -127,6 +127,11 @@ export async function pollForSignal(
     capturePane = defaultCapturePane,
     sendKeys = defaultSendKeys,
     log = () => {},
+    // v0.14.2 Bug Report #4 Fix-D: optional legacy fallback path checked
+    // only after the canonical signalFile last-chance read fails. Caller
+    // (campaign-main-loop) supplies the pre-v0.13.0 .claude/ralph-desk
+    // memos path; signal-poller stays read-only and never migrates.
+    legacySignalFile = null,
   } = {},
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -249,7 +254,23 @@ export async function pollForSignal(
     const rawContent = await readFile(signalFile);
     return JSON.parse(rawContent);
   } catch {
-    // fall through to TimeoutError
+    // fall through
+  }
+
+  // v0.14.2 Bug Report #4 Fix-D: codex sometimes lands the verdict at the
+  // pre-v0.13.0 legacy path (.claude/ralph-desk/memos/...) instead of the
+  // canonical .rlp-desk/memos/. If the caller passed `legacySignalFile`,
+  // try that path before declaring timeout — same semantics as the
+  // canonical last-chance read. campaign-main-loop is responsible for
+  // migrating the file into the canonical location after observing it;
+  // signal-poller stays read-only.
+  if (legacySignalFile) {
+    try {
+      const rawContent = await readFile(legacySignalFile);
+      return JSON.parse(rawContent);
+    } catch {
+      // fall through to TimeoutError
+    }
   }
 
   throw new TimeoutError(`Timed out waiting for valid JSON signal at ${signalFile}`);

@@ -180,6 +180,11 @@ export async function assembleVerifierPrompt({
   verifiedUs = [],
   autonomousMode = false,
   conflictLogPath = '',
+  // v0.14.2 Bug Report #4 Fix-E: when supplied, the assembled prompt
+  // ends with a strong "MUST write verdict to <absolute_path>" rule so
+  // codex (which sometimes infers the legacy .claude/ralph-desk path
+  // from CWD) lands the verdict where the leader is polling.
+  verdictWritePath = '',
 } = {}) {
   const basePrompt = await readRequiredFile(promptBase, 'Verifier prompt base file');
   const promptLines = [
@@ -207,6 +212,20 @@ export async function assembleVerifierPrompt({
 
   if (autonomousMode) {
     appendAutonomousModeSection(promptLines, { conflictLogPath, verifier: true });
+  }
+
+  if (verdictWritePath) {
+    promptLines.push('');
+    promptLines.push('---');
+    promptLines.push('## CRITICAL: Verdict file write path (v0.14.2)');
+    promptLines.push('');
+    promptLines.push('Write `verify-verdict.json` ONLY to this absolute path:');
+    promptLines.push('');
+    promptLines.push(`    ${verdictWritePath}`);
+    promptLines.push('');
+    promptLines.push('DO NOT write to `.claude/ralph-desk/memos/` — that path is deprecated since');
+    promptLines.push('v0.13.0. The leader polls only the absolute path above; writing elsewhere');
+    promptLines.push('triggers BLOCKED `verifier_dead` even though your verdict is correct.');
   }
 
   return `${promptLines.join('\n')}\n`;

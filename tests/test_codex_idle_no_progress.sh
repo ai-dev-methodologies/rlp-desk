@@ -17,12 +17,19 @@ RUN_SCRIPT="$ROOT_DIR/src/scripts/run_ralph_desk.zsh"
 
 # Extract the helpers we need to test. is_codex_idle_ui is small and
 # self-contained; _verifier_pane_has_verdict needs jq + the
-# VERIFIER_PANE/VERDICT_FILE globals.
+# VERIFIER_PANE/VERDICT_FILE globals; v0.14.2 also requires
+# _migrate_legacy_verdict (legacy → canonical fallback).
 TMP_LIB=$(mktemp -t codex-idle-test.XXXXXX)
 sed -n '/^is_codex_idle_ui()/,/^}/p' "$RUN_SCRIPT" >> "$TMP_LIB"
 print "" >> "$TMP_LIB"
+sed -n '/^_migrate_legacy_verdict()/,/^}/p' "$RUN_SCRIPT" >> "$TMP_LIB"
+print "" >> "$TMP_LIB"
 sed -n '/^_verifier_pane_has_verdict()/,/^}/p' "$RUN_SCRIPT" >> "$TMP_LIB"
 print "" >> "$TMP_LIB"
+
+# Stub log helpers so _migrate_legacy_verdict's calls do not error.
+log() { :; }
+log_debug() { :; }
 
 source "$TMP_LIB"
 
@@ -62,6 +69,22 @@ assert_eq "false: empty input" 1 $?
 is_codex_idle_ui 'Do you want to create file.json? (y/n)'
 assert_eq "false: claude permission prompt" 1 $?
 
+# v0.14.2 Bug Report #4 — pattern relaxations:
+is_codex_idle_ui 'Worked for 5m 14s'
+assert_eq "v0.14.2: 'Worked for' without horizontal-rule wrapper" 0 $?
+
+is_codex_idle_ui 'gpt-5.5 high · feature/phase-1-bc-implementation · Context 57%left'
+assert_eq "v0.14.2: 'Context X%left' (no space) — wrapped pane variant" 0 $?
+
+is_codex_idle_ui 'gpt-5.5 high · feature/foo · Context 99% left'
+assert_eq "v0.14.2: model+branch line — alone" 0 $?
+
+is_codex_idle_ui '› Improve documentation in @bos/db'
+assert_eq "v0.14.2: codex default suggestion 'Improve documentation in @'" 0 $?
+
+is_codex_idle_ui '› Summarize recent commits'
+assert_eq "v0.14.2: codex default suggestion 'Summarize recent commits'" 0 $?
+
 # ---------------------------------------------------------------------------
 # _verifier_pane_has_verdict
 # ---------------------------------------------------------------------------
@@ -95,6 +118,51 @@ assert_eq "verifier pane + missing verdict file → return 1" 1 $?
 VERDICT_FILE=""
 _verifier_pane_has_verdict "%v"
 assert_eq "empty VERDICT_FILE → return 1" 1 $?
+
+# ---------------------------------------------------------------------------
+# v0.14.2: legacy verdict auto-migration (Bug Report #4 Fix-D)
+# ---------------------------------------------------------------------------
+
+# Build a temp project layout with a legacy verdict file but no canonical one.
+TMP_PROJ=$(mktemp -d -t codex-verdict-proj.XXXXXX)
+mkdir -p "$TMP_PROJ/.claude/ralph-desk/memos"
+mkdir -p "$TMP_PROJ/.rlp-desk/memos"
+LEGACY_PAYLOAD='{"verdict":"pass","us_id":"US-008","iteration":5}'
+print -- "$LEGACY_PAYLOAD" > "$TMP_PROJ/.claude/ralph-desk/memos/test-verify-verdict.json"
+
+VERIFIER_PANE="%v"
+FINAL_VERIFIER_PANE="%fv"
+VERDICT_FILE="$TMP_PROJ/.rlp-desk/memos/test-verify-verdict.json"
+LEGACY_VERDICT_FILE="$TMP_PROJ/.claude/ralph-desk/memos/test-verify-verdict.json"
+
+# 1) verifier pane + only legacy file present → short-circuit returns 0
+#    AND auto-migrates the file into the canonical location.
+_verifier_pane_has_verdict "%v"
+assert_eq "v0.14.2: legacy-only verdict + verifier pane → return 0" 0 $?
+[[ -f "$VERDICT_FILE" ]]
+assert_eq "v0.14.2: canonical file now exists after auto-mv" 0 $?
+[[ ! -f "$LEGACY_VERDICT_FILE" ]]
+assert_eq "v0.14.2: legacy file removed after auto-mv" 0 $?
+test "$(jq -r .us_id < "$VERDICT_FILE")" = "US-008"
+assert_eq "v0.14.2: migrated content preserved (us_id=US-008)" 0 $?
+
+# 2) Both legacy + canonical present (canonical wins, no migration needed)
+print -- "$LEGACY_PAYLOAD" > "$LEGACY_VERDICT_FILE"
+print -- '{"verdict":"fail","us_id":"US-008","iteration":5}' > "$VERDICT_FILE"
+_verifier_pane_has_verdict "%v"
+assert_eq "v0.14.2: canonical present → return 0 (no migration)" 0 $?
+test "$(jq -r .verdict < "$VERDICT_FILE")" = "fail"
+assert_eq "v0.14.2: canonical content untouched when present" 0 $?
+
+# 3) Legacy present but invalid JSON → migration refused, return 1
+rm -f "$VERDICT_FILE"
+print -- 'not-json' > "$LEGACY_VERDICT_FILE"
+_verifier_pane_has_verdict "%v"
+assert_eq "v0.14.2: legacy with invalid JSON → return 1 (no migration)" 1 $?
+[[ -f "$LEGACY_VERDICT_FILE" ]]
+assert_eq "v0.14.2: invalid legacy file left in place" 0 $?
+
+rm -rf "$TMP_PROJ"
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -43,6 +43,31 @@ const MODEL_UPGRADES = {
   'gpt-5.3-codex-spark:xhigh': 'BLOCKED',
 };
 
+// v0.14.2 Bug Report #4 Fix-D: codex occasionally lands the verdict at the
+// pre-v0.13.0 `.claude/ralph-desk/memos/` path despite prompt instructions.
+// signal-poller's `legacySignalFile` last-chance branch returns the parsed
+// verdict in memory; these two helpers move the file into the canonical
+// .rlp-desk/memos/ location AFTER the polling loop succeeds, so analytics
+// archival + sentinel hygiene remain consistent.
+export async function _verdictMigrationNeeded(paths) {
+  if (!paths?.legacyVerdictFile || !paths?.verdictFile) return false;
+  // Migration is only meaningful when the legacy file exists AND the
+  // canonical file does not. If both exist, canonical wins (already
+  // observed) and we leave legacy alone.
+  let legacyExists = false;
+  let canonicalExists = false;
+  try { legacyExists = await exists(paths.legacyVerdictFile); } catch {}
+  try { canonicalExists = await exists(paths.verdictFile); } catch {}
+  return legacyExists && !canonicalExists;
+}
+
+export async function _migrateLegacyVerdict(paths) {
+  if (!paths?.legacyVerdictFile || !paths?.verdictFile) return false;
+  await fs.mkdir(path.dirname(paths.verdictFile), { recursive: true });
+  await fs.rename(paths.legacyVerdictFile, paths.verdictFile);
+  return true;
+}
+
 // v0.13.0: legacy .claude/ralph-desk/ guidance for run mode (no auto-mv).
 export function detectLegacyDeskInRunMode(rootDir, env = process.env) {
   const legacyPath = path.join(rootDir, LEGACY_DESK_REL);
@@ -76,6 +101,12 @@ function buildPaths(rootDir, slug, env = process.env) {
     doneClaimFile: path.join(deskRoot, 'memos', `${slug}-done-claim.json`),
     signalFile: path.join(deskRoot, 'memos', `${slug}-iter-signal.json`),
     verdictFile: path.join(deskRoot, 'memos', `${slug}-verify-verdict.json`),
+    // v0.14.2 Bug Report #4 Fix-D: codex sometimes lands the verdict at the
+    // pre-v0.13.0 legacy path. We track the absolute legacy location so the
+    // signal-poller last-chance read can fall back to it before declaring
+    // timeout. Always rooted at <project>/.claude/ralph-desk/memos/, even
+    // when RLP_DESK_RUNTIME_DIR overrides the canonical deskRoot.
+    legacyVerdictFile: path.join(rootDir, '.claude', 'ralph-desk', 'memos', `${slug}-verify-verdict.json`),
     blockedSentinel: path.join(deskRoot, 'memos', `${slug}-blocked.md`),
     completeSentinel: path.join(deskRoot, 'memos', `${slug}-complete.md`),
     contextFile: path.join(deskRoot, 'context', `${slug}-latest.md`),
@@ -376,6 +407,11 @@ async function dispatchVerifier({
     verifyMode: 'per-us',
     usId,
     verifiedUs: state.verified_us,
+    // v0.14.2 Fix-E: hand the absolute canonical verdict path to the
+    // verifier prompt. assembleVerifierPrompt appends a "CRITICAL: write
+    // verdict to <path>" footer so codex does not infer the legacy
+    // .claude/ralph-desk/memos/ location from CWD.
+    verdictWritePath: paths.verdictFile,
   });
   const fileName = suffix
     ? `${suffix}.verifier-prompt.md`
@@ -1452,7 +1488,21 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         mode: parseModelFlag(verifierModel, 'verifier').engine,
         paneId: state.verifier_pane_id,
         timeoutMs: iterTimeoutMs,
+        // v0.14.2 Fix-D: codex sometimes writes the verdict at the legacy
+        // .claude/ralph-desk/memos/ path. signal-poller's last-chance read
+        // tries this fallback before timing out.
+        legacySignalFile: paths.legacyVerdictFile,
       });
+      // v0.14.2 Fix-D continued: if the verdict came from the legacy path,
+      // migrate it into the canonical location so the rest of the pipeline
+      // (analytics archival, sentinels, status) sees a single canonical
+      // file. Best-effort — any rename failure is logged but does not
+      // re-throw because we already have the parsed verdict in memory.
+      if (await _verdictMigrationNeeded(paths)) {
+        await _migrateLegacyVerdict(paths).catch((migrateErr) => {
+          console.error('[v0.14.2] legacy verdict migration failed:', migrateErr?.message ?? migrateErr);
+        });
+      }
       validateArtifact(verdict, {
         expectedSlug: slug,
         iterationFloor: state.iteration,

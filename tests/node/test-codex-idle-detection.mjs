@@ -59,3 +59,39 @@ test('CODEX_IDLE_RE: exported regex is reusable + immutable contract', () => {
   assert.ok(CODEX_IDLE_RE.source.includes('Worked for'));
   assert.ok(CODEX_IDLE_RE.source.includes('Context'));
 });
+
+// v0.14.2 — Bug Report #4 (BOS 2026-05-05) pattern relaxations. The
+// v0.14.1 strict regex required the surrounding horizontal rule to match;
+// tmux capture truncation occasionally dropped those rules so the pattern
+// missed in production. These cases freeze the relaxed alternation.
+
+test('isCodexIdleUi v0.14.2: matches "Worked for" without horizontal-rule wrapping', () => {
+  assert.equal(isCodexIdleUi('Worked for 5m 14s'), true);
+});
+
+test('isCodexIdleUi v0.14.2: matches "Context X%left" without space (wrapped pane)', () => {
+  assert.equal(isCodexIdleUi('Context 57%left'), true);
+});
+
+test('isCodexIdleUi v0.14.2: matches codex model+branch line ("gpt-5.5 high · branch")', () => {
+  assert.equal(
+    isCodexIdleUi('gpt-5.5 high · feature/phase-1-bc-implementation · Context 57% left'),
+    true,
+  );
+});
+
+test('isCodexIdleUi v0.14.2: matches codex default suggestion "Improve documentation in @"', () => {
+  assert.equal(isCodexIdleUi('› Improve documentation in @bos/db'), true);
+});
+
+test('isCodexIdleUi v0.14.2: matches codex default suggestion "Summarize recent commits"', () => {
+  assert.equal(isCodexIdleUi('› Summarize recent commits'), true);
+});
+
+test('isCodexIdleUi v0.14.2: matches codex default suggestion "Explain this code"', () => {
+  assert.equal(isCodexIdleUi('› Explain this code'), true);
+});
+
+test('isCodexIdleUi v0.14.2: still rejects "worked through" prose (no false positive)', () => {
+  assert.equal(isCodexIdleUi('I worked through the spec and ran tests'), false);
+});

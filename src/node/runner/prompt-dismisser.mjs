@@ -36,13 +36,22 @@ const DEFAULT_NO_RE = /\[y\/N\]|\(yes\/no,\s*default\s+no\)|[Dd]efault[: ]+[Nn]o
 const ACTIVE_TASK_RE =
   /esc to interrupt|background terminal running|^\s*[·✻]\s+[A-Za-z]+(\.{3}|…)/m;
 
-// v0.14.1: codex post-work idle UI markers. NOT a permission prompt — the
-// codex CLI has finished its task and is waiting for the next user input.
-// Pattern: a divider line "─ Worked for Xm Ys ─", a "› " input prompt, and
-// a status bar "Context X% left". Sources: BOS Bug Report #3 (2026-05-04).
+// v0.14.1 / v0.14.2: codex post-work idle UI markers. NOT a permission prompt
+// — the codex CLI has finished its task and is waiting for the next user
+// input. Sources: BOS Bug Report #3 (2026-05-04) + #4 (2026-05-05).
 // Treat this as "task done, idle awaiting input"; callers should harvest
 // the verdict file rather than escalate as `prompt_blocked`.
-export const CODEX_IDLE_RE = /─\s*Worked for \d+m \d+s\s*─|Context \d+%\s*left/;
+//
+// v0.14.2 relaxation (Bug #4): the v0.14.1 strict "─ Worked for Xm Ys ─"
+// regex required the surrounding horizontal rule to match. tmux capture
+// truncation occasionally dropped those rules so the pattern missed in
+// production. Match on multiple independent markers; ANY one is enough.
+//   1. "Worked for Xm Ys"           — duration line, codex-only
+//   2. "Context X%left" (no space)  — status bar; tolerate wrap removal
+//   3. "gpt-X.Y reasoning · branch" — codex idle status line
+//   4. codex default suggestions    — only printed at the idle prompt
+export const CODEX_IDLE_RE =
+  /Worked for \d+m \d+s|Context \d+%\s*left|gpt-\d+(\.\d+)? (low|medium|high|xhigh) ·|Improve documentation in @|Summarize recent commits|Explain (this )?code/;
 export function isCodexIdleUi(paneText) {
   if (typeof paneText !== 'string' || paneText.length === 0) return false;
   return CODEX_IDLE_RE.test(paneText);

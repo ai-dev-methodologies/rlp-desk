@@ -270,6 +270,12 @@ MEMORY_FILE="$MEMOS_DIR/${SLUG}-memory.md"
 SIGNAL_FILE="$MEMOS_DIR/${SLUG}-iter-signal.json"
 DONE_CLAIM_FILE="$MEMOS_DIR/${SLUG}-done-claim.json"
 VERDICT_FILE="$MEMOS_DIR/${SLUG}-verify-verdict.json"
+# v0.14.2 Bug Report #4: codex sometimes writes the verdict file to the
+# pre-v0.13.0 legacy path despite the prompt instructing otherwise (CWD
+# heuristics inside the codex CLI). Track the legacy path so the no-progress
+# watcher and the harvest step can both fall back to it before BLOCKing the
+# campaign. Auto-migration logic lives in _migrate_legacy_verdict().
+LEGACY_VERDICT_FILE="$ROOT/.claude/ralph-desk/memos/${SLUG}-verify-verdict.json"
 COMPLETE_SENTINEL="$MEMOS_DIR/${SLUG}-complete.md"
 BLOCKED_SENTINEL="$MEMOS_DIR/${SLUG}-blocked.md"
 LOCKFILE_PATH="$DESK/logs/.rlp-desk-${SLUG}.lock"
@@ -1202,11 +1208,14 @@ typeset -gA PANE_LAST_CHANGE_TS  # epoch when content last changed
 typeset -gA PANE_LAST_CONTENT_FOR_PROGRESS  # captured content for diff
 
 # v0.14.1: codex post-work idle UI grace. When a verifier pane shows codex's
-# "─ Worked for Xm Ys ─" idle line at byte-stasis time, grant one extra
+# "Worked for Xm Ys" idle line at byte-stasis time, grant one extra
 # CODEX_IDLE_GRACE_S (default 120s) before BLOCK. Per-pane bookkeeping to
 # avoid granting it repeatedly. Bug Report #3 (BOS 2026-05-04).
 CODEX_IDLE_GRACE_S="${CODEX_IDLE_GRACE_S:-120}"
 typeset -gA PANE_CODEX_IDLE_GRACED
+# v0.14.2: per-verifier-pane trace flag — log the verdict-lookup outcome
+# exactly once per byte-stasis transition. Bug Report #4 (BOS 2026-05-05).
+typeset -gA PANE_VERIFIER_TRACE_LOGGED
 
 # v5.7 §4.17: default-No prompt detection. Pressing Enter on these means
 # CANCEL/REJECT, not approve — so we BLOCK with traceability instead of
@@ -1433,30 +1442,70 @@ check_prompt_stall() {
   return 0
 }
 
-# v0.14.1: codex post-work idle UI detector. The codex CLI shows a status
-# line like "─ Worked for 5m 36s ──" + a "› " prompt + "Context X% left"
+# v0.14.1 / v0.14.2: codex post-work idle UI detector. The codex CLI shows
+# a status line like "─ Worked for 5m 36s ──" + a "› " prompt + "Context
+# X% left" / model + suggestion ("Improve documentation in @filename")
 # after it finishes the verifier task and is waiting for the next user
 # input. This is NOT a permission prompt — it is a successful idle state.
 # The byte-stasis check below mistook this for "frozen" and BLOCKED a
-# verifier whose verdict file was already on disk.
+# verifier whose verdict file was already on disk. v0.14.2 Bug Report #4
+# observed the v0.14.1 patterns being too narrow (BOS 12th launch had
+# extra horizontal-rule wrapping that broke the strict dash-bracket regex)
+# — relaxed below to multiple independent markers; ANY one fires idle.
 is_codex_idle_ui() {
   local pane_text="$1"
-  print -- "$pane_text" | grep -qE '─ Worked for [0-9]+m [0-9]+s ─' && return 0
-  print -- "$pane_text" | grep -qE 'Context [0-9]+% left' && return 0
+  # 1. "Worked for Xm Ys" — most reliable codex idle marker.
+  print -- "$pane_text" | grep -qE 'Worked for [0-9]+m [0-9]+s' && return 0
+  # 2. "Context X% left" status bar — appears whenever codex is alive +
+  #    waiting at the prompt; captures the case where horizontal rules
+  #    above were stripped by tmux capture truncation.
+  print -- "$pane_text" | grep -qE 'Context [0-9]+%[[:space:]]*left' && return 0
+  # 3. codex model + branch line (e.g. "gpt-5.5 high · feature/...") —
+  #    only printed alongside the idle prompt, never during work.
+  print -- "$pane_text" | grep -qE 'gpt-[0-9]+(\.[0-9]+)? (low|medium|high|xhigh) ·' && return 0
+  # 4. codex default-suggestion prompt prefix at line start. v0.14.1 had
+  #    only "›" but BOS Bug #4 showed the leading character can be wrapped
+  #    by tmux narrowness — also accept the suggestion phrases verbatim.
+  print -- "$pane_text" | grep -qE 'Improve documentation in @|Summarize recent commits|Explain (this )?code' && return 0
   return 1
 }
 
-# v0.14.1: verdict-aware short-circuit. When the pane being polled is the
-# verifier pane AND a valid verdict file already exists on disk, the
+# v0.14.2 Bug Report #4 H1: codex sometimes lands the verdict at the
+# pre-v0.13.0 legacy path (`<root>/.claude/ralph-desk/memos/...`) instead
+# of `.rlp-desk/memos/`, even when the prompt instructs otherwise. When
+# we observe the legacy file with valid JSON, atomically rename it into
+# place so the rest of the pipeline (harvest + analytics + sentinels)
+# sees a single canonical path. Best-effort: any failure leaves the file
+# untouched and the campaign keeps polling.
+_migrate_legacy_verdict() {
+  [[ -n "${LEGACY_VERDICT_FILE:-}" && -f "$LEGACY_VERDICT_FILE" ]] || return 1
+  jq -e . "$LEGACY_VERDICT_FILE" >/dev/null 2>&1 || return 1
+  log "Verdict file found at legacy path ${LEGACY_VERDICT_FILE} — moving to ${VERDICT_FILE}"
+  log_debug "[GOV] iter=${ITERATION:-0} legacy_verdict_migrated=true from=${LEGACY_VERDICT_FILE} to=${VERDICT_FILE}"
+  mkdir -p "$(dirname "$VERDICT_FILE")" 2>/dev/null
+  mv -f "$LEGACY_VERDICT_FILE" "$VERDICT_FILE" 2>/dev/null && return 0
+  return 1
+}
+
+# v0.14.1 / v0.14.2: verdict-aware short-circuit. When the pane being
+# polled is the verifier pane AND a valid verdict file already exists on
+# disk (canonical path OR legacy path that we then auto-migrate), the
 # verifier has finished its work — the harvest step (run_single_verifier
 # / consensus loop) is the one that should observe the verdict, not the
 # generic no-progress watcher. Returning 0 here lets the outer loop keep
-# polling instead of escalating BLOCKED. Bug Report #3 (BOS 2026-05-04).
+# polling instead of escalating BLOCKED. Bug Reports #3 (BOS 2026-05-04)
+# + #4 (BOS 2026-05-05).
 _verifier_pane_has_verdict() {
   local pane_id="$1"
   [[ "$pane_id" == "${VERIFIER_PANE:-}" || "$pane_id" == "${FINAL_VERIFIER_PANE:-}" ]] || return 1
-  [[ -n "${VERDICT_FILE:-}" && -f "$VERDICT_FILE" ]] || return 1
-  jq -e . "$VERDICT_FILE" >/dev/null 2>&1 && return 0 || return 1
+  # Canonical path first.
+  if [[ -n "${VERDICT_FILE:-}" && -f "$VERDICT_FILE" ]]; then
+    jq -e . "$VERDICT_FILE" >/dev/null 2>&1 && return 0
+  fi
+  # v0.14.2 Fix-D: codex may have written to the legacy path. Try to
+  # migrate; success means the canonical file is now in place.
+  _migrate_legacy_verdict && return 0
+  return 1
 }
 
 # v5.7 §4.17 (codex Critic HIGH): generic no-progress timeout — independent
@@ -1475,14 +1524,26 @@ check_no_progress() {
   local capture
   capture=$(tmux capture-pane -t "$pane_id" -p -S -20 2>/dev/null) || return 0
 
-  # v0.14.1 Fix-A: codex verifier writes verdict, then sits at "─ Worked
-  # for Xm Ys ─" idle UI. byte-stasis would BLOCK after 600s even though
-  # the verdict is on disk. If the verifier pane already has a valid
-  # verdict file, defer to the harvest step.
+  # v0.14.1 Fix-A / v0.14.2 Fix-D: codex verifier writes verdict, then
+  # sits at "Worked for Xm Ys" idle UI. byte-stasis would BLOCK after
+  # 600s even though the verdict is on disk. Check both canonical and
+  # legacy verdict paths — auto-migrate legacy if found — and defer to
+  # the harvest step when the pane is a verifier pane.
   if _verifier_pane_has_verdict "$pane_id"; then
     PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]="$capture"
     PANE_LAST_CHANGE_TS[$pane_id]=$now
     return 0
+  fi
+  # v0.14.2: root-cause tracing for Bug Report #4. When the watcher is
+  # examining a verifier pane that does NOT have a verdict yet, log once
+  # per byte-stasis transition so post-mortem can tell whether the
+  # verdict was missing entirely vs. the idle-UI grace was the gating
+  # factor. Idempotent flag lives in PANE_VERIFIER_TRACE_LOGGED.
+  if [[ "$pane_id" == "${VERIFIER_PANE:-}" || "$pane_id" == "${FINAL_VERIFIER_PANE:-}" ]]; then
+    if [[ -z "${PANE_VERIFIER_TRACE_LOGGED[$pane_id]:-}" ]]; then
+      PANE_VERIFIER_TRACE_LOGGED[$pane_id]=1
+      log_debug "[GOV] iter=${ITERATION:-0} verifier_progress_check=miss pane=$pane_id verdict_canonical=${VERDICT_FILE} verdict_canonical_exists=$([[ -f "$VERDICT_FILE" ]] && echo true || echo false) verdict_legacy=${LEGACY_VERDICT_FILE:-unset} verdict_legacy_exists=$([[ -f "${LEGACY_VERDICT_FILE:-/nonexistent}" ]] && echo true || echo false)"
+    fi
   fi
 
   local last_content="${PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]:-}"
