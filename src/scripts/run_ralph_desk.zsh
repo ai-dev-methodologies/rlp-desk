@@ -1508,6 +1508,28 @@ _verifier_pane_has_verdict() {
   return 1
 }
 
+# v0.14.5 Bug Report #6 Fix-M (worker mirror of Fix-A/Fix-D):
+# Worker (claude sonnet 1m) writes commit + iter-signal.json verify signal
+# then claude CLI parks at its idle prompt. check_no_progress observes
+# byte-stasis on the worker pane and would BLOCK after 600s even though
+# the signal is on disk. When the pane is the worker pane AND a valid
+# iter-signal is on disk, defer to the harvest step (poll_for_signal in
+# run_single_worker) instead of escalating BLOCKED.
+_worker_pane_has_signal() {
+  local pane_id="$1"
+  [[ -n "${WORKER_PANE:-}" && "$pane_id" == "${WORKER_PANE}" ]] || return 1
+  [[ -n "${SIGNAL_FILE:-}" && -s "$SIGNAL_FILE" ]] || return 1
+  jq -e . "$SIGNAL_FILE" >/dev/null 2>&1 || return 1
+  local iter_field us_field status_field
+  iter_field=$(jq -r '.iteration // empty' "$SIGNAL_FILE" 2>/dev/null)
+  us_field=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
+  status_field=$(jq -r '.status // empty' "$SIGNAL_FILE" 2>/dev/null)
+  [[ "$iter_field" =~ ^[0-9]+$ ]] || return 1
+  [[ -n "$us_field" ]] || return 1
+  [[ "$status_field" == "verify" || "$status_field" == "verify_partial" ]] || return 1
+  return 0
+}
+
 # v5.7 §4.17 (codex Critic HIGH): generic no-progress timeout — independent
 # of prompt detection. Closes the gap where an undetected prompt or alive-
 # but-frozen Worker can bypass Layer 4 and infinite-wait.
@@ -1532,6 +1554,16 @@ check_no_progress() {
   if _verifier_pane_has_verdict "$pane_id"; then
     PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]="$capture"
     PANE_LAST_CHANGE_TS[$pane_id]=$now
+    return 0
+  fi
+  # v0.14.5 Bug Report #6 Fix-M: claude worker finishes (commit + iter-signal
+  # write) then parks at its idle prompt. byte-stasis would BLOCK after 600s
+  # even though the signal is on disk. Worker mirror of the verifier branch
+  # above — defer to poll_for_signal harvest when SIGNAL_FILE is valid.
+  if _worker_pane_has_signal "$pane_id"; then
+    PANE_LAST_CONTENT_FOR_PROGRESS[$pane_id]="$capture"
+    PANE_LAST_CHANGE_TS[$pane_id]=$now
+    log_debug "[GOV] iter=${ITERATION:-0} worker_progress_check=signal_present pane=$pane_id signal=${SIGNAL_FILE}"
     return 0
   fi
   # v0.14.2: root-cause tracing for Bug Report #4. When the watcher is
