@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 
 import { buildClaudeCmd, buildCodexCmd, parseModelFlag } from '../cli/command-builder.mjs';
 import { shellQuote } from '../util/shell-quote.mjs';
-import { OPUS_1M_BETA, isOpusModel } from '../constants.mjs';
+import { ONE_MILLION_BETA, wantsOneMillionContext } from '../constants.mjs';
 import { initCampaign } from '../init/campaign-initializer.mjs';
 import { LEGACY_DESK_REL, resolveDeskRoot } from '../util/desk-root.mjs';
 import { writeSentinelExclusive } from '../shared/fs.mjs';
@@ -933,9 +933,11 @@ async function runFinalSequentialVerify({
 const HOME_DESK_DIR = path.join(os.homedir(), '.claude', 'ralph-desk');
 
 function buildAutonomousClaudeCmd({ promptFile, model, rootDir, homeDeskDir = HOME_DESK_DIR }) {
-  // §4.9: ANTHROPIC_BETA prefix for Opus 1M context.
-  const betaPrefix = isOpusModel(model)
-    ? `ANTHROPIC_BETA=${shellQuote(OPUS_1M_BETA)} `
+  // v0.14.6: ANTHROPIC_BETA prefix injected only when the model id ends
+  // with explicit '[1m]' suffix. opus / sonnet / claude-opus-4-7 (no
+  // suffix) all run at the standard 200K context.
+  const betaPrefix = wantsOneMillionContext(model)
+    ? `ANTHROPIC_BETA=${shellQuote(ONE_MILLION_BETA)} `
     : '';
   // §4.11.a: --add-dir whitelist (home rlp-desk + campaign cwd) for true autonomy.
   const addDirParts = [];

@@ -4,14 +4,16 @@ import assert from 'node:assert/strict';
 test('US-002 AC2.1 happy: buildClaudeCmd tui includes claude flags and effort', async () => {
   const { buildClaudeCmd } = await import('../../src/node/cli/command-builder.mjs');
 
+  // v0.14.6: opus alias defaults to 200K (no ANTHROPIC_BETA). Use the
+  // explicit '[1m]' suffix to opt in to 1M — see test-opus-1m-context.mjs.
   const command = buildClaudeCmd('tui', 'opus', { effort: 'max' });
 
   // v5.7 §4.12 (Bug 1): model and effort values are shellQuoted (POSIX
   // single-quote wrap) to defend against bracketed model ids like
   // 'claude-opus-4-7[1m]' that zsh would otherwise expand as a glob.
-  // v5.7 §4.9 (Opus 1M): ANTHROPIC_BETA env is auto-prepended for Opus.
   assert.ok(command.startsWith('DISABLE_OMC=1'));
-  assert.match(command, /^DISABLE_OMC=1 ANTHROPIC_BETA='context-1m-2025-08-07' claude /);
+  assert.match(command, /^DISABLE_OMC=1 claude /);
+  assert.doesNotMatch(command, /ANTHROPIC_BETA/);
   assert.match(
     command,
     /--model 'opus' --mcp-config '\{"mcpServers":\{\}\}' --strict-mcp-config --dangerously-skip-permissions --effort 'max'$/,

@@ -89,6 +89,14 @@ Ask about these items one by one (or in small groups):
    - **gpt-5.5:medium** — default recommendation (full context window, progressive upgrade handles harder US)
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
 
+   **Context window behavior (claude models — v0.14.6+)**:
+   - All claude models default to **200K**. `sonnet` and `opus` aliases both run at the standard window.
+   - To request 1M, append the explicit `[1m]` suffix on the full model id:
+     - `claude-opus-4-7[1m]` — 1M attempted via `ANTHROPIC_BETA=context-1m-2025-08-07`. Works on most Claude Max accounts.
+     - `claude-sonnet-4-6[1m]` — 1M attempted, **but** requires the Anthropic "Extra usage" toggle at https://claude.ai/settings/usage. Without that toggle the worker fails at the first API call with `Extra usage is required for 1M context`.
+   - rlp-desk does NOT pre-check entitlement — the explicit `[1m]` is honored as-is. If the API rejects it, you will see the error immediately and can re-run with the standard alias or the opus 1M form.
+   - **Default recommendation when 1M is genuinely needed:** prefer `claude-opus-4-7[1m]` over `claude-sonnet-4-6[1m]` because opus 1M does not require a separate entitlement toggle.
+
    Present complexity score with evidence to the user, e.g.: "I rate this MEDIUM because: US count=4 (MEDIUM), file scope=2 (MEDIUM), logic=conditionals (MEDIUM), deps=none (LOW), impact=modify (MEDIUM). Highest=MEDIUM."
 
    **If codex IS installed** — say: "Codex is installed. I recommend cross-engine Worker for cost savings (Pro token pool separation) and cross-engine blind-spot coverage (claude Verifier catches issues codex Worker misses)."

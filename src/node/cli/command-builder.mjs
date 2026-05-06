@@ -1,5 +1,5 @@
 import { shellQuote } from '../util/shell-quote.mjs';
-import { OPUS_1M_BETA, isOpusModel } from '../constants.mjs';
+import { ONE_MILLION_BETA, wantsOneMillionContext } from '../constants.mjs';
 
 const CLAUDE_BIN = 'claude';
 const CODEX_BIN = 'codex';
@@ -32,12 +32,14 @@ function assertTuiMode(mode, builderName) {
 export function buildClaudeCmd(mode, model, options = {}) {
   assertTuiMode(mode, 'buildClaudeCmd');
 
-  // v5.7 §4.9: auto-enable 1M-token context for Opus models. Long campaigns
-  // no longer silently truncate at 200K. Header is benign for non-Opus calls
-  // but we omit it there to keep the cmdline tidy.
+  // v0.14.6: 1M context is opt-in only via the explicit '[1m]' suffix.
+  // opus / sonnet / claude-opus-4-7 (no suffix) all run at the standard
+  // 200K context. Adding '[1m]' on either opus or sonnet model id injects
+  // the ANTHROPIC_BETA header and attempts the 1M window — sonnet[1m] still
+  // requires Anthropic "Extra usage" entitlement at the API layer.
   const parts = ['DISABLE_OMC=1'];
-  if (isOpusModel(model)) {
-    parts.push(`ANTHROPIC_BETA=${shellQuote(OPUS_1M_BETA)}`);
+  if (wantsOneMillionContext(model)) {
+    parts.push(`ANTHROPIC_BETA=${shellQuote(ONE_MILLION_BETA)}`);
   }
   parts.push(
     CLAUDE_BIN,

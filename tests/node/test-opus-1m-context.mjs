@@ -2,53 +2,70 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildClaudeCmd } from '../../src/node/cli/command-builder.mjs';
-import { OPUS_1M_BETA, isOpusModel } from '../../src/node/constants.mjs';
+import { ONE_MILLION_BETA, wantsOneMillionContext } from '../../src/node/constants.mjs';
 
-// G8 — v5.7 §4.9: Opus 1M context auto-enable.
+// v0.14.6: 1M context window is opt-in only via the explicit '[1m]' suffix
+// on the model id. Both opus and sonnet without the suffix run at 200K.
+// File name kept as test-opus-1m-context.mjs for git history continuity;
+// content replaced to match the new explicit-opt-in policy.
 
-test('OPUS_1M_BETA is the documented header literal', () => {
-  assert.equal(OPUS_1M_BETA, 'context-1m-2025-08-07');
+test('ONE_MILLION_BETA is the documented header literal', () => {
+  assert.equal(ONE_MILLION_BETA, 'context-1m-2025-08-07');
 });
 
-test('isOpusModel: opus → true', () => {
-  assert.equal(isOpusModel('opus'), true);
+test('wantsOneMillionContext: opus alias → false (no [1m] suffix)', () => {
+  assert.equal(wantsOneMillionContext('opus'), false);
 });
 
-test('isOpusModel: claude-opus-4-7 → true', () => {
-  assert.equal(isOpusModel('claude-opus-4-7'), true);
+test('wantsOneMillionContext: sonnet alias → false', () => {
+  assert.equal(wantsOneMillionContext('sonnet'), false);
 });
 
-test('isOpusModel: claude-opus-4-7[1m] (Bug 1 form) → true', () => {
-  assert.equal(isOpusModel('claude-opus-4-7[1m]'), true);
+test('wantsOneMillionContext: haiku alias → false', () => {
+  assert.equal(wantsOneMillionContext('haiku'), false);
 });
 
-test('isOpusModel: sonnet → false', () => {
-  assert.equal(isOpusModel('sonnet'), false);
+test('wantsOneMillionContext: claude-opus-4-7 (no suffix) → false', () => {
+  assert.equal(wantsOneMillionContext('claude-opus-4-7'), false);
 });
 
-test('isOpusModel: haiku → false', () => {
-  assert.equal(isOpusModel('haiku'), false);
+test('wantsOneMillionContext: claude-opus-4-7[1m] → true', () => {
+  assert.equal(wantsOneMillionContext('claude-opus-4-7[1m]'), true);
 });
 
-test('isOpusModel: empty → false', () => {
-  assert.equal(isOpusModel(''), false);
-  assert.equal(isOpusModel(null), false);
-  assert.equal(isOpusModel(undefined), false);
+test('wantsOneMillionContext: claude-sonnet-4-6[1m] → true', () => {
+  assert.equal(wantsOneMillionContext('claude-sonnet-4-6[1m]'), true);
 });
 
-test('buildClaudeCmd opus: prepends ANTHROPIC_BETA', () => {
+test('wantsOneMillionContext: case-insensitive match on [1M] / [1m]', () => {
+  assert.equal(wantsOneMillionContext('claude-opus-4-7[1M]'), true);
+  assert.equal(wantsOneMillionContext('CLAUDE-OPUS-4-7[1m]'), true);
+});
+
+test('wantsOneMillionContext: empty / null / undefined → false', () => {
+  assert.equal(wantsOneMillionContext(''), false);
+  assert.equal(wantsOneMillionContext(null), false);
+  assert.equal(wantsOneMillionContext(undefined), false);
+});
+
+test('buildClaudeCmd opus alias: omits ANTHROPIC_BETA (200K default)', () => {
   const cmd = buildClaudeCmd('tui', 'opus');
-  assert.match(cmd, /ANTHROPIC_BETA='context-1m-2025-08-07'/);
+  assert.doesNotMatch(cmd, /ANTHROPIC_BETA/);
   assert.match(cmd, /--model 'opus'/);
 });
 
-test('buildClaudeCmd sonnet: omits ANTHROPIC_BETA', () => {
+test('buildClaudeCmd sonnet alias: omits ANTHROPIC_BETA', () => {
   const cmd = buildClaudeCmd('tui', 'sonnet');
   assert.doesNotMatch(cmd, /ANTHROPIC_BETA/);
 });
 
-test('buildClaudeCmd haiku: omits ANTHROPIC_BETA', () => {
+test('buildClaudeCmd haiku alias: omits ANTHROPIC_BETA', () => {
   const cmd = buildClaudeCmd('tui', 'haiku');
+  assert.doesNotMatch(cmd, /ANTHROPIC_BETA/);
+});
+
+test('buildClaudeCmd claude-opus-4-7 (no suffix): omits ANTHROPIC_BETA', () => {
+  const cmd = buildClaudeCmd('tui', 'claude-opus-4-7');
   assert.doesNotMatch(cmd, /ANTHROPIC_BETA/);
 });
 
@@ -58,9 +75,20 @@ test('buildClaudeCmd claude-opus-4-7[1m]: prepends ANTHROPIC_BETA AND survives B
   assert.match(cmd, /--model 'claude-opus-4-7\[1m\]'/);
 });
 
-test('buildClaudeCmd opus with effort: ANTHROPIC_BETA precedes binary', () => {
-  const cmd = buildClaudeCmd('tui', 'opus', { effort: 'high' });
-  // Order: DISABLE_OMC=1 ANTHROPIC_BETA=... claude --model 'opus' ...
+test('buildClaudeCmd claude-sonnet-4-6[1m]: prepends ANTHROPIC_BETA (entitlement responsibility on user)', () => {
+  const cmd = buildClaudeCmd('tui', 'claude-sonnet-4-6[1m]');
+  assert.match(cmd, /ANTHROPIC_BETA='context-1m-2025-08-07'/);
+  assert.match(cmd, /--model 'claude-sonnet-4-6\[1m\]'/);
+});
+
+test('buildClaudeCmd claude-opus-4-7[1m] with effort: ANTHROPIC_BETA precedes binary', () => {
+  const cmd = buildClaudeCmd('tui', 'claude-opus-4-7[1m]', { effort: 'high' });
   assert.match(cmd, /^DISABLE_OMC=1 ANTHROPIC_BETA='context-1m-2025-08-07' claude /);
+  assert.match(cmd, /--effort 'high'$/);
+});
+
+test('buildClaudeCmd opus alias with effort: no ANTHROPIC_BETA, effort still applied', () => {
+  const cmd = buildClaudeCmd('tui', 'opus', { effort: 'high' });
+  assert.match(cmd, /^DISABLE_OMC=1 claude /);
   assert.match(cmd, /--effort 'high'$/);
 });
