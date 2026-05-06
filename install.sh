@@ -115,6 +115,8 @@ fetch "$REPO_URL/docs/rlp-desk/getting-started.md" "$DESK_DIR/docs/rlp-desk/gett
 fetch "$REPO_URL/docs/rlp-desk/protocol-reference.md" "$DESK_DIR/docs/rlp-desk/protocol-reference.md"
 fetch "$REPO_URL/docs/rlp-desk/TODO-verification-next.md" "$DESK_DIR/docs/rlp-desk/TODO-verification-next.md"
 fetch "$REPO_URL/docs/rlp-desk/multi-mission-orchestration.md" "$DESK_DIR/docs/rlp-desk/multi-mission-orchestration.md"
+# Plan v6 PR-0a: signal protocol documentation
+fetch "$REPO_URL/docs/rlp-desk/signal-protocol.md" "$DESK_DIR/docs/rlp-desk/signal-protocol.md"
 # Dev meta docs (v5.7 §4.15: under docs/rlp-desk/ to avoid mixing with user docs)
 fetch "$REPO_URL/docs/rlp-desk/internal/verification-policy-gap-analysis.md" "$DESK_DIR/docs/rlp-desk/internal/verification-policy-gap-analysis.md"
 fetch "$REPO_URL/docs/rlp-desk/internal/verification-strategy-research.md" "$DESK_DIR/docs/rlp-desk/internal/verification-strategy-research.md"

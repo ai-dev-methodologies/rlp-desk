@@ -635,27 +635,82 @@ launch_verifier_claude() {
 # On exit: check done-claim, auto-generate iter-signal.
 # Args: $1=iteration  $2=signal_file
 # Returns: 0 (signal generated), 1 (error)
+# Bug #8 PR-B (codex critic P1.2 fix): shared 4-way gate used by both
+# handle_worker_exit_codex and the inline-polling A4 path. Returns:
+#   0 = synthesize allowed (caller writes signal_file + emits audit)
+#   1 = BLOCKED (this function already wrote sentinel + emitted audit)
+# Args: $1=iter  $2=us_id  $3=audit_clean_code (e.g. codex_exit_with_done_claim
+#       or inline_polling_a4_clean)
+_bug8_check_synth_allowed() {
+  local iter="$1"
+  local us_id="${2:-${CURRENT_US:-ALL}}"
+  local audit_clean="$3"
+
+  # Gate 1: done-claim must exist.
+  if [[ ! -f "$DONE_CLAIM_FILE" ]]; then
+    log_error "  Bug #8: no done-claim. Refusing to synthesize verify signal."
+    log_debug "[GOV] iter=$iter bug8=block_codex_exit_no_done_claim"
+    write_blocked_sentinel \
+      "Codex worker exited without writing done-claim (refusing to synthesize verify signal)" \
+      "$us_id" \
+      "infra_failure"
+    _emit_a4_fallback_audit "$us_id" "$iter" "blocked_codex_exit_no_done_claim"
+    return 1
+  fi
+
+  # Gate 2: git toplevel must equal $ROOT (canonicalized — macOS resolves
+  # /var → /private/var, NTFS may have 8.3 short paths; compare realpaths).
+  local _bug8_top _bug8_top_canon _bug8_root_canon
+  _bug8_top=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)
+  _bug8_top_canon=$(cd "$_bug8_top" 2>/dev/null && pwd -P 2>/dev/null)
+  _bug8_root_canon=$(cd "$ROOT" 2>/dev/null && pwd -P 2>/dev/null)
+  if [[ -z "$_bug8_top" || "$_bug8_top_canon" != "$_bug8_root_canon" ]]; then
+    log_error "  Bug #8: git unverifiable at \$ROOT=$ROOT (toplevel='$_bug8_top'). Refusing synthesis."
+    log_debug "[GOV] iter=$iter bug8=block_git_unverifiable root=$ROOT toplevel=$_bug8_top"
+    write_blocked_sentinel \
+      "git status unverifiable at $ROOT (toplevel='$_bug8_top'); refusing to synthesize verify signal" \
+      "$us_id" \
+      "infra_failure"
+    _emit_a4_fallback_audit "$us_id" "$iter" "blocked_git_unverifiable"
+    return 1
+  fi
+
+  # Gate 3: tree must be clean.
+  local _bug8_dirty
+  _bug8_dirty=$(git -C "$ROOT" status --porcelain 2>/dev/null)
+  if [[ -n "$_bug8_dirty" ]]; then
+    local _bug8_first5
+    _bug8_first5=$(printf '%s\n' "$_bug8_dirty" | head -n 5 | tr '\n' '|' | sed 's/|$//')
+    log_error "  Bug #8: done-claim present but tree dirty. Refusing synthesis. dirty: $_bug8_first5"
+    log_debug "[GOV] iter=$iter bug8=block_dirty_tree us_id=$us_id dirty='$_bug8_first5'"
+    write_blocked_sentinel \
+      "worker_incomplete_uncommitted: done-claim present but tree dirty ($_bug8_first5)" \
+      "$us_id" \
+      "metric_failure"
+    _emit_a4_fallback_audit "$us_id" "$iter" "blocked_dirty_tree"
+    return 1
+  fi
+
+  # All gates passed — synthesize allowed.
+  return 0
+}
+
 handle_worker_exit_codex() {
   local iter="$1"
   local signal_file="$2"
 
-  log "  Codex worker process exited. Checking for done-claim..."
-  if [[ -f "$DONE_CLAIM_FILE" ]]; then
-    local dc_us_id
-    dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
-    log "  Codex worker completed with done-claim (us_id=$dc_us_id). Auto-generating signal."
-    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exit","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
-    _emit_a4_fallback_audit "$dc_us_id" "$iter" "codex_exit_with_done_claim"
-  else
-    log "  WARNING: Codex worker exited without done-claim. Generating verify signal for current US."
-    local current_us
-    current_us=$(jq -r '.us_id // "US-001"' "$DESK/memos/${SLUG}-iter-signal.json" 2>/dev/null || echo "US-001")
-    local mem_us
-    mem_us=$(sed -n 's/.*Next.*US-\([0-9]*\).*/US-\1/p' "$DESK/memos/${SLUG}-memory.md" 2>/dev/null | head -1)
-    [[ -n "$mem_us" ]] && current_us="$mem_us"
-    echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$current_us"'","summary":"auto-generated after codex exit (no done-claim)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
-    _emit_a4_fallback_audit "$current_us" "$iter" "codex_exit_no_done_claim"
+  log "  Codex worker process exited. Checking for done-claim + clean tree..."
+
+  if ! _bug8_check_synth_allowed "$iter" "${CURRENT_US:-ALL}" "codex_exit_with_done_claim"; then
+    return 1
   fi
+
+  # All 3 gates passed: done-claim present, git OK, tree clean → synthesize.
+  local dc_us_id
+  dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
+  log "  Codex worker completed with done-claim (us_id=$dc_us_id) and clean tree. Auto-generating signal."
+  echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exit (clean tree)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+  _emit_a4_fallback_audit "$dc_us_id" "$iter" "codex_exit_with_done_claim_clean"
   return 0
 }
 
@@ -2176,8 +2231,22 @@ poll_for_signal() {
 
     # Check if signal file appeared
     if [[ -f "$signal_file" ]]; then
-      log "  Signal file detected: $signal_file"
-      return 0  # success
+      # Bug #7-extra (BOS 2026-05-06): file existence is NOT enough. Worker
+      # (claude opus) writes via Claude Code's Write tool, which is not
+      # guaranteed atomic — the file can appear with empty / partial JSON
+      # before the write completes. Verifier was being dispatched against a
+      # half-written iter-signal.json. Validate that the file holds a single
+      # parseable, non-null JSON value (`jq -e .`) before accepting; any
+      # failure simply continues polling (next tick re-reads). Note: `jq
+      # empty` was rejected because it accepts an EMPTY file as "zero
+      # documents" — the exact race window we need to reject.
+      if jq -e . "$signal_file" >/dev/null 2>&1; then
+        log "  Signal file detected: $signal_file"
+        return 0  # success
+      fi
+      # Empty / truncated / mid-write JSON. Stay in the polling loop and let
+      # the next tick re-read once the writer has finished.
+      log_debug "[bug7-extra] $role signal file present but JSON not yet valid — continue polling"
     fi
 
     # A4 fallback: done-claim exists but no signal → Worker forgot iter-signal
@@ -2216,11 +2285,24 @@ poll_for_signal() {
         local dc_us_id
         dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
         if [[ -n "$dc_us_id" && "$dc_us_id" != "null" ]]; then
-          log "  WARNING: done-claim exists for $dc_us_id but no iter-signal. Auto-generating signal (A4 fallback)."
-          log_debug "[GOV] iter=$ITERATION done_claim_without_signal=true us_id=$dc_us_id action=auto_generate_signal"
-          echo '{"iteration":'"$ITERATION"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated by A4 fallback (done-claim without signal)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
-          _emit_a4_fallback_audit "$dc_us_id" "$ITERATION" "inline_polling_a4"
-          return 0
+          # Bug #8 PR-B: defer to shared 4-way gate (codex critic P1.2).
+          # _bug8_check_synth_allowed handles done-claim/git/dirty-tree gates
+          # uniformly across handle_worker_exit_codex AND this inline path so
+          # both codex-exit and inline-polling A4 enforce the same contract.
+          if _bug8_check_synth_allowed "$ITERATION" "$dc_us_id" "inline_polling_a4_clean"; then
+            log "  WARNING: done-claim exists for $dc_us_id but no iter-signal. Tree clean — auto-generating signal (A4 fallback)."
+            log_debug "[GOV] iter=$ITERATION done_claim_without_signal=true us_id=$dc_us_id action=auto_generate_signal"
+            echo '{"iteration":'"$ITERATION"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated by A4 fallback (done-claim + clean tree)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+            _emit_a4_fallback_audit "$dc_us_id" "$ITERATION" "inline_polling_a4_clean"
+            return 0
+          else
+            # Bug #8 PR-B (codex critic round-2 P2): hard-stop rc=2 so the
+            # main worker loop (L3119) treats this BLOCKED as terminal,
+            # matching the handle_worker_exit_codex blocked path. rc=1 is
+            # ambiguous — caller may interpret it as a recoverable poll
+            # failure and re-loop while the BLOCKED sentinel is on disk.
+            return 2
+          fi
         fi
       fi
     fi
@@ -2271,8 +2353,16 @@ poll_for_signal() {
         fi
         # Dispatch to engine-specific exit handler
         if [[ "$WORKER_ENGINE" = "codex" && "$role" != *erifier* ]]; then
-          handle_worker_exit_codex "$ITERATION" "$signal_file"
-          return 0
+          # Bug #8 PR-B: handle_worker_exit_codex now returns 1 when it has
+          # written a BLOCKED sentinel (no done-claim, dirty tree, git
+          # unverifiable). Propagate the return so main loop stops, instead
+          # of swallowing it with `return 0` and continuing as if the poll
+          # had succeeded.
+          if handle_worker_exit_codex "$ITERATION" "$signal_file"; then
+            return 0
+          else
+            return 2
+          fi
         fi
         # Claude path (or verifier of any engine)
         if handle_worker_exit_claude "$pane_id" "$ITERATION" "$trigger_file"; then
@@ -2467,8 +2557,16 @@ run_single_verifier() {
     fi
   fi
 
+  # Bug #7 Fix-Q/R: reap verifier pane the moment we accept the verdict so
+  # codex/claude cannot keep self-reviewing and rewrite verify-verdict.json.
+  # Lock applied AFTER cp so the archived snapshot is also frozen at intent.
+  _kill_pane_process "$VERIFIER_PANE" "verifier-${suffix}"
+
   # Copy verdict to destination
   cp "$VERDICT_FILE" "$verdict_dest"
+  _lock_sentinel "$VERDICT_FILE"
+  # PR-0b-narrow: stamp leader handshake ack on the verdict (audit-only).
+  _stamp_ack_field "$VERDICT_FILE"
   log "  Verifier$suffix verdict saved to $verdict_dest"
   return 0
 }
@@ -2527,6 +2625,14 @@ run_sequential_final_verify() {
       FAILED_US="$us"
       return 1
     fi
+
+    # Bug #7 Fix-Q/R: reap verifier pane between per-US final verifications so
+    # the previous codex/claude TUI cannot continue running while the next per-
+    # US verifier dispatch reuses the same pane.
+    _kill_pane_process "$VERIFIER_PANE" "verifier-final"
+    _lock_sentinel "$VERDICT_FILE"
+    # PR-0b-narrow: stamp leader handshake ack on the verdict (audit-only).
+    _stamp_ack_field "$VERDICT_FILE"
 
     # Check verdict
     local verdict
@@ -2940,6 +3046,10 @@ main() {
     fi
 
     # --- governance.md s7 step 8 (cleanup): Clean previous iteration signals ---
+    # Bug #7 Fix-R cleanup: unlock 0o444 sentinels written by the previous
+    # iteration's reaper before rm so cleanup does not log permission noise.
+    _unlock_sentinel "$SIGNAL_FILE"
+    _unlock_sentinel "$VERDICT_FILE"
     rm -f "$SIGNAL_FILE" "$DONE_CLAIM_FILE" "$VERDICT_FILE" 2>/dev/null
     rm -f "$WORKER_HEARTBEAT" "$VERIFIER_HEARTBEAT" 2>/dev/null
 
@@ -3003,6 +3113,12 @@ main() {
       if poll_for_signal "$SIGNAL_FILE" "$WORKER_HEARTBEAT" "$WORKER_PANE" "$worker_launch" "Worker"; then
         worker_poll_done=1
         log_debug "[FLOW] iter=$ITERATION poll_signal_received=true"
+        # Bug #7 Fix-Q/R: reap worker pane immediately so claude/codex cannot
+        # self-review and rewrite iter-signal.json (1m43s drift observed).
+        _kill_pane_process "$WORKER_PANE" "worker"
+        _lock_sentinel "$SIGNAL_FILE"
+        # PR-0b-narrow: stamp leader handshake ack on the iter-signal (audit-only).
+        _stamp_ack_field "$SIGNAL_FILE"
       else
         worker_poll_rc=$?
         if (( worker_poll_rc == 2 )); then
@@ -3210,6 +3326,12 @@ main() {
             update_status "blocked" "verifier_dead"
             return 1
           fi
+          # Bug #7 Fix-Q/R: reap verifier pane immediately so codex cannot
+          # rewrite verify-verdict.json post-detect (mtime drift fix).
+          _kill_pane_process "$VERIFIER_PANE" "verifier"
+          _lock_sentinel "$VERDICT_FILE"
+          # PR-0b-narrow: stamp leader handshake ack on the verdict (audit-only).
+          _stamp_ack_field "$VERDICT_FILE"
         fi
 
         # AC1: capture verifier end timestamp

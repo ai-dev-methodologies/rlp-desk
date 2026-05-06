@@ -52,6 +52,12 @@ export async function sendKeys(paneId, command) {
   await runTmux(['send-keys', '-t', paneId, 'Enter'], { paneId });
 }
 
+// Bug #7 Fix-Q: send a raw tmux key (e.g. C-c) without the `-l --` literal-text
+// flag. Distinct from sendKeys() so callers can interrupt a running TUI.
+export async function sendRawKey(paneId, key) {
+  await runTmux(['send-keys', '-t', paneId, key], { paneId });
+}
+
 export async function waitForProcessExit(
   paneId,
   { pollIntervalMs = 100, timeoutMs = 5000 } = {},
@@ -74,4 +80,37 @@ export async function waitForProcessExit(
   throw new TmuxError(`Timed out waiting for pane ${paneId} to return to the shell`, {
     paneId,
   });
+}
+
+// Bug #7 Fix-Q: terminate the TUI process producing a sentinel file the moment
+// the leader has accepted it. Without this, claude/codex returns to its idle
+// prompt and continues self-review for 1-2 minutes, racing the next iteration.
+// Mirror of zsh pattern at run_ralph_desk.zsh:2384-2397, 375-376, 529-530.
+// Fail-open: pane may already be dead from prior teardown, or waitForExit may
+// time out — neither aborts the iteration.
+export async function killPaneProcess(
+  paneId,
+  {
+    sendRawKey: sendRawKeyImpl = sendRawKey,
+    waitForExit = waitForProcessExit,
+    gracePeriodMs = 800,
+    exitTimeoutMs = 5000,
+    log = () => {},
+  } = {},
+) {
+  const safeSend = async (key) => {
+    try {
+      await sendRawKeyImpl(paneId, key);
+    } catch (err) {
+      log(`[bug7] killPaneProcess sendRawKey ${key} failed for ${paneId}: ${err?.message ?? err}`);
+    }
+  };
+  await safeSend('C-c');
+  await new Promise((resolve) => setTimeout(resolve, gracePeriodMs));
+  await safeSend('C-c');
+  try {
+    await waitForExit(paneId, { timeoutMs: exitTimeoutMs });
+  } catch (err) {
+    log(`[bug7] killPaneProcess waitForExit failed for ${paneId}: ${err?.message ?? err}`);
+  }
 }

@@ -10,7 +10,12 @@ import { shellQuote } from '../util/shell-quote.mjs';
 import { ONE_MILLION_BETA, wantsOneMillionContext } from '../constants.mjs';
 import { initCampaign } from '../init/campaign-initializer.mjs';
 import { LEGACY_DESK_REL, resolveDeskRoot } from '../util/desk-root.mjs';
-import { writeSentinelExclusive } from '../shared/fs.mjs';
+import {
+  lockSentinelFile as defaultLockSentinelFile,
+  stampAckField as defaultStampAckField,
+  unlockSentinelFile,
+  writeSentinelExclusive,
+} from '../shared/fs.mjs';
 import {
   TimeoutError,
   WorkerExitedError,
@@ -29,7 +34,10 @@ import {
 } from '../reporting/campaign-reporting.mjs';
 import {
   createPane as defaultCreatePane,
+  killPaneProcess as defaultKillPaneProcess,
   sendKeys as defaultSendKeys,
+  sendRawKey as defaultSendRawKey,
+  waitForProcessExit as defaultWaitForProcessExit,
 } from '../tmux/pane-manager.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -126,6 +134,39 @@ function buildPaths(rootDir, slug, env = process.env) {
     flywheelGuardVerdictFile: path.join(deskRoot, 'memos', `${slug}-flywheel-guard-verdict.json`),
     laneAuditFile: path.join(campaignLogDir, 'lane-audit.json'),
 };
+}
+
+// Bug #8 PR-B: default git working-tree probe. Inline (~20 LoC) — no new
+// module per Architect/Critic codex iter 6 consensus. Tests inject a stub via
+// run() option `checkWorkingTree`.
+//   - returns { ok: false, error } when git rev-parse fails (not a repo, etc).
+//   - returns { ok: true, dirty: bool, dirtyFiles[] } otherwise.
+//   - dirtyFiles are raw `git status --porcelain` lines (caller truncates).
+async function _defaultCheckWorkingTree(rootDir) {
+  try {
+    const { stdout: top } = await execFileAsync('git', ['-C', rootDir, 'rev-parse', '--show-toplevel']);
+    const trimmed = top.trim();
+    // macOS `/var` resolves to `/private/var`; symlinks elsewhere too. Compare
+    // canonical realpaths via fs.realpath so the comparison does not fire on
+    // symlink-equivalent paths.
+    const [topCanon, rootCanon] = await Promise.all([
+      fs.realpath(trimmed).catch(() => trimmed),
+      fs.realpath(rootDir).catch(() => rootDir),
+    ]);
+    if (topCanon !== rootCanon) {
+      // Worker is in a sub-tree, not the campaign root. Refuse to classify.
+      return { ok: false, error: `git toplevel ${trimmed} != ${rootDir}` };
+    }
+  } catch (err) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', rootDir, 'status', '--porcelain']);
+    const lines = stdout.split('\n').filter(Boolean);
+    return { ok: true, dirty: lines.length > 0, dirtyFiles: lines };
+  } catch (err) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
 }
 
 async function exists(targetPath) {
@@ -534,6 +575,12 @@ export const BLOCK_TAGS = Object.freeze({
   MALFORMED_ARTIFACT: 'malformed_artifact',
   // Backstop (run() try/finally)
   LEADER_EXITED_WITHOUT_TERMINAL_STATE: 'leader_exited_without_terminal_state',
+  // Bug #8 (Plan v6 PR-B): refuse to synthesize verify signal when codex
+  // worker exited without committing. Three new tags route through
+  // _handlePollFailure with reasonOverride/categoryOverride.
+  CODEX_EXIT_NO_DONE_CLAIM: 'codex_exit_no_done_claim',
+  GIT_STATE_UNVERIFIABLE: 'git_state_unverifiable',
+  WORKER_INCOMPLETE_UNCOMMITTED: 'worker_incomplete_uncommitted',
 });
 
 // P1-D Failure Taxonomy classifier. governance §1f locks the reason_category
@@ -619,6 +666,32 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
       action = 'investigate_leader_logs';
       failureCategory = 'leader_exited_without_terminal_state';
       break;
+    // Bug #8 PR-B — codex worker exited but did not write done-claim. Refuse
+    // to synthesize a verify signal; surface as infra_failure so wrapper does
+    // not retry blindly.
+    case BLOCK_TAGS.CODEX_EXIT_NO_DONE_CLAIM:
+      category = 'infra_failure';
+      recoverable = false;
+      action = 'investigate_pane_logs';
+      failureCategory = 'codex_exit_no_done_claim';
+      break;
+    // Bug #8 PR-B — git status could not be resolved (not a repo, git binary
+    // missing, etc). Without git we cannot prove the working tree is clean,
+    // so refuse to synthesize.
+    case BLOCK_TAGS.GIT_STATE_UNVERIFIABLE:
+      category = 'infra_failure';
+      recoverable = false;
+      action = 'investigate_git_state';
+      failureCategory = 'git_state_unverifiable';
+      break;
+    // Bug #8 PR-B — worker said it was done (done-claim present) but the tree
+    // is dirty. Recoverable: next iteration's worker can finish committing.
+    case BLOCK_TAGS.WORKER_INCOMPLETE_UNCOMMITTED:
+      category = 'metric_failure';
+      recoverable = true;
+      action = 'retry_after_fix';
+      failureCategory = 'worker_incomplete_uncommitted';
+      break;
     default:
       category = 'metric_failure';
       recoverable = false;
@@ -650,8 +723,40 @@ async function _handlePollFailure(error, ctx) {
     options,
     role, // 'worker' | 'verifier' | 'final_verifier' | 'flywheel' | 'guard'
     usIdOverride,
+    // Bug #8 PR-B: when the caller has already classified the failure (e.g.
+    // codex done-claim/git gate), forward an explicit BLOCK_TAGS value as
+    // categoryOverride and a reason string. Named `categoryOverride` per
+    // Plan v6 PRD (it overrides the tag→reason_category mapping). Existing 5
+    // callers omit both and the legacy error→tag mapping below runs unchanged.
+    categoryOverride,
+    reasonOverride,
   } = ctx;
   const usId = usIdOverride ?? state.current_us;
+
+  if (categoryOverride) {
+    state.phase = 'blocked';
+    const classification = _classifyBlock(categoryOverride, { state, slug });
+    const reasonText = reasonOverride ?? `${role} blocked: ${categoryOverride}`;
+    await writeSentinel(paths.blockedSentinel, 'blocked', usId, reasonText, classification, paths);
+    await writeStatus(paths, state, options.onStatusChange, options.now);
+    await generateCampaignReport({
+      slug,
+      reportFile: paths.reportFile,
+      prdFile: paths.prdFile,
+      statusFile: paths.statusFile,
+      analyticsFile: paths.analyticsFile,
+      now: resolveNow(options.now),
+      blockedReason: reasonText,
+      blockedCategory: classification.reason_category,
+    });
+    return {
+      status: 'blocked',
+      usId,
+      reason: reasonText,
+      category: classification.reason_category,
+      statusFile: paths.statusFile,
+    };
+  }
 
   let tag;
   let reason;
@@ -872,6 +977,10 @@ async function runFinalSequentialVerify({
   pollForSignal,
   runIntegrationCheck,
   iterTimeoutMs,
+  // Bug #7 Fix-Q/R: optional reaper. Passed from _runCampaignBody so each
+  // per-US verdict kills the verifier TUI before the next per-US dispatch
+  // reuses the same pane. No-op when undefined (legacy/test callers).
+  reapProducer,
 }) {
   const verifierModel = state.final_verifier_model;
 
@@ -892,6 +1001,10 @@ async function runFinalSequentialVerify({
       paneId: verifierPaneId,
       timeoutMs: iterTimeoutMs,
     });
+
+    if (typeof reapProducer === 'function') {
+      await reapProducer(verifierPaneId, paths.verdictFile);
+    }
 
     if (verdict.verdict !== 'pass') {
       return {
@@ -1078,6 +1191,46 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   const createPane = options.createPane ?? defaultCreatePane;
   const createSession = options.createSession ?? defaultCreateSession;
   const pollForSignal = options.pollForSignal ?? defaultPollForSignal;
+  // Bug #7 Fix-Q/R: post-sentinel reaper. Producer (claude/codex TUI) must be
+  // interrupted the moment leader has consumed the sentinel; otherwise the
+  // pane lingers in idle prompt and self-reviews for ~2min. lockSentinel
+  // freezes the file mtime as defense-in-depth. All four are injectable so
+  // existing tests with fake sendKeys keep working (us006 createTmuxFakes).
+  const sendRawKey = options.sendRawKey ?? defaultSendRawKey;
+  const waitForProcessExit = options.waitForProcessExit ?? defaultWaitForProcessExit;
+  const killPaneProcess = options.killPaneProcess ?? defaultKillPaneProcess;
+  const lockSentinel = options.lockSentinelFile ?? defaultLockSentinelFile;
+  const stampAckField = options.stampAckField ?? defaultStampAckField;
+  const reapProducer = async (paneId, sentinelFile) => {
+    if (!paneId) return;
+    await killPaneProcess(paneId, {
+      sendRawKey,
+      waitForExit: waitForProcessExit,
+      log: (msg) => console.error(msg),
+    });
+    // PR-0b-narrow AC-H1: after killPaneProcess, wait for the producing
+    // process to actually exit before continuing. waitForProcessExit returns
+    // when pane_current_command resolves to a shell (zsh/bash/sh). Wrapped
+    // in try/catch — failure here is non-fatal but emits a log entry.
+    try {
+      await waitForProcessExit(paneId, { timeoutMs: 5000 });
+    } catch (err) {
+      console.error(`[handshake] waitForProcessExit failed on ${paneId} (${err?.message ?? err}); continuing`);
+    }
+    if (sentinelFile) {
+      await lockSentinel(sentinelFile, { log: (msg) => console.error(msg) });
+      // PR-0b-narrow AC-H2: stamp the leader_ack audit field. Best-effort,
+      // does not block subsequent dispatch.
+      await stampAckField(sentinelFile, {
+        acked_by: 'leader',
+        acked_at: new Date(resolveNow(options.now)).toISOString(),
+        ack_pane_state: 'shell',
+      }, { log: (msg) => console.error(msg) });
+    }
+  };
+  // Bug #8 PR-B: working-tree probe injected (or default execFile git).
+  // Returns { ok: boolean, dirty?: boolean, dirtyFiles?: string[], error?: string }.
+  const checkWorkingTree = options.checkWorkingTree ?? _defaultCheckWorkingTree;
   const runIntegrationCheck = options.runIntegrationCheck ?? (async () => ({ exitCode: 0, summary: 'integration skipped' }));
   const maxIterations = options.maxIterations ?? 100;
   // v5.7 §4.19: campaign-level pollForSignal timeout (Node leader fix).
@@ -1143,6 +1296,11 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   let _laneSnapshot = await _snapshotLaneMtimes(paths);
 
   while (state.iteration <= maxIterations) {
+    // Bug #7 Fix-R defensive unlock: a 0o444 sentinel left from the previous
+    // iteration must not block the next producer's atomic-rename write.
+    // Idempotent: missing-file calls are no-ops.
+    await unlockSentinelFile(paths.signalFile);
+    await unlockSentinelFile(paths.verdictFile);
     // Audit drift from the prior iteration before doing anything new.
     const _laneSnapshotAfter = await _snapshotLaneMtimes(paths);
     const _laneViolations = await _checkLaneViolations(paths, _laneSnapshot, _laneSnapshotAfter, state, options);
@@ -1191,6 +1349,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
           pollForSignal,
           runIntegrationCheck,
           iterTimeoutMs,
+          reapProducer,
         });
       } catch (error) {
         // v5.7 §4.25 — uniform poll-failure handling for final verifier.
@@ -1282,12 +1441,17 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         });
       }
 
+      // Bug #7 Fix-Q/R: reap flywheel pane before consuming the signal.
+      await reapProducer(state.flywheel_pane_id ?? state.verifier_pane_id, paths.flywheelSignalFile);
+
       state.last_flywheel_decision = flywheelSignal.decision;
       // P0-A multi-mission orchestration: optionally captured from flywheel signal.
       // null when the flywheel did not suggest a next mission. Consumer wrappers
       // poll status.next_mission_candidate to chain missions without code edits.
       // See docs/multi-mission-orchestration.md.
       state.next_mission_candidate = flywheelSignal.next_mission_candidate ?? null;
+      // Bug #7 Fix-R cleanup: unlock before unlink so 0o444 doesn't block.
+      await unlockSentinelFile(paths.flywheelSignalFile);
       await fs.unlink(paths.flywheelSignalFile).catch(() => {});
 
       // Flywheel Guard (independent validation of flywheel decision)
@@ -1320,11 +1484,15 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
           });
         }
 
+        // Bug #7 Fix-Q/R: reap guard pane before mutating state.
+        await reapProducer(guardPaneId, paths.flywheelGuardVerdictFile);
+
         if (!state.flywheel_guard_count[state.current_us]) {
           state.flywheel_guard_count[state.current_us] = 0;
         }
         state.flywheel_guard_count[state.current_us] += 1;
 
+        await unlockSentinelFile(paths.flywheelGuardVerdictFile);
         await fs.unlink(paths.flywheelGuardVerdictFile).catch(() => {});
 
         if (guardVerdict.verdict === 'inconclusive') {
@@ -1432,8 +1600,43 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       });
     } catch (error) {
       if (error instanceof TimeoutError && parseModelFlag(state.worker_model).engine === 'codex') {
-        // v5.7 — codex CLI exits cleanly after writing signal; if pollForSignal
-        // timed out for codex, synthesize a verify signal so the loop continues.
+        // Bug #8 PR-B 4-way gate: refuse to synthesize verify signal when
+        // codex worker exited without committing real work.
+        //   1. done-claim absent          → BLOCKED infra_failure
+        //   2. git unverifiable           → BLOCKED infra_failure
+        //   3. done-claim + dirty tree    → BLOCKED metric_failure
+        //   4. done-claim + clean tree    → synthesize verify (legacy path)
+        const doneClaimExists = await exists(paths.doneClaimFile);
+        if (!doneClaimExists) {
+          return _handlePollFailure(error, {
+            paths, state, slug, options,
+            role: 'worker',
+            categoryOverride: BLOCK_TAGS.CODEX_EXIT_NO_DONE_CLAIM,
+            reasonOverride:
+              'codex worker exited (timeout) without writing done-claim; refusing to synthesize verify signal',
+          });
+        }
+        const tree = await checkWorkingTree(rootDir);
+        if (!tree.ok) {
+          return _handlePollFailure(error, {
+            paths, state, slug, options,
+            role: 'worker',
+            categoryOverride: BLOCK_TAGS.GIT_STATE_UNVERIFIABLE,
+            reasonOverride:
+              `git status unverifiable (${tree.error ?? 'unknown'}); refusing to synthesize verify signal`,
+          });
+        }
+        if (tree.dirty) {
+          const sample = (tree.dirtyFiles ?? []).slice(0, 5).join(', ');
+          return _handlePollFailure(error, {
+            paths, state, slug, options,
+            role: 'worker',
+            categoryOverride: BLOCK_TAGS.WORKER_INCOMPLETE_UNCOMMITTED,
+            reasonOverride:
+              `worker_incomplete_uncommitted: done-claim present but tree dirty (${sample || 'no file list'})`,
+          });
+        }
+        // Clean tree — preserve the legacy synthesize behaviour.
         signal = {
           iteration: state.iteration,
           status: 'verify',
@@ -1449,6 +1652,11 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         });
       }
     }
+
+    // Bug #7 Fix-Q/R: reap the worker pane the instant we accept the signal so
+    // claude/codex cannot self-review and rewrite iter-signal.json. Runs even
+    // for the codex-fallback synthesized signal (no-op on a dead pane).
+    await reapProducer(state.worker_pane_id, paths.signalFile);
 
     // US-019 R7 P1-G: verify_partial malformed downgrade.
     // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier
@@ -1518,6 +1726,11 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         usIdOverride: usId,
       });
     }
+
+    // Bug #7 Fix-Q/R: reap verifier pane immediately after accepting the
+    // verdict — without this the codex/claude TUI keeps running for ~2min and
+    // can rewrite verify-verdict.json (mtime drift observed in 19th launch).
+    await reapProducer(state.verifier_pane_id, paths.verdictFile);
 
     if (verdict.verdict === 'pass') {
       state.consecutive_failures = 0;

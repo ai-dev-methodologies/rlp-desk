@@ -86,11 +86,20 @@ function createTmuxFakes() {
   // Panes are created in order: flywheel → worker → verifier (see campaign-main-loop.mjs)
   const paneIds = ['%flywheel', '%worker', '%verifier'];
   const createdPanes = [];
+  // Bug #7: reap/lock recorders. `commands` stays send-only (legacy tests
+  // index into it by position). `events` is a merged ordered log (send + kill)
+  // for tests that need to assert ordering across the two action streams.
+  const reaped = [];
+  const locked = [];
+  const events = [];
 
   return {
     commands,
     sessions,
     createdPanes,
+    reaped,
+    locked,
+    events,
     deps: {
       createSession: async ({ sessionName, workingDir }) => {
         sessions.push({ sessionName, workingDir });
@@ -103,6 +112,25 @@ function createTmuxFakes() {
       },
       sendKeys: async (paneId, command) => {
         commands.push({ paneId, command });
+        events.push({ kind: 'send', paneId, command });
+      },
+      // Bug #7 Fix-Q/R: no-op fakes that record calls. Kept off `commands`
+      // so legacy positional indexing in AC6.3-style tests stays valid.
+      killPaneProcess: async (paneId, _opts) => {
+        reaped.push({ paneId });
+        events.push({ kind: 'kill', paneId });
+      },
+      lockSentinelFile: async (filePath, _opts) => {
+        locked.push({ filePath });
+        events.push({ kind: 'lock', filePath });
+      },
+      // PR-0b-narrow handshake: reapProducer awaits waitForProcessExit
+      // explicitly. Without a fake the default impl polls real tmux against
+      // fake pane IDs and times out for 5s per call. Stub to a no-op so the
+      // unit tests stay fast.
+      waitForProcessExit: async () => {},
+      stampAckField: async (filePath, ack) => {
+        events.push({ kind: 'ack', filePath, ack });
       },
     },
   };
@@ -254,6 +282,20 @@ test('US-006 AC6.2 happy: a worker verify signal launches a verifier prompt scop
 
 test('US-006 AC6.2 boundary: a codex worker timeout falls back to verifying the current US so the loop can continue', async (t) => {
   const campaign = await setupCampaign(t);
+  // Bug #8 PR-B: legacy synth path now requires (a) done-claim AND (b) clean
+  // working tree. Pre-create both pre-conditions so the codex-timeout fallback
+  // still resolves to verifier dispatch (the original contract of AC6.2).
+  const claimPath = deskPath(
+    campaign.rootDir,
+    'memos',
+    `${campaign.slug}-done-claim.json`,
+  );
+  await fs.mkdir(path.dirname(claimPath), { recursive: true });
+  await fs.writeFile(
+    claimPath,
+    JSON.stringify({ us_id: 'US-001', summary: 'codex done' }, null, 2),
+    'utf8',
+  );
   const tmux = createTmuxFakes();
   const { TimeoutError } = await import('../../src/node/polling/signal-poller.mjs');
   const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
@@ -268,6 +310,7 @@ test('US-006 AC6.2 boundary: a codex worker timeout falls back to verifying the 
       { verdict: 'pass', recommended_state_transition: 'complete' },
     ]),
     runIntegrationCheck: async () => ({ exitCode: 0 }),
+    checkWorkingTree: async () => ({ ok: true, dirty: false, dirtyFiles: [] }),
     ...tmux.deps,
   });
 
@@ -607,4 +650,444 @@ test('US-006 AC6.5 negative: without a blocked sentinel the campaign is allowed 
 
   assert.equal(result.status, 'complete');
   assert.equal(tmux.sessions.length, 1);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// Bug #7 Fix-Q/R: post-sentinel reaper.
+// Asserts: every accepted signal/verdict triggers killPaneProcess on the
+// producing pane and lockSentinelFile on the artifact, BEFORE the next
+// dispatch fires. Without this the producing TUI keeps running and rewrites
+// the sentinel for ~2min (verdict mtime drift observed in 19th launch).
+// ────────────────────────────────────────────────────────────────────────
+
+test('US-006 Bug-7-A: worker pollForSignal success reaps worker pane and locks signal file before verifier dispatch', async (t) => {
+  const campaign = await setupCampaign(t);
+  const tmux = createTmuxFakes();
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    ...tmux.deps,
+  });
+
+  const reapedWorker = tmux.reaped.find((r) => r.paneId === '%worker');
+  assert.ok(reapedWorker, 'worker pane was reaped');
+
+  const lockedSignal = tmux.locked.find((l) => l.filePath.endsWith('iter-signal.json'));
+  assert.ok(lockedSignal, 'iter-signal.json was locked');
+
+  // Order over the merged event log: send to %worker → kill on %worker →
+  // send to %verifier.
+  const workerSendIdx = tmux.events.findIndex(
+    (e) => e.kind === 'send' && e.paneId === '%worker',
+  );
+  const workerKillIdx = tmux.events.findIndex(
+    (e) => e.kind === 'kill' && e.paneId === '%worker',
+  );
+  const verifierSendIdx = tmux.events.findIndex(
+    (e) => e.kind === 'send' && e.paneId === '%verifier',
+  );
+  assert.ok(workerSendIdx >= 0, 'worker dispatched');
+  assert.ok(workerKillIdx > workerSendIdx, 'worker killed AFTER its dispatch');
+  assert.ok(verifierSendIdx > workerKillIdx, 'verifier dispatched AFTER worker reap');
+});
+
+test('US-006 Bug-7-B: verifier verdict pass reaps verifier pane and locks verdict file before next dispatch', async (t) => {
+  const campaign = await setupCampaign(t);
+  const tmux = createTmuxFakes();
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    ...tmux.deps,
+  });
+
+  const verifierReaps = tmux.reaped.filter((r) => r.paneId === '%verifier');
+  assert.ok(verifierReaps.length >= 1, 'verifier pane reaped at least once');
+
+  const lockedVerdict = tmux.locked.find((l) => l.filePath.endsWith('verify-verdict.json'));
+  assert.ok(lockedVerdict, 'verify-verdict.json was locked');
+
+  // The final verifier interaction in the merged event log must be a kill,
+  // not a dispatch — campaign reached complete after the last reap.
+  const lastVerifierEvent = [...tmux.events].reverse().find((e) => e.paneId === '%verifier');
+  assert.ok(lastVerifierEvent, 'verifier interacted at least once');
+  assert.equal(
+    lastVerifierEvent.kind,
+    'kill',
+    'last verifier event is a kill, not a dispatch',
+  );
+});
+
+test('US-006 Bug-7-C: every accepted artifact triggers exactly one kill+lock pair', async (t) => {
+  const campaign = await setupCampaign(t);
+  const tmux = createTmuxFakes();
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    ...tmux.deps,
+  });
+
+  // Single-US campaign with one verify cycle plus the final per-US verdict:
+  // worker accepted once, verifier accepted at least twice (per-US + final).
+  const workerReaps = tmux.reaped.filter((r) => r.paneId === '%worker');
+  const verifierReaps = tmux.reaped.filter((r) => r.paneId === '%verifier');
+  assert.equal(workerReaps.length, 1, 'worker reaped exactly once per accepted signal');
+  assert.ok(verifierReaps.length >= 1, 'verifier reaped at least once');
+
+  // Every reap must be paired with a sentinel lock (kill+lock invariant).
+  assert.equal(
+    tmux.locked.length,
+    tmux.reaped.length,
+    'each reaped pane has a paired sentinel lock',
+  );
+  for (const lock of tmux.locked) {
+    assert.match(
+      lock.filePath,
+      /(iter-signal|verify-verdict|flywheel-signal|flywheel-guard-verdict)\.json$/,
+      `locked file is a sentinel artifact: ${lock.filePath}`,
+    );
+  }
+});
+
+test('US-006 Bug-7-D: --mode agent live tmux reaper leaves all panes at idle shell', async (t) => {
+  // Plan §C "Agent mode coverage" + Verification end-to-end §6: exercise the
+  // production code path with REAL tmux session + real killPaneProcess +
+  // real lockSentinelFile (no fake helper inject). Mirrors AC6.1 boundary
+  // pattern but additionally asserts every pane is at the shell after the
+  // campaign completes (i.e. the reaper actually fired against real panes).
+  const campaign = await setupCampaign(t);
+  const sessionName = `us006-bug7d-${Date.now()}`;
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  t.after(async () => {
+    await execFileAsync('tmux', ['kill-session', '-t', sessionName]).catch(() => {});
+  });
+
+  // No `sendKeys`/`killPaneProcess`/`lockSentinelFile` injection — defaults
+  // are used so real tmux + real reaper run end-to-end.
+  await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    sessionName,
+    workerModel: 'gpt-5.5:medium',
+    env: {},
+    pollForSignal: createPoller([
+      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+  });
+
+  const { stdout } = await execFileAsync('tmux', [
+    'list-panes',
+    '-t',
+    sessionName,
+    '-F',
+    '#{pane_id} #{pane_current_command}',
+  ]);
+  const lines = stdout.trim().split('\n').filter(Boolean);
+  // 4 panes: leader + flywheel + worker + verifier
+  assert.equal(lines.length, 4);
+  // After Bug #7 reaper has fired against worker + verifier (and the
+  // dispatched fake commands were non-existent binaries that immediately
+  // exit), every pane must be parked at a shell — not running claude/codex
+  // self-review.
+  for (const line of lines) {
+    const command = line.split(/\s+/, 2)[1] ?? '';
+    assert.ok(
+      ['zsh', 'bash', 'sh'].includes(command),
+      `pane ${line} is not at a shell — reaper failed to bring TUI back to idle`,
+    );
+  }
+});
+
+// =============================================================================
+// Bug #8 — refuse to synthesize verify signal when worker exited without commit
+// =============================================================================
+//
+// Plan v6 PR-B. Codex worker stub timeout fallback (campaign-main-loop.mjs
+// L1484-1500) used to blindly synthesize a verify signal whenever pollForSignal
+// raised TimeoutError. With Bug #8 fix this becomes a 4-way gate:
+//
+//   A1. done-claim absent             → BLOCKED infra_failure
+//                                       (codex_exit_no_done_claim)
+//   A2. done-claim + git unverifiable → BLOCKED infra_failure
+//                                       (git_state_unverifiable)
+//   A3. done-claim + dirty tree       → BLOCKED metric_failure
+//                                       (worker_incomplete_uncommitted)
+//   A4. done-claim + clean tree       → synthesize verify signal (legacy path)
+//
+// All four assertions exercise the codex engine (workerModel 'gpt-5.5:medium')
+// because the synthesize gate was always a codex-only branch.
+
+async function writeDoneClaim(campaign, usId = 'US-001') {
+  const claimPath = deskPath(
+    campaign.rootDir,
+    'memos',
+    `${campaign.slug}-done-claim.json`,
+  );
+  await fs.mkdir(path.dirname(claimPath), { recursive: true });
+  await fs.writeFile(
+    claimPath,
+    JSON.stringify({ us_id: usId, summary: 'stub done-claim' }, null, 2),
+    'utf8',
+  );
+}
+
+test('US-006 Bug-8-A1: codex worker timeout WITHOUT done-claim writes BLOCKED infra_failure (codex_exit_no_done_claim)', async (t) => {
+  const campaign = await setupCampaign(t);
+  const tmux = createTmuxFakes();
+  const { TimeoutError } = await import('../../src/node/polling/signal-poller.mjs');
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  // No done-claim written → A1 path.
+  const result = await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      new TimeoutError('codex worker exited before writing a signal'),
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    // Inject deterministic clean-tree result. Should NOT be reached because
+    // the done-claim absence gate fires first.
+    checkWorkingTree: async () => ({ ok: true, dirty: false, dirtyFiles: [] }),
+    ...tmux.deps,
+  });
+
+  assert.equal(result.status, 'blocked', 'campaign exit status is blocked');
+  assert.equal(result.category, 'infra_failure');
+  assert.match(result.reason, /done.?claim|done_claim|codex.*exit/i);
+
+  const blockedJsonPath = deskPath(
+    campaign.rootDir,
+    'memos',
+    `${campaign.slug}-blocked.json`,
+  );
+  const blocked = await readJson(blockedJsonPath);
+  assert.equal(blocked.reason_category, 'infra_failure');
+  assert.equal(blocked.failure_category, 'codex_exit_no_done_claim');
+});
+
+test('US-006 Bug-8-A2: codex worker timeout WITH done-claim but git unverifiable writes BLOCKED infra_failure (git_state_unverifiable)', async (t) => {
+  const campaign = await setupCampaign(t);
+  await writeDoneClaim(campaign);
+  const tmux = createTmuxFakes();
+  const { TimeoutError } = await import('../../src/node/polling/signal-poller.mjs');
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  const result = await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      new TimeoutError('codex worker exited before writing a signal'),
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    checkWorkingTree: async () => ({
+      ok: false,
+      error: 'fatal: not a git repository',
+    }),
+    ...tmux.deps,
+  });
+
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.category, 'infra_failure');
+  assert.match(result.reason, /git.*(unverifiable|state)/i);
+
+  const blockedJsonPath = deskPath(
+    campaign.rootDir,
+    'memos',
+    `${campaign.slug}-blocked.json`,
+  );
+  const blocked = await readJson(blockedJsonPath);
+  assert.equal(blocked.reason_category, 'infra_failure');
+  assert.equal(blocked.failure_category, 'git_state_unverifiable');
+});
+
+test('US-006 Bug-8-A3: codex worker timeout WITH done-claim AND dirty tree writes BLOCKED metric_failure (worker_incomplete_uncommitted)', async (t) => {
+  const campaign = await setupCampaign(t);
+  await writeDoneClaim(campaign);
+  const tmux = createTmuxFakes();
+  const { TimeoutError } = await import('../../src/node/polling/signal-poller.mjs');
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  const result = await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      new TimeoutError('codex worker exited before writing a signal'),
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    checkWorkingTree: async () => ({
+      ok: true,
+      dirty: true,
+      dirtyFiles: [' M src/foo.mjs', '?? new-file.mjs'],
+    }),
+    ...tmux.deps,
+  });
+
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.category, 'metric_failure');
+  assert.match(
+    result.reason,
+    /uncommitted|dirty|worker_incomplete/i,
+    `reason text mentions dirty tree (got: ${result.reason})`,
+  );
+
+  const blockedJsonPath = deskPath(
+    campaign.rootDir,
+    'memos',
+    `${campaign.slug}-blocked.json`,
+  );
+  const blocked = await readJson(blockedJsonPath);
+  assert.equal(blocked.reason_category, 'metric_failure');
+  assert.equal(blocked.failure_category, 'worker_incomplete_uncommitted');
+  // First few dirty files surfaced in reason text (per PRD AC: "first 5 dirty files").
+  // The JSON sidecar exposes the reason verbatim under `reason_detail`.
+  assert.match(blocked.reason_detail ?? '', /src\/foo\.mjs/);
+});
+
+test('US-006 Bug-8-A4: codex worker timeout WITH done-claim AND clean tree synthesizes verify signal (legacy preserved)', async (t) => {
+  const campaign = await setupCampaign(t);
+  await writeDoneClaim(campaign);
+  const tmux = createTmuxFakes();
+  const { TimeoutError } = await import('../../src/node/polling/signal-poller.mjs');
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  // After synthesize, the verifier and final-verifier each consume one verdict.
+  const result = await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      new TimeoutError('codex worker exited before writing a signal'),
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    checkWorkingTree: async () => ({ ok: true, dirty: false, dirtyFiles: [] }),
+    ...tmux.deps,
+  });
+
+  // Synthesize success path: campaign should complete, NOT block.
+  assert.notEqual(result?.status, 'blocked', `clean tree must NOT block (got: ${JSON.stringify(result)})`);
+  // Verifier prompt was emitted, proving synthesize → verifier dispatch path fired.
+  const verifierPrompt = await readText(
+    deskPath(campaign.rootDir, 'logs', campaign.slug, 'iter-001.verifier-prompt.md'),
+  );
+  assert.match(verifierPrompt, /Verify ONLY the acceptance criteria for \*\*US-001\*\*/);
+});
+
+// =============================================================================
+// PR-0b-narrow — Leader handshake (waitForProcessExit + stampAckField)
+// =============================================================================
+//
+// AC-H1: reapProducer awaits waitForProcessExit on the producing pane after
+//        killPaneProcess (5s timeout, fail-open). Verified by counting calls
+//        on the injected fake.
+// AC-H2: every accepted sentinel receives a leader_ack stamp with the 3 audit
+//        fields (acked_by, acked_at, ack_pane_state).
+// AC-H7: backward compat — existing readers do not throw on the new field
+//        (covered by validateArtifact passing through verdicts unchanged).
+
+test('US-006 PR-0b-narrow AC-H1: reapProducer awaits waitForProcessExit on every accepted producing pane', async (t) => {
+  const campaign = await setupCampaign(t);
+  const tmux = createTmuxFakes();
+  // Wrap waitForProcessExit fake to count calls per pane.
+  const waitCalls = [];
+  tmux.deps.waitForProcessExit = async (paneId, opts) => {
+    waitCalls.push({ paneId, opts });
+  };
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    ...tmux.deps,
+  });
+
+  // Worker pane reaped exactly once → waitForProcessExit called for it.
+  const workerWaits = waitCalls.filter((w) => w.paneId === '%worker');
+  assert.ok(workerWaits.length >= 1, 'waitForProcessExit was called for the worker pane');
+  // Verifier pane reaped at least once → waitForProcessExit called for it too.
+  const verifierWaits = waitCalls.filter((w) => w.paneId === '%verifier');
+  assert.ok(verifierWaits.length >= 1, 'waitForProcessExit was called for the verifier pane');
+  // 5000ms timeout per PRD AC-H1.
+  assert.equal(workerWaits[0].opts.timeoutMs, 5000);
+});
+
+test('US-006 PR-0b-narrow AC-H2: every accepted sentinel receives a leader_ack stamp with 3 audit fields', async (t) => {
+  const campaign = await setupCampaign(t);
+  const tmux = createTmuxFakes();
+  const ackStamps = [];
+  tmux.deps.stampAckField = async (filePath, ack) => {
+    ackStamps.push({ filePath, ack });
+  };
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    ...tmux.deps,
+  });
+
+  // At least one ack per accepted artifact (worker iter-signal, verifier verdict).
+  assert.ok(ackStamps.length >= 2, `expected ≥2 ack stamps, got ${ackStamps.length}`);
+  for (const { ack, filePath } of ackStamps) {
+    assert.equal(ack.acked_by, 'leader', `ack.acked_by mismatch for ${filePath}`);
+    assert.match(
+      ack.acked_at,
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+      `ack.acked_at not ISO-8601 for ${filePath}: ${ack.acked_at}`,
+    );
+    assert.equal(ack.ack_pane_state, 'shell');
+  }
+  // At least one stamped a worker iter-signal AND one stamped a verifier verdict.
+  const stampedSignal = ackStamps.find((s) => /iter-signal\.json$/.test(s.filePath));
+  const stampedVerdict = ackStamps.find((s) => /verify-verdict\.json$/.test(s.filePath));
+  assert.ok(stampedSignal, 'iter-signal.json received an ack stamp');
+  assert.ok(stampedVerdict, 'verify-verdict.json received an ack stamp');
 });

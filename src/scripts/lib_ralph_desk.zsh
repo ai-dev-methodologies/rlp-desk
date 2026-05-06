@@ -245,6 +245,74 @@ atomic_write() {
 }
 
 # =============================================================================
+# Bug #7 Fix-Q/R: Post-sentinel pane reaper + sentinel write-lock
+# =============================================================================
+# Without explicit teardown the claude/codex TUI returns to its idle prompt and
+# self-reviews for ~2min after writing iter-signal.json or verify-verdict.json.
+# Observed: verdict mtime drift 1m43s post-detect; iter-N verifier overlapped
+# iter-N+1 worker for 2min. _kill_pane_process closes the race; _lock_sentinel
+# is defense-in-depth that freezes the file mtime. Mirror of run_ralph_desk.zsh
+# verifier-cleanup pattern at L2384-2397 (Ctrl+C + /exit + wait_for_pane_ready).
+# Both helpers are fail-open: pane may already be dead, FS may ignore chmod.
+_kill_pane_process() {
+  local pane_id="$1"
+  local role="${2:-producer}"
+  [[ -n "$pane_id" ]] || return 0
+  if typeset -f log_debug >/dev/null 2>&1; then
+    log_debug "[bug7] kill_pane_process pane=$pane_id role=$role"
+  fi
+  tmux send-keys -t "$pane_id" C-c 2>/dev/null
+  sleep 0.5
+  tmux send-keys -t "$pane_id" C-c 2>/dev/null
+  sleep 1
+  if typeset -f wait_for_pane_ready >/dev/null 2>&1; then
+    wait_for_pane_ready "$pane_id" 5 2>/dev/null || true
+  fi
+  return 0
+}
+
+_lock_sentinel() {
+  local file="$1"
+  [[ -n "$file" && -f "$file" ]] || return 0
+  chmod 0444 "$file" 2>/dev/null || true
+  return 0
+}
+
+_unlock_sentinel() {
+  local file="$1"
+  [[ -n "$file" && -f "$file" ]] || return 0
+  chmod 0644 "$file" 2>/dev/null || true
+  return 0
+}
+
+# PR-0b-narrow (Plan v6) — stamp leader handshake ack onto the sentinel.
+# Mirror of src/node/shared/fs.mjs::stampAckField. Best-effort, audit-only:
+# any failure is silently swallowed. Sequence:
+#   1. chmod 0644 (so jq + mv can write)
+#   2. jq merge .leader_ack
+#   3. atomic rename via tmp file
+#   4. chmod 0444 (re-lock)
+# Tolerant of jq absence (graceful degrade — no stamp, no error).
+_stamp_ack_field() {
+  local file="$1"
+  [[ -n "$file" && -f "$file" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local now_iso
+  now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  local tmp="${file}.ack.tmp"
+  chmod 0644 "$file" 2>/dev/null || true
+  if jq --arg ts "$now_iso" \
+        '. + {leader_ack: {acked_by: "leader", acked_at: $ts, ack_pane_state: "shell"}}' \
+        "$file" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  else
+    rm -f "$tmp" 2>/dev/null
+  fi
+  chmod 0444 "$file" 2>/dev/null || true
+  return 0
+}
+
+# =============================================================================
 # Scaffold Validation
 # =============================================================================
 
