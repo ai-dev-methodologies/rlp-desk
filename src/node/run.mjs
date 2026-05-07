@@ -405,20 +405,21 @@ async function runRunCommand(args, deps) {
       deps.stderr,
       'For Claude Code Native Agent() campaigns, use `/rlp-desk run --mode native` from a Claude Code session.',
     );
-    // P2 prep (v0.16.0): make the removal commitment explicit. Wrappers that
-    // still call `node run.mjs --mode agent` directly need a concrete target
-    // to plan their migration around, not just "next major release".
+    // 2026-05-07: project entered maintenance mode after CEO review concluded
+    // that omc (oh-my-claudecode) /autopilot + /ralph + /team cover ~95% of
+    // rlp-desk's vision and are production-ready. rlp-desk is no longer
+    // pursuing the v0.16.0 fundamental-redesign path. See FROZEN status doc.
     write(
       deps.stderr,
-      'SCHEDULED REMOVAL: this mode will hard-error in v0.16.0 (target ~3-4 weeks from v0.15.1 release on 2026-05-07).',
+      'MAINTENANCE MODE: rlp-desk entered maintenance on 2026-05-07. v0.16.0 redesign is FROZEN. v0.15.x remains usable.',
     );
     write(
       deps.stderr,
-      'TO PIN: `npm install rlp-desk@~0.15` keeps you on the v0.15.x line until you migrate.',
+      'RECOMMENDED PATH: use `/oh-my-claudecode:autopilot` or `/oh-my-claudecode:ralph` from omc — they cover the vision rlp-desk was pursuing.',
     );
     write(
       deps.stderr,
-      'TO MIGRATE: see docs/plans/strategic-review/option-b-migration-guide.md (forthcoming) or open an issue for help.',
+      'CONTEXT: see docs/plans/v0.16-FROZEN-status.md for the pivot rationale and contribution roadmap.',
     );
   }
 
