@@ -24,7 +24,7 @@
 - If any scenario FAIL: fix the issue, re-run the failing scenario, then re-verify all 3.
 
 ### Local File Sync (ABSOLUTE — no exceptions)
-After every commit that changes ANY src/ file, sync ALL distributable files to local install. Not just the changed ones — ALL of them. Then verify with `diff -q`.
+After every commit that changes ANY src/ file, sync ALL distributable files to local install. Not just the changed ones — ALL of them. Then verify with the **banner-aware procedure below** (NOT naive `diff -q` / `diff -rq` — post-v0.12.0 installed files have line-1 banners that naive diff treats as drift; see §4.5 verification recipe).
 
 **Runtime files (always sync via `npm install` / postinstall.js — Node canonical):**
 ```
@@ -99,13 +99,16 @@ the source of truth remains the `src/` tree.
 
 
 ### Release Workflow
+0. **Preflight (auto, all BLOCKING)** per `docs/plans/v0.15.4-release-runbook.md` §1: A1 `gh auth status` / A2 `npm publish --dry-run` (auth+scope; pre-bump tolerates EPUBLISHCONFLICT) / A3 sv-gate-fast / A4 `npm run test:node` / A5 trigger-file diff oracle (anchor uses commit SHA, not git tag — `npm version --no-git-tag-version` policy means `vX.Y.Z` tags do not exist locally).
 1. All changes committed and pushed
 2. `npm version patch|minor|major --no-git-tag-version`
+2a. **A2' post-bump dry-run** — re-run `npm publish --dry-run`; strict exit-0 required for the new version.
 3. Commit version bump
 4. Push to main
 5. `gh release create vX.Y.Z` with release notes
 6. `npm publish`
-7. Local file sync
+7. Local file sync (banner-aware verification per §4.5)
+7a. **Post-publish verify (P1-P5, auto, all BLOCKING)** per runbook §3: P1 fresh `npm install` / P2 banner-strip diff (3 ref files) / P3 recursive Node sync (banner-aware per-file, NOT `diff -rq`) / P4 chmod 0o444 verify / P5 `npm view @ai-dev-methodologies/rlp-desk@vX.Y.Z version` (allow single retry on registry propagation lag).
 - Steps 1-7 require user approval at each stage.
 
 ## Review Process
@@ -118,3 +121,6 @@ the source of truth remains the `src/` tree.
 - Governance sections: §1a-§1f (Iron Laws through Traceability), §7¾ (Architecture Escalation)
 - §1f (Execution & Judgment Traceability) is always-on, not flag-gated
 - `--with-self-verification` enables post-campaign analysis only
+- **Lifecycle observability (v0.15.4+)**: `src/node/util/lifecycle-metrics.mjs` is the B4 emitter. Gated by `RLP_LIFECYCLE_METRICS=1`. Emit sites in `src/node/runner/campaign-main-loop.mjs` (Node leader) and `src/scripts/lib_ralph_desk.zsh` `log_lifecycle_metric` (zsh leader).
+- **Failure modes atlas**: `docs/rlp-desk/failure-modes.md` is the canonical FMEA-style reference for known race patterns (done-claim, sentinel, B3 stage 2). New failure modes are added there with `Symptom / Root cause / Detection / Recovery / Reference` schema.
+- **Release runbook (v0.15.4+)**: `docs/plans/v0.15.4-release-runbook.md` is the executable contract for release pipeline (preflight A1-A5, steps 1-7 with 4 user gates, post-verify P1-P5). Supersedes ad-hoc release procedure.
