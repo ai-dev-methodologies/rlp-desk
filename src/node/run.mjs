@@ -48,14 +48,14 @@ function buildHelpText() {
     'Commands:',
     '  brainstorm <description>     Plan before init (not implemented in the Node rewrite yet)',
     '  init <slug> [objective]      Create project scaffold',
-    '  run <slug> [options]         Run loop (agent=LLM leader, tmux=shell leader)',
+    '  run <slug> [options]         Run loop (tmux=zsh leader [production], agent=Node leader [deprecated alpha], native=slash-only error)',
     '  status <slug>                Show loop status',
     '  logs <slug> [N]              Show iteration log (not implemented in the Node rewrite yet)',
     '  clean <slug> [--kill-session] Reset for re-run (not implemented in the Node rewrite yet)',
     '  resume <slug>                Resume loop (not implemented in the Node rewrite yet)',
     '',
     'Run Options:',
-    '  --mode agent|tmux',
+    '  --mode tmux|agent|native       (CLI: tmux=production, agent=deprecated, native=errors with redirect to slash command)',
     '  --worker-model MODEL',
     '  --lock-worker-model',
     '  --verifier-model MODEL',
@@ -358,10 +358,32 @@ async function runRunCommand(args, deps) {
     return runTmuxViaZsh(slug, options, deps);
   }
 
-  // v0.14.0: agent mode is the alpha LLM-driven path. The Node port shipped
-  // without zsh-equivalent safety nets (heartbeat, copy-mode guard,
-  // prompt-stall timeout, no-progress detection, claude model upgrade chain).
-  // Surface that explicitly so production users pick --mode tmux instead.
+  // P1.b (native-agent-revert plan v7): --mode native is slash-command-only.
+  // The Node CLI does not implement Native Agent() — that path lives in
+  // src/commands/rlp-desk.md and runs in a Claude Code session. Surface a
+  // hard error here so direct CLI invocation does not silently fall through
+  // to the deprecated Node-leader path.
+  if (options.mode === 'native') {
+    write(
+      deps.stderr,
+      'ERROR: --mode native is slash-command-only. The Node CLI does not implement it.',
+    );
+    write(
+      deps.stderr,
+      'Use `/rlp-desk run <slug> --mode native` from a Claude Code session,',
+    );
+    write(
+      deps.stderr,
+      'or use `--mode tmux` (production) / `--mode agent` (deprecated alpha) for direct CLI invocation.',
+    );
+    return 2;
+  }
+
+  // P1.b: --mode agent (Node-leader alpha) is deprecated. The slash command's
+  // Native Agent() path (`/rlp-desk run --mode native`) is unrelated — different
+  // code, different leader. We keep the Node-leader behavior unchanged for
+  // backward compatibility but surface a strong deprecation banner so wrappers
+  // can migrate before the next major release hard-errors this mode.
   if (
     options.mode === 'agent'
     && !process.env.RLP_DESK_QUIET_WARNINGS
@@ -369,7 +391,23 @@ async function runRunCommand(args, deps) {
   ) {
     write(
       deps.stderr,
-      'WARNING: --mode agent is alpha. For production tmux orchestration, prefer --mode tmux (zsh-backed, stable).',
+      'WARNING: --mode agent (Node-leader alpha) is deprecated.',
+    );
+    write(
+      deps.stderr,
+      'This is the direct Node-CLI alpha path — UNRELATED to the slash command Native Agent() path (`/rlp-desk run --mode native`).',
+    );
+    write(
+      deps.stderr,
+      'For production tmux orchestration, use `--mode tmux`.',
+    );
+    write(
+      deps.stderr,
+      'For Claude Code Native Agent() campaigns, use `/rlp-desk run --mode native` from a Claude Code session.',
+    );
+    write(
+      deps.stderr,
+      'This mode will hard-error in the next major release.',
     );
   }
 
