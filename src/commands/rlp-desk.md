@@ -189,7 +189,7 @@ Tell the user:
    /rlp-desk run <actual-slug> --debug
 
    # Full options reference:
-   #   --mode agent|tmux                      (default: agent)
+   #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
    #   --worker-model MODEL                   haiku|sonnet|opus or gpt-5.5:high|spark:high (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
    #   --verifier-model MODEL                 per-US verifier (default: sonnet)
@@ -217,14 +217,14 @@ Tell the user:
    # ★ Recommended: tmux mode + claude-only (real-time visibility):
    /rlp-desk run <actual-slug> --mode tmux --debug
 
-   # Agent mode:
-   /rlp-desk run <actual-slug> --debug
+   # Native Agent() mode (slash leader, short / interactive campaigns):
+   /rlp-desk run <actual-slug> --mode native --debug
 
    # Install codex for cost savings + cross-engine blind-spot coverage:
    npm install -g @openai/codex
 
    # Full options reference:
-   #   --mode agent|tmux                      (default: agent)
+   #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
    #   --worker-model MODEL                   haiku|sonnet|opus (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
    #   --verifier-model MODEL                 per-US verifier (default: sonnet)
@@ -252,7 +252,7 @@ Tell the user:
 **YOU are the leader. Do NOT delegate leadership.**
 
 Options (parse from `$ARGUMENTS`):
-- `--mode agent|tmux` (default: `agent`) — execution mode
+- `--mode native|tmux` (default: `native`) — execution mode. `native` = slash command is the leader, calls `Agent(...)` (claude) and `Bash("codex exec ...")` (codex). `tmux` = slash command spawns the zsh runner via `node run.mjs --mode tmux`. Legacy `--mode agent` typed against the slash command emits a deprecation notice and redirects to `--mode native` (NOT to be confused with `node run.mjs --mode agent`, which is the deprecated Node-leader alpha — see "Direct Node CLI invocation" below).
 - `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.5:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
 - `--lock-worker-model` — disable automatic model upgrade on failure. Worker stays on the specified model regardless of consecutive failures.
 - `--verifier-model MODEL` (default: `sonnet`) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier.
@@ -284,20 +284,26 @@ Cross-project aggregation: scan `~/.claude/ralph-desk/analytics/` and read each 
 
 ### Mode Selection
 
-Parse the `--mode` flag. If absent or `agent`, use the Agent() path below. If `tmux`, use the Tmux path.
+Parse the `--mode` flag. Slash command canonical labels:
 
-> **v0.14.0 stability tiers:**
-> - `--mode tmux` is the **stable, production** path. The Node leader (`run.mjs`)
->   now routes tmux invocations to `~/.claude/ralph-desk/run_ralph_desk.zsh`
->   as a subprocess — that runner has the full safety net (heartbeat,
->   copy-mode guard, prompt-stall, no-progress detection, claude model
->   upgrade chain). Recommend this for autonomous campaigns.
-> - `--mode agent` is **alpha** (Node-native LLM-driven Leader). The runner
->   emits a stderr warning when this mode is invoked.
+- `--mode native` (default): **Native Agent() path** below. The slash command IS the leader. It calls `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)` for claude workers/verifiers and `Bash("codex exec --model <m> --reasoning-effort <r> <prompt>")` for codex workers/verifiers.
+- `--mode tmux`: **zsh runner path** below. The slash command shells out to `node ~/.claude/ralph-desk/node/run.mjs run --mode tmux …` which spawns `run_ralph_desk.zsh` as a subprocess.
+
+Legacy `--mode agent` typed against this slash command emits a deprecation notice and redirects to `--mode native`. **Do NOT confuse `/rlp-desk run --mode agent`** (slash command, redirects to Native Agent()) **with** `node run.mjs run --mode agent` (deprecated Node-leader alpha, direct CLI invocation, unrelated code path — see "Direct Node CLI invocation" below).
+
+> **Stability tiers:**
+> - `--mode tmux` is the **stable, production** path. The slash command spawns
+>   the Node leader, which spawns `run_ralph_desk.zsh` — the zsh runner has the
+>   full safety net (heartbeat, copy-mode guard, prompt-stall, no-progress
+>   detection, claude model upgrade chain). Recommend this for autonomous
+>   campaigns.
+> - `--mode native` is **for short / interactive campaigns**. Native Agent()
+>   has no timeout API (platform constraint). Long-running autonomous campaigns
+>   SHOULD use `--mode tmux`.
 
 #### Tmux Mode (`--mode tmux`)
 
-When `--mode tmux` is specified (v0.14.0+: `run.mjs` accepts the same flags as before but spawns `run_ralph_desk.zsh` as a subprocess and inherits stdio. Flywheel and self-verification flags are not honored under tmux mode — they require `--mode agent`):
+When `--mode tmux` is specified (v0.14.0+: `run.mjs` accepts the same flags as before but spawns `run_ralph_desk.zsh` as a subprocess and inherits stdio. Flywheel and self-verification flags are not honored under tmux mode — they currently require the deprecated Node-leader direct-CLI path `node run.mjs --mode agent` (see "Direct Node CLI invocation" below). Native Agent() port is a post-Node-leader-retirement task):
 
 1. **Validate scaffold** — same as Agent() mode: check `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
 2. **Check sentinels** — same as Agent() mode.
@@ -331,7 +337,7 @@ node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
 
 **Env-var translation (v5.7 §4.1)**: the slash command historically built `LANE_MODE=strict zsh ...` and `TEST_DENSITY_MODE=strict zsh ...` from CLI flags. The Node leader uses CLI flags instead — translate `--lane-strict` and `--test-density-strict` into the corresponding flags. Direct env-var users (running zsh directly) are unaffected.
 
-6. **If the Node leader exits with error** — report the error to the user and STOP. Do NOT attempt to work around it. Do NOT create tmux sessions yourself. Do NOT re-launch in a different way. Tell the user what went wrong and suggest `--mode agent` as alternative.
+6. **If the Node leader exits with error** — report the error to the user and STOP. Do NOT attempt to work around it. Do NOT create tmux sessions yourself. Do NOT re-launch in a different way. Tell the user what went wrong and suggest `--mode native` (slash command Native Agent() path) as alternative.
 7. **If successful** — tell the user the tmux session has been started. The Node leader takes over as the deterministic Leader. No Agent() calls are made in tmux mode.
 
 **IMPORTANT RULES:**
@@ -339,35 +345,36 @@ node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
 - MUST launch with `run_in_background: true` so `/rlp-desk` returns control immediately while preserving live tmux visibility.
 - Run-in-background is used so the shell can keep the command visible and keep the pane layout stable for status checks and completion flow.
 - Do NOT kill panes after completion. Panes stay alive for inspection. User cleans up with `/rlp-desk clean <slug> --kill-session`.
-- v0.14.0: `--with-self-verification`, `--flywheel`, and `--flywheel-guard` are **not honored** under `--mode tmux` — the zsh runner has no SV/flywheel implementation. The Node leader emits a stderr WARNING listing the dropped flags. For SV/flywheel, use `--mode agent` (alpha).
-- The slash command always invokes `node ~/.claude/ralph-desk/node/run.mjs run --mode tmux ...`. Do NOT invoke `~/.claude/ralph-desk/run_ralph_desk.zsh` directly — the Node router resolves the runner path, runs legacy detection, and surfaces actionable errors when the runner is missing.
+- v0.14.0: `--with-self-verification`, `--flywheel`, and `--flywheel-guard` are **not honored** under `--mode tmux` — the zsh runner has no SV/flywheel implementation. The Node leader emits a stderr WARNING listing the dropped flags. For SV/flywheel today, use the deprecated Node-leader direct-CLI path `node run.mjs --mode agent` (see "Direct Node CLI invocation" below). The slash command's Native Agent() (`--mode native`) does not yet implement SV/flywheel — port is a post-Node-leader-retirement task.
+- **For `--mode tmux` only**: the slash command invokes `node ~/.claude/ralph-desk/node/run.mjs run --mode tmux ...`. Do NOT invoke `~/.claude/ralph-desk/run_ralph_desk.zsh` directly — the Node router resolves the runner path, runs legacy detection, and surfaces actionable errors when the runner is missing. **For `--mode native`**, the slash command does NOT invoke the Node CLI — it acts as the leader itself; see Native Agent() Mode section below.
 
 **tmux UX model (5 items):**
 - The session returns immediately after launch (`run_in_background: true`) so the command returns control to the parent CLI.
 - Worker/Verifier panes remain visible to the user during execution.
 - Users check progress with the **status command**: `/rlp-desk status <slug>`.
 - On completion, the command returns a completion notification before the loop ends.
-- Agent mode remains unchanged, and no tmux-specific behavior is mixed into Agent mode.
+- Native Agent() mode remains unchanged, and no tmux-specific behavior is mixed into it.
 
-#### Agent Mode (`--mode agent` or default — **alpha**)
+#### Native Agent() Mode (`--mode native` or default)
 
-> **v0.14.0:** Agent mode is the alpha LLM-driven path. The Node port shipped
-> without zsh-equivalent safety nets (heartbeat, copy-mode guard, prompt-stall
-> timeout, no-progress detection, claude model upgrade chain). The runner
-> emits a stderr WARNING when agent mode is invoked. For production
-> autonomous campaigns, prefer `--mode tmux`.
+The slash command IS the leader. Workers/Verifiers are spawned via `Agent(model=…, mode="bypassPermissions", prompt=…)` (claude) or `Bash("codex exec --model <m> --reasoning-effort <r> <prompt>")` (codex).
 
-**Why Agent mode is structurally immune to Bug 4/5 (mid-execution prompt hang
-& A4 premature dispatch):** Worker/Verifier are dispatched as `Agent(...,
-mode="bypassPermissions", ...)`. The subagent runs non-interactively under
-the platform's bypass — it has no tmux pane, no TUI surface, and cannot
-surface a `[y/N]` prompt to the parent Leader. The auto-dismiss /
-prompt-stall / no-progress timeouts in `run_ralph_desk.zsh` (v5.7 §4.13.b /
-§4.16 / §4.17) are therefore tmux-only by design. **Tradeoff**: because
-`Agent()` has no timeout API, agent-mode iterations are not bounded — if
-the platform's `bypassPermissions` ever fails to suppress an interactive
-prompt at the SDK level, the call hangs indefinitely with no rlp-desk-side
-watchdog. Use `--mode tmux` if you need bounded execution time.
+### Native Agent() Safety Contract
+
+This contract MUST be observed in every iteration of the leader loop below. Future PRs deleting any of these guarantees break the slash command's behavior.
+
+1. **Turn-keepalive**: every status report uses `Bash("echo '...'")` to emit messages. NEVER output plain text without an accompanying tool call. Plain text = turn ends = loop stops. (Mitigation for commit `29fd29b` platform constraint, permanent.)
+2. **no `subagent_type` parameter**: the `Agent(...)` call form is exactly `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)`. Do NOT pass `subagent_type`. (Mitigation for commit `920a31c`: `subagent_type="executor"` overrode `bypassPermissions` and surfaced a permission popup; permanent.)
+3. **`mode="bypassPermissions"` mandatory**: every claude `Agent()` worker/verifier dispatch must include `mode="bypassPermissions"`.
+4. **Long-running campaigns: prefer `--mode tmux`** for production. Native Agent() has no timeout API (platform constraint) — if `bypassPermissions` fails to suppress an interactive prompt at the SDK level, the call hangs indefinitely with no rlp-desk-side watchdog.
+
+**Why Native Agent() is structurally immune to Bug 4/5 (mid-execution prompt hang & A4 premature dispatch)**: Worker/Verifier run non-interactively under the platform's bypass — they have no tmux pane, no TUI surface, and cannot surface a `[y/N]` prompt to the parent Leader. The auto-dismiss / prompt-stall / no-progress timeouts in `run_ralph_desk.zsh` (v5.7 §4.13.b / §4.16 / §4.17) are therefore tmux-only by design.
+
+**Tradeoff**: because `Agent()` has no timeout API, Native Agent() iterations are not bounded — if the platform's `bypassPermissions` ever fails to suppress an interactive prompt at the SDK level, the call hangs indefinitely with no rlp-desk-side watchdog. Use `--mode tmux` if you need bounded execution time.
+
+#### Direct Node CLI invocation (`node run.mjs run <slug> --mode agent` — deprecated alpha)
+
+Direct invocation of `node ~/.claude/ralph-desk/node/run.mjs run <slug> --mode agent` is **the deprecated Node-leader alpha path**. This is unrelated to the slash command's Native Agent() path above — different code, different leader, different lifecycle. The Node leader currently retains SV/flywheel implementations not yet ported to Native Agent(). The Node CLI emits a deprecation banner on this mode and is scheduled for hard-error in the next major release. For production tmux orchestration, use `--mode tmux`. For Claude Code Native Agent() campaigns, use `/rlp-desk run <slug> --mode native` from a Claude Code session.
 
 ### Preparation
 1. Validate scaffold: `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
@@ -775,13 +782,13 @@ Example:
 ```
 /rlp-desk brainstorm <description>          Plan before init (interactive)
 /rlp-desk init  <slug> [objective]          Create project scaffold
-/rlp-desk run   <slug> [options]            Run loop (agent=LLM leader, tmux=shell leader)
+/rlp-desk run   <slug> [options]            Run loop (native=Native Agent() leader (slash), tmux=zsh leader (production); legacy `agent` redirects to `native` — direct Node CLI `--mode agent` is deprecated alpha)
 /rlp-desk status <slug>                     Show loop status
 /rlp-desk logs  <slug> [N]                  Show iteration log
 /rlp-desk clean <slug> [--kill-session]     Reset for re-run (--kill-session kills tmux)
 
 Run options:
-  --mode agent|tmux                    Execution mode (default: agent)
+  --mode native|tmux                   Execution mode (default: native)
   --worker-model MODEL                 Worker model: haiku|sonnet|opus or gpt-5.5:high|spark:high (default: haiku)
   --lock-worker-model                  Disable auto model upgrade on failure
   --verifier-model MODEL               per-US verifier (default: sonnet)
@@ -799,15 +806,18 @@ Run options:
 
 ## Architecture
 
-### Agent Mode (default: `--mode agent`)
+### Native Agent() Mode (default: `--mode native`)
 ```
-[This session = LEADER (LLM)]
+[This session = LEADER (LLM, slash command itself)]
         │
-  Agent()├──▶ [Worker: executor (fresh context)]
+  Agent()├──▶ [Worker: claude subagent (fresh context, mode="bypassPermissions")]
         │     └── reads desk files, implements, updates memory
         │
-  Agent()└──▶ [Verifier: executor (fresh context)]
-              └── reads done-claim, runs checks, writes verdict
+  Agent()└──▶ [Verifier: claude subagent (fresh context, mode="bypassPermissions")]
+        │     └── reads done-claim, runs checks, writes verdict
+        │
+  Bash() ───▶ [Worker/Verifier: codex CLI subprocess]
+              └── `codex exec --model <m> --reasoning-effort <r> <prompt>`
 ```
 
 ### Tmux Mode (`--mode tmux`)
