@@ -97,11 +97,24 @@ b3_assert_lifecycle_metric_within_band() {
   return 0
 }
 
-# Initial tolerance bands sourced from docs/plans/v0.15-phase-b-lifecycle-
-# audit.md §4.2 (Option-C synthetic baseline). Each band = max(p95 × 2,
-# fixed_floor). Pre-merge revalidation against fresh B4 5-iter sample MUST
-# update these constants if empirical p95 differs by >25% from synthetic.
-B3_BAND_ITER_SIGNAL_MS=9500           # synthetic p95=4750 × 2
-B3_BAND_VERDICT_MS=9500               # synthetic p95=4750 × 2
-B3_BAND_PANE_EOF_CLEANUP_MS=5000      # synthetic p95=2500 × 2
-B3_BAND_PANE_REAP_LATENCY_MS=16000    # synthetic p95=8000 × 2
+# Tolerance bands — refit 2026-05-07 from pre-merge revalidation harness
+# (tests/sv-real-llm/lib/b3-band-revalidation.mjs, 5-iter Node-leader sample
+# with stub poll + real tmux + real reaper). Plan v3 §B3 AC3.5 specified
+# refit when |drift| > 25% vs B1 §4.2 Option-C synthetic; all 4 metrics
+# breached, so bands have been tightened. Multiplier raised from 2× to 3×
+# to absorb real-LLM jitter (the harness has no LLM in the worker/verifier
+# panes). pane_eof_to_cleanup_ms keeps 5000ms to envelope the
+# killPaneProcess worst-case (gracePeriodMs=800 + exitTimeoutMs=5000).
+#
+# Empirical sample (2026-05-07 N=5-10):
+#   iter_signal_write_to_read_ms p95=853  → 3000 (3× + headroom)
+#   verdict_write_to_read_ms     p95=885  → 3000 (3× + headroom)
+#   pane_eof_to_cleanup_ms       p95=834  → 5000 (worst-case envelope)
+#   pane_reap_latency_ms         p95=834  → 6000 (3× + done-claim observe headroom)
+#
+# Re-run rule: any future >25% drift in ANY metric requires revalidation
+# refit before merge. Use `node tests/sv-real-llm/lib/b3-band-revalidation.mjs`.
+B3_BAND_ITER_SIGNAL_MS=3000
+B3_BAND_VERDICT_MS=3000
+B3_BAND_PANE_EOF_CLEANUP_MS=5000
+B3_BAND_PANE_REAP_LATENCY_MS=6000
