@@ -51,7 +51,16 @@ EOF
   local exercise_log="$sandbox_dir/exercise.log"
   # v0.15.4 PR-B3: enable B4 lifecycle observability so two-stage assertions
   # below can read campaign.jsonl.lifecycle_metrics.
-  if ! RLP_LIFECYCLE_METRICS=1 timeout 600 node ~/.claude/ralph-desk/node/run.mjs run "$slug" \
+  #
+  # v0.15.4 pre-release audit C2 fix: support RLP_DESK_NODE_PATH override to
+  # break the pre-merge circular dependency. Default → installed leader; set
+  # to source tree `<repo>/src/node/run.mjs` for pre-merge AC3.1a sample.
+  local node_leader_path="${RLP_DESK_NODE_PATH:-$HOME/.claude/ralph-desk/node/run.mjs}"
+  if [[ ! -f "$node_leader_path" ]]; then
+    SCENARIO_FAILURE_REASON="setup: leader not found at $node_leader_path (set RLP_DESK_NODE_PATH or install rlp-desk)"
+    return 1
+  fi
+  if ! RLP_LIFECYCLE_METRICS=1 timeout 600 node "$node_leader_path" run "$slug" \
       --mode tmux --max-iter 2 --iter-timeout 120 \
       --worker-model haiku --verifier-model haiku \
       > "$exercise_log" 2>&1; then
