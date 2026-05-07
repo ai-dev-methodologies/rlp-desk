@@ -405,21 +405,18 @@ async function runRunCommand(args, deps) {
       deps.stderr,
       'For Claude Code Native Agent() campaigns, use `/rlp-desk run --mode native` from a Claude Code session.',
     );
-    // 2026-05-07: project entered maintenance mode after CEO review concluded
-    // that omc (oh-my-claudecode) /autopilot + /ralph + /team cover ~95% of
-    // rlp-desk's vision and are production-ready. rlp-desk is no longer
-    // pursuing the v0.16.0 fundamental-redesign path. See FROZEN status doc.
+    // 2026-05-07 (v0.15.2): rlp-desk is in active stabilization. Goal: reach
+    // omc /team/ralph/ralplan level of reliability while preserving
+    // rlp-desk's self-driving advantages (multi-engine consensus, multi-mission
+    // queue, BLOCK_TAGS taxonomy, structured SV reports). omc is the BENCHMARK,
+    // not a replacement. See docs/plans/v0.15-stabilization-plan.md.
     write(
       deps.stderr,
-      'MAINTENANCE MODE: rlp-desk entered maintenance on 2026-05-07. v0.16.0 redesign is FROZEN. v0.15.x remains usable.',
+      'SCHEDULED REMOVAL: --mode agent (Node CLI alpha) will be removed in a future major release. Date TBD until stabilization milestones complete.',
     );
     write(
       deps.stderr,
-      'RECOMMENDED PATH: use `/oh-my-claudecode:autopilot` or `/oh-my-claudecode:ralph` from omc — they cover the vision rlp-desk was pursuing.',
-    );
-    write(
-      deps.stderr,
-      'CONTEXT: see docs/plans/v0.16-FROZEN-status.md for the pivot rationale and contribution roadmap.',
+      'STABILIZATION IN PROGRESS: rlp-desk is hardening against the 10-bug regression pattern observed 2026-05-01..05-07. See docs/plans/v0.15-stabilization-plan.md.',
     );
   }
 
