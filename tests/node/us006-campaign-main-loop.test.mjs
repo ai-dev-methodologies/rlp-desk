@@ -735,7 +735,7 @@ test('US-006 Bug-7-B: verifier verdict pass reaps verifier pane and locks verdic
   );
 });
 
-test('US-006 Bug-7-C: every accepted artifact triggers exactly one kill+lock pair', async (t) => {
+test('US-006 Bug-7-C: every accepted artifact triggers a kill+lock pair (post-B2-FIX: Worker emits 2 lock-targets)', async (t) => {
   const campaign = await setupCampaign(t);
   const tmux = createTmuxFakes();
   const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
@@ -760,19 +760,26 @@ test('US-006 Bug-7-C: every accepted artifact triggers exactly one kill+lock pai
   assert.equal(workerReaps.length, 1, 'worker reaped exactly once per accepted signal');
   assert.ok(verifierReaps.length >= 1, 'verifier reaped at least once');
 
-  // Every reap must be paired with a sentinel lock (kill+lock invariant).
+  // v0.15.4 PR-B2-FIX: contract amended. The worker pane produces TWO sentinel
+  // artifacts in a single pass (iter-signal AND done-claim), both of which are
+  // locked once the iter-signal poll resolves. Verifier still produces 1
+  // sentinel per pass. Therefore lock count = reap count + workerReaps.length
+  // (one extra done-claim lock per worker reap).
   assert.equal(
     tmux.locked.length,
-    tmux.reaped.length,
-    'each reaped pane has a paired sentinel lock',
+    tmux.reaped.length + workerReaps.length,
+    'each reap pairs with locks; worker pane emits +1 done-claim lock per reap (B2-FIX)',
   );
   for (const lock of tmux.locked) {
     assert.match(
       lock.filePath,
-      /(iter-signal|verify-verdict|flywheel-signal|flywheel-guard-verdict)\.json$/,
+      /(iter-signal|verify-verdict|flywheel-signal|flywheel-guard-verdict|done-claim)\.json$/,
       `locked file is a sentinel artifact: ${lock.filePath}`,
     );
   }
+  // v0.15.4 PR-B2-FIX explicit assertion: done-claim is among the locked files.
+  const doneClaimLocked = tmux.locked.some((l) => l.filePath.endsWith('done-claim.json'));
+  assert.ok(doneClaimLocked, 'B2-FIX: done-claim.json is locked alongside iter-signal');
 });
 
 test('US-006 Bug-7-D: --mode agent live tmux reaper leaves all panes at idle shell', async (t) => {

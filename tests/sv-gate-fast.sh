@@ -116,6 +116,15 @@ check "§4.25 flywheel poll uses _handlePollFailure" \
   grep -q "role: 'flywheel'" src/node/runner/campaign-main-loop.mjs
 check "§4.25 guard poll uses _handlePollFailure" \
   grep -q "role: 'guard'" src/node/runner/campaign-main-loop.mjs
+# v0.15.4 PR-B2-FIX — done-claim reaper extension across the 4 substrate sites.
+check "B2-FIX zsh site 1: handle_worker_exit_codex locks DONE_CLAIM_FILE" \
+  bash -c 'awk "/^handle_worker_exit_codex\\(\\)/,/^}/" src/scripts/run_ralph_desk.zsh | grep -q "_lock_sentinel \"\$DONE_CLAIM_FILE\""'
+check "B2-FIX zsh site 2: A4 fallback inline kills worker pane (worker-a4)" \
+  grep -q '_kill_pane_process "$pane_id" "worker-a4"' src/scripts/run_ralph_desk.zsh
+check "B2-FIX zsh site 3: post iter-signal reaper locks DONE_CLAIM_FILE" \
+  grep -qE 'PR-B2-FIX.*Freeze' src/scripts/run_ralph_desk.zsh
+check "B2-FIX Node site: lockSentinel(paths.doneClaimFile) after worker reap" \
+  grep -q 'lockSentinel(paths.doneClaimFile' src/node/runner/campaign-main-loop.mjs
 
 bold ""
 bold "▶ SV Gate FAST — Node unit tests"
@@ -129,6 +138,7 @@ NODE_TESTS=(
   tests/node/test-leader-exit-invariant.mjs
   tests/node/test-lying-worker.mjs
   tests/node/test-artifact-schema.mjs
+  tests/node/test-sentinel-reaper-invariant.test.mjs
   tests/node/sv-e2e/test-lying-verifier.mjs
   tests/node/sv-e2e/test-prompt-blocked.mjs
 )
@@ -144,6 +154,7 @@ ZSH_TESTS=(
   tests/test_prompt_stall_escalation.sh
   tests/test_no_progress_and_default_no.sh
   tests/test_us012_sv_tmux_skip_traceability.sh
+  tests/test_b2fix_sentinel_lock.sh
 )
 for t in $ZSH_TESTS; do
   check "$(basename $t)" zsh "$t"

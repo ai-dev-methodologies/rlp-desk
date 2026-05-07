@@ -1891,6 +1891,12 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // claude/codex cannot self-review and rewrite iter-signal.json. Runs even
     // for the codex-fallback synthesized signal (no-op on a dead pane).
     await reapProducer(state.worker_pane_id, paths.signalFile);
+    // v0.15.4 PR-B2-FIX: same worker pass produced done-claim. The pane is
+    // already reaped above; lock done-claim so the iter-NNN-done-claim archive
+    // and any post-iter Bug #8 gate read a snapshot the worker can no longer
+    // revise. Symmetric with the zsh lock-on-iter-signal contract at
+    // run_ralph_desk.zsh:3197. Best-effort: missing-file is fail-open.
+    await lockSentinel(paths.doneClaimFile, { log: (msg) => console.error(msg) });
 
     // US-019 R7 P1-G: verify_partial malformed downgrade.
     // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier
