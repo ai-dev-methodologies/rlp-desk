@@ -476,3 +476,91 @@ test('main run command does not warn when claude worker is used in agent mode', 
 
   assert.doesNotMatch(stderrChunks.join(''), /Claude worker in tmux mode/);
 });
+
+// ────────────────────────────────────────────────────────────────────────
+// P1.b (native-agent-revert plan v7): --mode native + --mode agent deprecation
+// ────────────────────────────────────────────────────────────────────────
+
+test('US-008 P1.b: --mode native exits 2 with slash-only error message', async () => {
+  const { main } = await import('../../src/node/run.mjs');
+  const stderrChunks = [];
+  const stdoutChunks = [];
+  const stderr = { write: (s) => { stderrChunks.push(String(s)); } };
+  const stdout = { write: (s) => { stdoutChunks.push(String(s)); } };
+  // runCampaign must NOT be called for --mode native (slash-only).
+  let runCampaignInvocations = 0;
+  const fakeRun = async () => {
+    runCampaignInvocations += 1;
+    return { status: 'continue' };
+  };
+
+  const exitCode = await main(
+    ['run', 'demo', '--mode', 'native', '--worker-model', 'sonnet'],
+    { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
+  );
+
+  assert.equal(exitCode, 2, '--mode native must exit 2');
+  assert.equal(runCampaignInvocations, 0, 'runCampaign must NOT be invoked for --mode native');
+  const stderrText = stderrChunks.join('');
+  assert.match(stderrText, /ERROR: --mode native is slash-command-only/);
+  assert.match(stderrText, /\/rlp-desk run .* --mode native/);
+});
+
+test('US-008 P1.b: --mode agent emits strengthened deprecation banner (slash native distinction)', async () => {
+  const { main } = await import('../../src/node/run.mjs');
+  const stderrChunks = [];
+  const stdoutChunks = [];
+  const stderr = { write: (s) => { stderrChunks.push(String(s)); } };
+  const stdout = { write: (s) => { stdoutChunks.push(String(s)); } };
+  const fakeRun = async () => ({ status: 'continue' });
+
+  const prevEnv = process.env.NODE_ENV;
+  delete process.env.NODE_ENV;
+  try {
+    await main(
+      ['run', 'demo', '--mode', 'agent', '--worker-model', 'sonnet'],
+      { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
+    );
+  } finally {
+    if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;
+  }
+
+  const stderrText = stderrChunks.join('');
+  assert.match(stderrText, /WARNING: --mode agent .* deprecated/i);
+  assert.match(stderrText, /UNRELATED to the slash command Native Agent\(\) path/);
+  assert.match(stderrText, /\/rlp-desk run --mode native/);
+  assert.match(stderrText, /will hard-error in the next major release/);
+});
+
+test('US-008 P1.b: --mode tmux unaffected by P1.b banner changes', async (t) => {
+  // Mirror AC8.2 tmux pattern — fresh tempdir to avoid legacy desk detection.
+  const tempCwd = await createTempDir(t);
+  const { main } = await import('../../src/node/run.mjs');
+  const stderrChunks = [];
+  const stdoutChunks = [];
+  const stderr = { write: (s) => { stderrChunks.push(String(s)); } };
+  const stdout = { write: (s) => { stdoutChunks.push(String(s)); } };
+  let zshSpawned = false;
+
+  const prevEnv = process.env.NODE_ENV;
+  delete process.env.NODE_ENV;
+  try {
+    await main(
+      ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.5:high'],
+      {
+        stderr,
+        stdout,
+        cwd: tempCwd,
+        fileExists: () => true,
+        zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+        spawnZsh: async () => { zshSpawned = true; return 0; },
+      },
+    );
+  } finally {
+    if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;
+  }
+
+  assert.equal(zshSpawned, true, '--mode tmux still routes to zsh runner');
+  assert.doesNotMatch(stderrChunks.join(''), /--mode native is slash-command-only/);
+  assert.doesNotMatch(stderrChunks.join(''), /--mode agent .* deprecated/i);
+});

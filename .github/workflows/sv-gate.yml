@@ -27,7 +27,7 @@ on:
 jobs:
   sv-gate-fast:
     name: SV Gate Fast (~30s)
-    runs-on: macos-latest  # macOS provides zsh + tmux + node out of the box
+    runs-on: macos-latest  # macOS provides zsh + node; tmux installed below
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +36,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Install tmux (macOS runner image no longer pre-installs tmux)
+        run: brew install tmux
 
       - name: Verify zsh + tmux available
         run: |
