@@ -3069,6 +3069,32 @@ main() {
       fi
     fi
 
+    # PR-E (Phase C1, stabilization): operator-cleared BLOCKED recovery.
+    # Pair to PR-A above. Runs AFTER PR-A (so phase=verify wins) and skipped
+    # when SKIP_NEXT_WORKER=1 (PR-A already honored). Resets stale counters
+    # in status.json when operator manually deleted the BLOCKED sentinel.
+    # Mirrors Node `_validateBlockedRecovery` + branch in campaign-main-loop.mjs.
+    if [[ "$LAST_PHASE" == "blocked" && "$SKIP_NEXT_WORKER" -eq 0 ]]; then
+      local _blocked_sidecar="$MEMOS_DIR/${SLUG}-blocked.json"
+      if _validate_blocked_recovery \
+           "$BLOCKED_SENTINEL" "$_blocked_sidecar" "$STATUS_FILE"; then
+        local _prev_reason
+        _prev_reason=$(jq -r '.last_block_reason // ""' "$STATUS_FILE" 2>/dev/null)
+        log "[recovery] Operator-cleared BLOCKED detected (was: ${_prev_reason:-unrecorded}). Resetting counters and resuming as worker. iter=$ITERATION"
+        log_debug "[recovery] iter=$ITERATION blocked_recovery=applied reason=\"${BLOCKED_RECOVERY_FAIL_REASON:-sidecar absent or recoverable=true}\""
+        # Reset counters in-process. update_status writes fresh status when
+        # next phase transition fires. Operator's intent was a clean restart.
+        CONSECUTIVE_FAILURES=0
+        CONSECUTIVE_BLOCKS=0
+        LAST_BLOCK_REASON=""
+        # Archive sidecar (rename, not delete) for audit trail.
+        _archive_recovered_sidecar "$_blocked_sidecar"
+      else
+        log "[recovery] phase=blocked ignored: ${BLOCKED_RECOVERY_FAIL_REASON}"
+        log_debug "[recovery] iter=$ITERATION blocked_recovery=skipped reason=\"${BLOCKED_RECOVERY_FAIL_REASON}\""
+      fi
+    fi
+
     if (( ! SKIP_NEXT_WORKER )); then
       # --- governance.md s7 step 8 (cleanup): Clean previous iteration signals ---
       # Bug #7 Fix-R cleanup: unlock 0o444 sentinels written by the previous

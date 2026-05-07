@@ -369,6 +369,81 @@ _validate_operator_recovery_artifacts() {
   return 0
 }
 
+# PR-E (Phase C1, stabilization) — operator-cleared BLOCKED recovery validator.
+# Pair to PR-A (_validate_operator_recovery_artifacts above). Together they
+# close two recovery surfaces: phase=verify (PR-A) and phase=blocked
+# sentinel-cleared (PR-E this helper).
+#
+# Returns 0 when all 4 checks pass; 1 otherwise. Sets BLOCKED_RECOVERY_FAIL_REASON
+# (global) on failure for caller logging. Mirrors Node `_validateBlockedRecovery`
+# in src/node/runner/campaign-main-loop.mjs.
+#
+# Args:
+#   $1  blocked sentinel path (.md)
+#   $2  blocked sidecar path (.json)
+#   $3  status.json path
+_validate_blocked_recovery() {
+  local sentinel_md="$1" sidecar_json="$2" status_file="$3"
+  BLOCKED_RECOVERY_FAIL_REASON=""
+
+  # Check 1: precondition — caller verified phase=blocked already
+  # (passed in via status read; no need to re-read here)
+
+  # Check 2: sentinel cleared by operator
+  if [[ -f "$sentinel_md" ]]; then
+    BLOCKED_RECOVERY_FAIL_REASON="blocked sentinel still present (operator did not clear)"
+    return 1
+  fi
+
+  # Check 3: status.json must exist + counters non-zero
+  if [[ ! -f "$status_file" ]]; then
+    BLOCKED_RECOVERY_FAIL_REASON="status.json missing"
+    return 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    BLOCKED_RECOVERY_FAIL_REASON="jq unavailable; cannot validate"
+    return 1
+  fi
+  local fails blocks
+  fails=$(jq -r '.consecutive_failures // 0' "$status_file" 2>/dev/null)
+  blocks=$(jq -r '.consecutive_blocks // 0' "$status_file" 2>/dev/null)
+  if [[ "$fails" == "0" && "$blocks" == "0" ]]; then
+    BLOCKED_RECOVERY_FAIL_REASON="counters already zero, nothing to recover"
+    return 1
+  fi
+
+  # Check 4: sidecar safety — if sidecar exists and recoverable=false, fall through
+  if [[ -f "$sidecar_json" ]]; then
+    if ! jq -e . "$sidecar_json" >/dev/null 2>&1; then
+      BLOCKED_RECOVERY_FAIL_REASON="blocked.json sidecar parse error"
+      return 1
+    fi
+    local recoverable category
+    recoverable=$(jq -r '.recoverable' "$sidecar_json" 2>/dev/null)
+    category=$(jq -r '.reason_category // "unknown"' "$sidecar_json" 2>/dev/null)
+    if [[ "$recoverable" == "false" ]]; then
+      BLOCKED_RECOVERY_FAIL_REASON="non-recoverable category $category from sidecar (use clean to reset)"
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+# PR-E helper: rename the recovered sidecar so operator can audit what was
+# recovered from. Best-effort — failure is non-fatal.
+#
+# Args:
+#   $1  blocked sidecar path (.json)
+_archive_recovered_sidecar() {
+  local sidecar_json="$1"
+  [[ -f "$sidecar_json" ]] || return 0
+  local iso
+  iso=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+  mv "$sidecar_json" "${sidecar_json}.recovered-${iso}" 2>/dev/null || true
+  return 0
+}
+
 # PR-0b-narrow (Plan v6) — stamp leader handshake ack onto the sentinel.
 # Mirror of src/node/shared/fs.mjs::stampAckField. Best-effort, audit-only:
 # any failure is silently swallowed. Sequence:
