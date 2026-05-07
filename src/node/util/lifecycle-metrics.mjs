@@ -57,6 +57,16 @@ export class LifecycleMetricsCollector {
   // Convenience: pair-bookkeeping for sentinel_lock_to_unlock_ms (object-
   // valued metric keyed by sentinel type). Call markLockStart at chmod 0o444
   // time, markUnlock at chmod 0o644 time (or end-of-iter for never-unlocked).
+  //
+  // v0.15.4 audit H2: done-claim is intentionally NOT instrumented with this
+  // pair. In production happy path done-claim is locked-but-never-unlocked
+  // (campaign-main-loop unlocks only signalFile + verdictFile at iter start);
+  // markUnlock for done-claim never fires, so the metric would silently never
+  // emit. Future work: emit at lib_ralph_desk.zsh:602 archival site if needed.
+  //
+  // v0.15.4 audit H3: callers must invoke markLockStart BEFORE the chmod
+  // operation, not after, so the metric covers full lock duration including
+  // chmod execution time. Sub-ms skew, but semantically correct.
   markLockStart(sentinelType, t = Date.now()) {
     if (!this._enabled) return;
     this._sentinelLockTimes.set(sentinelType, t);

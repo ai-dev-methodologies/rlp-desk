@@ -1416,10 +1416,14 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       });
     }
     if (sentinelFile) {
-      await lockSentinel(sentinelFile, { log: (msg) => console.error(msg) });
+      // v0.15.4 audit H3 fix: markLockStart BEFORE lockSentinel so the
+      // sentinel_lock_to_unlock_ms metric covers the full lock duration
+      // including chmod 0o444 execution time. Previous code recorded
+      // post-chmod timestamp — sub-ms skew but semantically inverted.
       // v0.15.4 PR-B4: open lock-to-unlock pair tracking. markUnlock fires
       // at unlockSentinelFile call sites or end-of-iter for never-unlocked.
       lifecycleMetrics.markLockStart(path.basename(sentinelFile));
+      await lockSentinel(sentinelFile, { log: (msg) => console.error(msg) });
       // PR-0b-narrow AC-H2: stamp the leader_ack audit field. Best-effort,
       // does not block subsequent dispatch.
       await stampAckField(sentinelFile, {
@@ -1943,8 +1947,15 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // and any post-iter Bug #8 gate read a snapshot the worker can no longer
     // revise. Symmetric with the zsh lock-on-iter-signal contract at
     // run_ralph_desk.zsh:3197. Best-effort: missing-file is fail-open.
+    //
+    // v0.15.4 audit H2 fix: NO markLockStart for done-claim. In production
+    // happy path done-claim is locked-but-never-unlocked (only signalFile +
+    // verdictFile receive iter-start unlockSentinelFile at L1552-1555), so
+    // markUnlock would never fire and the metric would silently never emit.
+    // done-claim is intentionally excluded from sentinel_lock_to_unlock_ms;
+    // the lib_ralph_desk.zsh:602 archival step is the practical lock-end
+    // event but is not currently instrumented (deferred — not B4 scope).
     await lockSentinel(paths.doneClaimFile, { log: (msg) => console.error(msg) });
-    lifecycleMetrics.markLockStart('done-claim.json');
 
     // US-019 R7 P1-G: verify_partial malformed downgrade.
     // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier

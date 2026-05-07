@@ -171,6 +171,7 @@ NODE_TESTS=(
   tests/node/test-sentinel-reaper-invariant.test.mjs
   tests/node/test-lifecycle-metrics.test.mjs
   tests/node/test-campaign-jsonl-shape.test.mjs
+  tests/node/test-b3-band-revalidation.test.mjs
   tests/node/sv-e2e/test-lying-verifier.mjs
   tests/node/sv-e2e/test-prompt-blocked.mjs
 )

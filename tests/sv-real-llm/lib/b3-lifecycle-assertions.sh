@@ -66,14 +66,28 @@ b3_assert_lifecycle_metric_within_band() {
     return 0
   fi
 
-  # Pull max value_ms across all records for this metric.
+  # v0.15.4 pre-release audit C1 fix: pre-compute entry_count to distinguish
+  # "no data" (B4 telemetry never fired — should SKIP) from "zero-valued data"
+  # (legitimate 0ms measurement — should still go through band check).
+  # Previous implementation used `// 0` sentinel which collapsed both cases to
+  # max=0, causing false PASS when telemetry was disabled.
+  local entry_count
+  entry_count=$(jq -s --arg m "$metric" \
+    '[.[] | (.lifecycle_metrics // {})[$m] // []] | flatten | length' \
+    "$jsonl" 2>/dev/null || echo 0)
+  if (( entry_count == 0 )); then
+    echo "ASSERT $label SKIP: metric not emitted (zero entries across all records)"
+    return 0
+  fi
+
+  # Compute max only across records that actually have entries. No // 0 sentinel.
   local max_observed
-  max_observed=$(jq -s --arg m "$metric" '
-    [.[] | (.lifecycle_metrics // {})[$m] // [] | .[].value_ms // 0] | max // 0
-  ' "$jsonl" 2>/dev/null || echo 0)
+  max_observed=$(jq -s --arg m "$metric" \
+    '[.[] | (.lifecycle_metrics // {})[$m] // [] | .[].value_ms] | max' \
+    "$jsonl" 2>/dev/null || echo "")
 
   if [[ -z "$max_observed" || "$max_observed" == "null" ]]; then
-    echo "ASSERT $label SKIP: metric not emitted (no entries in any record)"
+    echo "ASSERT $label SKIP: metric entries present but no value_ms field (schema drift?)"
     return 0
   fi
 

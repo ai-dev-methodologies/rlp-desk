@@ -313,6 +313,18 @@ _unlock_sentinel() {
 # block on the FS write. The Node-side mirror is src/node/util/lifecycle-
 # metrics.mjs LifecycleMetricsCollector.
 #
+# v0.15.4 audit M2: concurrent-appender semantics — `( ... ) &!` spawns a
+# disowned subshell per metric. Multiple metrics can fire in rapid succession
+# (e.g., during iter teardown) and race on debug.log. POSIX guarantees atomic
+# append for writes <= PIPE_BUF (4096 bytes). A single LIFECYCLE line is
+# ~150 bytes, well under the limit, so on local filesystems (APFS, ext4, xfs)
+# concurrent appends produce intact non-interleaved lines. On NFS / FUSE /
+# some Docker overlay setups PIPE_BUF guarantees may not hold; in those
+# environments, expect possible interleaving. This is best-effort logging
+# by design — the metric values land in campaign.jsonl via the Node leader's
+# batched flush as the canonical authoritative record. debug.log is an
+# audit aid, not the source of truth.
+#
 # Args:
 #   $1  metric_name       e.g. iter_signal_write_to_read_ms
 #   $2  value_ms          integer milliseconds (will be coerced via printf %d)
@@ -320,7 +332,7 @@ _unlock_sentinel() {
 #
 # Side effects:
 #   - When flag unset: returns 0 immediately (no fork, no FS call).
-#   - When flag set:   forks `( log_debug "..." ) &` to debug.log.
+#   - When flag set:   forks `( log_debug "..." ) &!` to debug.log.
 #
 # Examples:
 #   log_lifecycle_metric "iter_signal_write_to_read_ms" "$delta" \
