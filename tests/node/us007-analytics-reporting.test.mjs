@@ -247,9 +247,13 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   const lines = (await readText(analyticsFile)).trim().split('\n').map((line) => JSON.parse(line));
 
   assert.equal(lines.length, 2);
+  // v0.15.4 PR-B4: campaign.jsonl schema extended with lifecycle_metrics
+  // (null when RLP_LIFECYCLE_METRICS unset, object when set). Field is
+  // ALWAYS present in the record for shape predictability.
   assert.deepEqual(Object.keys(lines[0]).sort(), [
     'duration',
     'iter',
+    'lifecycle_metrics',
     'timestamp',
     'us_id',
     'verdict',
@@ -258,6 +262,9 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   ]);
   assert.equal(lines[0].iter, 1);
   assert.equal(lines[1].iter, 2);
+  // B4: with no collector injected and RLP_LIFECYCLE_METRICS unset, the
+  // field is null (default-disabled production behavior).
+  assert.equal(lines[0].lifecycle_metrics, null);
 });
 
 test('US-007 AC7.2 boundary: starting a new campaign versions an existing campaign.jsonl before appending fresh analytics', async (t) => {
