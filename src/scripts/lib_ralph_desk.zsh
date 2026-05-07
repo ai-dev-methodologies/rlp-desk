@@ -285,6 +285,90 @@ _unlock_sentinel() {
   return 0
 }
 
+# PR-A (Bug #10) — validate operator-written manual recovery artifacts.
+# Returns 0 when all 5 checks pass; 1 otherwise. Sets RECOVERY_FAIL_REASON
+# (global) on failure for caller logging. Mirrors the Node-side helper
+# `_validateOperatorRecoveryArtifacts` in `src/node/runner/campaign-main-loop.mjs`.
+#
+# Args:
+#   $1  iter-signal.json path
+#   $2  done-claim.json path
+#   $3  status.json path
+#   $4  iter-NNN.worker-prompt.md path (may not exist for iter-1 fresh start)
+_validate_operator_recovery_artifacts() {
+  local sig_file="$1" done_file="$2" status_file="$3" prompt_file="$4"
+  RECOVERY_FAIL_REASON=""
+
+  # Check 1: both artifacts exist + parse as JSON
+  if [[ ! -f "$sig_file" ]]; then
+    RECOVERY_FAIL_REASON="iter-signal.json missing"; return 1
+  fi
+  if [[ ! -f "$done_file" ]]; then
+    RECOVERY_FAIL_REASON="done-claim.json missing"; return 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    RECOVERY_FAIL_REASON="jq unavailable; cannot validate"; return 1
+  fi
+  if ! jq -e . "$sig_file" >/dev/null 2>&1; then
+    RECOVERY_FAIL_REASON="iter-signal.json parse error"; return 1
+  fi
+  if ! jq -e . "$done_file" >/dev/null 2>&1; then
+    RECOVERY_FAIL_REASON="done-claim.json parse error"; return 1
+  fi
+  if [[ ! -f "$status_file" ]] || ! jq -e . "$status_file" >/dev/null 2>&1; then
+    RECOVERY_FAIL_REASON="status.json missing or invalid"; return 1
+  fi
+
+  # Check 2: us_id match in both artifacts
+  local current_us sig_us done_us
+  current_us=$(jq -r '.current_us // ""' "$status_file" 2>/dev/null)
+  sig_us=$(jq -r '.us_id // ""' "$sig_file" 2>/dev/null)
+  done_us=$(jq -r '.us_id // ""' "$done_file" 2>/dev/null)
+  if [[ "$sig_us" != "$current_us" ]]; then
+    RECOVERY_FAIL_REASON="iter-signal.us_id ($sig_us) != status.current_us ($current_us)"; return 1
+  fi
+  if [[ "$done_us" != "$current_us" ]]; then
+    RECOVERY_FAIL_REASON="done-claim.us_id ($done_us) != status.current_us ($current_us)"; return 1
+  fi
+
+  # Check 3: iteration match in both artifacts
+  local current_iter sig_iter done_iter
+  current_iter=$(jq -r '.iteration // 0' "$status_file" 2>/dev/null)
+  sig_iter=$(jq -r '.iteration // 0' "$sig_file" 2>/dev/null)
+  done_iter=$(jq -r '.iteration // 0' "$done_file" 2>/dev/null)
+  if [[ "$sig_iter" != "$current_iter" ]]; then
+    RECOVERY_FAIL_REASON="iter-signal.iteration ($sig_iter) != status.iteration ($current_iter)"; return 1
+  fi
+  if [[ "$done_iter" != "$current_iter" ]]; then
+    RECOVERY_FAIL_REASON="done-claim.iteration ($done_iter) != status.iteration ($current_iter)"; return 1
+  fi
+
+  # Check 4: iter_signal_quality must equal 'specific'
+  local sig_quality
+  sig_quality=$(jq -r '.iter_signal_quality // ""' "$sig_file" 2>/dev/null)
+  if [[ "$sig_quality" != "specific" ]]; then
+    RECOVERY_FAIL_REASON="iter-signal.iter_signal_quality ($sig_quality) != 'specific'"; return 1
+  fi
+
+  # Check 5: artifact mtimes must be strictly newer than worker-prompt mtime.
+  # Vacuously passes when the prompt file does not exist (fresh iter-1 start
+  # before any leader-written prompt).
+  if [[ -f "$prompt_file" ]]; then
+    local prompt_mtime sig_mtime done_mtime
+    prompt_mtime=$(stat -f %m "$prompt_file" 2>/dev/null || stat -c %Y "$prompt_file" 2>/dev/null || print 0)
+    sig_mtime=$(stat -f %m "$sig_file" 2>/dev/null || stat -c %Y "$sig_file" 2>/dev/null || print 0)
+    done_mtime=$(stat -f %m "$done_file" 2>/dev/null || stat -c %Y "$done_file" 2>/dev/null || print 0)
+    if (( sig_mtime <= prompt_mtime )); then
+      RECOVERY_FAIL_REASON="iter-signal.json mtime ($sig_mtime) not strictly newer than worker-prompt mtime ($prompt_mtime)"; return 1
+    fi
+    if (( done_mtime <= prompt_mtime )); then
+      RECOVERY_FAIL_REASON="done-claim.json mtime ($done_mtime) not strictly newer than worker-prompt mtime ($prompt_mtime)"; return 1
+    fi
+  fi
+
+  return 0
+}
+
 # PR-0b-narrow (Plan v6) — stamp leader handshake ack onto the sentinel.
 # Mirror of src/node/shared/fs.mjs::stampAckField. Best-effort, audit-only:
 # any failure is silently swallowed. Sequence:

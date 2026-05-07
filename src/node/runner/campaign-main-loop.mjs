@@ -388,6 +388,110 @@ async function readCurrentState(paths, slug, options) {
   };
 }
 
+// PR-A (Bug #10): validate operator-written recovery artifacts. When the
+// operator hand-rolls a `phase=verify` recovery (jq-patches status.json,
+// writes iter-signal.json + done-claim.json by hand, deletes the blocked
+// sentinel), the leader must NOT silently overwrite that work on relaunch.
+// All five checks must pass for the leader to honor the recovery.
+//
+// Returns { ok: boolean, reason: string }. On any failure the caller falls
+// through to the default behavior (worker dispatch) — defensive by design.
+async function _validateOperatorRecoveryArtifacts({ paths, state }) {
+  // 1. iter-signal.json + done-claim.json must both exist and parse.
+  let signal;
+  let doneClaim;
+  try {
+    signal = await readJsonIfExists(paths.signalFile);
+  } catch (err) {
+    return { ok: false, reason: `iter-signal.json parse error: ${err?.message ?? err}` };
+  }
+  if (!signal) return { ok: false, reason: 'iter-signal.json missing' };
+
+  try {
+    doneClaim = await readJsonIfExists(paths.doneClaimFile);
+  } catch (err) {
+    return { ok: false, reason: `done-claim.json parse error: ${err?.message ?? err}` };
+  }
+  if (!doneClaim) return { ok: false, reason: 'done-claim.json missing' };
+
+  // 2. us_id must match status.current_us in BOTH artifacts.
+  if (signal.us_id !== state.current_us) {
+    return {
+      ok: false,
+      reason: `iter-signal.us_id (${signal.us_id}) != status.current_us (${state.current_us})`,
+    };
+  }
+  if (doneClaim.us_id !== state.current_us) {
+    return {
+      ok: false,
+      reason: `done-claim.us_id (${doneClaim.us_id}) != status.current_us (${state.current_us})`,
+    };
+  }
+
+  // 3. iteration must match status.iteration in BOTH artifacts.
+  if (signal.iteration !== state.iteration) {
+    return {
+      ok: false,
+      reason: `iter-signal.iteration (${signal.iteration}) != status.iteration (${state.iteration})`,
+    };
+  }
+  if (doneClaim.iteration !== state.iteration) {
+    return {
+      ok: false,
+      reason: `done-claim.iteration (${doneClaim.iteration}) != status.iteration (${state.iteration})`,
+    };
+  }
+
+  // 4. iter_signal_quality must be 'specific' (not generic / vague).
+  if (signal.iter_signal_quality !== 'specific') {
+    return {
+      ok: false,
+      reason: `iter-signal.iter_signal_quality (${signal.iter_signal_quality}) != 'specific'`,
+    };
+  }
+
+  // 5. Both artifact mtimes must be NEWER than the most recent
+  //    iter-NNN.worker-prompt.md mtime — guards against operator running
+  //    `phase=verify` against stale artifacts from a much earlier iteration.
+  const promptFile = path.join(
+    paths.campaignLogDir,
+    `iter-${String(state.iteration).padStart(3, '0')}.worker-prompt.md`,
+  );
+  let promptMtime = 0;
+  try {
+    const promptStat = await fs.stat(promptFile);
+    promptMtime = promptStat.mtimeMs;
+  } catch {
+    // No worker-prompt.md for this iteration → check vacuously passes
+    // (operator is recovering from a state that never even dispatched yet).
+    promptMtime = 0;
+  }
+  if (promptMtime > 0) {
+    let signalMtime = 0;
+    let doneClaimMtime = 0;
+    try {
+      signalMtime = (await fs.stat(paths.signalFile)).mtimeMs;
+      doneClaimMtime = (await fs.stat(paths.doneClaimFile)).mtimeMs;
+    } catch (err) {
+      return { ok: false, reason: `mtime stat failed: ${err?.message ?? err}` };
+    }
+    if (signalMtime <= promptMtime) {
+      return {
+        ok: false,
+        reason: `iter-signal.json mtime (${signalMtime}) is not strictly newer than worker-prompt mtime (${promptMtime})`,
+      };
+    }
+    if (doneClaimMtime <= promptMtime) {
+      return {
+        ok: false,
+        reason: `done-claim.json mtime (${doneClaimMtime}) is not strictly newer than worker-prompt mtime (${promptMtime})`,
+      };
+    }
+  }
+
+  return { ok: true, reason: 'all five checks passed' };
+}
+
 async function appendIterationAnalytics(paths, state, usId, verdict, options) {
   await appendCampaignAnalytics(paths.analyticsFile, {
     iter: state.iteration,
@@ -1288,6 +1392,28 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
 
   let fixContractPath = null;
 
+  // PR-A (Bug #10): operator-recovery hygiene. If the operator hand-rolled a
+  // `phase=verify` recovery (jq-patches status.json, writes manual artifacts,
+  // deletes the blocked sentinel), the leader MUST honor that work instead of
+  // resetting to phase=worker on relaunch. The validator runs five checks
+  // (see _validateOperatorRecoveryArtifacts); on full pass, _skipNextWorkerDispatch
+  // is set as a one-shot flag consumed at the worker dispatch call site below.
+  // On any failure the leader logs the reason and falls through to default
+  // behavior.
+  if (state.phase === 'verify' && state.iteration > 0) {
+    const validation = await _validateOperatorRecoveryArtifacts({ paths, state });
+    if (validation.ok) {
+      console.error(
+        `[recovery] Resuming verify phase — operator manual recovery detected (us=${state.current_us} iter=${state.iteration}): ${validation.reason}`,
+      );
+      state._skipNextWorkerDispatch = true;
+    } else {
+      console.error(
+        `[recovery] phase=verify ignored, falling through to worker dispatch: ${validation.reason}`,
+      );
+    }
+  }
+
   // P1-E Lane Enforcement: snapshot lane mtimes before each iteration,
   // compare at the top of the next iteration. Drift on read-only artifacts
   // (PRD, test-spec, context) emits a lane_violation_warning event + audit
@@ -1572,18 +1698,36 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       }
     }
 
-    state.phase = 'worker';
-    await writeStatus(paths, state, options.onStatusChange, options.now);
-    await dispatchWorker({
-      iteration: state.iteration,
-      paths,
-      slug,
-      usList,
-      state,
-      sendKeys,
-      workerPaneId: state.worker_pane_id,
-      fixContractPath,
-    });
+    // PR-A (Bug #10): one-shot guard. When the operator's `phase=verify`
+    // recovery was honored at campaign entry, skip both the phase reset and
+    // the worker dispatch — the operator already wrote a valid iter-signal.json
+    // and done-claim.json, so pollForSignal below will pick them up immediately
+    // and the loop continues into the verifier phase. The flag is cleared
+    // after consumption so subsequent iterations dispatch the worker normally.
+    if (state._skipNextWorkerDispatch) {
+      state._skipNextWorkerDispatch = false;
+      console.error(
+        `[recovery] Skipping worker dispatch for iter=${state.iteration} (honoring operator manual recovery)`,
+      );
+      // Persist phase=verify so a subsequent crash-and-relaunch sees the same
+      // contract. writeStatus is intentionally called BEFORE pollForSignal so
+      // the on-disk state matches what we are about to do.
+      state.phase = 'verify';
+      await writeStatus(paths, state, options.onStatusChange, options.now);
+    } else {
+      state.phase = 'worker';
+      await writeStatus(paths, state, options.onStatusChange, options.now);
+      await dispatchWorker({
+        iteration: state.iteration,
+        paths,
+        slug,
+        usList,
+        state,
+        sendKeys,
+        workerPaneId: state.worker_pane_id,
+        fixContractPath,
+      });
+    }
 
     let signal;
     try {

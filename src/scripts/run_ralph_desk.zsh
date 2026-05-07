@@ -3045,24 +3045,50 @@ main() {
       return 1
     fi
 
-    # --- governance.md s7 step 8 (cleanup): Clean previous iteration signals ---
-    # Bug #7 Fix-R cleanup: unlock 0o444 sentinels written by the previous
-    # iteration's reaper before rm so cleanup does not log permission noise.
-    _unlock_sentinel "$SIGNAL_FILE"
-    _unlock_sentinel "$VERDICT_FILE"
-    rm -f "$SIGNAL_FILE" "$DONE_CLAIM_FILE" "$VERDICT_FILE" 2>/dev/null
-    rm -f "$WORKER_HEARTBEAT" "$VERIFIER_HEARTBEAT" 2>/dev/null
+    # PR-A (Bug #10): operator-recovery hygiene check.
+    # When the operator hand-rolls a `phase=verify` recovery (jq-patches
+    # status.json, writes manual iter-signal.json + done-claim.json, deletes
+    # the blocked sentinel), the leader MUST honor that work instead of
+    # deleting the artifacts and resetting to phase=worker. Mirrors the
+    # Node-side guard in src/node/runner/campaign-main-loop.mjs.
+    local SKIP_NEXT_WORKER=0
+    local LAST_PHASE=""
+    if [[ -f "$STATUS_FILE" ]] && command -v jq >/dev/null 2>&1; then
+      LAST_PHASE=$(jq -r '.phase // ""' "$STATUS_FILE" 2>/dev/null)
+    fi
+    if [[ "$LAST_PHASE" == "verify" ]]; then
+      local _iter_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-prompt.md"
+      if _validate_operator_recovery_artifacts \
+           "$SIGNAL_FILE" "$DONE_CLAIM_FILE" "$STATUS_FILE" "$_iter_prompt"; then
+        log "[recovery] Resuming verify phase — operator manual recovery detected (iter=$ITERATION)"
+        log_debug "[recovery] iter=$ITERATION skip_worker=true reason=manual_recovery_validated"
+        SKIP_NEXT_WORKER=1
+      else
+        log "[recovery] phase=verify ignored: ${RECOVERY_FAIL_REASON}"
+        log_debug "[recovery] iter=$ITERATION skip_worker=false reason=\"${RECOVERY_FAIL_REASON}\""
+      fi
+    fi
 
-    # --- Clean previous claude session in panes (one-shot lifecycle) ---
-    # Only needed from iteration 2 onwards (iteration 1 has fresh panes)
-    if (( ITERATION > 1 )); then
-      # Send C-c first (in case claude is mid-task), then /exit
-      tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
-      sleep 1
-      tmux send-keys -t "$WORKER_PANE" "/exit" C-m 2>/dev/null
-      sleep 2
-      # Wait for shell prompt before proceeding
-      wait_for_pane_ready "$WORKER_PANE" 10 2>/dev/null || true
+    if (( ! SKIP_NEXT_WORKER )); then
+      # --- governance.md s7 step 8 (cleanup): Clean previous iteration signals ---
+      # Bug #7 Fix-R cleanup: unlock 0o444 sentinels written by the previous
+      # iteration's reaper before rm so cleanup does not log permission noise.
+      _unlock_sentinel "$SIGNAL_FILE"
+      _unlock_sentinel "$VERDICT_FILE"
+      rm -f "$SIGNAL_FILE" "$DONE_CLAIM_FILE" "$VERDICT_FILE" 2>/dev/null
+      rm -f "$WORKER_HEARTBEAT" "$VERIFIER_HEARTBEAT" 2>/dev/null
+
+      # --- Clean previous claude session in panes (one-shot lifecycle) ---
+      # Only needed from iteration 2 onwards (iteration 1 has fresh panes)
+      if (( ITERATION > 1 )); then
+        # Send C-c first (in case claude is mid-task), then /exit
+        tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
+        sleep 1
+        tmux send-keys -t "$WORKER_PANE" "/exit" C-m 2>/dev/null
+        sleep 2
+        # Wait for shell prompt before proceeding
+        wait_for_pane_ready "$WORKER_PANE" 10 2>/dev/null || true
+      fi
     fi
 
     # Reset per-iteration state
@@ -3074,33 +3100,44 @@ main() {
     # --- US-004: detect PRD changes for live update + re-split ---
     check_prd_update
 
-    # --- governance.md s7 step 4: Build worker prompt + trigger ---
-    write_worker_trigger "$ITERATION"
-    local worker_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-prompt.md"
-
-    # AC1: capture worker start timestamp
+    # AC1: capture worker start timestamp (still set for downstream telemetry
+    # even when the worker dispatch is skipped — recovery still consumes time).
     ITER_WORKER_START=$(date +%s)
 
-    update_status "worker" "running"
+    local worker_launch=""
+    if (( ! SKIP_NEXT_WORKER )); then
+      # --- governance.md s7 step 4: Build worker prompt + trigger ---
+      write_worker_trigger "$ITERATION"
+      local worker_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-prompt.md"
 
-    # --- governance.md s7 step 5: Execute Worker (dispatched to engine-specific function) ---
-    log_debug "[FLOW] iter=$ITERATION phase=worker engine=$WORKER_ENGINE model=$WORKER_MODEL dispatched=true"
+      update_status "worker" "running"
 
-    local worker_launch
-    if [[ "$WORKER_ENGINE" = "codex" ]]; then
-      worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
-      if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
-        write_blocked_sentinel "Worker codex failed to start in pane" "" "infra_failure"
-        update_status "blocked" "worker_start_failed"
-        return 1
+      # --- governance.md s7 step 5: Execute Worker (dispatched to engine-specific function) ---
+      log_debug "[FLOW] iter=$ITERATION phase=worker engine=$WORKER_ENGINE model=$WORKER_MODEL dispatched=true"
+
+      if [[ "$WORKER_ENGINE" = "codex" ]]; then
+        worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+        if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
+          write_blocked_sentinel "Worker codex failed to start in pane" "" "infra_failure"
+          update_status "blocked" "worker_start_failed"
+          return 1
+        fi
+      else
+        worker_launch="$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
+        if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
+          write_blocked_sentinel "Worker claude failed to start in pane" "" "infra_failure"
+          update_status "blocked" "worker_start_failed"
+          return 1
+        fi
       fi
     else
-      worker_launch="$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
-      if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
-        write_blocked_sentinel "Worker claude failed to start in pane" "" "infra_failure"
-        update_status "blocked" "worker_start_failed"
-        return 1
-      fi
+      # PR-A (Bug #10): one-shot recovery path. The operator's iter-signal.json
+      # is already on disk; polling below picks it up immediately and the loop
+      # transitions cleanly into the verifier phase. Persist phase=verify so a
+      # subsequent crash-and-relaunch sees the same contract. SKIP_NEXT_WORKER
+      # is local to this iteration so iter-N+1 dispatches the worker normally.
+      update_status "verify" "running"
+      log "[recovery] Skipping worker dispatch for iter=$ITERATION (one-shot, honoring operator manual recovery)"
     fi
 
     # --- governance.md s7 step 5+6: Poll for Worker completion ---
