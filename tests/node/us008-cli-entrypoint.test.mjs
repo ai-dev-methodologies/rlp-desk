@@ -529,7 +529,11 @@ test('US-008 P1.b: --mode agent emits strengthened deprecation banner (slash nat
   assert.match(stderrText, /WARNING: --mode agent .* deprecated/i);
   assert.match(stderrText, /UNRELATED to the slash command Native Agent\(\) path/);
   assert.match(stderrText, /\/rlp-desk run --mode native/);
-  assert.match(stderrText, /will hard-error in the next major release/);
+  // P2 prep (v0.16): banner names the explicit removal target version
+  // and provides actionable migration / pin guidance for wrapper users.
+  assert.match(stderrText, /will hard-error in v0\.\d+/);
+  assert.match(stderrText, /SCHEDULED REMOVAL/);
+  assert.match(stderrText, /TO PIN.*~0\.15/);
 });
 
 test('US-008 P1.b: --mode tmux unaffected by P1.b banner changes', async (t) => {

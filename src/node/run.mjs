@@ -405,9 +405,20 @@ async function runRunCommand(args, deps) {
       deps.stderr,
       'For Claude Code Native Agent() campaigns, use `/rlp-desk run --mode native` from a Claude Code session.',
     );
+    // P2 prep (v0.16.0): make the removal commitment explicit. Wrappers that
+    // still call `node run.mjs --mode agent` directly need a concrete target
+    // to plan their migration around, not just "next major release".
     write(
       deps.stderr,
-      'This mode will hard-error in the next major release.',
+      'SCHEDULED REMOVAL: this mode will hard-error in v0.16.0 (target ~3-4 weeks from v0.15.1 release on 2026-05-07).',
+    );
+    write(
+      deps.stderr,
+      'TO PIN: `npm install rlp-desk@~0.15` keeps you on the v0.15.x line until you migrate.',
+    );
+    write(
+      deps.stderr,
+      'TO MIGRATE: see docs/plans/strategic-review/option-b-migration-guide.md (forthcoming) or open an issue for help.',
     );
   }
 
