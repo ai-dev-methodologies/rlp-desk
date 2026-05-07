@@ -524,12 +524,42 @@ mkdir my-calc && cd my-calc
 /rlp-desk run loop-test
 ```
 
+## Lifecycle Observability (v0.15.4+)
+
+Set `RLP_LIFECYCLE_METRICS=1` before invoking the runner to enable structured tmux/process lifecycle telemetry. Default: OFF (zero overhead when unset).
+
+```bash
+RLP_LIFECYCLE_METRICS=1 node ~/.claude/ralph-desk/node/run.mjs run my-slug --mode tmux
+```
+
+When enabled, five metrics are emitted per iteration:
+
+| Metric | Meaning |
+|---|---|
+| `iter_signal_write_to_read_ms` | Worker FS write → leader poll resolve |
+| `verdict_write_to_read_ms` | Verifier FS write → leader poll resolve |
+| `pane_eof_to_cleanup_ms` | Kill-start → `killPaneProcess` return |
+| `pane_reap_latency_ms` | done-claim observe → pane shell-idle |
+| `sentinel_lock_to_unlock_ms` | per sentinel type, lock vs unlock pair |
+
+**Where they land:**
+- `debug.log` — `[LIFECYCLE]` tagged lines (per emission)
+- `campaign.jsonl` — batched `lifecycle_metrics` object per iteration record (canonical authoritative source)
+
+**When to enable:**
+- Investigating tmux race windows or leader-poll latency
+- Pre-merge real-LLM SV scenarios (`bug-05` / `bug-07` two-stage assertions consume this telemetry)
+- Long-running campaigns where lifecycle SLO tracking matters
+
+**See also:** `docs/rlp-desk/failure-modes.md` for known race patterns the metrics catch.
+
 ## Documentation
 
-- [Architecture](docs/architecture.md) — Design philosophy, Agent() and tmux execution modes
-- [Getting Started](docs/getting-started.md) — Step-by-step tutorial with the calculator example
-- [Protocol Reference](docs/protocol-reference.md) — Full protocol specification
-- [Future Plans](docs/TODO-verification-next.md) — P3 items and upcoming features
+- [Architecture](docs/rlp-desk/architecture.md) — Design philosophy, Agent() and tmux execution modes
+- [Getting Started](docs/rlp-desk/getting-started.md) — Step-by-step tutorial with the calculator example
+- [Protocol Reference](docs/rlp-desk/protocol-reference.md) — Full protocol specification
+- [Failure Modes Atlas](docs/rlp-desk/failure-modes.md) — known failure patterns + recovery procedures
+- [Future Plans](docs/rlp-desk/TODO-verification-next.md) — P3 items and upcoming features
 
 ## Contributing
 
