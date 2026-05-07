@@ -405,9 +405,21 @@ async function runRunCommand(args, deps) {
       deps.stderr,
       'For Claude Code Native Agent() campaigns, use `/rlp-desk run --mode native` from a Claude Code session.',
     );
+    // 2026-05-07: project entered maintenance mode after CEO review concluded
+    // that omc (oh-my-claudecode) /autopilot + /ralph + /team cover ~95% of
+    // rlp-desk's vision and are production-ready. rlp-desk is no longer
+    // pursuing the v0.16.0 fundamental-redesign path. See FROZEN status doc.
     write(
       deps.stderr,
-      'This mode will hard-error in the next major release.',
+      'MAINTENANCE MODE: rlp-desk entered maintenance on 2026-05-07. v0.16.0 redesign is FROZEN. v0.15.x remains usable.',
+    );
+    write(
+      deps.stderr,
+      'RECOMMENDED PATH: use `/oh-my-claudecode:autopilot` or `/oh-my-claudecode:ralph` from omc — they cover the vision rlp-desk was pursuing.',
+    );
+    write(
+      deps.stderr,
+      'CONTEXT: see docs/plans/v0.16-FROZEN-status.md for the pivot rationale and contribution roadmap.',
     );
   }
 
