@@ -19,7 +19,7 @@
     "src/governance.md",
     "src/model-upgrade-table.md",
     "scripts/",
-    "docs/",
+    "docs/rlp-desk/",
     "examples/",
     "install.sh",
     "README.md",
