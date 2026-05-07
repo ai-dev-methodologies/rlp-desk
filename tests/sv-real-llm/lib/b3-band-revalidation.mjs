@@ -51,10 +51,50 @@ const FIXED_FLOOR_MS = {
   pane_reap_latency_ms: 1000,
 };
 
-function percentile(sorted, p) {
+// v0.15.4 audit L2 fix: exported for unit testing — see
+// tests/node/test-b3-band-revalidation.test.mjs.
+export function percentile(sorted, p) {
   if (sorted.length === 0) return null;
   const idx = Math.ceil((p / 100) * sorted.length) - 1;
   return sorted[Math.max(0, Math.min(idx, sorted.length - 1))];
+}
+
+// v0.15.4 audit L2 fix: pure aggregation function — same logic as the
+// async `aggregateMetrics` in this file, but no I/O and no console.log,
+// so unit tests can validate bucket-fill semantics deterministically.
+export function bucketRecords(records) {
+  const buckets = {
+    iter_signal_write_to_read_ms: [],
+    verdict_write_to_read_ms: [],
+    pane_eof_to_cleanup_ms: [],
+    pane_reap_latency_ms: [],
+  };
+  for (const r of records) {
+    const lm = r?.lifecycle_metrics;
+    if (!lm || typeof lm !== 'object') continue;
+    for (const metric of Object.keys(buckets)) {
+      const entries = lm[metric] || [];
+      for (const e of entries) {
+        if (typeof e?.value_ms === 'number') buckets[metric].push(e.value_ms);
+      }
+    }
+  }
+  return buckets;
+}
+
+// v0.15.4 audit L2 fix: pure drift-classification function. Returns
+// { p50, p95, synthP95, drift, breaches, recommendedBand }; null if
+// no samples. Drift is signed percentage; breaches=true when |drift| > 25.
+export function classifyDrift(name, samples, syntheticTable = SYNTHETIC_P95, floorTable = FIXED_FLOOR_MS) {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const p50 = percentile(sorted, 50);
+  const p95 = percentile(sorted, 95);
+  const synthP95 = syntheticTable[name];
+  const drift = synthP95 ? ((p95 - synthP95) / synthP95) * 100 : null;
+  const breaches = drift !== null && Math.abs(drift) > 25;
+  const recommendedBand = Math.max(p95 * 2, floorTable[name] ?? 1000);
+  return { name, p50, p95, synthP95, drift, breaches, recommendedBand };
 }
 
 async function makeSandbox() {
@@ -266,7 +306,14 @@ async function main() {
   process.exit(breaches.length > 0 ? 2 : 0);
 }
 
-main().catch((err) => {
-  console.error('[harness] fatal:', err);
-  process.exit(1);
-});
+// v0.15.4 audit L2 fix: main-guard. When this file is imported as a module
+// (e.g., by tests/node/test-b3-band-revalidation.test.mjs to exercise the
+// pure helpers above), do NOT execute main(). Direct `node <file>` invocation
+// still runs main() as before.
+const isMainModule = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (isMainModule) {
+  main().catch((err) => {
+    console.error('[harness] fatal:', err);
+    process.exit(1);
+  });
+}
