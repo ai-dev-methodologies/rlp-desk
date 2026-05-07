@@ -23,6 +23,7 @@
     "examples/",
     "install.sh",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [
