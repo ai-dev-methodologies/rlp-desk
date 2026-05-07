@@ -173,7 +173,16 @@ When a failure mode is permanently retired:
 
 ## §6 — Open issues (no recovery yet)
 
-(none as of 2026-05-08)
+### F6.1 — us006 real-tmux boundary test flakiness
+| Field | Value |
+|---|---|
+| Symptom | `tests/node/us006-campaign-main-loop.test.mjs` AC6.1 boundary case (real tmux session w/ 4 panes) intermittently fails 2-5 of 377 Node suite tests on first run; passes cleanly on retry |
+| Root cause | Real tmux session creation + pane process spawn race: `tmux send-keys` may fire before pane's shell is fully ready, causing `can't find pane` warnings (which are non-fatal but timing-sensitive assertions occasionally trip) |
+| Detection | Observed 2026-05-07 + 2026-05-08 in v0.15.4 release pipeline preflight; first-run fail-count varies 2-5 of 377 |
+| Recovery | Runbook §2 S2 retry-once policy: re-run `npm run test:node`. Second run consistently 377/377 PASS |
+| Reference | v0.15.4 release pipeline observation; runbook §7.5.3 Stage 2 INFO-band-exceeded path is unrelated but uses same retry-once mental model |
+
+**Why "open"**: the flake is in the test, not in production code. Adding retry-once to npm test:node script would mask actual regressions. Better fix: redesign the AC6.1 boundary test to use `wait-for-pane-ready` synchronization before sending keys. Deferred to a future v0.15.x patch — not release-blocking.
 
 ---
 
