@@ -492,6 +492,69 @@ async function _validateOperatorRecoveryArtifacts({ paths, state }) {
   return { ok: true, reason: 'all five checks passed' };
 }
 
+// PR-E (Phase C1, stabilization): operator-cleared BLOCKED recovery.
+// When operator manually deletes <slug>-blocked.md to recover (a documented
+// flow), counters in status.json (consecutive_failures / consecutive_blocks)
+// stay populated. Without this branch, leader relaunches with stale counters
+// and may immediately re-BLOCK on the first failure even though operator's
+// intent was a fresh start. Pair to PR-A (phase=verify recovery, Bug #10).
+//
+// 4-check validator. Returns { ok, reason }. On any failure, caller falls
+// through to existing behavior — defensive default, never auto-recovers
+// against ambiguous state.
+//
+// Check 4 reads <slug>-blocked.json sidecar (NOT status.json), because
+// status.json never persists `last_block_reason` (blocked-write code path
+// at L920-968 doesn't write that field). The sidecar DOES carry
+// `recoverable: bool` per _classifyBlock contract — that's the canonical
+// non-recoverable signal.
+async function _validateBlockedRecovery({ paths, state }) {
+  // Check 1: precondition
+  if (state.phase !== 'blocked') {
+    return { ok: false, reason: `state.phase is ${state.phase}, not 'blocked'` };
+  }
+  // Check 2: sentinel cleared by operator
+  if (await exists(paths.blockedSentinel)) {
+    return { ok: false, reason: 'blocked sentinel still present (operator did not clear)' };
+  }
+  // Check 3: counters non-zero (something to reset)
+  const failures = state.consecutive_failures ?? 0;
+  const blocks = state.consecutive_blocks ?? 0;
+  if (failures === 0 && blocks === 0) {
+    return { ok: false, reason: 'counters already zero, nothing to recover' };
+  }
+  // Check 4: sidecar safety check
+  const sidecarPath = paths.blockedSentinel.replace(/\.md$/, '.json');
+  let sidecar = null;
+  try {
+    sidecar = await readJsonIfExists(sidecarPath);
+  } catch (err) {
+    // Malformed sidecar — be defensive and fall through.
+    return { ok: false, reason: `blocked.json sidecar parse error: ${err?.message ?? err}` };
+  }
+  if (sidecar && sidecar.recoverable === false) {
+    return {
+      ok: false,
+      reason: `non-recoverable category ${sidecar.reason_category ?? 'unknown'} from sidecar (use clean to reset)`,
+    };
+  }
+  return { ok: true, reason: 'sidecar absent or recoverable=true; recovery permitted' };
+}
+
+// PR-E helper: rename the recovered sidecar so operator can audit what was
+// recovered from. Best-effort — failure here is non-fatal.
+async function _archiveRecoveredSidecar(paths) {
+  const sidecarPath = paths.blockedSentinel.replace(/\.md$/, '.json');
+  if (!(await exists(sidecarPath))) return;
+  const iso = new Date().toISOString().replace(/[:.]/g, '-');
+  const archivePath = `${sidecarPath}.recovered-${iso}`;
+  try {
+    await fs.rename(sidecarPath, archivePath);
+  } catch (err) {
+    console.error(`[recovery] failed to archive sidecar: ${err?.message ?? err}`);
+  }
+}
+
 async function appendIterationAnalytics(paths, state, usId, verdict, options) {
   await appendCampaignAnalytics(paths.analyticsFile, {
     iter: state.iteration,
@@ -1410,6 +1473,33 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     } else {
       console.error(
         `[recovery] phase=verify ignored, falling through to worker dispatch: ${validation.reason}`,
+      );
+    }
+  }
+
+  // PR-E (Phase C1, stabilization): operator-cleared BLOCKED recovery.
+  // Pair to PR-A above. PR-E runs AFTER PR-A so phase=verify takes precedence
+  // when both apply (defensive ordering: never auto-recover phase=blocked if
+  // the operator's actual intent was phase=verify hygiene). Does NOT use
+  // _skipNextWorkerDispatch — counters reset is enough; worker dispatches
+  // normally on the next iteration with a clean state.
+  if (state.phase === 'blocked' && !state._skipNextWorkerDispatch) {
+    const validation = await _validateBlockedRecovery({ paths, state });
+    if (validation.ok) {
+      const previousReason = state.last_block_reason ?? '';
+      console.error(
+        `[recovery] Operator-cleared BLOCKED detected (was: ${previousReason || 'unrecorded'}). Resetting counters and resuming as worker. iter=${state.iteration} us_id=${state.current_us}: ${validation.reason}`,
+      );
+      state.phase = 'worker';
+      state.consecutive_failures = 0;
+      state.consecutive_blocks = 0;
+      state.last_block_reason = '';
+      // Archive sidecar (rename, not delete) so operator can audit the
+      // recovered-from state. Best-effort.
+      await _archiveRecoveredSidecar(paths);
+    } else {
+      console.error(
+        `[recovery] phase=blocked ignored, falling through to existing behavior: ${validation.reason}`,
       );
     }
   }
