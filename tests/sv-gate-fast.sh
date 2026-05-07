@@ -138,6 +138,23 @@ check "B4 Node leader instantiates LifecycleMetricsCollector" \
   grep -q "new LifecycleMetricsCollector" src/node/runner/campaign-main-loop.mjs
 check "B4 lifecycle_metrics flushed into appendIterationAnalytics" \
   grep -q "lifecycle_metrics: lifecycleSnapshot" src/node/runner/campaign-main-loop.mjs
+# v0.15.4 PR-B3 — Real-LLM SV scenarios with two-stage lifecycle assertions.
+check "B3 shared lifecycle assertion helper exists" \
+  test -f tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
+check "B3 helper exports b3_assert_lifecycle_metrics_present" \
+  grep -q "^b3_assert_lifecycle_metrics_present()" tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
+check "B3 helper exports b3_assert_lifecycle_metric_within_band" \
+  grep -q "^b3_assert_lifecycle_metric_within_band()" tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
+check "B3 bug-05 sources B3 helper + RLP_LIFECYCLE_METRICS=1" \
+  grep -q "RLP_LIFECYCLE_METRICS=1" tests/sv-real-llm/scenarios/bug-05-worker-dead-on-reuse.test.sh
+check "B3 bug-05 calls Stage 1 presence assertion" \
+  grep -q "b3_assert_lifecycle_metrics_present" tests/sv-real-llm/scenarios/bug-05-worker-dead-on-reuse.test.sh
+check "B3 bug-07 sources B3 helper + RLP_LIFECYCLE_METRICS=1" \
+  grep -q "RLP_LIFECYCLE_METRICS=1" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
+check "B3 bug-07 calls Stage 1 presence assertion" \
+  grep -q "b3_assert_lifecycle_metrics_present" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
+check "B3 bug-06 untouched (structural \$0 retained per plan v3 ADR)" \
+  bash -c '! grep -q "RLP_LIFECYCLE_METRICS" tests/sv-real-llm/scenarios/bug-06-claude-worker-idle-noprogress.test.sh'
 
 bold ""
 bold "▶ SV Gate FAST — Node unit tests"

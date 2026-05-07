@@ -69,7 +69,10 @@ EOF
 EOF
 
   local exercise_log="$sandbox_dir/exercise.log"
-  if ! timeout 300 node ~/.claude/ralph-desk/node/run.mjs run "$slug" \
+  # v0.15.4 PR-B3: enable B4 lifecycle observability so two-stage assertions
+  # below can read campaign.jsonl.lifecycle_metrics. Default-off in production;
+  # explicitly opted in for SV gate so B3 assertions are deterministic.
+  if ! RLP_LIFECYCLE_METRICS=1 timeout 300 node ~/.claude/ralph-desk/node/run.mjs run "$slug" \
       --mode tmux --max-iter 2 --iter-timeout 60 \
       --worker-model haiku --verifier-model haiku \
       > "$exercise_log" 2>&1; then
@@ -101,6 +104,29 @@ EOF
   else
     echo "ASSERT A2 PASS: no 'can't find pane' tmux errors"
     ASSERTIONS_PASSED=$((ASSERTIONS_PASSED+1))
+  fi
+
+  # ────────────────────────────────────────────────────────────────────────
+  # v0.15.4 PR-B3: two-stage lifecycle metric assertions (per plan v3 §B3).
+  # Stage 1 (presence) is deterministic and required.
+  # Stage 2 (value) uses initial Option-C synthetic bands from B1 §4.2; pre-
+  # merge revalidation against fresh B4 sample is non-optional (AC3.5).
+  # Set B3_STAGE2_BLOCKING=1 to upgrade Stage 2 to release-blocking after
+  # bands have been refit empirically.
+  # ────────────────────────────────────────────────────────────────────────
+  local _b3_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/b3-lifecycle-assertions.sh"
+  if [[ -f "$_b3_lib" ]]; then
+    # shellcheck source=tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
+    source "$_b3_lib"
+    local _jsonl="$sandbox_dir/.rlp-desk/logs/$slug/campaign.jsonl"
+    b3_assert_lifecycle_metrics_present "$_jsonl"
+    # Bug #5 cluster — relevant metrics: pane reap latency (done-claim race
+    # the substrate fix closed) + iter_signal write_to_read (Bug #5 manifests
+    # as worker NOT producing iter-signal at all; presence is the assertion).
+    b3_assert_lifecycle_metric_within_band "$_jsonl" "pane_reap_latency_ms" "$B3_BAND_PANE_REAP_LATENCY_MS"
+    b3_assert_lifecycle_metric_within_band "$_jsonl" "pane_eof_to_cleanup_ms" "$B3_BAND_PANE_EOF_CLEANUP_MS"
+  else
+    echo "ASSERT B3 SKIP: b3-lifecycle-assertions.sh missing at $_b3_lib"
   fi
 
   SCENARIO_COST_USD_ACTUAL="unmeasured"
