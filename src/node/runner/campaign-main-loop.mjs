@@ -32,6 +32,8 @@ import {
   generateSVReport,
   prepareCampaignAnalytics,
 } from '../reporting/campaign-reporting.mjs';
+import { LifecycleMetricsCollector } from '../util/lifecycle-metrics.mjs';
+import { makeDebugLogger } from '../util/debug-log.mjs';
 import {
   createPane as defaultCreatePane,
   killPaneProcess as defaultKillPaneProcess,
@@ -133,6 +135,10 @@ function buildPaths(rootDir, slug, env = process.env) {
     flywheelGuardPromptFile: path.join(deskRoot, 'prompts', `${slug}.flywheel-guard.prompt.md`),
     flywheelGuardVerdictFile: path.join(deskRoot, 'memos', `${slug}-flywheel-guard-verdict.json`),
     laneAuditFile: path.join(campaignLogDir, 'lane-audit.json'),
+    // v0.15.4 PR-B4: structured debug.log. log_lifecycle_metric (zsh) and
+    // LifecycleMetricsCollector (Node) both emit here when
+    // RLP_LIFECYCLE_METRICS=1.
+    debugLogFile: path.join(campaignLogDir, 'debug.log'),
 };
 }
 
@@ -555,7 +561,11 @@ async function _archiveRecoveredSidecar(paths) {
   }
 }
 
-async function appendIterationAnalytics(paths, state, usId, verdict, options) {
+async function appendIterationAnalytics(paths, state, usId, verdict, options, lifecycleMetrics = null) {
+  // v0.15.4 PR-B4: lifecycle_metrics field — null when flag unset (collector
+  // returns null), object grouped by metric name when flag set. Test:
+  // tests/node/test-campaign-jsonl-shape.mjs.
+  const lifecycleSnapshot = lifecycleMetrics ? lifecycleMetrics.flush() : null;
   await appendCampaignAnalytics(paths.analyticsFile, {
     iter: state.iteration,
     us_id: usId,
@@ -564,6 +574,7 @@ async function appendIterationAnalytics(paths, state, usId, verdict, options) {
     verdict,
     duration: 0,
     timestamp: toIso(resolveNow(options.now)),
+    lifecycle_metrics: lifecycleSnapshot,
   });
 }
 
@@ -1170,7 +1181,7 @@ async function runFinalSequentialVerify({
     });
 
     if (typeof reapProducer === 'function') {
-      await reapProducer(verifierPaneId, paths.verdictFile);
+      await reapProducer(verifierPaneId, paths.verdictFile, 'verify-verdict');
     }
 
     if (verdict.verdict !== 'pass') {
@@ -1368,8 +1379,20 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   const killPaneProcess = options.killPaneProcess ?? defaultKillPaneProcess;
   const lockSentinel = options.lockSentinelFile ?? defaultLockSentinelFile;
   const stampAckField = options.stampAckField ?? defaultStampAckField;
-  const reapProducer = async (paneId, sentinelFile) => {
+  // v0.15.4 PR-B4: lifecycle observability collector. Tests inject
+  // options.lifecycleMetrics for shape-contract verification; production
+  // path constructs from process.env (RLP_LIFECYCLE_METRICS=1 enables).
+  const debugLogger = makeDebugLogger(paths.debugLogFile);
+  const lifecycleMetrics = options.lifecycleMetrics ?? new LifecycleMetricsCollector({
+    env: options.env ?? process.env,
+    debugLog: (cat, fields) => debugLogger(cat, fields),
+  });
+  const reapProducer = async (paneId, sentinelFile, sentinelType = null) => {
     if (!paneId) return;
+    // v0.15.4 PR-B4: pane_eof_to_cleanup_ms = wallclock from kill-start to
+    // killPaneProcess return. pane_reap_latency_ms tracks the same window
+    // when the trigger was a sentinel observation (i.e. sentinelType set).
+    const reapStart = Date.now();
     await killPaneProcess(paneId, {
       sendRawKey,
       waitForExit: waitForProcessExit,
@@ -1384,8 +1407,19 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     } catch (err) {
       console.error(`[handshake] waitForProcessExit failed on ${paneId} (${err?.message ?? err}); continuing`);
     }
+    const reapMs = Date.now() - reapStart;
+    lifecycleMetrics.record('pane_eof_to_cleanup_ms', reapMs, { pane_id: paneId });
+    if (sentinelType) {
+      lifecycleMetrics.record('pane_reap_latency_ms', reapMs, {
+        pane_id: paneId,
+        sentinel_type: sentinelType,
+      });
+    }
     if (sentinelFile) {
       await lockSentinel(sentinelFile, { log: (msg) => console.error(msg) });
+      // v0.15.4 PR-B4: open lock-to-unlock pair tracking. markUnlock fires
+      // at unlockSentinelFile call sites or end-of-iter for never-unlocked.
+      lifecycleMetrics.markLockStart(path.basename(sentinelFile));
       // PR-0b-narrow AC-H2: stamp the leader_ack audit field. Best-effort,
       // does not block subsequent dispatch.
       await stampAckField(sentinelFile, {
@@ -1516,13 +1550,15 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // iteration must not block the next producer's atomic-rename write.
     // Idempotent: missing-file calls are no-ops.
     await unlockSentinelFile(paths.signalFile);
+    lifecycleMetrics.markUnlock(path.basename(paths.signalFile), { iter: state.iteration });
     await unlockSentinelFile(paths.verdictFile);
+    lifecycleMetrics.markUnlock(path.basename(paths.verdictFile), { iter: state.iteration });
     // Audit drift from the prior iteration before doing anything new.
     const _laneSnapshotAfter = await _snapshotLaneMtimes(paths);
     const _laneViolations = await _checkLaneViolations(paths, _laneSnapshot, _laneSnapshotAfter, state, options);
     if (_laneViolations) {
       for (const v of _laneViolations) {
-        await appendIterationAnalytics(paths, state, state.current_us ?? 'ALL', 'lane_violation_warning', { ...options, lane_violation: v });
+        await appendIterationAnalytics(paths, state, state.current_us ?? 'ALL', 'lane_violation_warning', { ...options, lane_violation: v }, lifecycleMetrics);
       }
       if (options.laneStrict) {
         // Strict mode: escalate to BLOCKED with downgrade
@@ -1658,7 +1694,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       }
 
       // Bug #7 Fix-Q/R: reap flywheel pane before consuming the signal.
-      await reapProducer(state.flywheel_pane_id ?? state.verifier_pane_id, paths.flywheelSignalFile);
+      await reapProducer(state.flywheel_pane_id ?? state.verifier_pane_id, paths.flywheelSignalFile, 'flywheel-signal');
 
       state.last_flywheel_decision = flywheelSignal.decision;
       // P0-A multi-mission orchestration: optionally captured from flywheel signal.
@@ -1701,7 +1737,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         }
 
         // Bug #7 Fix-Q/R: reap guard pane before mutating state.
-        await reapProducer(guardPaneId, paths.flywheelGuardVerdictFile);
+        await reapProducer(guardPaneId, paths.flywheelGuardVerdictFile, 'flywheel-guard-verdict');
 
         if (!state.flywheel_guard_count[state.current_us]) {
           state.flywheel_guard_count[state.current_us] = 0;
@@ -1887,16 +1923,28 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       }
     }
 
+    // v0.15.4 PR-B4: iter_signal_write_to_read_ms = wallclock from worker FS
+    // write to leader poll resolve. Sentinel mtime is the producer-side anchor;
+    // Date.now() is the leader-side anchor. Best-effort stat — if the file
+    // already lacks read perms (race vs prior lock), fall back to skip.
+    try {
+      const sigStat = fsSync.statSync(paths.signalFile);
+      lifecycleMetrics.record('iter_signal_write_to_read_ms', Date.now() - sigStat.mtimeMs, {
+        iter: state.iteration,
+        us_id: state.current_us,
+      });
+    } catch { /* fail-open: skip on stat error */ }
     // Bug #7 Fix-Q/R: reap the worker pane the instant we accept the signal so
     // claude/codex cannot self-review and rewrite iter-signal.json. Runs even
     // for the codex-fallback synthesized signal (no-op on a dead pane).
-    await reapProducer(state.worker_pane_id, paths.signalFile);
+    await reapProducer(state.worker_pane_id, paths.signalFile, 'iter-signal');
     // v0.15.4 PR-B2-FIX: same worker pass produced done-claim. The pane is
     // already reaped above; lock done-claim so the iter-NNN-done-claim archive
     // and any post-iter Bug #8 gate read a snapshot the worker can no longer
     // revise. Symmetric with the zsh lock-on-iter-signal contract at
     // run_ralph_desk.zsh:3197. Best-effort: missing-file is fail-open.
     await lockSentinel(paths.doneClaimFile, { log: (msg) => console.error(msg) });
+    lifecycleMetrics.markLockStart('done-claim.json');
 
     // US-019 R7 P1-G: verify_partial malformed downgrade.
     // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier
@@ -1967,10 +2015,18 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       });
     }
 
+    // v0.15.4 PR-B4: verdict_write_to_read_ms parallel to iter_signal metric.
+    try {
+      const verdStat = fsSync.statSync(paths.verdictFile);
+      lifecycleMetrics.record('verdict_write_to_read_ms', Date.now() - verdStat.mtimeMs, {
+        iter: state.iteration,
+        us_id: state.current_us,
+      });
+    } catch { /* fail-open */ }
     // Bug #7 Fix-Q/R: reap verifier pane immediately after accepting the
     // verdict — without this the codex/claude TUI keeps running for ~2min and
     // can rewrite verify-verdict.json (mtime drift observed in 19th launch).
-    await reapProducer(state.verifier_pane_id, paths.verdictFile);
+    await reapProducer(state.verifier_pane_id, paths.verdictFile, 'verify-verdict');
 
     if (verdict.verdict === 'pass') {
       state.consecutive_failures = 0;
@@ -1979,7 +2035,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       }
       state.current_us = getNextUs(usList, state.verified_us, null);
       fixContractPath = null;
-      await appendIterationAnalytics(paths, state, usId, 'pass', options);
+      await appendIterationAnalytics(paths, state, usId, 'pass', options, lifecycleMetrics);
       await writeStatus(paths, state, options.onStatusChange, options.now);
 
       if (state.verified_us.length === usList.length) {
@@ -1995,7 +2051,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       const blockedReason = verdict.reason || verdict.summary || 'verifier-blocked';
       const blockedClassification = _classifyBlock('verifier', { verdict, state, slug });
       await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason, blockedClassification, paths);
-      await appendIterationAnalytics(paths, state, usId, 'blocked', options);
+      await appendIterationAnalytics(paths, state, usId, 'blocked', options, lifecycleMetrics);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
       if (options.withSelfVerification) {
@@ -2034,7 +2090,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     }
 
     state.consecutive_failures += 1;
-    await appendIterationAnalytics(paths, state, usId, 'fail', options);
+    await appendIterationAnalytics(paths, state, usId, 'fail', options, lifecycleMetrics);
     const upgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
     if (upgradedModel === 'BLOCKED') {
       state.phase = 'blocked';

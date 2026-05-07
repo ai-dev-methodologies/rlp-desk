@@ -6,15 +6,19 @@
 // SHOULD use debugLog() instead of console/manual writes.
 //
 // Categories (governance §1f traceability):
-// - GOV   : governance enforcement (IL, CB triggers, scope locks, verdicts)
-// - DECIDE: leader decisions (model selection, fix contracts, escalation)
-// - OPTION: configuration snapshot at loop start
-// - FLOW  : execution progress (worker/verifier dispatch, signal reads, transitions)
+// - GOV       : governance enforcement (IL, CB triggers, scope locks, verdicts)
+// - DECIDE    : leader decisions (model selection, fix contracts, escalation)
+// - OPTION    : configuration snapshot at loop start
+// - FLOW      : execution progress (worker/verifier dispatch, signal reads, transitions)
+// - LIFECYCLE : v0.15.4 PR-B4 — tmux/process lifecycle metrics gated on
+//               RLP_LIFECYCLE_METRICS=1. Emission rules: see plan v3 §B4
+//               Table (5 metrics). Helper is no-op when flag unset (verified
+//               by tests/node/test-campaign-jsonl-shape.mjs).
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const VALID_CATEGORIES = new Set(['GOV', 'DECIDE', 'OPTION', 'FLOW']);
+const VALID_CATEGORIES = new Set(['GOV', 'DECIDE', 'OPTION', 'FLOW', 'LIFECYCLE']);
 
 /**
  * Append a structured log line to debug.log. Format mirrors zsh log_debug:
@@ -22,7 +26,7 @@ const VALID_CATEGORIES = new Set(['GOV', 'DECIDE', 'OPTION', 'FLOW']);
  *
  * @param {Object} args
  * @param {string} args.debugLogPath — absolute path to debug.log
- * @param {'GOV'|'DECIDE'|'OPTION'|'FLOW'} args.category
+ * @param {'GOV'|'DECIDE'|'OPTION'|'FLOW'|'LIFECYCLE'} args.category
  * @param {Object<string,string|number|boolean>} args.fields — flat key/value
  *   pairs, serialized as `key=value`. Avoid nested objects; pre-stringify.
  * @returns {Promise<void>} — resolves even on filesystem errors (best-effort).

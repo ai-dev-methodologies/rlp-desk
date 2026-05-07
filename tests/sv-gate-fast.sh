@@ -125,6 +125,19 @@ check "B2-FIX zsh site 3: post iter-signal reaper locks DONE_CLAIM_FILE" \
   grep -qE 'PR-B2-FIX.*Freeze' src/scripts/run_ralph_desk.zsh
 check "B2-FIX Node site: lockSentinel(paths.doneClaimFile) after worker reap" \
   grep -q 'lockSentinel(paths.doneClaimFile' src/node/runner/campaign-main-loop.mjs
+# v0.15.4 PR-B4 — Lifecycle observability (flag-gated on RLP_LIFECYCLE_METRICS=1)
+check "B4 LIFECYCLE category whitelisted in debug-log VALID_CATEGORIES" \
+  grep -qE "VALID_CATEGORIES = new Set.*'LIFECYCLE'" src/node/util/debug-log.mjs
+check "B4 LifecycleMetricsCollector module exists" \
+  test -f src/node/util/lifecycle-metrics.mjs
+check "B4 zsh log_lifecycle_metric helper exists" \
+  grep -q "^log_lifecycle_metric()" src/scripts/lib_ralph_desk.zsh
+check "B4 zsh helper gated on RLP_LIFECYCLE_METRICS" \
+  grep -q 'RLP_LIFECYCLE_METRICS:-0' src/scripts/lib_ralph_desk.zsh
+check "B4 Node leader instantiates LifecycleMetricsCollector" \
+  grep -q "new LifecycleMetricsCollector" src/node/runner/campaign-main-loop.mjs
+check "B4 lifecycle_metrics flushed into appendIterationAnalytics" \
+  grep -q "lifecycle_metrics: lifecycleSnapshot" src/node/runner/campaign-main-loop.mjs
 
 bold ""
 bold "▶ SV Gate FAST — Node unit tests"
@@ -139,6 +152,8 @@ NODE_TESTS=(
   tests/node/test-lying-worker.mjs
   tests/node/test-artifact-schema.mjs
   tests/node/test-sentinel-reaper-invariant.test.mjs
+  tests/node/test-lifecycle-metrics.test.mjs
+  tests/node/test-campaign-jsonl-shape.test.mjs
   tests/node/sv-e2e/test-lying-verifier.mjs
   tests/node/sv-e2e/test-prompt-blocked.mjs
 )

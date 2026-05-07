@@ -261,12 +261,31 @@ _kill_pane_process() {
   if typeset -f log_debug >/dev/null 2>&1; then
     log_debug "[bug7] kill_pane_process pane=$pane_id role=$role"
   fi
+  # v0.15.4 PR-B4: pane_eof_to_cleanup_ms instrumentation (flag-gated).
+  # Records the wallclock from kill-start to wait_for_pane_ready return so
+  # B3 can value-assert the substrate fix actually closes the race window.
+  # Uses zsh native $EPOCHREALTIME (microsec) — portable to macOS BSD where
+  # `date +%N` is not supported.
+  local _b4_t0_ms=0
+  if [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]]; then
+    zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
+    if [[ -n "${EPOCHREALTIME:-}" ]]; then
+      local _b4_t0_str="${EPOCHREALTIME//./}"
+      _b4_t0_ms=${_b4_t0_str:0:13}
+    fi
+  fi
   tmux send-keys -t "$pane_id" C-c 2>/dev/null
   sleep 0.5
   tmux send-keys -t "$pane_id" C-c 2>/dev/null
   sleep 1
   if typeset -f wait_for_pane_ready >/dev/null 2>&1; then
     wait_for_pane_ready "$pane_id" 5 2>/dev/null || true
+  fi
+  if (( _b4_t0_ms > 0 )); then
+    local _b4_t1_str="${EPOCHREALTIME//./}"
+    local _b4_t1_ms=${_b4_t1_str:0:13}
+    log_lifecycle_metric "pane_eof_to_cleanup_ms" $((_b4_t1_ms - _b4_t0_ms)) \
+      "pane=$pane_id role=$role"
   fi
   return 0
 }
@@ -282,6 +301,41 @@ _unlock_sentinel() {
   local file="$1"
   [[ -n "$file" && -f "$file" ]] || return 0
   chmod 0644 "$file" 2>/dev/null || true
+  return 0
+}
+
+# =============================================================================
+# v0.15.4 PR-B4: Lifecycle observability — log_lifecycle_metric
+# =============================================================================
+# Plan: docs/plans/v0.15-phase-b-plan-v3.md §B4 (P2.1 critic-round-2 fix).
+# Helper is GATED on $RLP_LIFECYCLE_METRICS=1 (no-op when unset). Emits to
+# debug.log via log_debug, in a backgrounded subshell so the caller does not
+# block on the FS write. The Node-side mirror is src/node/util/lifecycle-
+# metrics.mjs LifecycleMetricsCollector.
+#
+# Args:
+#   $1  metric_name       e.g. iter_signal_write_to_read_ms
+#   $2  value_ms          integer milliseconds (will be coerced via printf %d)
+#   $3  context (optional, free-form key=val pairs joined with spaces)
+#
+# Side effects:
+#   - When flag unset: returns 0 immediately (no fork, no FS call).
+#   - When flag set:   forks `( log_debug "..." ) &` to debug.log.
+#
+# Examples:
+#   log_lifecycle_metric "iter_signal_write_to_read_ms" "$delta" \
+#     "iter=$ITERATION us=$us_id pane=$WORKER_PANE"
+#   log_lifecycle_metric "pane_reap_latency_ms" "$delta" \
+#     "iter=$ITERATION sentinel=done-claim"
+log_lifecycle_metric() {
+  [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]] || return 0
+  local metric="$1"
+  local value_ms="$2"
+  local ctx="${3:-}"
+  [[ -n "$metric" && -n "$value_ms" ]] || return 0
+  if typeset -f log_debug >/dev/null 2>&1; then
+    ( log_debug "[LIFECYCLE] metric=$metric value_ms=$value_ms $ctx" ) &!
+  fi
   return 0
 }
 
