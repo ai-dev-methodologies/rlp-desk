@@ -529,12 +529,13 @@ test('US-008 P1.b: --mode agent emits strengthened deprecation banner (slash nat
   assert.match(stderrText, /WARNING: --mode agent .* deprecated/i);
   assert.match(stderrText, /UNRELATED to the slash command Native Agent\(\) path/);
   assert.match(stderrText, /\/rlp-desk run --mode native/);
-  // 2026-05-07 pivot: banner reflects maintenance mode, not v0.16.0 hard-error.
-  // Project entered maintenance after CEO review concluded omc covers ~95% of
-  // rlp-desk's vision (see docs/plans/v0.16-FROZEN-status.md).
-  assert.match(stderrText, /MAINTENANCE MODE/);
-  assert.match(stderrText, /v0\.16\.0 redesign is FROZEN/);
-  assert.match(stderrText, /oh-my-claudecode:(autopilot|ralph)/);
+  // 2026-05-07 (v0.15.2 redirect): banner reflects active stabilization, not
+  // maintenance mode. Earlier pivot-to-omc messaging misread the user's
+  // intent — rlp-desk is being hardened to omc-level reliability while
+  // preserving its self-driving advantages. See docs/plans/v0.15-stabilization-plan.md.
+  assert.match(stderrText, /SCHEDULED REMOVAL/);
+  assert.match(stderrText, /STABILIZATION IN PROGRESS/);
+  assert.match(stderrText, /10-bug regression pattern/);
 });
 
 test('US-008 P1.b: --mode tmux unaffected by P1.b banner changes', async (t) => {
