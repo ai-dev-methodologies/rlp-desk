@@ -5,6 +5,8 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
     "uninstall": "node scripts/uninstall.js",
+    "manifest:check": "node scripts/build-node-manifest.js --check",
+    "prepublishOnly": "node scripts/build-node-manifest.js --check",
     "test:node": "node --test 'tests/node/*.mjs' 'tests/node/*.test.mjs'",
     "test:zsh": "for f in tests/test_*.sh; do echo \"=== $f ===\"; zsh \"$f\" || exit 1; done",
     "test:fast": "npm run test:node",
