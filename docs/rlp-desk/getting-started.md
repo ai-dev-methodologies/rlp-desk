@@ -64,7 +64,7 @@ On approval, brainstorm offers to run `init` automatically.
 This creates the scaffold:
 
 ```
-.claude/ralph-desk/
+.rlp-desk/
 ├── prompts/
 │   ├── loop-test.worker.prompt.md
 │   └── loop-test.verifier.prompt.md
@@ -78,9 +78,12 @@ This creates the scaffold:
 └── logs/loop-test/
 ```
 
+> Since v0.13.0 the scaffold lives at the project-local `.rlp-desk/` (not `.claude/ralph-desk/`),
+> so Claude Code's `.claude/` sensitive-file gate no longer blocks Worker/Verifier writes.
+
 ## Step 5: Customize the PRD
 
-Edit `.claude/ralph-desk/plans/prd-loop-test.md` to define your user stories and acceptance criteria. See [`examples/calculator/`](../examples/calculator/.claude/ralph-desk/plans/prd-loop-test.md) for a complete example.
+Edit `.rlp-desk/plans/prd-loop-test.md` to define your user stories and acceptance criteria. See [`examples/calculator/`](../examples/calculator/.claude/ralph-desk/plans/prd-loop-test.md) for a complete example.
 
 Key sections:
 - **User Stories** with Given/When/Then acceptance criteria, Task Type, and Risk Level
@@ -91,7 +94,7 @@ Key sections:
 
 ## Step 6: Define the Test Spec
 
-Edit `.claude/ralph-desk/plans/test-spec-loop-test.md` to specify verification commands:
+Edit `.rlp-desk/plans/test-spec-loop-test.md` to specify verification commands:
 
 ```markdown
 ## Verification Commands
