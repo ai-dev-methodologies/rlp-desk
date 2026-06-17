@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { initCampaign } from './init/campaign-initializer.mjs';
@@ -9,6 +9,7 @@ import { readStatus } from './reporting/campaign-reporting.mjs';
 import {
   run as runCampaignMain,
   detectLegacyDeskInRunMode,
+  buildPaths,
 } from './runner/campaign-main-loop.mjs';
 import { isClaudeEngine } from './cli/command-builder.mjs';
 
@@ -51,7 +52,7 @@ function buildHelpText() {
     '  run <slug> [options]         Run loop (tmux=zsh leader [production], agent=Node leader [deprecated alpha], native=slash-only error)',
     '  status <slug>                Show loop status',
     '  logs <slug> [N]              Show iteration log (not implemented in the Node rewrite yet)',
-    '  clean <slug> [--kill-session] Reset for re-run (not implemented in the Node rewrite yet)',
+    '  clean <slug> [--kill-session] Reset for re-run (removes sentinels + runtime/; preserves PRD/prompts/memory)',
     '  resume <slug>                Resume loop (not implemented in the Node rewrite yet)',
     '',
     'Run Options:',
@@ -214,6 +215,71 @@ async function runStatusCommand(args, deps) {
   }
 
   write(deps.stdout, await deps.readStatus(args[0], { rootDir: deps.cwd }));
+  return 0;
+}
+
+// D-6 (dogfood): real `clean` for the Node leader. Previously "not implemented",
+// which left a blocked campaign with NO recovery path (a transient parse error
+// wrote a blocked sentinel that bricked re-runs). Removes the transient/terminal
+// state (sentinels, signal/claim/verdict, runtime/) while PRESERVING the durable
+// inputs (PRD, test-spec, prompts, context, memory) and the campaign report.
+async function runCleanCommand(args, deps) {
+  if (args.length === 0 || args[0] === '--help') {
+    write(deps.stdout, 'Usage: node src/node/run.mjs clean <slug> [--kill-session]');
+    return 0;
+  }
+  const slug = args[0];
+  const killSession = args.includes('--kill-session');
+  const paths = buildPaths(deps.cwd, slug);
+
+  // --kill-session: read the session name from runtime/session-config.json
+  // BEFORE removing runtime, then best-effort tmux teardown.
+  if (killSession) {
+    try {
+      const cfgPath = path.join(paths.runtimeDir, 'session-config.json');
+      if (deps.fileExists(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        if (cfg && cfg.session_name) {
+          spawnSync('tmux', ['kill-session', '-t', cfg.session_name], { stdio: 'ignore' });
+        }
+      }
+    } catch { /* best-effort */ }
+  }
+
+  const transient = [
+    paths.blockedSentinel,
+    paths.blockedSentinel.replace(/\.md$/, '.json'),
+    paths.completeSentinel,
+    paths.completeSentinel.replace(/\.md$/, '.json'),
+    paths.signalFile,
+    paths.doneClaimFile,
+    paths.verdictFile,
+    paths.flywheelSignalFile,
+    paths.flywheelGuardVerdictFile,
+  ];
+  let removed = 0;
+  for (const target of transient) {
+    try {
+      if (fs.existsSync(target)) {
+        // Sentinels may be chmod 0o444 (write-lock); relax before unlink.
+        try { fs.chmodSync(target, 0o644); } catch { /* ignore */ }
+        fs.rmSync(target, { force: true });
+        removed += 1;
+      }
+    } catch { /* best-effort per-file */ }
+  }
+  try {
+    if (fs.existsSync(paths.runtimeDir)) {
+      fs.rmSync(paths.runtimeDir, { recursive: true, force: true });
+      removed += 1;
+    }
+  } catch { /* best-effort */ }
+
+  write(
+    deps.stdout,
+    `Cleaned ${slug}: removed ${removed} transient artifact(s) (sentinels, signal/claim/verdict, runtime/`
+      + `${killSession ? ', tmux session' : ''}). Preserved PRD, test-spec, prompts, context, memory, reports.`,
+  );
   return 0;
 }
 
@@ -466,9 +532,10 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
         return await runRunCommand(rest, deps);
       case 'status':
         return await runStatusCommand(rest, deps);
+      case 'clean':
+        return await runCleanCommand(rest, deps);
       case 'brainstorm':
       case 'logs':
-      case 'clean':
       case 'resume':
         throw new Error(`${command} is not implemented in the Node rewrite yet`);
       default:

@@ -93,7 +93,7 @@ export function detectLegacyDeskInRunMode(rootDir, env = process.env) {
   return { legacyPath, newPath, message };
 }
 
-function buildPaths(rootDir, slug, env = process.env) {
+export function buildPaths(rootDir, slug, env = process.env) {
   const deskRoot = resolveDeskRoot(rootDir, env);
   const campaignLogDir = path.join(deskRoot, 'logs', slug);
 
