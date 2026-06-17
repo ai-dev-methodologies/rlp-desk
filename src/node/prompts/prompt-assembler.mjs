@@ -150,8 +150,8 @@ export async function assembleWorkerPrompt({
       } else {
         promptLines.push(`- **Test Spec**: Read \`${fullTestSpecPath}\` (full — find ${nextUs} section)`);
       }
-      promptLines.push(`When done, signal verify with us_id="${nextUs}" (not "ALL").`);
-      promptLines.push(`Signal format: {"iteration": N, "status": "verify", "us_id": "${nextUs}", ...}`);
+      promptLines.push(`When done, you MUST WRITE (not just print) the verify signal to the iter-signal FILE — Path: \`memos/<slug>-iter-signal.json\` (see the MANDATORY signal-file instruction in the base prompt).`);
+      promptLines.push(`Write this exact JSON to that file (us_id="${nextUs}", not "ALL"): {"iteration": N, "status": "verify", "us_id": "${nextUs}", "summary": "what was done", "timestamp": "ISO"}`);
       promptLines.push('');
       promptLines.push(`**Update the campaign memory's 'Next Iteration Contract' to reflect ${nextUs}.**`);
     } else if (verifiedUs.length > 0) {

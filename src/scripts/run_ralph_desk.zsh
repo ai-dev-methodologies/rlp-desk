@@ -929,7 +929,9 @@ create_session() {
   BASELINE_COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "none")
 
   # Truncate cost-log for fresh run (previous data in versioned campaign reports)
-  > "$COST_LOG"
+  # NOTE: ': >' not bare '>' — in zsh a bare redirect with no command runs $NULLCMD
+  # (=cat), which blocks reading stdin when the leader has an open TTY (D-1 dogfood hang).
+  : > "$COST_LOG"
 
   # v5.7 §4.2: WITH_SELF_VERIFICATION=1 is hard-rejected at script entry now,
   # so by the time we reach create_session() the flag is guaranteed to be 0.
@@ -1853,8 +1855,8 @@ write_worker_trigger() {
         else
           echo "- **Test Spec**: Read \`$DESK/plans/test-spec-${SLUG}.md\` (full — find ${next_us} section)"
         fi
-        echo "When done, signal verify with us_id=\"${next_us}\" (not \"ALL\")."
-        echo "Signal format: {\"iteration\": N, \"status\": \"verify\", \"us_id\": \"${next_us}\", ...}"
+        echo "When done, you MUST WRITE (not just print) the verify signal to the iter-signal FILE at: ${SIGNAL_FILE}"
+        echo "Write this exact JSON to that file (us_id=\"${next_us}\", not \"ALL\"): {\"iteration\": N, \"status\": \"verify\", \"us_id\": \"${next_us}\", \"summary\": \"what was done\", \"timestamp\": \"ISO\"}"
         echo ""
         echo "**Update the campaign memory's 'Next Iteration Contract' to reflect ${next_us}.**"
       elif [[ -n "$VERIFIED_US" ]]; then

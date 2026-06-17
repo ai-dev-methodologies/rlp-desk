@@ -93,7 +93,7 @@ export function detectLegacyDeskInRunMode(rootDir, env = process.env) {
   return { legacyPath, newPath, message };
 }
 
-function buildPaths(rootDir, slug, env = process.env) {
+export function buildPaths(rootDir, slug, env = process.env) {
   const deskRoot = resolveDeskRoot(rootDir, env);
   const campaignLogDir = path.join(deskRoot, 'logs', slug);
 
@@ -1462,7 +1462,18 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   const usList = await readUsList(paths, slug);
 
   if (usList.length === 0) {
-    throw new Error(`No user stories found for ${slug}`);
+    // D-5 (dogfood): both leaders parse only H2 `## US-NNN:`. A common mistake is
+    // authoring `### US-NNN` (H3+), which yields zero stories. Surface an actionable
+    // hint instead of a bare "not found" (the zsh leader silently degrades here;
+    // Node fail-closes — the safer behavior, now recoverable via `clean`).
+    let hint = '';
+    try {
+      const prdRaw = await fs.readFile(paths.prdFile, 'utf8');
+      if (/^#{3,}\s+US-\d{3}\b/m.test(prdRaw)) {
+        hint = ' — found US-NNN heading(s) at level ### or deeper; US headings must be H2 ("## US-NNN:")';
+      }
+    } catch { /* best-effort hint */ }
+    throw new Error(`No user stories found for ${slug}${hint}`);
   }
 
   if (!state.current_us) {

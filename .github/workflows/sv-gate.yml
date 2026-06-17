@@ -45,6 +45,9 @@ jobs:
           zsh --version
           tmux -V
 
+      - name: Check Node MANIFEST drift (PKG-1/PKG-2)
+        run: node scripts/build-node-manifest.js --check
+
       - name: Run SV Gate Fast
         run: zsh tests/sv-gate-fast.sh
 
