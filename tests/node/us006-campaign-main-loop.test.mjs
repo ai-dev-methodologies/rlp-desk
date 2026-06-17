@@ -163,7 +163,7 @@ test('US-006 AC6.1 happy: run creates the tmux panes, launches the worker with c
   );
 
   const workerCommand = tmux.commands.find((entry) => entry.paneId === '%worker')?.command ?? '';
-  assert.match(workerCommand, /codex -m gpt-5\.5/);
+  assert.match(workerCommand, /codex -m 'gpt-5\.5'/); // GAP-2: model is now shell-quoted
   assert.match(workerCommand, /model_reasoning_effort="medium"/);
   assert.match(workerCommand, /--disable plugins --dangerously-bypass-approvals-and-sandbox/);
   assert.match(workerCommand, /iter-001\.worker-prompt\.md/);
