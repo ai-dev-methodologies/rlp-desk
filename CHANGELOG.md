@@ -11,7 +11,23 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
-## [0.15.4] — 2026-05-08 (pending release)
+## [0.15.5] — 2026-06-17
+
+Patch: fixes surfaced by a fresh-context live dogfood of the tmux and agent run modes, plus packaging hygiene.
+
+### Fixed
+- **Curl-install (`install.sh`) produced a Node leader that could not start.** `src/node/MANIFEST.txt` was missing three runtime modules, so a curl-installed `--mode agent` / Node leader threw `ERR_MODULE_NOT_FOUND` at startup. MANIFEST regenerated. (npm installs were unaffected.)
+- **Tmux-mode leader could hang at startup.** A bare `> "$COST_LOG"` redirect runs zsh's `$NULLCMD` (`cat`), which blocks reading stdin when launched with an open TTY (interactive shell / tmux pane). Changed to `: > "$COST_LOG"`.
+- **Worker sometimes printed the iteration signal instead of writing it.** The per-iteration prompt now explicitly instructs the worker to WRITE the verify signal to the iter-signal file (resolved path in tmux mode).
+- **Clearer error for mis-leveled PRD user-story headings.** When user stories use `###` instead of `## US-NNN` (H2), the Node leader now hints at the correct heading level instead of a bare "No user stories found".
+
+### Added
+- **`clean <slug> [--kill-session]` for the Node CLI.** Resets a campaign — removes sentinels, signal/claim/verdict files, and runtime state, while preserving the PRD, test-spec, prompts, memory, and reports. Previously unimplemented in the Node rewrite, which left a blocked campaign with no recovery path.
+
+### Changed
+- **Smaller published package.** The tarball no longer ships internal research docs, dev planning handoffs, or example runtime state (73 → 53 files, ~364 → ~244 kB).
+
+## [0.15.4] — 2026-05-08
 
 Phase B: tmux/process lifecycle hardening + observability + real-LLM SV strengthening. 4 sequential PRs (B1, B2-FIX, B4, B3) merged to main, plus pre-release audit fix branch addressing 16 findings (3 CRITICAL, 6 HIGH, 5 MEDIUM, 2 LOW).
 
