@@ -72,14 +72,17 @@ export function buildClaudeCmd(mode, model, options = {}) {
 export function buildCodexCmd(mode, model, options = {}) {
   assertTuiMode(mode, 'buildCodexCmd');
 
+  // GAP-2 (audit): shell-quote model + reasoning for parity with buildClaudeCmd.
+  // The command string is delivered to a shell (tmux send-keys), so unquoted
+  // operator-supplied values were a shell-injection / arg-splitting hazard.
   const parts = [
     CODEX_BIN,
     '-m',
-    model,
+    shellQuote(model),
   ];
 
   if (options.reasoning !== undefined) {
-    parts.push('-c', `model_reasoning_effort="${options.reasoning}"`);
+    parts.push('-c', shellQuote(`model_reasoning_effort="${options.reasoning}"`));
   }
 
   parts.push('--disable', 'plugins', '--dangerously-bypass-approvals-and-sandbox');

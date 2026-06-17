@@ -45,7 +45,7 @@ test('US-002 AC2.2 happy: buildCodexCmd tui includes codex model and reasoning f
 
   assert.match(
     command,
-    /^codex -m gpt-5\.5 -c model_reasoning_effort="high" --disable plugins --dangerously-bypass-approvals-and-sandbox$/,
+    /^codex -m 'gpt-5\.5' -c 'model_reasoning_effort="high"' --disable plugins --dangerously-bypass-approvals-and-sandbox$/,
   );
 });
 
@@ -56,8 +56,21 @@ test('US-002 AC2.2 boundary: buildCodexCmd omits reasoning when it is undefined'
 
   assert.equal(
     command,
-    'codex -m gpt-5.5 --disable plugins --dangerously-bypass-approvals-and-sandbox',
+    "codex -m 'gpt-5.5' --disable plugins --dangerously-bypass-approvals-and-sandbox",
   );
+});
+
+test('US-002 GAP-2: buildCodexCmd single-quotes model + reasoning (shell-injection defense)', async () => {
+  const { buildCodexCmd } = await import('../../src/node/cli/command-builder.mjs');
+
+  const command = buildCodexCmd('tui', 'gpt-5.5', { reasoning: 'high"; rm -rf / #' });
+
+  // model + reasoning are emitted as single-quoted args, at parity with buildClaudeCmd.
+  assert.match(command, /-m 'gpt-5\.5'/);
+  assert.match(command, /-c 'model_reasoning_effort=/);
+  // After stripping single-quoted spans, none of the injected shell syntax survives.
+  const bare = command.replace(/'(?:[^']|'\\'')*'/g, '');
+  assert.ok(!/;|\brm\b/.test(bare), `reasoning injection escaped single-quoting: ${bare}`);
 });
 
 test('US-002 AC2.2 negative: buildCodexCmd rejects unsupported modes', async () => {
