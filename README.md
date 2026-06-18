@@ -275,45 +275,48 @@ The brainstorm phase evaluates complexity (US count, file scope, logic, dependen
 
 ## Execution Modes
 
-RLP Desk supports two execution modes. Both honor the same governance protocol.
+RLP Desk has three execution modes, all honoring the same governance protocol. **`--mode tmux` is the canonical, recommended path for any real campaign** (see [ADR-001](docs/plans/adr-001-leader-consolidation.md)).
 
-> **v0.14.0 status:** `--mode tmux` (zsh-backed) is the **stable, production** path
-> with the full safety net (heartbeat, copy-mode guard, prompt-stall timeout,
-> no-progress detection, claude model upgrade chain). `--mode agent` is **alpha**
-> and ships without those features — the runner emits a stderr warning when
-> agent mode is invoked. For long campaigns and BOS-style autonomous loops,
-> use `--mode tmux`.
+> **Mode status:**
+> - **`--mode tmux`** (zsh-backed) — **stable / production / canonical.** Full safety net (heartbeat,
+>   copy-mode guard, prompt-stall timeout, no-progress detection, model upgrade chain). Use this for
+>   long campaigns and autonomous loops.
+> - **`--mode native`** (the slash-command **default**) — the current Claude Code session is the Leader,
+>   dispatching via `Agent()`. Works anywhere (no tmux), good for short/interactive use, but is a
+>   second-class companion: no iteration watchdog, turn-based pauses possible. Not for long unattended runs.
+> - **`--mode agent`** (direct Node CLI) — **deprecated alpha**, on a removal schedule (ADR-001). Prints a
+>   SCHEDULED-REMOVAL banner. Do not use for new work; prefer `--mode tmux`.
 
 ### Environment Compatibility
 
-| Environment | Agent Mode (alpha) | Tmux Mode (stable) |
-|-------------|--------------------|--------------------|
-| Claude Code (any terminal) | **Works** | Requires tmux |
-| Inside tmux session | **Works** | **Works** — panes split in current window |
-| Outside tmux session | **Works** | **Rejected** — "start tmux first" |
+| Environment | Native (default) | Tmux (canonical) | Agent (deprecated) |
+|-------------|------------------|------------------|--------------------|
+| Claude Code (any terminal) | **Works** | Requires tmux | Works |
+| Inside tmux session | **Works** | **Works** — panes split in current window | Works |
+| Outside tmux session | **Works** | **Rejected** — "start tmux first" | Works |
 
 ### Choosing Your Mode
 
 | Need | Use |
 |------|-----|
-| Production / autonomous campaigns | `--mode tmux` (stable) |
-| Long campaigns, CI, overnight runs | `--mode tmux` (stable) |
-| Quick interactive exploration inside Claude Code | `--mode agent` (alpha — Node-native) |
+| Production / autonomous / overnight / CI campaigns | `--mode tmux` (canonical) |
+| Quick interactive exploration, no tmux available | `--mode native` (default) |
+| (legacy direct-Node-CLI workflows) | `--mode agent` — deprecated; migrate to `--mode tmux` |
 
-### Agent Mode (default) — "Smart Mode"
+### Native Mode (slash-command default) — "Smart Mode"
 
 ```
-/rlp-desk run calculator
+/rlp-desk run calculator        # defaults to --mode native
 ```
 
 The current Claude Code session acts as the Leader, dispatching Workers and Verifiers via `Agent()`. The Leader is an LLM that dynamically routes models and reasons about context.
 
 - Works anywhere — no tmux required
 - Dynamic model routing — Leader upgrades models on failure
-
-**Known limitation:** Agent mode runs inside Claude Code's turn-based request-response model. If the LLM outputs text without a tool call, the turn terminates and the loop pauses until the user sends "continue." This is a platform constraint — the protocol mitigates it but cannot guarantee 100% uninterrupted execution. For guaranteed autonomous loops, use tmux mode.
 - Fix Loop — extracts verifier issues and feeds them back to the next worker
-- Best for interactive development
+- Best for short, interactive development
+
+**Known limitation:** Native mode runs inside Claude Code's turn-based request-response model. If the LLM outputs text without a tool call, the turn terminates and the loop pauses until the user sends "continue." This is a platform constraint — the protocol mitigates it but cannot guarantee 100% uninterrupted execution. **For guaranteed autonomous loops, use `--mode tmux`.**
 
 ### Tmux Mode — "Lean Mode"
 
@@ -456,7 +459,7 @@ Each conflict is logged as a JSONL entry in `logs/<slug>/conflict-log.jsonl`:
 After the campaign, review the conflict log to identify systemic issues:
 
 ```bash
-cat .claude/ralph-desk/logs/<slug>/conflict-log.jsonl | jq .
+cat .rlp-desk/logs/<slug>/conflict-log.jsonl | jq .
 ```
 
 Common patterns:
@@ -471,20 +474,20 @@ After `init`, your project gets this scaffold:
 ```
 your-project/
 ├── .claude/
-│   ├── settings.local.json          # rlp-desk permissions (auto-added by init)
-│   └── ralph-desk/
-│       ├── prompts/
-│       │   ├── <slug>.worker.prompt.md
-│       │   └── <slug>.verifier.prompt.md
-│       ├── context/
-│       │   └── <slug>-latest.md
-│       ├── memos/
-│       │   └── <slug>-memory.md
-│       ├── plans/
-│       │   ├── prd-<slug>.md
-│       │   └── test-spec-<slug>.md
-│       └── logs/<slug>/
-│           └── status.json
+│   └── settings.local.json          # rlp-desk permissions (auto-added by init)
+└── .rlp-desk/                        # scaffold (v0.13.0+; was .claude/ralph-desk/)
+    ├── prompts/
+    │   ├── <slug>.worker.prompt.md
+    │   └── <slug>.verifier.prompt.md
+    ├── context/
+    │   └── <slug>-latest.md
+    ├── memos/
+    │   └── <slug>-memory.md
+    ├── plans/
+    │   ├── prd-<slug>.md
+    │   └── test-spec-<slug>.md
+    └── logs/<slug>/
+        └── status.json
 ```
 
 ### Local Settings
@@ -495,15 +498,15 @@ your-project/
 {
   "permissions": {
     "allow": [
-      "Read(.claude/ralph-desk/**)",
-      "Edit(.claude/ralph-desk/**)",
-      "Write(.claude/ralph-desk/**)"
+      "Read(.rlp-desk/**)",
+      "Edit(.rlp-desk/**)",
+      "Write(.rlp-desk/**)"
     ]
   }
 }
 ```
 
-**Why:** Claude Code treats `.claude/` files as sensitive and prompts for confirmation on each access, even with `--dangerously-skip-permissions`. Without these permissions, Worker and Verifier agents are blocked by interactive prompts during automated loop execution.
+**Why:** Since v0.13.0 the scaffold lives at `.rlp-desk/` (outside `.claude/`), so Claude Code's `.claude/` sensitive-file gate no longer blocks Worker/Verifier writes. These explicit `.rlp-desk/**` permissions are a belt-and-suspenders helper that keeps automated loop execution prompt-free.
 
 **Note:** `settings.local.json` is local to your machine and is not committed to git. If the file already exists, permissions are merged without overwriting your existing settings.
 
