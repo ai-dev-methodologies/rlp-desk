@@ -11,6 +11,22 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.15.6] — 2026-06-18
+
+Patch: CI/test integrity, a codex command-builder security fix, and documentation reconciliation.
+
+### Fixed
+- **Codex worker command no longer passes model/reasoning unquoted.** `buildCodexCmd` now shell-quotes the model and reasoning values (parity with the claude path), closing a shell-injection / argument-splitting hazard when operator-supplied flags reach the shell via tmux send-keys.
+- **Docs now describe the correct execution modes.** The README "execution modes" section conflated the slash-command default (`--mode native`, `Agent()`-based) with the deprecated `--mode agent` (Node CLI). It is rewritten to the accurate three-mode model: `--mode tmux` is the canonical/recommended path, `--mode native` is the default companion for short/interactive use, `--mode agent` is deprecated.
+- **Docs now point to the correct scaffold path.** Getting-started and README referenced the pre-v0.13.0 `.claude/ralph-desk/` project-local path; corrected to `.rlp-desk/` (the global install path `~/.claude/ralph-desk/` is unchanged).
+
+### Changed
+- **CI now runs the behavioral test suites.** A new CI job runs `test:node` + `test:zsh` (previously CI ran only the existence-grep fast gate). First rollout is non-blocking to inventory CI-only flakiness before being made blocking.
+- **The full SV gate verifies the source tree.** `sv-gate:full`'s real-campaign E2E now targets the in-repo `src/` leader (and the correct `.rlp-desk/` sentinel paths) instead of the installed copy, so the gate validates the code being merged.
+
+### Added
+- **ADR-001 (Leader Consolidation).** Records the decision to make `--mode tmux` the canonical production leader, deprecate the `--mode agent` Node-CLI entry point on a dated schedule, and retain `--mode native` as a second-class companion. (Internal; not shipped in the tarball.)
+
 ## [0.15.5] — 2026-06-17
 
 Patch: fixes surfaced by a fresh-context live dogfood of the tmux and agent run modes, plus packaging hygiene.
