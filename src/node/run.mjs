@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { initCampaign } from './init/campaign-initializer.mjs';
-import { readStatus } from './reporting/campaign-reporting.mjs';
+import { readStatus, generateSVReport } from './reporting/campaign-reporting.mjs';
 import {
   run as runCampaignMain,
   detectLegacyDeskInRunMode,
@@ -318,6 +318,10 @@ function buildZshEnv(slug, options, parentEnv) {
     AUTONOMOUS_MODE: options.autonomous ? '1' : '0',
     LANE_MODE: options.laneStrict ? 'strict' : 'warn',
     TEST_DENSITY_MODE: options.testDensityStrict ? 'strict' : 'warn',
+    // ARCH Wave C-SV: forwarded for traceability only. The zsh leader keeps its
+    // $TMUX early-return (no in-pane `claude --print`); the SV report itself is
+    // produced by the Node post-pass in runTmuxViaZsh after the zsh child exits.
+    WITH_SELF_VERIFICATION: options.withSelfVerification ? '1' : '0',
   };
 }
 
@@ -360,23 +364,47 @@ async function runTmuxViaZsh(slug, options, deps) {
     return 1;
   }
 
-  // Surface flags the zsh runner cannot honor. Flywheel and self-verification
-  // remain Node-leader features, available only in --mode agent. Warn loudly
-  // instead of silent no-op so the operator understands the trade-off.
+  // Surface flags the zsh runner cannot honor. ARCH Wave C: --with-self-verification
+  // IS now honored in tmux mode via a post-zsh-return pass (see below) — only the
+  // flywheel flags remain unsupported here. Warn loudly instead of silent no-op.
   const unsupported = [];
   if (options.flywheel !== 'off') unsupported.push('--flywheel');
   if (options.flywheelGuard !== 'off') unsupported.push('--flywheel-guard');
-  if (options.withSelfVerification) unsupported.push('--with-self-verification');
   if (unsupported.length > 0) {
     write(
       deps.stderr,
-      `WARNING: ${unsupported.join(', ')} not honored in --mode tmux (zsh runner). Use --mode agent for those features.`,
+      `WARNING: ${unsupported.join(', ')} not honored in --mode tmux (zsh runner). Flywheel is deprecated (ADR-001) — use --mode agent if you still need it.`,
     );
   }
 
   const env = buildZshEnv(slug, options, process.env);
   const spawnZsh = deps.spawnZsh ?? defaultSpawnZsh;
-  return spawnZsh(zshPath, env, options.rootDir);
+  const exitCode = await spawnZsh(zshPath, env, options.rootDir);
+
+  // ARCH Wave C-SV: home self-verification onto --mode tmux. The zsh runner cannot
+  // produce the SV report itself (`claude --print` hangs without a TTY in a tmux
+  // pane — that is why lib_ralph_desk.zsh keeps its $TMUX early-return). Instead we
+  // run the Node PURE-FS generateSVReport as a post-pass AFTER the zsh child exits:
+  // real stdout, no pane, no TTY → no hang. It reads the campaign's on-disk
+  // iter-*-done-claim/verify-verdict artifacts the zsh leader already wrote.
+  if (options.withSelfVerification) {
+    try {
+      const paths = buildPaths(options.rootDir, slug);
+      const sv = await generateSVReport({
+        slug,
+        logsDir: paths.campaignLogDir,
+        prdFile: paths.prdFile,
+        testSpecFile: paths.testSpecFile,
+        analyticsFile: paths.analyticsFile,
+        outputDir: paths.analyticsDir,
+      });
+      write(deps.stdout, `\nSelf-verification report (tmux post-pass): ${sv.summary ?? 'generated'}`);
+    } catch (err) {
+      write(deps.stderr, `WARNING: self-verification post-pass failed: ${err.message}`);
+    }
+  }
+
+  return exitCode;
 }
 
 async function runRunCommand(args, deps) {

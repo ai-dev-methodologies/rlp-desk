@@ -303,7 +303,7 @@ Legacy `--mode agent` typed against this slash command emits a deprecation notic
 
 #### Tmux Mode (`--mode tmux`)
 
-When `--mode tmux` is specified (v0.14.0+: `run.mjs` accepts the same flags as before but spawns `run_ralph_desk.zsh` as a subprocess and inherits stdio. Flywheel and self-verification flags are not honored under tmux mode — they currently require the deprecated Node-leader direct-CLI path `node run.mjs --mode agent` (see "Direct Node CLI invocation" below). Native Agent() port is a post-Node-leader-retirement task):
+When `--mode tmux` is specified (v0.14.0+: `run.mjs` accepts the same flags as before but spawns `run_ralph_desk.zsh` as a subprocess and inherits stdio. ARCH Wave C: `--with-self-verification` **is honored** under tmux mode via a Node post-pass that runs after the zsh leader exits (see §348). `--flywheel`/`--flywheel-guard` are deprecated (ADR-001) and remain unimplemented in the zsh leader):
 
 1. **Validate scaffold** — same as Agent() mode: check `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
 2. **Check sentinels** — same as Agent() mode.
@@ -345,7 +345,7 @@ node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
 - MUST launch with `run_in_background: true` so `/rlp-desk` returns control immediately while preserving live tmux visibility.
 - Run-in-background is used so the shell can keep the command visible and keep the pane layout stable for status checks and completion flow.
 - Do NOT kill panes after completion. Panes stay alive for inspection. User cleans up with `/rlp-desk clean <slug> --kill-session`.
-- v0.14.0: `--with-self-verification`, `--flywheel`, and `--flywheel-guard` are **not honored** under `--mode tmux` — the zsh runner has no SV/flywheel implementation. The Node leader emits a stderr WARNING listing the dropped flags. For SV/flywheel today, use the deprecated Node-leader direct-CLI path `node run.mjs --mode agent` (see "Direct Node CLI invocation" below). The slash command's Native Agent() (`--mode native`) does not yet implement SV/flywheel — port is a post-Node-leader-retirement task.
+- ARCH Wave C (ADR-001): `--with-self-verification` **is honored** under `--mode tmux`. The zsh leader cannot generate the SV report in-pane (`claude --print` hangs without a TTY — hence its `$TMUX` early-return), so `run.mjs` runs the **pure-filesystem** `generateSVReport` as a **post-pass after the zsh child exits**, reading the campaign's on-disk done-claim/verdict artifacts. `--flywheel` and `--flywheel-guard` are **deprecated** (ADR-001) and remain unimplemented in the zsh leader; the Node leader emits a stderr WARNING for those two only. The slash command's Native Agent() (`--mode native`) does not yet implement SV/flywheel.
 - **For `--mode tmux` only**: the slash command invokes `node ~/.claude/ralph-desk/node/run.mjs run --mode tmux ...`. Do NOT invoke `~/.claude/ralph-desk/run_ralph_desk.zsh` directly — the Node router resolves the runner path, runs legacy detection, and surfaces actionable errors when the runner is missing. **For `--mode native`**, the slash command does NOT invoke the Node CLI — it acts as the leader itself; see Native Agent() Mode section below.
 
 **tmux UX model (5 items):**

@@ -67,8 +67,12 @@ SV_SKIPPED_REASON=""                                         # set when SV is di
 # no-progress, stale-context, claude model upgrade chain, etc.), so the
 # Node leader is now reserved for `--mode agent` (LLM-driven) only.
 # `--mode tmux` invocations from src/node/run.mjs delegate here as a
-# subprocess via env vars. zsh continues to honor FLYWHEEL,
-# FLYWHEEL_GUARD, WITH_SELF_VERIFICATION.
+# subprocess via env vars. ARCH Wave C / ADR-001: FLYWHEEL and FLYWHEEL_GUARD
+# are NOT implemented in the zsh leader (no dispatch site) and are deprecated —
+# do NOT claim otherwise. WITH_SELF_VERIFICATION is forwarded for traceability,
+# but the SV report is produced by the Node post-pass in run.mjs runTmuxViaZsh
+# after this script exits (this script keeps its $TMUX early-return to avoid the
+# `claude --print` no-TTY hang).
 AUTONOMOUS_MODE="${AUTONOMOUS_MODE:-0}"    # 1=don't stop on ambiguity, PRD is authoritative
 # P1-E Lane enforcement: WARN-only by default; --lane-strict opts into BLOCKED
 # escalation. governance §7¾. The opt-in defaults to "warn"; "strict" trips
