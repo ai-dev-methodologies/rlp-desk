@@ -6,6 +6,9 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 
 ## [Unreleased]
 
+### Deprecated
+- **`node run.mjs run <slug> --mode agent` (Node-leader CLI alpha) is on a dated removal schedule** (ADR-001): 0.16.x louder banner → **0.17.0 hard-error** (and the Node-CLI default flips to `tmux`) → 0.18.0 dispatch branch removed. The `src/node/**` engine modules are retained throughout. Migrate direct-CLI wrappers to `--mode tmux` (canonical). This does NOT affect the slash command's `--mode native` default.
+
 ### Planned (not yet shipped)
 - v0.15.5 candidate: flip `RLP_LIFECYCLE_METRICS=1` default to ON (gated on 3 consecutive nightly real-LLM SV passes per `docs/plans/v0.15.4-release-runbook.md` §7.5.2).
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).

@@ -374,7 +374,17 @@ This contract MUST be observed in every iteration of the leader loop below. Futu
 
 #### Direct Node CLI invocation (`node run.mjs run <slug> --mode agent` — deprecated alpha)
 
-Direct invocation of `node ~/.claude/ralph-desk/node/run.mjs run <slug> --mode agent` is **the deprecated Node-leader alpha path**. This is unrelated to the slash command's Native Agent() path above — different code, different leader, different lifecycle. The Node leader currently retains SV/flywheel implementations not yet ported to Native Agent(). The Node CLI emits a deprecation banner on this mode and is scheduled for hard-error in the next major release. For production tmux orchestration, use `--mode tmux`. For Claude Code Native Agent() campaigns, use `/rlp-desk run <slug> --mode native` from a Claude Code session.
+Direct invocation of `node ~/.claude/ralph-desk/node/run.mjs run <slug> --mode agent` is **the deprecated Node-leader alpha path**. This is unrelated to the slash command's Native Agent() path above — different code, different leader, different lifecycle. The Node leader currently retains SV/flywheel implementations not yet ported to Native Agent(). For production tmux orchestration, use `--mode tmux` (the **canonical** leader). For Claude Code Native Agent() campaigns, use `/rlp-desk run <slug> --mode native` from a Claude Code session.
+
+**Deprecation schedule** (per [ADR-001](../../docs/plans/adr-001-leader-consolidation.md) §3 — applies to the Node-CLI `--mode agent` entry point ONLY; the `src/node/**` engine modules are retained throughout):
+
+| Version | Behavior of `node run.mjs run <slug> --mode agent` |
+|---------|-----------------------------------------------------|
+| 0.16.x  | runs, with a louder deprecation banner |
+| **0.17.0** | **hard-errors** (exit 2) with a redirect to `--mode tmux` / `--mode native`; the Node-CLI default also flips to `tmux` |
+| 0.18.0  | the `--mode agent` dispatch branch is removed (engine modules stay) |
+
+External wrappers calling `--mode agent` must migrate to `--mode tmux` by 0.17.0. This is a breaking CLI change for that entry point, announced in CHANGELOG at each step.
 
 ### Preparation
 1. Validate scaffold: `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.

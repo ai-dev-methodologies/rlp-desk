@@ -478,7 +478,7 @@ async function runRunCommand(args, deps) {
     // not a replacement. See docs/plans/v0.15-stabilization-plan.md.
     write(
       deps.stderr,
-      'SCHEDULED REMOVAL: --mode agent (Node CLI alpha) will be removed in a future major release. Date TBD until stabilization milestones complete.',
+      'SCHEDULED REMOVAL (ADR-001): --mode agent (Node CLI alpha) hard-errors in 0.17.0 (Node-CLI default flips to tmux) and the dispatch branch is removed in 0.18.0. Engine modules stay. Migrate to --mode tmux.',
     );
     write(
       deps.stderr,
