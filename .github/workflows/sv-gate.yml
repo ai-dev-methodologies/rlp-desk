@@ -59,3 +59,52 @@ jobs:
           path: |
             tests/**/*.log
           if-no-files-found: ignore
+
+  # GAP-1 (audit): CI previously ran ONLY the existence-grep fast gate — the Node
+  # and zsh behavioral suites never ran in CI, so a PR could be green while most
+  # tests were broken. This job RUNS them. First rollout is NON-blocking
+  # (continue-on-error) to inventory CI-only flakiness (e.g. F6.1 us006 real-tmux
+  # boundary) before flipping to blocking.
+  # ROLLOUT: after one clean CI cycle, remove continue-on-error from test:node
+  # (blocking); keep test:zsh non-blocking until any flaky real-tmux tests are
+  # quarantined behind an env guard.
+  behavioral-suites:
+    name: Behavioral suites (test:node + test:zsh)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install tmux
+        run: brew install tmux
+
+      - name: Run Node suite (test:node)
+        id: test_node
+        continue-on-error: true   # FLIP to blocking after one clean CI cycle (GAP-1)
+        run: npm run test:node
+
+      - name: Run zsh suite (test:zsh)
+        id: test_zsh
+        continue-on-error: true   # keep non-blocking until flaky real-tmux tests are quarantined
+        run: npm run test:zsh
+
+      - name: Report suite outcomes
+        if: always()
+        run: |
+          echo "test:node outcome = ${{ steps.test_node.outcome }}"
+          echo "test:zsh  outcome = ${{ steps.test_zsh.outcome }}"
+          echo "GAP-1 rollout is non-blocking; flip test:node to blocking after a clean cycle."
+
+      - name: Upload suite logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: behavioral-suite-logs
+          path: |
+            tests/**/*.log
+          if-no-files-found: ignore
