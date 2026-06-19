@@ -83,7 +83,7 @@ This creates the scaffold:
 
 ## Step 5: Customize the PRD
 
-Edit `.rlp-desk/plans/prd-loop-test.md` to define your user stories and acceptance criteria. See [`examples/calculator/`](../examples/calculator/.claude/ralph-desk/plans/prd-loop-test.md) for a complete example.
+Edit `.rlp-desk/plans/prd-loop-test.md` to define your user stories and acceptance criteria. See [`examples/calculator/`](../examples/calculator/.rlp-desk/plans/prd-loop-test.md) for a complete example.
 
 Key sections:
 - **User Stories** with Given/When/Then acceptance criteria, Task Type, and Risk Level

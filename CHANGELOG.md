@@ -11,6 +11,21 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.17.0] — 2026-06-19
+
+**BREAKING (ADR-001): `node run.mjs run <slug> --mode agent` (the deprecated Node-leader direct-CLI alpha) now hard-errors.** Per the schedule announced in 0.16.0, the `--mode agent` entry point exits 2 with a redirect, and the Node-CLI default mode flips from `agent` to `tmux` (the canonical production leader). The `src/node/**` engine modules are retained (they back the Native Agent() path and the test suite); only the direct-CLI `--mode agent` *dispatch entry* was removed. **Migration:** replace `node run.mjs run <slug> --mode agent` with `--mode tmux`. The slash command's `--mode native` default is unaffected.
+
+### Changed
+- `node run.mjs run <slug>` (no `--mode`) now defaults to `--mode tmux` and delegates to the zsh leader, instead of the deprecated Node leader.
+
+### Fixed
+- Four shipped files referenced `docs/multi-mission-orchestration.md`; corrected to the real shipped path `docs/rlp-desk/multi-mission-orchestration.md` (dead link on fresh installs). Added a docs-link-resolve test.
+- `uninstall` now removes the `UNLOCK.md` marker (and unlocks 0o444 files before unlink), so the `ralph-desk/` directory is fully removed.
+- The A4 fallback iteration-signal write now goes through the atomic `atomic_write` helper (temp+rename) instead of a raw redirect.
+
+### Changed (packaging)
+- The shipped `examples/calculator` scaffold moved from the legacy `.claude/ralph-desk/` path to `.rlp-desk/` (v0.13.0+ convention) and no longer ships generated runtime state.
+
 ## [0.16.0] — 2026-06-18
 
 Leader consolidation (ADR-001): `--mode tmux` is now the canonical production leader, self-verification works on it, and the deprecated `--mode agent` Node-CLI path is on a dated removal schedule.

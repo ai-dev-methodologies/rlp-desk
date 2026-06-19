@@ -756,9 +756,18 @@ _lint_test_density() {
   us_list=$(grep -oE '^##[[:space:]]+US-[0-9]+' "$prd_file" 2>/dev/null | grep -oE 'US-[0-9]+' | sort -u)
   [[ -z "$us_list" ]] && return 0
 
-  local audit_dir="${LOGS_DIR:-/tmp}"
-  local audit_file="$audit_dir/test-density-audit.jsonl"
-  [[ -d "$audit_dir" ]] || audit_file="/tmp/test-density-audit.jsonl"
+  # ZSH-8: prefer the campaign LOGS_DIR. When it is unavailable, avoid a fixed,
+  # predictable /tmp name (insecure-temp: symlink/collision risk) by creating a
+  # unique temp file via mktemp; fall back to a PID-scoped name only if mktemp
+  # is missing.
+  local audit_dir="${LOGS_DIR:-}"
+  local audit_file
+  if [[ -n "$audit_dir" && -d "$audit_dir" ]]; then
+    audit_file="$audit_dir/test-density-audit.jsonl"
+  else
+    audit_file=$(mktemp "${TMPDIR:-/tmp}/test-density-audit.XXXXXX" 2>/dev/null) \
+      || audit_file="${TMPDIR:-/tmp}/test-density-audit.$$.jsonl"
+  fi
 
   local us
   for us in ${(f)us_list}; do

@@ -25,10 +25,22 @@ const files = [
   path.join(deskDir, "init_ralph_desk.zsh"),
   path.join(deskDir, "run_ralph_desk.zsh"),
   path.join(deskDir, "lib_ralph_desk.zsh"),
+  // PKG-6: postinstall writes the UNLOCK.md escape-hatch doc into deskDir. If we
+  // skip it here, the empty-dir rmdir below always sees one leftover file and the
+  // ralph-desk/ directory is never removed.
+  path.join(deskDir, "UNLOCK.md"),
 ];
 
 for (const targetPath of files) {
   try {
+    // Installed files are write-locked (chmod 0o444) per postinstall v5.7 §4.10.
+    // Restore write permission before unlink so removal is robust across
+    // filesystems (mirrors postinstall's unlock-before-remove).
+    try {
+      fs.chmodSync(targetPath, 0o644);
+    } catch (_) {
+      // File may be missing or already writable.
+    }
     fs.rmSync(targetPath, { recursive: true, force: true });
     console.log("  - " + targetPath);
   } catch (_) {

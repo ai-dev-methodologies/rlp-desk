@@ -125,54 +125,33 @@ test('US-008 AC8.1 negative: uninstall removes the installed Node runtime files'
   assert.equal(await exists(path.join(deskDir, 'node', 'run.mjs')), false);
 });
 
-test('US-008 AC8.2 happy: the run command parses agent example flags and launches the campaign with the expected configuration', async () => {
-  // v0.14.0: --mode tmux now delegates to the zsh runner (see the zsh routing
-  // test below). Flag-parsing coverage moved to --mode agent which still goes
-  // through the Node leader (deps.runCampaign).
+test('US-008 AC8.2 happy: --mode agent hard-errors (exit 2) and does NOT launch the Node leader (ARCH Wave D)', async () => {
+  // ARCH Wave D (ADR-001 §3): the direct Node-CLI --mode agent entry point now
+  // hard-errors instead of dispatching to the deprecated Node leader. runCampaign
+  // must NOT be reached. Flag-parsing coverage now lives in the --mode tmux
+  // env-mapping test below (the canonical production leader).
   const cli = await import('../../src/node/run.mjs');
-  let received = null;
+  let runCampaignInvocations = 0;
+  let stderr = '';
 
   const exitCode = await cli.main(
     ['run', 'test', '--mode', 'agent', '--worker-model', 'gpt-5.5:medium', '--debug'],
     {
       cwd: repoRoot,
       stdout: { write() {} },
-      stderr: { write() {} },
-      runCampaign: async (slug, options) => {
-        received = { slug, options };
+      stderr: { write(chunk) { stderr += chunk; } },
+      runCampaign: async () => {
+        runCampaignInvocations += 1;
         return { status: 'continue' };
       },
     },
   );
 
-  assert.equal(exitCode, 0);
-  assert.deepEqual(received, {
-    slug: 'test',
-    options: {
-      rootDir: repoRoot,
-      mode: 'agent',
-      workerModel: 'gpt-5.5:medium',
-      verifierModel: 'sonnet',
-      finalVerifierModel: 'opus',
-      consensusMode: 'off',
-      consensusModel: 'gpt-5.5:medium',
-      finalConsensusModel: 'gpt-5.5:high',
-      verifyMode: 'per-us',
-      cbThreshold: 6,
-      maxIterations: 100,
-      iterTimeout: 600,
-      debug: true,
-      lockWorkerModel: false,
-      autonomous: false,
-      laneStrict: false,
-      testDensityStrict: false,
-      withSelfVerification: false,
-      flywheel: 'off',
-      flywheelModel: 'opus',
-      flywheelGuard: 'off',
-      flywheelGuardModel: 'opus',
-    },
-  });
+  assert.equal(exitCode, 2, '--mode agent must exit 2');
+  assert.equal(runCampaignInvocations, 0, 'runCampaign must NOT be invoked for --mode agent');
+  assert.match(stderr, /ERROR: --mode agent .* no longer supported/i);
+  assert.match(stderr, /--mode tmux/);
+  assert.match(stderr, /--mode native/);
 });
 
 test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env vars (v0.14.0 routing)', async (t) => {
@@ -258,25 +237,40 @@ test('US-008 AC8.2 tmux missing zsh runner: surfaces actionable error and exits 
   assert.match(stderr, /\/missing\/run_ralph_desk\.zsh/);
 });
 
-test('US-008 AC8.2 boundary: the run command applies the documented defaults when optional flags are omitted', async () => {
+test('US-008 AC8.2 boundary: bare `run <slug>` now defaults to --mode tmux and applies documented defaults (ARCH Wave D)', async (t) => {
+  // ARCH Wave D (ADR-001 §3): the Node-CLI default mode flipped from 'agent' to
+  // 'tmux'. A bare `run <slug>` delegates to the zsh runner (spawnZsh) and does
+  // NOT call the Node leader (runCampaign). Fresh tempdir avoids legacy desk
+  // detection on the repo's own .rlp-desk/ tree.
+  const tempCwd = await createTempDir(t);
   const cli = await import('../../src/node/run.mjs');
-  let received = null;
+  let spawned = null;
+  let runCalled = false;
 
   const exitCode = await cli.main(['run', 'demo'], {
-    cwd: repoRoot,
+    cwd: tempCwd,
     stdout: { write() {} },
     stderr: { write() {} },
-    runCampaign: async (slug, options) => {
-      received = { slug, options };
+    runCampaign: async () => {
+      runCalled = true;
       return { status: 'continue' };
+    },
+    fileExists: () => true,
+    zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+    spawnZsh: async (zshPath, env, cwd) => {
+      spawned = { zshPath, env, cwd };
+      return 0;
     },
   });
 
   assert.equal(exitCode, 0);
-  assert.equal(received.slug, 'demo');
-  assert.equal(received.options.mode, 'agent');
-  assert.equal(received.options.workerModel, 'haiku');
-  assert.equal(received.options.debug, false);
+  assert.equal(runCalled, false, 'default mode (tmux) must not call the Node leader');
+  assert.equal(spawned.env.LOOP_NAME, 'demo');
+  assert.equal(spawned.env.WORKER_MODEL, 'haiku', 'default worker model');
+  assert.equal(spawned.env.MAX_ITER, '100', 'default max-iter');
+  assert.equal(spawned.env.CB_THRESHOLD, '6', 'default cb-threshold');
+  assert.equal(spawned.env.VERIFY_MODE, 'per-us', 'default verify-mode');
+  assert.equal(spawned.env.CONSENSUS_MODE, 'off', 'default consensus');
 });
 
 test('US-008 AC8.2 negative: the run command rejects unknown flags instead of launching with a silent parse failure', async () => {
@@ -506,36 +500,36 @@ test('US-008 P1.b: --mode native exits 2 with slash-only error message', async (
   assert.match(stderrText, /\/rlp-desk run .* --mode native/);
 });
 
-test('US-008 P1.b: --mode agent emits strengthened deprecation banner (slash native distinction)', async () => {
+test('US-008 Wave D: --mode agent hard-errors (exit 2) with a redirect, runCampaign not invoked (ADR-001 §3)', async () => {
+  // ARCH Wave D (ADR-001 §3): the 0.16.0 deprecation banner is replaced by the dated
+  // breaking change — the direct Node-CLI --mode agent entry point now hard-errors
+  // (exit 2) and redirects to --mode tmux (production) / --mode native (slash). The
+  // src/node/** engine modules are retained; only this dispatch entry point is gone.
   const { main } = await import('../../src/node/run.mjs');
   const stderrChunks = [];
-  const stdoutChunks = [];
+  const stdout = { write() {} };
   const stderr = { write: (s) => { stderrChunks.push(String(s)); } };
-  const stdout = { write: (s) => { stdoutChunks.push(String(s)); } };
-  const fakeRun = async () => ({ status: 'continue' });
+  let runCampaignInvocations = 0;
+  const fakeRun = async () => {
+    runCampaignInvocations += 1;
+    return { status: 'continue' };
+  };
 
-  const prevEnv = process.env.NODE_ENV;
-  delete process.env.NODE_ENV;
-  try {
-    await main(
-      ['run', 'demo', '--mode', 'agent', '--worker-model', 'sonnet'],
-      { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
-    );
-  } finally {
-    if (prevEnv !== undefined) process.env.NODE_ENV = prevEnv;
-  }
+  const exitCode = await main(
+    ['run', 'demo', '--mode', 'agent', '--worker-model', 'sonnet'],
+    { runCampaign: fakeRun, stderr, stdout, cwd: process.cwd() },
+  );
 
+  assert.equal(exitCode, 2, '--mode agent must exit 2 (ARCH Wave D / ADR-001)');
+  assert.equal(runCampaignInvocations, 0, 'runCampaign must NOT be invoked for --mode agent');
   const stderrText = stderrChunks.join('');
-  assert.match(stderrText, /WARNING: --mode agent .* deprecated/i);
-  assert.match(stderrText, /UNRELATED to the slash command Native Agent\(\) path/);
-  assert.match(stderrText, /\/rlp-desk run --mode native/);
-  // 2026-05-07 (v0.15.2 redirect): banner reflects active stabilization, not
-  // maintenance mode. Earlier pivot-to-omc messaging misread the user's
-  // intent — rlp-desk is being hardened to omc-level reliability while
-  // preserving its self-driving advantages. See docs/plans/v0.15-stabilization-plan.md.
-  assert.match(stderrText, /SCHEDULED REMOVAL/);
-  assert.match(stderrText, /STABILIZATION IN PROGRESS/);
-  assert.match(stderrText, /10-bug regression pattern/);
+  assert.match(stderrText, /ERROR: --mode agent .* no longer supported/i);
+  assert.match(stderrText, /ADR-001/);
+  assert.match(stderrText, /--mode tmux/);
+  assert.match(stderrText, /\/rlp-desk run .* --mode native/);
+  // The old SCHEDULED-REMOVAL / stabilization banner is gone — it is now enforced,
+  // not announced.
+  assert.doesNotMatch(stderrText, /SCHEDULED REMOVAL/);
 });
 
 test('US-008 P1.b: --mode tmux unaffected by P1.b banner changes', async (t) => {

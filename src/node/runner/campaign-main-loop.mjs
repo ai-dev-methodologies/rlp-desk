@@ -1715,7 +1715,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       // P0-A multi-mission orchestration: optionally captured from flywheel signal.
       // null when the flywheel did not suggest a next mission. Consumer wrappers
       // poll status.next_mission_candidate to chain missions without code edits.
-      // See docs/multi-mission-orchestration.md.
+      // See docs/rlp-desk/multi-mission-orchestration.md.
       state.next_mission_candidate = flywheelSignal.next_mission_candidate ?? null;
       // Bug #7 Fix-R cleanup: unlock before unlink so 0o444 doesn't block.
       await unlockSentinelFile(paths.flywheelSignalFile);
