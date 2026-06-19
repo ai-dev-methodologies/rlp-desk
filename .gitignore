@@ -21,6 +21,8 @@
 .sv/
 .vscode/
 .worktrees/
+.env
+.env.*
 Thumbs.db
 docs/rlp-desk/internal/
 node_modules/
