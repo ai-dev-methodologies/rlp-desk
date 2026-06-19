@@ -649,5 +649,5 @@ an optional `next_mission_candidate` field:
 
 The leader propagates the field into `status.json`
 (`status.next_mission_candidate`). Wrappers poll either source. See
-`docs/multi-mission-orchestration.md` for the consumer-side polling
+`docs/rlp-desk/multi-mission-orchestration.md` for the consumer-side polling
 pattern.

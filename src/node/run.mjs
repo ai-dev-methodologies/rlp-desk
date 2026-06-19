@@ -14,7 +14,11 @@ import {
 import { isClaudeEngine } from './cli/command-builder.mjs';
 
 const RUN_DEFAULTS = {
-  mode: 'agent',
+  // ARCH Wave D (ADR-001 §3): the Node-CLI default mode flips from the deprecated
+  // 'agent' (Node-leader alpha) to 'tmux' (the canonical production leader) at the
+  // same step that makes --mode agent hard-error. A bare `run <slug>` now delegates
+  // to the zsh runner, not the deprecated Node leader.
+  mode: 'tmux',
   workerModel: 'haiku',
   verifierModel: 'sonnet',
   finalVerifierModel: 'opus',
@@ -49,14 +53,14 @@ function buildHelpText() {
     'Commands:',
     '  brainstorm <description>     Plan before init (not implemented in the Node rewrite yet)',
     '  init <slug> [objective]      Create project scaffold',
-    '  run <slug> [options]         Run loop (tmux=zsh leader [production], agent=Node leader [deprecated alpha], native=slash-only error)',
+    '  run <slug> [options]         Run loop (tmux=zsh leader [production, default], agent=hard-errors per ADR-001, native=slash-only error)',
     '  status <slug>                Show loop status',
     '  logs <slug> [N]              Show iteration log (not implemented in the Node rewrite yet)',
     '  clean <slug> [--kill-session] Reset for re-run (removes sentinels + runtime/; preserves PRD/prompts/memory)',
     '  resume <slug>                Resume loop (not implemented in the Node rewrite yet)',
     '',
     'Run Options:',
-    '  --mode tmux|agent|native       (CLI: tmux=production, agent=deprecated, native=errors with redirect to slash command)',
+    '  --mode tmux|agent|native       (CLI: tmux=production [default], agent=hard-errors (ADR-001), native=errors with redirect to slash command)',
     '  --worker-model MODEL',
     '  --lock-worker-model',
     '  --verifier-model MODEL',
@@ -373,7 +377,7 @@ async function runTmuxViaZsh(slug, options, deps) {
   if (unsupported.length > 0) {
     write(
       deps.stderr,
-      `WARNING: ${unsupported.join(', ')} not honored in --mode tmux (zsh runner). Flywheel is deprecated (ADR-001) — use --mode agent if you still need it.`,
+      `WARNING: ${unsupported.join(', ')} not honored in --mode tmux (zsh runner). Flywheel is deprecated (ADR-001) and unimplemented in the canonical leader.`,
     );
   }
 
@@ -442,7 +446,7 @@ async function runRunCommand(args, deps) {
     );
     write(
       deps.stderr,
-      'If hang persists, switch to --worker-model gpt-5.5:high (codex) or --mode agent.',
+      'If hang persists, switch to --worker-model gpt-5.5:high (codex).',
     );
   }
 
@@ -468,50 +472,38 @@ async function runRunCommand(args, deps) {
     );
     write(
       deps.stderr,
-      'or use `--mode tmux` (production) / `--mode agent` (deprecated alpha) for direct CLI invocation.',
+      'or use `--mode tmux` (production) for direct CLI invocation. `--mode agent` hard-errors (ADR-001).',
     );
     return 2;
   }
 
-  // P1.b: --mode agent (Node-leader alpha) is deprecated. The slash command's
-  // Native Agent() path (`/rlp-desk run --mode native`) is unrelated — different
-  // code, different leader. We keep the Node-leader behavior unchanged for
-  // backward compatibility but surface a strong deprecation banner so wrappers
-  // can migrate before the next major release hard-errors this mode.
-  if (
-    options.mode === 'agent'
-    && !process.env.RLP_DESK_QUIET_WARNINGS
-    && process.env.NODE_ENV !== 'test'
-  ) {
+  // ARCH Wave D (ADR-001 §3): --mode agent (Node-leader direct-CLI alpha) HARD-ERRORS
+  // as of this release. It is the dated breaking change the deprecation banner
+  // announced — direct CLI invocation now exits 2 with a redirect to the canonical
+  // production leader (--mode tmux) or the slash-command Native Agent() path
+  // (--mode native). This is UNRELATED to the slash command's legacy `--mode agent`
+  // → native redirect (different code, different leader). The `src/node/**` engine
+  // modules (run()/runCampaign) are RETAINED — they remain the engine the Native
+  // Agent() path and the test suite build on; only this direct-CLI dispatch entry
+  // hard-errors. Mirror the --mode native slash-only exit-2 pattern above.
+  if (options.mode === 'agent') {
     write(
       deps.stderr,
-      'WARNING: --mode agent (Node-leader alpha) is deprecated.',
+      'ERROR: --mode agent (Node-leader direct-CLI alpha) is no longer supported (ADR-001).',
     );
     write(
       deps.stderr,
-      'This is the direct Node-CLI alpha path — UNRELATED to the slash command Native Agent() path (`/rlp-desk run --mode native`).',
+      'For production tmux orchestration, use `--mode tmux` (the canonical leader).',
     );
     write(
       deps.stderr,
-      'For production tmux orchestration, use `--mode tmux`.',
+      'For Claude Code Native Agent() campaigns, use `/rlp-desk run <slug> --mode native` from a Claude Code session.',
     );
     write(
       deps.stderr,
-      'For Claude Code Native Agent() campaigns, use `/rlp-desk run --mode native` from a Claude Code session.',
+      'The src/node/** engine modules are retained; only the direct-CLI --mode agent entry point was removed.',
     );
-    // 2026-05-07 (v0.15.2): rlp-desk is in active stabilization. Goal: reach
-    // omc /team/ralph/ralplan level of reliability while preserving
-    // rlp-desk's self-driving advantages (multi-engine consensus, multi-mission
-    // queue, BLOCK_TAGS taxonomy, structured SV reports). omc is the BENCHMARK,
-    // not a replacement. See docs/plans/v0.15-stabilization-plan.md.
-    write(
-      deps.stderr,
-      'SCHEDULED REMOVAL (ADR-001): --mode agent (Node CLI alpha) hard-errors in 0.17.0 (Node-CLI default flips to tmux) and the dispatch branch is removed in 0.18.0. Engine modules stay. Migrate to --mode tmux.',
-    );
-    write(
-      deps.stderr,
-      'STABILIZATION IN PROGRESS: rlp-desk is hardening against the 10-bug regression pattern observed 2026-05-01..05-07. See docs/plans/v0.15-stabilization-plan.md.',
-    );
+    return 2;
   }
 
   const result = await deps.runCampaign(slug, options);

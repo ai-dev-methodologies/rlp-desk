@@ -61,8 +61,11 @@ SITE2_KILL_LINE=$(awk '/inline_polling_a4_clean/,/_emit_a4_fallback_audit/' "$RU
 SITE2_LOCK_LINE=$(awk '/inline_polling_a4_clean/,/_emit_a4_fallback_audit/' "$RUN" \
                   | grep -nE '_lock_sentinel "\$DONE_CLAIM_FILE"' \
                   | head -1 | cut -d: -f1)
+# ZSH-8 (audit): the A4 fallback synth write was routed through atomic_write
+# (atomic temp+rename) instead of a raw `>` redirect. Match either form — the
+# kill < lock < synth ORDERING is the contract, not the write mechanism.
 SITE2_SYNTH_LINE=$(awk '/inline_polling_a4_clean/,/_emit_a4_fallback_audit/' "$RUN" \
-                   | grep -nE 'echo .*"status":"verify".*> "\$signal_file"' \
+                   | grep -nE 'echo .*"status":"verify".*(> "\$signal_file"|atomic_write "\$signal_file")' \
                    | head -1 | cut -d: -f1)
 if [[ -n "$SITE2_KILL_LINE" && -n "$SITE2_LOCK_LINE" && -n "$SITE2_SYNTH_LINE" ]] \
    && (( SITE2_KILL_LINE < SITE2_LOCK_LINE )) \

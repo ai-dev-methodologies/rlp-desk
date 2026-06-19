@@ -761,7 +761,7 @@ Based on your decision, update campaign memory:
      current direction. The wrapper polls this field for autonomous
      multi-mission orchestration (rlp-desk does not auto-launch missions —
      the consumer wrapper owns that policy). Field is OPTIONAL; absence is
-     treated as null. See docs/multi-mission-orchestration.md for the
+     treated as null. See docs/rlp-desk/multi-mission-orchestration.md for the
      consumer-side polling pattern.
 FLYWHEEL_EOF
 
