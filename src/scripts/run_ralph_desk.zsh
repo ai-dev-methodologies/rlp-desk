@@ -408,6 +408,18 @@ launch_worker_codex() {
       tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
       (( _codex_wait++ )); continue
     fi
+    # F-16: codex 0.141 shows a "Do you trust the contents of this directory?
+    # 1. Yes, continue / 2. No, quit" prompt at startup (project-local config/
+    # hooks loading). Its '›' is otherwise mis-read as "ready" below, and the
+    # worker instruction sent into that menu can land on "No, quit" → codex exits
+    # → "worker not active" BLOCK. Accept it (Enter = default "1. Yes, continue")
+    # before the ready check. Validated end-to-end: codex then runs the task.
+    if echo "$_pane_text" | grep -qiE 'Do you trust|1\. Yes, continue' 2>/dev/null; then
+      log "  Worker codex: directory-trust prompt — accepting (F-16)."
+      log_debug "[GOV] iter=$iter codex_trust_prompt=accepted role=worker"
+      tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+      (( _codex_wait++ )); continue
+    fi
     if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
       _codex_ready=1
       log_debug "Worker codex TUI ready after ${_codex_wait}s"
@@ -568,6 +580,16 @@ launch_verifier_codex() {
       log "  Verifier codex: update prompt detected — selecting '2. Skip' (F-1)."
       log_debug "[GOV] iter=$iter codex_update_prompt=skipped role=verifier"
       tmux send-keys -t "$pane_id" Down 2>/dev/null; sleep 0.3
+      tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+      (( _codex_wait++ )); continue
+    fi
+    # F-16: accept codex 0.141's "Do you trust this directory?" startup prompt
+    # (Enter = default "1. Yes, continue") before the ready check — see
+    # launch_worker_codex for detail. Otherwise the instruction lands in the menu
+    # and can select "No, quit" → codex exits → "verifier not active".
+    if echo "$_pane_text" | grep -qiE 'Do you trust|1\. Yes, continue' 2>/dev/null; then
+      log "  Verifier codex: directory-trust prompt — accepting (F-16)."
+      log_debug "[GOV] iter=$iter codex_trust_prompt=accepted role=verifier"
       tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
       (( _codex_wait++ )); continue
     fi
@@ -1817,7 +1839,7 @@ restart_worker() {
 
   # Re-launch worker (tmux interactive pattern)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
-    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
   else
     safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
   fi
@@ -2572,7 +2594,7 @@ run_single_verifier() {
   # Launch verifier — dispatch to engine-specific function
   local verifier_launch
   if [[ "$engine" = "codex" ]]; then
-    verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
     launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
     log_debug "Verifier$suffix codex TUI dispatched"
   else
@@ -2684,7 +2706,7 @@ run_sequential_final_verify() {
     # Launch verifier
     local verifier_launch
     if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
-      verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+      verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
       launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
     else
       verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL" "" "" "$VERIFIER_EFFORT")"
@@ -3252,7 +3274,7 @@ main() {
       # (send-keys before the pane's shell is ready). Replace the pane and retry
       # ONCE before BLOCKing, instead of terminating the campaign on a transient.
       if [[ "$WORKER_ENGINE" = "codex" ]]; then
-        worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+        worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
         if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
           log "  Worker codex failed to start — replacing pane and retrying once (F-11)."
           log_debug "[GOV] iter=$ITERATION worker_start_failed=true action=replace_retry engine=codex"
@@ -3501,7 +3523,7 @@ main() {
 
           local verifier_launch
           if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
-            verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+            verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
           else
             verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL" "" "" "$VERIFIER_EFFORT")"
           fi
