@@ -162,11 +162,21 @@ The haiku run showed 0 Worker model upgrades despite struggle. On inspection thi
 | Fix | Make a durable append-only verdict ledger the source-of-truth for VERIFIED_US (a status.json fallback already exists at ~3044; promote it / add a structured ledger). |
 | Status | **FIXED + verified.** Added a durable append-only JSONL ledger (`${SLUG}-verified.jsonl`) the leader writes on every verified-pass; restore reads it FIRST (drift-proof, structured), with the prose parse + status.json as fallbacks. Robust to a corrupt/partial trailing line (`jq -rR 'fromjson?'`). `tests/sv-large-campaign/test-f14-verified-ledger.zsh` → 8/8 PASS. **Item-4 promotion**: restore precedence reordered to ledger → status.json (structured leader serialization written every phase by `update_status`) → prose (drift-prone LLM, LAST resort), so the only drift-prone source is now the absolute fallback. |
 
-## F-15 — codex worker fails the N×M nonce round-trip (instruction hits shell, not TUI)  · OPEN
+## F-15 — N×M harness L4 (nonce round-trip) broken for ALL engines (harness defect, not production)  · OPEN
 | | |
 |---|---|
-| Symptom | N×M cell C1 (W=codex/V=codex) on real codex 0.141: L1 (launch rc=0, 48s) + L2 (ready glyph) PASS, but L4 (nonce round-trip) FAILs — no worker artifact (`got='<none>'`). |
-| Evidence | The worker pane shows a SHELL prompt (`kyjin@… %`), not the codex TUI, and the instruction landed in the shell: `/usr/bin/Read: line 4: read: '…/worker_prompt.md': not a valid identifier`. So codex either EXITED after L2 or the ready-glyph (`›`) detection mis-fired on a transient. |
-| Scope | Methodology N×M HARNESS (`tests/sv-nxm-matrix`), NOT confirmed in the production runner — production haiku/sonnet 12-US E2E all COMPLETE. May reflect a real codex-path fragility (codex exit / ready mis-detect under 0.141) or a harness nonce-task issue. |
-| Next | Full C1–C4 re-run in progress: does codex-as-worker (C1/C2) consistently fail vs claude cells (C4) pass? Check whether codex 0.141 changed its ready glyph / TUI lifecycle. F-3 (cell-result.json null fields) also still open. |
-| Status | OPEN — flagged; not a production regression. |
+| Symptom | Full N×M re-run: **ALL 4 cells FAIL at L4:nonce_roundtrip** — C1 codex×codex, C2 codex×claude, C3 claude×codex, AND C4 claude×claude. Engine-AGNOSTIC (not codex-specific as first suspected). |
+| Root cause | The harness's L4 nonce-round-trip drive is broken: the worker pane shows a bare SHELL (`kyjin@… %`) when the task instruction is sent, and the instruction lands in the shell (`/usr/bin/Read: … not a valid identifier`). The methodology workflow that built this harness only ever C1-smoke-tested it (the failure then masked by the codex update prompt), so the claude cells shipped "implemented-unverified" — and are in fact broken. |
+| NOT a production bug | Production worker execution is proven by real campaigns: haiku-default + sonnet 12-US and f6mini E2E all COMPLETE with genuine products. The defect is in the test harness, NOT `run_ralph_desk.zsh`. |
+| Codex path | Since the harness can't verify it, the codex PRODUCTION path is verified directly via a real f6mini campaign (`WORKER_MODEL=gpt-5.5` codex × claude verifier) on the proven runner — see the codex-E2E result. |
+| Follow-up | Fix the N×M harness L4 drive (engine-agnostic) + verify all 4 cells; F-3 (cell-result.json null fields) also still open. Harness-quality, non-blocking. |
+| Status | OPEN — harness defect, not a production regression. |
+
+## F-16 — codex 0.141 worker blocks the production campaign ("worker not active")  · OPEN (codex path)
+| | |
+|---|---|
+| Symptom | A real f6mini campaign with a codex worker (`WORKER_MODEL=gpt-5.5`, codex 0.141) × claude verifier BLOCKED at iter 1 / 44s: `[infra_failure] 3 consecutive monitor failures (worker not active)`. claude workers complete the same campaign. |
+| Pinned | codex 0.141 launches FINE standalone — TUI box "OpenAI Codex (v0.141.0)", `›` prompt, `pane_current_command=node` — but takes ~14s to come up. In the production run the worker pane ended as a bare zsh shell (`worker_cmd=zsh`): codex EXITED after the instruction was sent. Launch flags are valid (`--disable plugins`, `--dangerously-bypass-approvals-and-sandbox`; an `exec` probe ran clean). |
+| Likely cause | A leader↔codex-0.141 integration issue: the ~14s startup latency vs the submit-loop timing, and/or codex exiting after the "Read and execute …" instruction (same shape as the harness F-15 "instruction hits shell"). A malformed `~/.codex/hooks.json` (`unknown field 'state' @ line 94`) was also observed (warning only). Needs interactive diagnosis of the live codex worker. |
+| Scope | codex ENGINE path only. The primary claude/haiku path is PROVEN (real 12-US + f6mini campaigns COMPLETE). F-1 (codex update dismiss) is unaffected — no update prompt on 0.141. |
+| Status | OPEN — codex-path follow-up; NOT blocking the primary path. |
