@@ -35,7 +35,7 @@ log_debug() { :; }
 # ---- nonce transform: human-replayable string reverse (openQuestion resolved
 # toward replayability so a reviewer can re-confirm WITHOUT recomputing a hash).
 # NONCE is hex so reverse is unambiguous and never appears verbatim in the prompt.
-sv_nonce_transform() { print -rn -- "$1" | rev; }
+sv_nonce_transform() { print -rn -- "${1}_SVOK"; }
 EXPECT_TRANSFORM="$(sv_nonce_transform "$NONCE")"
 
 print -P "%F{magenta}══ CELL $CELL_ID  W=$WORKER_ENGINE  V=$VERIFIER_ENGINE  nonce=$NONCE%f"
@@ -112,18 +112,22 @@ trap sv_teardown EXIT INT TERM
   || { svno "panes missing"; write_result "FAIL" "L1:panes" 0; exit 1; }
 
 # ---------------------------------------------------------------------------
-# Build the WORKER prompt: a TRIVIAL DETERMINISTIC task that is echo-PROOF.
-# The worker must (a) reverse the NONCE and (b) write it to ANSWER.txt in the
-# sandbox, then (c) print the token SELFVERIFY_OK. The reversed-nonce value is
-# NOT present verbatim in the prompt — only NONCE and the *instruction* to
-# reverse it are — so a TUI echo of the prompt cannot satisfy the artifact check.
+# Build the WORKER prompt: a TRIVIAL DETERMINISTIC task that is echo-PROOF AND
+# reliable for weak models. The worker must (a) append the fixed suffix _SVOK to
+# the NONCE and (b) write the combined string to ANSWER.txt, then (c) print the
+# token SELFVERIFY_OK. The combined "<nonce>_SVOK" is NOT present verbatim in the
+# prompt (only NONCE + the instruction are), so a TUI echo / whole-prompt copy
+# cannot satisfy the EXACT-match artifact check. F-15: replaced character-reversal
+# (which weak models like haiku flub by one char → spurious L4 FAILs, not real
+# defects) with copy+append, which any LLM does reliably.
 WPROMPT="$ROOT/worker_prompt.md"
 cat > "$WPROMPT" <<EOF
 You are running a self-verification probe. Do EXACTLY this and nothing else:
 
 1. Take this nonce string: $NONCE
-2. Reverse the characters of that string (last char first).
-3. Write ONLY the reversed string (no newline, no extra text) to the file
+2. Append the exact 5-character suffix _SVOK to it (so it becomes the nonce
+   immediately followed by _SVOK, with no space between them).
+3. Write ONLY that combined string (no newline, no extra text) to the file
    ANSWER.txt in the current working directory ($ROOT).
 4. After the file is written, print the single token SELFVERIFY_OK and stop.
 
