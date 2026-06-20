@@ -274,6 +274,10 @@ MEMORY_FILE="$MEMOS_DIR/${SLUG}-memory.md"
 SIGNAL_FILE="$MEMOS_DIR/${SLUG}-iter-signal.json"
 DONE_CLAIM_FILE="$MEMOS_DIR/${SLUG}-done-claim.json"
 VERDICT_FILE="$MEMOS_DIR/${SLUG}-verify-verdict.json"
+# F-14: durable, structured append-only ledger of verified-pass US — the
+# drift-proof source-of-truth for VERIFIED_US restore (vs the Worker's prose
+# "## Completed Stories", which is fresh-context LLM output that can drift).
+VERIFIED_LEDGER="$MEMOS_DIR/${SLUG}-verified.jsonl"
 # v0.14.2 Bug Report #4: codex sometimes writes the verdict file to the
 # pre-v0.13.0 legacy path despite the prompt instructing otherwise (CWD
 # heuristics inside the codex CLI). Track the legacy path so the no-progress
@@ -389,6 +393,21 @@ launch_worker_codex() {
     sleep 1
     local _pane_text
     _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    # F-1: on launch codex may show "✨ Update available!" — an arrow-menu whose
+    # DEFAULT highlighted option is "1. Update now" (runs `npm install -g
+    # @openai/codex`) with "Press enter to continue". Our subsequent Enter would
+    # confirm option 1 and the update REPLACES the Worker session (hijack). This
+    # check MUST precede the '›' ready check below because the update menu also
+    # renders '›'. Move the selection to "2. Skip" (Down) then confirm (Enter).
+    # (Guarded: only fires when the update banner is present, so it is harmless
+    # in any normal pane state. Key sequence pending live-codex confirmation.)
+    if echo "$_pane_text" | grep -qiE 'Update available|1\. Update now' 2>/dev/null; then
+      log "  Worker codex: update prompt detected — selecting '2. Skip' (F-1)."
+      log_debug "[GOV] iter=$iter codex_update_prompt=skipped role=worker"
+      tmux send-keys -t "$pane_id" Down 2>/dev/null; sleep 0.3
+      tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+      (( _codex_wait++ )); continue
+    fi
     if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
       _codex_ready=1
       log_debug "Worker codex TUI ready after ${_codex_wait}s"
@@ -543,6 +562,15 @@ launch_verifier_codex() {
     sleep 1
     local _pane_text
     _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    # F-1: dismiss codex's "✨ Update available!" launch menu before it hijacks the
+    # pane (default option is "1. Update now"). See launch_worker_codex for detail.
+    if echo "$_pane_text" | grep -qiE 'Update available|1\. Update now' 2>/dev/null; then
+      log "  Verifier codex: update prompt detected — selecting '2. Skip' (F-1)."
+      log_debug "[GOV] iter=$iter codex_update_prompt=skipped role=verifier"
+      tmux send-keys -t "$pane_id" Down 2>/dev/null; sleep 0.3
+      tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+      (( _codex_wait++ )); continue
+    fi
     if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
       _codex_ready=1
       log_debug "Verifier codex TUI ready after ${_codex_wait}s"
@@ -639,6 +667,16 @@ launch_verifier_claude() {
 # On exit: check done-claim, auto-generate iter-signal.
 # Args: $1=iteration  $2=signal_file
 # Returns: 0 (signal generated), 1 (error)
+# F-14: append a verified-pass US to the durable ledger (the leader's structured,
+# drift-proof record of progress). Skips ALL/empty; append-only, readers dedup.
+_append_verified_ledger() {
+  local us="$1"
+  [[ -z "$us" || "$us" == "ALL" ]] && return 0
+  mkdir -p "${VERIFIED_LEDGER:h}" 2>/dev/null
+  printf '{"us_id":"%s","iter":%s,"verified_at":"%s"}\n' \
+    "$us" "${ITERATION:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$VERIFIED_LEDGER"
+}
+
 # Bug #8 PR-B (codex critic P1.2 fix): shared 4-way gate used by both
 # handle_worker_exit_codex and the inline-polling A4 path. Returns:
 #   0 = synthesize allowed (caller writes signal_file + emits audit)
@@ -679,20 +717,42 @@ _bug8_check_synth_allowed() {
     return 1
   fi
 
-  # Gate 3: tree must be clean.
+  # Gate 3: no UNCOMMITTED changes to TRACKED files (F-6 fix). We deliberately
+  # pass --untracked-files=no: real repos carry untracked cruft (logs, .DS_Store,
+  # local config, build/coverage output) the Worker never touched. Blocking on
+  # those false-BLOCKs the campaign at iter 1 on ANY non-pristine repo — the
+  # single largest "never completes" cause found in large-campaign dogfood. The
+  # Verifier (test-spec) is the real correctness gate for the Worker's committed
+  # work; this gate only guards against a Worker that left TRACKED edits uncommitted.
   local _bug8_dirty
-  _bug8_dirty=$(git -C "$ROOT" status --porcelain 2>/dev/null)
+  _bug8_dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)
   if [[ -n "$_bug8_dirty" ]]; then
+    # F-8 recovery: by Gate 1 a done-claim exists, so these uncommitted TRACKED
+    # changes are the Worker's own US work it failed to commit — a frequent
+    # weak-model slip (the default haiku Worker reports "Committed ..." in its
+    # done-claim while the git commit never landed). The sidecar already marks
+    # this recoverable:true, yet the historical behavior TERMINATED the campaign,
+    # stranding completed work — the #1 weak-model "never completes" cause.
+    # Instead auto-commit the Worker's tracked changes (`git add -u`, never
+    # untracked cruft) and proceed. The Verifier (test-spec) is the real
+    # correctness gate, so a genuine mid-write bail still FAILs verify → fix loop;
+    # Bug #8's "no false PASS" intent is preserved by the Verifier, not by abort.
     local _bug8_first5
     _bug8_first5=$(printf '%s\n' "$_bug8_dirty" | head -n 5 | tr '\n' '|' | sed 's/|$//')
-    log_error "  Bug #8: done-claim present but tree dirty. Refusing synthesis. dirty: $_bug8_first5"
-    log_debug "[GOV] iter=$iter bug8=block_dirty_tree us_id=$us_id dirty='$_bug8_first5'"
-    write_blocked_sentinel \
-      "worker_incomplete_uncommitted: done-claim present but tree dirty ($_bug8_first5)" \
-      "$us_id" \
-      "metric_failure"
-    _emit_a4_fallback_audit "$us_id" "$iter" "blocked_dirty_tree"
-    return 1
+    log "  Bug #8 F-8 recovery: done-claim + uncommitted tracked changes — auto-committing Worker's pending $us_id work (dirty: $_bug8_first5)."
+    log_debug "[GOV] iter=$iter bug8=recover_autocommit us_id=$us_id dirty='$_bug8_first5'"
+    if git -C "$ROOT" add -u && git -C "$ROOT" commit -q -m "chore(leader-recovery): commit Worker's uncommitted $us_id changes (Bug #8 F-8)"; then
+      log "  Leader-recovery auto-commit OK — Verifier will gate correctness."
+    else
+      log_error "  Bug #8: leader-recovery auto-commit failed. Refusing synthesis. dirty: $_bug8_first5"
+      log_debug "[GOV] iter=$iter bug8=block_autocommit_failed us_id=$us_id dirty='$_bug8_first5'"
+      write_blocked_sentinel \
+        "worker_incomplete_uncommitted: leader-recovery auto-commit failed ($_bug8_first5)" \
+        "$us_id" \
+        "metric_failure"
+      _emit_a4_fallback_audit "$us_id" "$iter" "blocked_autocommit_failed"
+      return 1
+    fi
   fi
 
   # All gates passed — synthesize allowed.
@@ -2875,28 +2935,17 @@ main() {
   printf '{"pid":%s,"slug":"%s","root":"%s","started_at":"%s"}\n' \
     "$$" "$SLUG" "$ROOT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUNNER_LOCKFILE_PATH"
 
-  # --- Lockfile: prevent duplicate execution ---
-  local lockfile="$LOCKFILE_PATH"
-  mkdir -p "$(dirname "$lockfile")" 2>/dev/null
-  if ! (set -C; echo $$ > "$lockfile") 2>/dev/null; then
-    local lock_pid
-    lock_pid=$(cat "$lockfile" 2>/dev/null)
-    if kill -0 "$lock_pid" 2>/dev/null; then
-      log_error "Another instance is already running (PID $lock_pid). Kill $lock_pid or rm $lockfile"
-      exit 1
-    fi
-    # Stale lock — overwrite.
-    # NOTE (ZSH-4, deferred): a fully race-safe stale-lock recovery is a separate
-    # distributed-lock redesign (codex review found subtle rm/create + mutex-leak
-    # races in patch attempts). This finding is LOW: the outer RUNNER_LOCKDIR mkdir
-    # lock (keyed on the same $ROOT) already serializes runners before this inner
-    # path is reached, so the inner race is unreachable in practice. Left at the
-    # tested baseline pending a dedicated redesign.
-    log "Stale lock detected (PID ${lock_pid:-unknown} not running), recovering"
-    echo $$ > "$lockfile"
+  # --- Lockfile: prevent duplicate execution (ZSH-4 race-safe, v0.17.1) ---
+  # Delegates to acquire_slug_lock (lib_ralph_desk.zsh): atomic set -C fast path +
+  # mkdir-mutex-serialized, PID-reaped stale recovery. Race-safe vs concurrent
+  # recoverers, gap-starters, and a crashed-recoverer mutex leak.
+  if acquire_slug_lock "$LOCKFILE_PATH"; then
     LOCKFILE_ACQUIRED=1
   else
-    LOCKFILE_ACQUIRED=1
+    local lock_pid
+    lock_pid=$(cat "$LOCKFILE_PATH" 2>/dev/null)
+    log_error "Another instance is already running or won the lock race (PID ${lock_pid:-unknown}). Kill it or rm $LOCKFILE_PATH"
+    exit 1
   fi
   # US-023 R11 P2-K: chain `_emit_final_cost_log` so cost-log.jsonl is never silently empty on exit.
   trap '_emit_final_cost_log; cleanup' EXIT INT TERM
@@ -2994,9 +3043,23 @@ main() {
       US_LIST=$(grep -oE 'US-[0-9]+' "$prd_file" | sort -u | tr '\n' ',' | sed 's/,$//')
     fi
 
+  # F-14: the durable verified-US ledger is the PRIMARY restore source — a
+  # drift-proof, leader-written structured record. The Worker's prose
+  # "## Completed Stories" (read below) is fresh-context LLM output, used only if
+  # the ledger is absent/empty (legacy campaigns); status.json is the last resort.
+  if [[ -f "$VERIFIED_LEDGER" ]]; then
+    local ledger_verified
+    ledger_verified=$(jq -rR 'fromjson? | .us_id // empty' "$VERIFIED_LEDGER" 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u | tr '\n' ',' | sed 's/,$//')
+    if [[ -n "$ledger_verified" ]]; then
+      VERIFIED_US="$ledger_verified"
+      log "  Restored verified_us from durable ledger: $VERIFIED_US"
+      log_debug "[FLOW] restored_verified_us_from_ledger=$VERIFIED_US"
+    fi
+  fi
+
   # Initialize VERIFIED_US from memory's Completed Stories (carry over previous runs)
   local memory_file="$DESK/memos/${SLUG}-memory.md"
-  if [[ -f "$memory_file" ]]; then
+  if [[ -z "$VERIFIED_US" && -f "$memory_file" ]]; then
       local completed_us
       completed_us=$(sed -n '/^## Completed Stories$/,/^## /p' "$memory_file" 2>/dev/null | grep '^- US-' | sed 's/^- \(US-[0-9]*\):.*/\1/' | sort -u | tr '\n' ',' | sed 's/,$//')
       if [[ -n "$completed_us" ]]; then
@@ -3014,6 +3077,21 @@ main() {
         VERIFIED_US="$status_verified"
         log "  Restored verified_us from status.json: $VERIFIED_US"
         log_debug "[FLOW] restored_verified_us_from_status=$VERIFIED_US"
+      fi
+    fi
+
+    # F-13: restore the circuit-breaker counter on relaunch. status.json persists
+    # consecutive_failures (lib_ralph_desk.zsh) but only verified_us was ever read
+    # back, so a crash-looping campaign reset its CB to 0 on every relaunch and
+    # could evade the breaker (a durability hole a clean run never exercises).
+    # Restore it alongside verified_us; normal reset-on-progress still applies.
+    if [[ -f "$STATUS_FILE" ]]; then
+      local _status_cf
+      _status_cf=$(jq -r '.consecutive_failures // 0' "$STATUS_FILE" 2>/dev/null)
+      if [[ "$_status_cf" == <-> && "$_status_cf" -gt 0 ]]; then
+        CONSECUTIVE_FAILURES="$_status_cf"
+        log "  Restored consecutive_failures from status.json: $CONSECUTIVE_FAILURES"
+        log_debug "[FLOW] restored_consecutive_failures_from_status=$CONSECUTIVE_FAILURES"
       fi
     fi
   fi
@@ -3166,19 +3244,34 @@ main() {
       # --- governance.md s7 step 5: Execute Worker (dispatched to engine-specific function) ---
       log_debug "[FLOW] iter=$ITERATION phase=worker engine=$WORKER_ENGINE model=$WORKER_MODEL dispatched=true"
 
+      # F-11: a pane-start failure is usually the transient F6.1 spawn race
+      # (send-keys before the pane's shell is ready). Replace the pane and retry
+      # ONCE before BLOCKing, instead of terminating the campaign on a transient.
       if [[ "$WORKER_ENGINE" = "codex" ]]; then
         worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
         if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
-          write_blocked_sentinel "Worker codex failed to start in pane" "" "infra_failure"
-          update_status "blocked" "worker_start_failed"
-          return 1
+          log "  Worker codex failed to start — replacing pane and retrying once (F-11)."
+          log_debug "[GOV] iter=$ITERATION worker_start_failed=true action=replace_retry engine=codex"
+          replace_worker_pane "$WORKER_PANE" "worker"
+          WORKER_PANE=$(jq -r '.panes.worker' "$SESSION_CONFIG")
+          if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
+            write_blocked_sentinel "Worker codex failed to start in pane after replace+retry" "" "infra_failure"
+            update_status "blocked" "worker_start_failed"
+            return 1
+          fi
         fi
       else
         worker_launch="$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
         if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
-          write_blocked_sentinel "Worker claude failed to start in pane" "" "infra_failure"
-          update_status "blocked" "worker_start_failed"
-          return 1
+          log "  Worker claude failed to start — replacing pane and retrying once (F-11)."
+          log_debug "[GOV] iter=$ITERATION worker_start_failed=true action=replace_retry engine=claude"
+          replace_worker_pane "$WORKER_PANE" "worker"
+          WORKER_PANE=$(jq -r '.panes.worker' "$SESSION_CONFIG")
+          if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
+            write_blocked_sentinel "Worker claude failed to start in pane after replace+retry" "" "infra_failure"
+            update_status "blocked" "worker_start_failed"
+            return 1
+          fi
         fi
       fi
     else
@@ -3299,12 +3392,25 @@ main() {
         local vp_count
         vp_count=$(jq -r '.verified_acs // [] | length' "$SIGNAL_FILE" 2>/dev/null || echo 0)
         if [[ "$vp_count" -eq 0 ]]; then
-          log "  Worker signal verify_partial but verified_acs is empty — downgrading to blocked (verify_partial_malformed)."
+          # F-12: a Worker formatting slip (verify_partial with empty verified_acs)
+          # is recoverable — route it back to the Worker as a soft-fail BOUNDED by
+          # the consecutive-failure circuit breaker, instead of a terminal
+          # mission_abort that ends the whole campaign on a single malformed signal.
+          # A fresh-context Worker that keeps malforming still trips the CB and
+          # blocks; one slip just costs an iteration.
           local vp_us_id
           vp_us_id=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
-          write_blocked_sentinel "verify_partial_malformed: empty verified_acs" "${vp_us_id:-${CURRENT_US:-ALL}}" "mission_abort"
-          update_status "blocked" "verify_partial_malformed"
-          break
+          (( CONSECUTIVE_FAILURES++ ))
+          log "  Worker verify_partial malformed (empty verified_acs) — soft-fail retry $CONSECUTIVE_FAILURES/$EFFECTIVE_CB_THRESHOLD (bounded by CB)."
+          log_debug "[GOV] iter=$ITERATION verify_partial_malformed=soft_fail consecutive_failures=$CONSECUTIVE_FAILURES threshold=$EFFECTIVE_CB_THRESHOLD"
+          update_status "worker" "verify_partial_malformed_retry"
+          if (( CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD )); then
+            log_error "  verify_partial_malformed repeated $CONSECUTIVE_FAILURES times (>= $EFFECTIVE_CB_THRESHOLD) — blocking."
+            write_blocked_sentinel "verify_partial_malformed repeated $CONSECUTIVE_FAILURES times" "${vp_us_id:-${CURRENT_US:-ALL}}" "repeat_axis"
+            update_status "blocked" "verify_partial_malformed_cb"
+            break
+          fi
+          continue
         fi
         log "  Worker signal verify_partial (verified_acs count=$vp_count). Routing to verify path."
         signal_status="verify"
@@ -3406,16 +3512,45 @@ main() {
             fi
           fi
 
-          # Poll for verify-verdict.json
+          # Poll for verify-verdict.json — F-10: 3-strike replace+re-dispatch
+          # parity with the Worker's MONITOR_FAILURE_COUNT breaker. "Bug Report #5"
+          # hardened the Worker poll-fail path (retry-3-then-block) but left the
+          # Verifier path as an immediate terminal BLOCK, so a single transient
+          # verifier death (API blip / pane-spawn race, also F-11) ended a campaign
+          # the Worker path would have survived. rc==2 keeps its original meaning
+          # (already-handled → return). Only 3 consecutive failures BLOCK.
           log "  Polling for verify-verdict.json..."
-          if ! poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier"; then
+          local _vpoll_strike=0 _vpoll_ok=0
+          while (( _vpoll_strike < 3 )); do
+            # Capture poll rc DIRECTLY — `$?` after `if cmd; then…fi` is the
+            # if-statement's status (0), not cmd's rc (the original `if ! poll;
+            # then local rc=$?` had this latent bug, so its `rc==2` branch was
+            # dead and a hard-fail double-wrote a sentinel). rc: 0=verdict,
+            # 1=timeout (retryable), 2=hard-failed + infra_failure already recorded.
+            poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier"
             local verifier_poll_rc=$?
-            if (( verifier_poll_rc == 2 )); then
-              return 1
+            if (( verifier_poll_rc == 0 )); then
+              _vpoll_ok=1; break
             fi
-            log_error "Verifier poll failed"
-            # Verifier is dead/stuck — BLOCK and let user decide
-            write_blocked_sentinel "Verifier process dead/stuck (poll failed). Pane preserved for inspection." "" "infra_failure"
+            if (( verifier_poll_rc == 2 )); then
+              return 1   # hard-failed; poll already recorded infra_failure — do not retry
+            fi
+            (( _vpoll_strike++ ))
+            log "  WARNING: Verifier poll failed (strike $_vpoll_strike/3) — replacing pane and re-dispatching"
+            log_debug "[GOV] iter=$ITERATION verifier_monitor_failure=$_vpoll_strike/3"
+            update_status "verifier" "poll_failed"
+            (( _vpoll_strike >= 3 )) && break
+            replace_worker_pane "$VERIFIER_PANE" "verifier"
+            VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
+            if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+              launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"
+            else
+              launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch" || true
+            fi
+          done
+          if (( ! _vpoll_ok )); then
+            log_error "Verifier poll failed 3× (dead/stuck after retries)"
+            write_blocked_sentinel "Verifier process dead/stuck after 3 retries. Pane preserved for inspection." "" "infra_failure"
             update_status "blocked" "verifier_dead"
             return 1
           fi
@@ -3470,6 +3605,7 @@ main() {
               fi
               log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
               log_debug "[FLOW] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
+              _append_verified_ledger "$signal_us_id"   # F-14: durable source-of-truth
               update_status "verifier" "pass_us"
               # Worker will do next US on next iteration
             elif [[ "$recommended" == "complete" || "$signal_us_id" == "ALL" ]]; then
@@ -3499,6 +3635,7 @@ main() {
                     VERIFIED_US="$_pus"
                   fi
                   log "  Partial progress: $_pus passed (overall FAIL). Verified so far: $VERIFIED_US"
+                  _append_verified_ledger "$_pus"   # F-14: durable source-of-truth
                 fi
               done
               log_debug "[FLOW] iter=$ITERATION partial_progress prev=$_prev_verified now=$VERIFIED_US"

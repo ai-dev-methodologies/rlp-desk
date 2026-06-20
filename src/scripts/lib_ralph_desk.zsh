@@ -245,6 +245,66 @@ atomic_write() {
 }
 
 # =============================================================================
+# ZSH-4: race-safe per-slug lock acquisition (redesign, v0.17.1)
+# =============================================================================
+# Acquire an exclusive lock at $1 (a file holding the owner PID). Race-safe vs:
+#   (a) two concurrent stale-lock recoverers,
+#   (b) a normal starter slipping into the rm/create gap,
+#   (c) a recovery mutex leaked by a crashed recoverer.
+# Algorithm: fast path is `set -C` (noclobber) atomic create. On contention with
+# a STALE (dead-owner) lock, recovery is serialized by an atomic `mkdir` mutex
+# whose own staleness is PID-based (never age-based, so a slow-but-alive recoverer
+# is never falsely reaped). Inside the mutex we re-read the lock (don't clobber a
+# live holder that recovered first) and re-acquire with `set -C` (so a starter
+# that grabbed the lock in the gap wins instead of us). Echoes nothing; returns:
+#   0 = acquired (caller should set LOCKFILE_ACQUIRED=1 and trap cleanup)
+#   1 = busy (a live instance holds the lock) OR lost a recovery race — caller exits
+acquire_slug_lock() {
+  local lockfile="$1"
+  mkdir -p "$(dirname "$lockfile")" 2>/dev/null
+  # Fast path: atomic noclobber create.
+  if (set -C; echo $$ > "$lockfile") 2>/dev/null; then
+    return 0
+  fi
+  local lock_pid
+  lock_pid=$(cat "$lockfile" 2>/dev/null)
+  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    return 1   # a live instance holds it
+  fi
+  # Stale lock (dead/unknown owner) — recover under an atomic mkdir mutex.
+  local rmutex="${lockfile}.recovery.d"
+  # Reap a leaked mutex ONLY if its owner is dead (PID-based; no false reap).
+  if [[ -d "$rmutex" ]]; then
+    local mowner
+    mowner=$(cat "$rmutex/owner" 2>/dev/null)
+    if [[ -z "$mowner" ]] || ! kill -0 "$mowner" 2>/dev/null; then
+      rm -rf "$rmutex" 2>/dev/null
+    fi
+  fi
+  if ! mkdir "$rmutex" 2>/dev/null; then
+    return 1   # another recoverer owns the critical section
+  fi
+  echo $$ > "$rmutex/owner" 2>/dev/null
+  # Critical section: re-read the lock. If a prior recoverer installed a LIVE pid,
+  # do not clobber it.
+  local cur_pid
+  cur_pid=$(cat "$lockfile" 2>/dev/null)
+  if [[ -n "$cur_pid" && "$cur_pid" != "$$" ]] && kill -0 "$cur_pid" 2>/dev/null; then
+    rm -rf "$rmutex" 2>/dev/null
+    return 1
+  fi
+  # Replace the stale lock, re-acquiring with noclobber so a starter that slipped
+  # into the gap (and created the lock) wins — we lose cleanly instead of clobbering.
+  rm -f "$lockfile" 2>/dev/null
+  if ! (set -C; echo $$ > "$lockfile") 2>/dev/null; then
+    rm -rf "$rmutex" 2>/dev/null
+    return 1
+  fi
+  rm -rf "$rmutex" 2>/dev/null
+  return 0
+}
+
+# =============================================================================
 # Bug #7 Fix-Q/R: Post-sentinel pane reaper + sentinel write-lock
 # =============================================================================
 # Without explicit teardown the claude/codex TUI returns to its idle prompt and

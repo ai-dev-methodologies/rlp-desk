@@ -29,3 +29,6 @@ node_modules/
 package-lock.json
 write
 .tmp/
+
+# Generated drift-hazard scratch (assemble-base regenerates; never snapshot)
+src/scripts/.run_src_verify.zsh

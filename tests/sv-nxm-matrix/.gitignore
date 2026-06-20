@@ -1,0 +1,4 @@
+# Generated main()-stripped bases + per-run evidence (INV-7: regenerated, never snapshotted)
+results/
+_base.zsh
+_assembled.zsh
