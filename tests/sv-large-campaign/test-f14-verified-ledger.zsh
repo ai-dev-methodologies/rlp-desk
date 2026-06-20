@@ -57,6 +57,15 @@ print '' >> "$VERIFIED_LEDGER"; _append_verified_ledger US-003
   && ok "empty ledger → empty restore (runner falls back to prose/status)" \
   || no "empty ledger returned '$(restore_from_ledger "$VERIFIED_LEDGER")'"
 
+# Item-4 promotion: restore precedence ledger > status.json > prose (durable first)
+cascade(){ local v="" l="$1" s="$2" p="$3"; [[ -z "$v" && -n "$l" ]] && v="$l"; [[ -z "$v" && -n "$s" ]] && v="$s"; [[ -z "$v" && -n "$p" ]] && v="$p"; print -r -- "$v"; }
+[[ "$(cascade US-001,US-002 US-001 US-001)" == "US-001,US-002" ]] \
+  && ok "precedence: ledger wins over status.json + prose" || no "ledger precedence broken"
+[[ "$(cascade '' US-005 US-009)" == "US-005" ]] \
+  && ok "precedence: status.json wins over prose when no ledger (Item-4 promotion)" || no "status>prose broken"
+[[ "$(cascade '' '' US-009)" == "US-009" ]] \
+  && ok "precedence: prose is the LAST resort (legacy only)" || no "prose fallback broken"
+
 rm -rf "$D"
 print ""
 if (( FAIL == 0 )); then

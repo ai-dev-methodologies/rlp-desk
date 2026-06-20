@@ -3043,10 +3043,13 @@ main() {
       US_LIST=$(grep -oE 'US-[0-9]+' "$prd_file" | sort -u | tr '\n' ',' | sed 's/,$//')
     fi
 
-  # F-14: the durable verified-US ledger is the PRIMARY restore source — a
-  # drift-proof, leader-written structured record. The Worker's prose
-  # "## Completed Stories" (read below) is fresh-context LLM output, used only if
-  # the ledger is absent/empty (legacy campaigns); status.json is the last resort.
+  # F-14 + status.json promotion (Item-4): VERIFIED_US restore precedence,
+  # most-durable first —
+  #   1. durable append-only ledger (leader-written, structured)
+  #   2. status.json verified_us (leader serialization written EVERY phase by
+  #      update_status — structured, reliable; promoted ABOVE the prose parse)
+  #   3. the Worker's prose "## Completed Stories" — LAST resort (fresh-context
+  #      LLM output that can drift; only legacy campaigns without 1 or 2 use it).
   if [[ -f "$VERIFIED_LEDGER" ]]; then
     local ledger_verified
     ledger_verified=$(jq -rR 'fromjson? | .us_id // empty' "$VERIFIED_LEDGER" 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u | tr '\n' ',' | sed 's/,$//')
@@ -3057,19 +3060,8 @@ main() {
     fi
   fi
 
-  # Initialize VERIFIED_US from memory's Completed Stories (carry over previous runs)
-  local memory_file="$DESK/memos/${SLUG}-memory.md"
-  if [[ -z "$VERIFIED_US" && -f "$memory_file" ]]; then
-      local completed_us
-      completed_us=$(sed -n '/^## Completed Stories$/,/^## /p' "$memory_file" 2>/dev/null | grep '^- US-' | sed 's/^- \(US-[0-9]*\):.*/\1/' | sort -u | tr '\n' ',' | sed 's/,$//')
-      if [[ -n "$completed_us" ]]; then
-        VERIFIED_US="$completed_us"
-        log "  Loaded completed stories from memory: $VERIFIED_US"
-        log_debug "[FLOW] loaded_verified_us_from_memory=$VERIFIED_US"
-      fi
-    fi
-
-    # D1: Fallback — restore verified_us from status.json if memory had none
+    # 2nd source: status.json verified_us — structured leader serialization,
+    # more reliable than the prose parse below (Item-4: promoted above prose).
     if [[ -z "$VERIFIED_US" && -f "$STATUS_FILE" ]]; then
       local status_verified
       status_verified=$(jq -r '.verified_us // [] | join(",")' "$STATUS_FILE" 2>/dev/null)
@@ -3077,6 +3069,18 @@ main() {
         VERIFIED_US="$status_verified"
         log "  Restored verified_us from status.json: $VERIFIED_US"
         log_debug "[FLOW] restored_verified_us_from_status=$VERIFIED_US"
+      fi
+    fi
+
+  # LAST resort: the Worker's prose "## Completed Stories" (drift-prone; legacy).
+  local memory_file="$DESK/memos/${SLUG}-memory.md"
+  if [[ -z "$VERIFIED_US" && -f "$memory_file" ]]; then
+      local completed_us
+      completed_us=$(sed -n '/^## Completed Stories$/,/^## /p' "$memory_file" 2>/dev/null | grep '^- US-' | sed 's/^- \(US-[0-9]*\):.*/\1/' | sort -u | tr '\n' ',' | sed 's/,$//')
+      if [[ -n "$completed_us" ]]; then
+        VERIFIED_US="$completed_us"
+        log "  Loaded completed stories from memory (last-resort prose): $VERIFIED_US"
+        log_debug "[FLOW] loaded_verified_us_from_memory=$VERIFIED_US"
       fi
     fi
 
