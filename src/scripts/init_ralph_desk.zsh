@@ -599,7 +599,7 @@ Check the iter-signal.json "us_id" field:
 2. Read done claim
 3. Identify scope: run \`git diff --name-only\` to find changed files, then read those files + related imports only
 4. **Scope Lock check**: (a) Read the Next Iteration Contract from campaign memory to identify the contracted US. (b) Run \`git diff --name-only\` to list all changed files. (c) For each changed file, verify it is plausibly related to the contracted US's acceptance criteria. (d) Flag files that appear unrelated. (e) Shared infrastructure (types, configs, common utilities) and dependency files are permitted if the AC implies them.
-5. **Layer Enforcement**: check test-spec L1/L2/L3/L4 sections. ANY section with TODO or blank = FAIL (IL-3).
+5. **Layer Enforcement (IL-3)**: confirm each REQUIRED layer is actually verified by a concrete PASSING check (a per-AC command in the Criteria-to-Verification table counts as L1/L3 coverage). Explicit "## L1/L2/L3" section headers and "N/A" markers are NOT mandatory — their absence is NOT a fail. FAIL a required layer ONLY when its verification is genuinely absent, blank, TODO, or failing — never for format alone. (Identical for claude AND codex.)
 6. Run fresh verification: execute ALL commands from test-spec verification layers (L1, L2, L3, L4 as applicable)
    **Skip detection (IL-5)**: After running tests, check output for "skip", "pending", "not run", or "0 items collected". Tests that did not actually execute do NOT count as passed. If test_count_executed < test_count_expected, verdict = FAIL ("skipped tests detected").
 7. Check each criterion against fresh evidence (only for the scoped US, or all if us_id=ALL)
@@ -618,10 +618,11 @@ Check the iter-signal.json "us_id" field:
    - Rationalization red flags: "tests pass so it works" (passing ≠ correct), "Worker is confident" (confidence ≠ evidence), "changes are minimal" (scope ≠ correctness)
 10½. **Worker Process Audit**:
    - Test-first compliance: done-claim execution_steps must show write_test step before implement step for each AC
-   - RED phase evidence: at least one verify_red step with exit_code=1 per AC (proves tests were written before passing)
+   - RED phase evidence: at least one verify_red step with exit_code=1 for the US (proves tests were written before passing). Per-AC RED is preferred, but AGGREGATE RED evidence is acceptable — do NOT FAIL merely because red/green is aggregated rather than per-AC.
    - Forbidden shortcuts: check done-claim claims and summary for forbidden phrases ("code inspection", "I'm confident", "too simple", "I'll test after", "already manually tested", "partial check")
    - Step completeness: each AC should have write_test → verify_red → implement → verify_green sequence in execution_steps
    - Planning Step presence: done-claim execution_steps should include a \`plan\` step as the first entry. If missing, record in reasoning as {"check": "Planning Step", "decision": "info", "basis": "plan step present/absent"} — informational only (does not affect pass/fail verdict)
+10¾. **Process-meta is NOT a PASS-blocker (F-17, identical for claude AND codex)**: when the acceptance criteria are met and their FRESH checks are green (per the Evidence Gate), record process/format observations — missing layer-section headers, aggregate-vs-per-AC evidence, a leader-synthesized iter signal, transiently-untracked deliverables — as warnings in reasoning, NOT as a FAIL. The real correctness gates (Evidence Gate, Test Sufficiency IL-4, Skip detection IL-5, Anti-Gaming) stay strict regardless.
 11. **Reproducibility check**: verify lock file committed, clean install succeeds, security scan passes, env vars documented (per test-spec Reproducibility Gate). Skip if test-spec says "N/A."
 12. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
     **CRITICAL: You MUST write the verdict as a FILE (not stdout/echo/cat). The Leader polls this file path — terminal output is lost. Evidence strings: include key metrics and exit codes only, do NOT quote full command output or logs verbatim.**

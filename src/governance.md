@@ -66,9 +66,20 @@ Verification layers:
 - L3: E2E Simulation — known input → full pipeline → output comparison. Always required.
 - L4: Deploy Verify — production environment checks. Required when deploying.
 
-Layer requirements per US are determined by risk classification (§1c).
-Non-applicable layers must be explicitly marked "N/A — {reason}" in the test-spec.
-Any required layer section with TODO or blank = automatic Verifier FAIL.
+Layer requirements per US are determined by risk classification (§1c). Layer
+completeness means ACTUAL verification COVERAGE, not test-spec FORMAT: a required
+layer is satisfied when its behavior is genuinely exercised by a concrete, PASSING
+check — e.g. a per-AC command in the Criteria→Verification table counts as L1/L3
+coverage. Explicit "## L1/L2/L3" section headers and "N/A — {reason}" markers are
+recommended but NOT mandatory, and their absence is NOT itself a fail.
+FAIL a required layer ONLY when its verification is genuinely absent, blank, TODO,
+or failing — never merely for a different-but-adequate test-spec format, a missing
+N/A marker, a leader-synthesized iter signal, or transiently-untracked
+deliverables. This rule is IDENTICAL for every verifier engine (claude AND codex):
+do NOT block a PASS on process/formatting meta when the acceptance criteria are
+met and their checks are green. This preserves strict AC + real layer coverage
+(IL-4 still governs test sufficiency); it removes only format pedantry — the F-17
+cross-engine consistency fix.
 See §1d for full layer definitions.
 
 **IL-4: Test Sufficiency**
