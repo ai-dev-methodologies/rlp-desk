@@ -273,10 +273,22 @@ acquire_slug_lock() {
   fi
   # Stale lock (dead/unknown owner) — recover under an atomic mkdir mutex.
   local rmutex="${lockfile}.recovery.d"
-  # Reap a leaked mutex ONLY if its owner is dead (PID-based; no false reap).
+  # Reap a leaked mutex ONLY when we can prove its owner is dead. An EMPTY owner
+  # is NOT proof of death: it usually means another recoverer just won the `mkdir`
+  # and has not yet written its PID (the window between `mkdir` and the owner
+  # write below). Reaping an empty-owner mutex here is a TOCTOU that deletes a
+  # LIVE mid-creation holder, letting two recoverers both proceed. So: a
+  # present-but-dead owner is reaped immediately; for an empty owner we give a
+  # brief settle window and re-read — if a PID appears it is a live holder and we
+  # do NOT reap (we lose the mkdir below and back off), and only if it stays
+  # empty do we treat it as a genuinely leaked mutex (creator died in the gap).
   if [[ -d "$rmutex" ]]; then
     local mowner
     mowner=$(cat "$rmutex/owner" 2>/dev/null)
+    if [[ -z "$mowner" ]]; then
+      sleep 0.3
+      mowner=$(cat "$rmutex/owner" 2>/dev/null)
+    fi
     if [[ -z "$mowner" ]] || ! kill -0 "$mowner" 2>/dev/null; then
       rm -rf "$rmutex" 2>/dev/null
     fi

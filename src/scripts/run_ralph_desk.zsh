@@ -739,41 +739,58 @@ _bug8_check_synth_allowed() {
     return 1
   fi
 
-  # Gate 3: no UNCOMMITTED changes to TRACKED files (F-6 fix). We deliberately
-  # pass --untracked-files=no: real repos carry untracked cruft (logs, .DS_Store,
-  # local config, build/coverage output) the Worker never touched. Blocking on
-  # those false-BLOCKs the campaign at iter 1 on ANY non-pristine repo — the
-  # single largest "never completes" cause found in large-campaign dogfood. The
-  # Verifier (test-spec) is the real correctness gate for the Worker's committed
-  # work; this gate only guards against a Worker that left TRACKED edits uncommitted.
+  # Gate 3: no UNCOMMITTED changes to TRACKED files (F-6 fix). We compare against
+  # HEAD with `git diff --name-only HEAD`, which lists ONLY tracked files modified
+  # vs HEAD — untracked cruft (logs, .DS_Store, local config, build/coverage
+  # output) the Worker never touched is never listed. Blocking on such cruft
+  # false-BLOCKed the campaign at iter 1 on ANY non-pristine repo — the single
+  # largest "never completes" cause found in large-campaign dogfood. The Verifier
+  # (test-spec) is the real correctness gate for the Worker's committed work; this
+  # gate only guards against a Worker that left TRACKED edits uncommitted.
   local _bug8_dirty
-  _bug8_dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)
+  _bug8_dirty=$(git -C "$ROOT" diff --name-only HEAD 2>/dev/null)
   if [[ -n "$_bug8_dirty" ]]; then
-    # F-8 recovery: by Gate 1 a done-claim exists, so these uncommitted TRACKED
-    # changes are the Worker's own US work it failed to commit — a frequent
-    # weak-model slip (the default haiku Worker reports "Committed ..." in its
-    # done-claim while the git commit never landed). The sidecar already marks
-    # this recoverable:true, yet the historical behavior TERMINATED the campaign,
-    # stranding completed work — the #1 weak-model "never completes" cause.
-    # Instead auto-commit the Worker's tracked changes (`git add -u`, never
-    # untracked cruft) and proceed. The Verifier (test-spec) is the real
-    # correctness gate, so a genuine mid-write bail still FAILs verify → fix loop;
-    # Bug #8's "no false PASS" intent is preserved by the Verifier, not by abort.
-    local _bug8_first5
-    _bug8_first5=$(printf '%s\n' "$_bug8_dirty" | head -n 5 | tr '\n' '|' | sed 's/|$//')
-    log "  Bug #8 F-8 recovery: done-claim + uncommitted tracked changes — auto-committing Worker's pending $us_id work (dirty: $_bug8_first5)."
-    log_debug "[GOV] iter=$iter bug8=recover_autocommit us_id=$us_id dirty='$_bug8_first5'"
-    if git -C "$ROOT" add -u && git -C "$ROOT" commit -q -m "chore(leader-recovery): commit Worker's uncommitted $us_id changes (Bug #8 F-8)"; then
-      log "  Leader-recovery auto-commit OK — Verifier will gate correctness."
+    # F-8 recovery (F-19 scoped): by Gate 1 a done-claim exists, so uncommitted
+    # TRACKED changes are most likely the Worker's own US work it failed to commit
+    # — a frequent weak-model slip (the default haiku Worker reports "Committed ..."
+    # in its done-claim while the git commit never landed). Historically this
+    # TERMINATED the campaign, stranding completed work — the #1 weak-model "never
+    # completes" cause. Instead auto-commit the Worker's edits and proceed — but
+    # scope the commit to the Worker's OWN files: exclude any tracked file ALREADY
+    # dirty before the campaign (CAMPAIGN_PREEXISTING_DIRTY) so an operator's
+    # pre-existing uncommitted work is NEVER swept into a Worker-recovery commit.
+    # The Verifier (test-spec) is the real correctness gate, so a genuine mid-write
+    # bail still FAILs verify → fix loop; Bug #8's "no false PASS" intent is
+    # preserved by the Verifier, not by abort.
+    local _bug8_worker_files
+    _bug8_worker_files=$(comm -23 \
+      <(printf '%s\n' "$_bug8_dirty" | sort -u) \
+      <(printf '%s\n' "${CAMPAIGN_PREEXISTING_DIRTY:-}" | sort -u) \
+      | grep -v '^[[:space:]]*$')
+    if [[ -z "$_bug8_worker_files" ]]; then
+      # Every dirty tracked file was already dirty BEFORE the campaign — the Worker
+      # committed its own work (or made no tracked change). Nothing to recover; do
+      # NOT commit the operator's pre-existing edits. Allow synthesis to proceed.
+      log "  Bug #8 F-8: only operator's pre-existing edits are dirty — Worker work already committed; proceeding without auto-commit."
+      log_debug "[GOV] iter=$iter bug8=preexisting_only_no_commit us_id=$us_id"
     else
-      log_error "  Bug #8: leader-recovery auto-commit failed. Refusing synthesis. dirty: $_bug8_first5"
-      log_debug "[GOV] iter=$iter bug8=block_autocommit_failed us_id=$us_id dirty='$_bug8_first5'"
-      write_blocked_sentinel \
-        "worker_incomplete_uncommitted: leader-recovery auto-commit failed ($_bug8_first5)" \
-        "$us_id" \
-        "metric_failure"
-      _emit_a4_fallback_audit "$us_id" "$iter" "blocked_autocommit_failed"
-      return 1
+      local _bug8_first5
+      _bug8_first5=$(printf '%s\n' "$_bug8_worker_files" | head -n 5 | tr '\n' '|' | sed 's/|$//')
+      log "  Bug #8 F-8 recovery: done-claim + Worker's uncommitted tracked changes — auto-committing $us_id work (files: $_bug8_first5)."
+      log_debug "[GOV] iter=$iter bug8=recover_autocommit us_id=$us_id files='$_bug8_first5'"
+      local -a _bug8_add=("${(@f)_bug8_worker_files}")
+      if git -C "$ROOT" add -- "${_bug8_add[@]}" && git -C "$ROOT" commit -q -m "chore(leader-recovery): commit Worker's uncommitted $us_id changes (Bug #8 F-8)"; then
+        log "  Leader-recovery auto-commit OK (Worker files only) — Verifier will gate correctness."
+      else
+        log_error "  Bug #8: leader-recovery auto-commit failed. Refusing synthesis. files: $_bug8_first5"
+        log_debug "[GOV] iter=$iter bug8=block_autocommit_failed us_id=$us_id files='$_bug8_first5'"
+        write_blocked_sentinel \
+          "worker_incomplete_uncommitted: leader-recovery auto-commit failed ($_bug8_first5)" \
+          "$us_id" \
+          "metric_failure"
+        _emit_a4_fallback_audit "$us_id" "$iter" "blocked_autocommit_failed"
+        return 1
+      fi
     fi
   fi
 
@@ -3106,19 +3123,22 @@ main() {
       fi
     fi
 
-    # F-13: restore the circuit-breaker counter on relaunch. status.json persists
-    # consecutive_failures (lib_ralph_desk.zsh) but only verified_us was ever read
-    # back, so a crash-looping campaign reset its CB to 0 on every relaunch and
-    # could evade the breaker (a durability hole a clean run never exercises).
-    # Restore it alongside verified_us; normal reset-on-progress still applies.
-    if [[ -f "$STATUS_FILE" ]]; then
-      local _status_cf
-      _status_cf=$(jq -r '.consecutive_failures // 0' "$STATUS_FILE" 2>/dev/null)
-      if [[ "$_status_cf" == <-> && "$_status_cf" -gt 0 ]]; then
-        CONSECUTIVE_FAILURES="$_status_cf"
-        log "  Restored consecutive_failures from status.json: $CONSECUTIVE_FAILURES"
-        log_debug "[FLOW] restored_consecutive_failures_from_status=$CONSECUTIVE_FAILURES"
-      fi
+  fi
+
+  # F-13 (batch-safe): restore the circuit-breaker counter on relaunch. This runs
+  # OUTSIDE the per-us block above because consecutive_failures is meaningful in
+  # EVERY verify mode — a batch-mode campaign crash-loops the same way, so nesting
+  # the restore under `per-us` let a batch relaunch reset its CB to 0 and evade the
+  # breaker. status.json persists the counter (lib_ralph_desk.zsh) every phase;
+  # only verified_us was ever read back. (verified_us restore stays per-us: batch
+  # mode has no per-US progress to rehydrate.) Normal reset-on-progress applies.
+  if [[ -f "$STATUS_FILE" ]]; then
+    local _status_cf
+    _status_cf=$(jq -r '.consecutive_failures // 0' "$STATUS_FILE" 2>/dev/null)
+    if [[ "$_status_cf" == <-> && "$_status_cf" -gt 0 ]]; then
+      CONSECUTIVE_FAILURES="$_status_cf"
+      log "  Restored consecutive_failures from status.json: $CONSECUTIVE_FAILURES"
+      log_debug "[FLOW] restored_consecutive_failures_from_status=$CONSECUTIVE_FAILURES"
     fi
   fi
 
@@ -3131,6 +3151,16 @@ main() {
 
   # Print security warning (governance.md s7: --dangerously-skip-permissions)
   print_security_warning
+
+  # F-8 scope guard (F-19): snapshot the tracked files that are ALREADY dirty
+  # before the campaign touches anything. The F-8 leader-recovery auto-commit
+  # (Bug #8 Gate 3) must commit only the Worker's OWN edits and never sweep an
+  # operator's pre-existing uncommitted work into a Worker-recovery commit.
+  # `git diff --name-only HEAD` lists tracked files modified vs HEAD (staged or
+  # not); untracked cruft is excluded and is never auto-committed. Empty when the
+  # tree starts clean. Recorded once; excluded at recovery time in Gate 3.
+  typeset -g CAMPAIGN_PREEXISTING_DIRTY
+  CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only HEAD 2>/dev/null)
 
   # Validate scaffold
   validate_scaffold

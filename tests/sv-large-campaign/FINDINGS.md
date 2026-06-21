@@ -190,3 +190,71 @@ The haiku run showed 0 Worker model upgrades despite struggle. On inspection thi
 | Scope | codex VERIFIER only. codex WORKER is fixed + proven (F-16; codex×claude COMPLETE; N×M C1/C2 PASS). claude verifier proven (12-US + f6mini campaigns). |
 | Fix | Softened ONLY the format/process meta-gates, uniformly for claude AND codex, in both governance.md (IL-3) and the init verifier-prompt template: (1) layer completeness = ACTUAL coverage not section FORMAT (explicit `## L1/L2/L3` headers + N/A markers no longer mandatory); (2) aggregate (vs per-AC) RED evidence accepted; (3) a "process-meta is NOT a PASS-blocker when ACs are green" principle. The strict CORRECTNESS gates were left UNTOUCHED: Evidence Gate (run all commands + exit codes), IL-4 (≥3 tests + ≥2 categories/AC), IL-5 (skip detection), Anti-Gaming. `tests/sv-large-campaign/test-f17-verifier-gate-contract.zsh` → 10/10 locks "format soft, correctness strict". |
 | Status | **FIXED + gate-verified, no weakening.** Formal 3-scenario Self-Verification Gate all COMPLETE with the codex verifier: LOW (f6mini codex×codex), MEDIUM (kvstore file I/O), CRITICAL (safe_path security; reproducibility N/A + IL-4 diversity). NO-WEAKENING empirically proven: the BROKEN control (mutually-unsatisfiable AC) got verdict=fail ×3 (real Evidence-Gate checks: `level()=='LOW'` exit 1), and CRITICAL-v1 (under-specified) correctly BLOCKed on IL-4 diversity + reproducibility — the verifier still rigorously fails work that misses the bar. Every passing scenario showed a fail→pass arc (real scrutiny, not rubber-stamp). |
+
+---
+
+# Codex-review round (pre-main-merge gate)
+
+A codex review of the full `origin/main…HEAD` source diff (before merging to main)
+returned **9 issues (1 critical, 4 high)**. Triaged against the actual code: 1
+pre-existing/non-issue (dismissed), 4 real defects fixed (F-18…F-21), the rest
+lower/mitigated. The 4 fixes were re-verified deterministically AND through the
+full real-LLM SV gate (below). All run in an ISOLATED tmux server (`tmux -L`) so
+the caller's session is never touched.
+
+## F-20 — recovery-mutex TOCTOU: empty owner treated as stale  ⚠️ HIGH (lock redesign)
+| | |
+|---|---|
+| Symptom | `acquire_slug_lock` (lib_ralph_desk.zsh) reaped a recovery mutex whose `owner` file was EMPTY. An empty owner is the normal mid-creation state (the window between `mkdir "$rmutex"` and the `echo $$ > owner` write), so a second recoverer could `rm -rf` a LIVE just-created mutex → two recoverers both proceed → two leaders on one slug. |
+| Fix | Only reap a present-but-DEAD owner immediately; for an EMPTY owner, `sleep 0.3` and re-read — if a PID appears it is a live mid-creation holder (back off via the failing `mkdir`), only if still empty (creator died in the gap) is it a genuine leak and reaped. `mkdir` atomicity serializes any double-reap of a leaked mutex. |
+| Verification | `tests/test_zsh4_lock_redesign.sh` 9/9 — added case 6 (empty-owner filled mid-settle → busy, mutex preserved) + case 7 (empty-owner stays empty → reaped after settle). |
+
+## F-21 — F-13 CB-counter restore nested under per-us  ⚠️ HIGH
+| | |
+|---|---|
+| Symptom | The F-13 `consecutive_failures` restore sat INSIDE `if [[ "$VERIFY_MODE" = "per-us" ]]`, so a BATCH-mode relaunch never restored the circuit-breaker counter → CB resets to 0 every relaunch → breaker evadable in batch mode. (Broader than codex flagged: the whole ledger/status verified_us restore was also nested, but that is per-us-only by design; only the CB restore needed to be mode-agnostic.) |
+| Fix | Moved the CB-counter restore OUT of the per-us block to function-body scope (a standalone `if [[ -f "$STATUS_FILE" ]]`), so it runs in every verify mode. verified_us restore stays per-us (batch has no per-US progress to rehydrate). |
+| Verification | `test-f13-cb-counter-restore.zsh` 5/5 — added a structural guard asserting the CB restore's enclosing `STATUS_FILE` guard is at 2-space (function-body) indent, not nested. |
+
+## F-18 — F-17 softening exceeded format-only (substance exempted)  · MEDIUM (policy-critical)
+| | |
+|---|---|
+| Symptom | The F-17 exemption list included "a leader-synthesized iter signal" and "transiently-untracked deliverables" — these are substantive completeness/process conditions, not FORMAT. Exempting untracked deliverables weakens the completeness check (work that isn't committed could PASS), exceeding the "FORMAT-only, do-not-weaken-verification" mandate. |
+| Fix | Narrowed governance.md IL-3 + the init verifier-prompt 10¾ to FORMAT-only (section headers, N/A markers, aggregate-vs-per-AC RED granularity). EXPLICITLY states deliverable COMPLETENESS is NOT exempt ("absent, uncommitted/untracked, or never actually exercised = FAIL"). iter-signal author reframed as out-of-scope (verify the work, not the signal's author) — a scope clarification, not a substance exemption. |
+| Verification | `test-f17-verifier-gate-contract.zsh` 13/13 — added F-18 checks: governance says completeness NOT exempt, verifier prompt says uncommitted/untracked = FAIL, and "transiently-untracked deliverables" no longer appears as an exemption. |
+
+## F-19 — F-8 auto-commit was repo-wide (swept operator edits)  ⚠️ HIGH
+| | |
+|---|---|
+| Symptom | F-8 Gate 3 recovery ran `git add -u` repo-wide, committing ALL tracked modifications under a Worker-recovery message — including an operator's pre-existing unrelated tracked edits present when the campaign started. |
+| Fix | Snapshot `CAMPAIGN_PREEXISTING_DIRTY` (tracked files dirty at campaign start, `git diff --name-only HEAD`) once before the loop; in Gate 3 commit only worker files = `comm -23 (current dirty) (preexisting)` via a zsh array `git add -- "${(@f)...}"`. If only pre-existing edits are dirty, commit nothing and allow synthesis (Worker already committed its own work). |
+| Verification | `test-f8-commit-slip-recovery.zsh` 10/10 — added case B (operator pre-existing edit NOT swept, stays uncommitted) + case C (only pre-existing dirty → no commit, synthesis allowed). |
+
+## Dismissed / unchanged
+- **CRITICAL "codex launch shell interpolation"** — PRE-EXISTING on origin/main (`-m $WORKER_CODEX_MODEL …` at 5 sites); this branch only added `-c mcp_servers='{}'`. Operator-supplied values, cmd already runs `--dangerously-bypass-approvals-and-sandbox` (operator-trusted). Not a NEW merge-blocker; backlog: validate/quote model values.
+- **verified-ledger raw us_id (F-14)** — the READ side filters via `jq 'fromjson?'` + `grep '^US-[0-9]+$'`, dropping malformed lines; us_id is always `US-NNN`. Low risk, defensive nice-to-have.
+
+## SV gate re-verification (real-LLM, codex verifier + NARROWED prompt, isolated tmux)
+Worker→Verifier campaigns run via the SRC init (bakes the F-18-narrowed verifier
+prompt) + SRC leader, each inside a separate `tmux -L` server. The caller's tmux
+server was verified intact (9 sessions, attached session alive) before/after all
+five campaigns — the SV-kills-the-main-session failure mode did NOT recur.
+
+| Scenario | Worker × Verifier | Result |
+|---|---|---|
+| LOW (f6mini) | sonnet × codex gpt-5.5:high | **COMPLETE** (verdict=pass) |
+| MEDIUM (kvstore, file I/O) | sonnet × codex gpt-5.5:high | **COMPLETE** (verdict=pass) |
+| CRITICAL (safe_path, security) | opus × codex gpt-5.5:high | **COMPLETE** (verdict=pass; safe_path.py committed iter 1) |
+| BROKEN (mutually-exclusive AC) | sonnet × codex gpt-5.5:high | **BLOCKED**, verdict=fail ×4, never COMPLETE |
+
+- **No false-fail**: the narrowed prompt lets the codex verifier PASS correct,
+  committed, tested work across all three risk tiers.
+- **No weakening**: BROKEN failed every iteration → BLOCKED (4 consecutive
+  fails); never falsely passed.
+- A first CRITICAL run with a **sonnet** worker BLOCKed (stale) — root-caused to
+  WORKER non-compliance (done-claim had no `write_test`/`verify_red` steps; the
+  unchanged Worker-Process-Audit correctness gate correctly failed it), NOT a
+  narrowing regression. Re-run with an opus worker COMPLETEd cleanly, isolating
+  worker quality from the verifier change. (The F-18 untracked-strictness was
+  exercised transiently at iter 2 and self-resolved when the worker committed —
+  no deadlock; safe_path.py ended TRACKED+committed.)

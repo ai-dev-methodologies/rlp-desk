@@ -74,12 +74,17 @@ coverage. Explicit "## L1/L2/L3" section headers and "N/A — {reason}" markers 
 recommended but NOT mandatory, and their absence is NOT itself a fail.
 FAIL a required layer ONLY when its verification is genuinely absent, blank, TODO,
 or failing — never merely for a different-but-adequate test-spec format, a missing
-N/A marker, a leader-synthesized iter signal, or transiently-untracked
-deliverables. This rule is IDENTICAL for every verifier engine (claude AND codex):
-do NOT block a PASS on process/formatting meta when the acceptance criteria are
-met and their checks are green. This preserves strict AC + real layer coverage
-(IL-4 still governs test sufficiency); it removes only format pedantry — the F-17
-cross-engine consistency fix.
+N/A marker, or RED evidence aggregated across the US instead of recorded per-AC.
+The iter-signal.json only identifies WHICH US to verify; whether the Worker wrote
+it or the leader synthesized it does not change the verdict — verify the work, not
+the signal's author. Deliverable COMPLETENESS is NOT exempt: if the work an AC
+requires is absent, uncommitted/untracked, or never actually exercised, the layer
+still FAILs. This rule is IDENTICAL for every verifier engine (claude AND codex):
+do NOT block a PASS on test-spec FORMAT when the acceptance criteria are met and
+their checks are green — but DO fail on missing or unverified substance. This
+preserves strict AC + real layer coverage (IL-4 still governs test sufficiency);
+it removes only format pedantry, never substance — the F-17 cross-engine
+consistency fix (scope narrowed to format-only per the F-18 review).
 See §1d for full layer definitions.
 
 **IL-4: Test Sufficiency**

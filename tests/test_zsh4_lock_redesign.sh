@@ -7,6 +7,9 @@
 #   3. stale lock (dead owner) -> recover
 #   4. leaked recovery mutex owned by a DEAD pid -> reaped, then acquire (no leak)
 #   5. recovery mutex owned by a LIVE pid -> busy (never clobber a live recoverer)
+#   6. EMPTY-owner mutex a live recoverer fills mid-settle -> busy, preserved
+#      (the mkdir->owner-write TOCTOU: an empty owner must NOT be reaped as stale)
+#   7. EMPTY-owner mutex that stays empty (creator died in the gap) -> reaped
 set -uo pipefail
 SCRIPT_DIR="${0:A:h}"
 ROOT="${SCRIPT_DIR:h}"
@@ -48,6 +51,24 @@ echo 999996 > "$LF"; mkdir -p "$LF.recovery.d"; echo "$MO" > "$LF.recovery.d/own
 acquire_slug_lock "$LF"; rc=$?
 [[ $rc -eq 1 ]] && ok "5 live-owner mutex -> busy (no clobber)" || no "5 live-mutex busy (rc=$rc)"
 kill "$MO" 2>/dev/null; rm -rf "$LF.recovery.d"
+
+# 6. EMPTY-owner mutex (another recoverer mid-creation) that gets its PID written
+#    DURING our settle window -> must back off, never reap the live holder. This is
+#    the mkdir->owner-write TOCTOU codex flagged: empty owner != stale.
+sleep 30 & MO6=$!
+echo 999995 > "$LF"; mkdir -p "$LF.recovery.d"; : > "$LF.recovery.d/owner"   # empty owner now
+( sleep 0.1; echo "$MO6" > "$LF.recovery.d/owner" ) &   # creator fills PID mid-settle
+acquire_slug_lock "$LF"; rc=$?
+if [[ $rc -eq 1 && -d "$LF.recovery.d" ]]; then ok "6 empty-owner mid-creation -> busy, mutex preserved (TOCTOU closed)"; else no "6 mid-creation race (rc=$rc, mutex=$([[ -d $LF.recovery.d ]] && echo present || echo GONE))"; fi
+wait 2>/dev/null
+kill "$MO6" 2>/dev/null; rm -rf "$LF.recovery.d"
+
+# 7. EMPTY-owner mutex that STAYS empty (creator died between mkdir and owner
+#    write) -> genuinely leaked; reaped after the settle re-read, then acquire.
+echo 999994 > "$LF"; mkdir -p "$LF.recovery.d"; : > "$LF.recovery.d/owner"
+acquire_slug_lock "$LF"; rc=$?
+[[ $rc -eq 0 && "$(cat "$LF")" == "$$" ]] && ok "7 leaked empty-owner reaped after settle, acquired" || no "7 leaked empty-owner reap (rc=$rc)"
+[[ -d "$LF.recovery.d" ]] && no "7b leaked empty mutex not cleaned" || ok "7b leaked empty mutex cleaned up"
 
 print ""
 print "─────────────────────────────────────────"

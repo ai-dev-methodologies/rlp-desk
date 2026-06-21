@@ -23,8 +23,8 @@ grep -q 'Layer Enforcement (IL-3)' "$INIT" && grep -q 'NOT mandatory' "$INIT" \
   || no "layer-format softening missing from verifier prompt"
 grep -q 'AGGREGATE RED evidence is acceptable' "$INIT" \
   && ok "softened: aggregate (vs per-AC) RED evidence accepted" || no "per-AC RED softening missing"
-grep -q 'Process-meta is NOT a PASS-blocker' "$INIT" \
-  && ok "softened: process-meta is a warning, not a PASS-blocker (when ACs green)" || no "process-meta principle missing"
+grep -q 'FORMAT is not a PASS-blocker' "$INIT" \
+  && ok "softened: format is a warning, not a PASS-blocker (when ACs green)" || no "format-not-blocker principle missing"
 grep -q 'ACTUAL verification COVERAGE, not test-spec FORMAT' "$GOV" \
   && ok "softened: governance IL-3 = coverage not format" || no "governance IL-3 softening missing"
 
@@ -44,6 +44,18 @@ grep -qiE 'Anti-Gaming' "$INIT" \
   && ok "strict KEPT: Anti-Gaming detection" || no "Anti-Gaming LOST — weakened!"
 grep -q 'Count < 3 per any AC = FAIL' "$GOV" \
   && ok "strict KEPT: governance IL-4 test sufficiency" || no "governance IL-4 LOST — weakened!"
+
+# --- F-18 NARROWING: the F-17 softening must be FORMAT-ONLY. Substance /
+# deliverable completeness must NOT be exempted (codex flagged the over-reach). ---
+grep -qi 'COMPLETENESS is NOT' "$GOV" \
+  && ok "strict KEPT (F-18): governance — deliverable completeness NOT exempt" || no "F-18: completeness exemption not closed (governance)"
+grep -qi 'uncommitted/untracked' "$INIT" \
+  && ok "strict KEPT (F-18): verifier prompt — uncommitted/untracked work is a FAIL" || no "F-18: untracked-work strictness missing (verifier prompt)"
+if grep -q 'transiently-untracked deliverables' "$GOV" "$INIT" 2>/dev/null; then
+  no "REGRESSION (F-18): 'transiently-untracked deliverables' is still EXEMPTED"
+else
+  ok "removed (F-18): untracked deliverables is no longer a format exemption"
+fi
 
 print ""
 if (( FAIL == 0 )); then

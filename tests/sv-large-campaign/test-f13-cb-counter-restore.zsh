@@ -40,6 +40,24 @@ print 'not json' > "$D/status.json"
   && ok "corrupt status.json → 0 (no crash)" \
   || no "corrupt json not handled"
 
+# --- structural guard (the ACTUAL F-13 fix): the CB restore must NOT be nested
+# under `if [[ "$VERIFY_MODE" = "per-us" ]]`, or a batch-mode relaunch skips it
+# entirely and the circuit breaker resets to 0 (evadable). The logic cases above
+# can't see placement; this asserts the enclosing STATUS_FILE guard sits at
+# function-body indent (2 spaces), not nested (4+). ---
+RUN="${0:A:h:h:h}/src/scripts/run_ralph_desk.zsh"
+if [[ -f "$RUN" ]]; then
+  cf_line=$(grep -n 'restored_consecutive_failures_from_status' "$RUN" | head -1 | cut -d: -f1)
+  guard_line=$(grep -n 'if \[\[ -f "\$STATUS_FILE" \]\]; then' "$RUN" \
+                 | awk -F: -v c="$cf_line" '$1 < c {l=$1} END{print l+0}')
+  indent=$(awk -v n="$guard_line" 'NR==n{match($0,/^ */);print RLENGTH}' "$RUN")
+  [[ "$indent" == 2 ]] \
+    && ok "CB restore runs at function-body scope (batch-safe, not nested under per-us)" \
+    || no "CB restore nested under per-us (STATUS_FILE guard indent=$indent, want 2)"
+else
+  no "structural guard: run_ralph_desk.zsh not found at $RUN"
+fi
+
 rm -rf "$D"
 print ""
 if (( FAIL == 0 )); then
