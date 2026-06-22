@@ -240,8 +240,21 @@ record_us_failure() {
 atomic_write() {
   local target="$1"
   local tmp="${target}.tmp.$$"
-  cat > "$tmp"
-  mv "$tmp" "$target"
+  # F-26: check BOTH stages. A truncated tmp (ENOSPC / SIGPIPE / full disk) must
+  # never be atomically renamed into the canonical path — a half-written
+  # complete/blocked/status sentinel would otherwise pass existence checks and
+  # mis-drive (or falsely terminate) the campaign. On failure: drop the tmp,
+  # leave the existing target untouched, and signal the error to callers that
+  # check. Behaviour on success is unchanged.
+  if ! cat > "$tmp"; then
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  fi
+  if ! mv "$tmp" "$target" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  fi
+  return 0
 }
 
 # =============================================================================
@@ -1260,6 +1273,11 @@ Summary: $summary
 Completed at iteration $ITERATION.
 
 Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$COMPLETE_SENTINEL"
+  # F-26: propagate atomic_write failure — never log success on a failed write.
+  if (( ${pipestatus[-1]:-0} != 0 )); then
+    log_error "FAILED to write COMPLETE sentinel ($COMPLETE_SENTINEL) — IO/disk error; completion NOT durably recorded"
+    return 1
+  fi
   log "COMPLETE sentinel written: $COMPLETE_SENTINEL"
 }
 
@@ -1369,6 +1387,7 @@ write_blocked_sentinel() {
       suggested_action: $action,
       meta: { blocked_hygiene_violated: $hygiene }
     }' | atomic_write "$json_path"
+  local _bs_json_rc=${pipestatus[-1]:-0}
 
   echo "BLOCKED: $us_id
 Reason: $reason
@@ -1379,7 +1398,16 @@ Category: $category
 Blocked at iteration $ITERATION.
 
 Timestamp: $now_iso" | atomic_write "$BLOCKED_SENTINEL"
+  local _bs_md_rc=${pipestatus[-1]:-0}
 
+  # F-26: propagate atomic_write failure. The "markdown ⇒ JSON" invariant means a
+  # half-written sentinel must surface loudly, not log false success. (Best-effort
+  # signal: callers already `return 1` after this, so we log+return rather than
+  # restructure every caller.)
+  if (( _bs_md_rc != 0 || _bs_json_rc != 0 )); then
+    log_error "FAILED to durably write BLOCKED sentinel (md_rc=$_bs_md_rc json_rc=$_bs_json_rc) for [$category] $reason — IO/disk error"
+    return 1
+  fi
   log_error "Campaign BLOCKED: [$category] $reason"
   log "BLOCKED sentinel written: $BLOCKED_SENTINEL"
   log "BLOCKED sidecar written: $json_path"

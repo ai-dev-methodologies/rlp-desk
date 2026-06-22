@@ -258,3 +258,94 @@ five campaigns — the SV-kills-the-main-session failure mode did NOT recur.
   worker quality from the verifier change. (The F-18 untracked-strictness was
   exercised transiently at iter 2 and self-resolved when the worker committed —
   no deadlock; safe_path.py ended TRACKED+committed.)
+
+---
+
+# Exhaustive audit round (5-agent fan-out)
+
+A 5-agent parallel audit derived EVERY termination site, race/TOCTOU point,
+state-persistence path, poll/timeout/liveness mechanism, and verdict/dispatch
+edge case in the leader. Agent line numbers were NOT trusted — every finding
+below was re-verified against the actual code before action (several agent line
+refs were wrong, e.g. `check_no_progress` cited as lib:1705 but is run:1705).
+Cross-agent dedup + verification yielded the fixes (F-22..F-26) and a documented
+backlog (real, but each needs careful design / carries false-fail or dispatch
+regression risk — deliberately NOT rushed, per "don't introduce new bugs").
+
+## FIXED (verified + tested; all run/lib only — formal SV-gate not triggered)
+
+### F-22 — consecutive-blocks CB was DEAD CODE; a single "blocked" killed the campaign  ⚠️ HIGH
+| | |
+|---|---|
+| Symptom | `_check_consecutive_blocks` (run:137) was DEFINED but NEVER called (0 call sites). So governance §8's consecutive-blocks breaker never ran in zsh, AND a single transient `blocked` verdict (run:3772) or worker `status=blocked` signal (run:3785) wrote a terminal sentinel + `return 1` on the FIRST occurrence — a fresh-context LLM mis-emitting "blocked" (format slip, confusion) ended the whole campaign. Separately, `request_info`, unknown verdict, and unknown signal status fell through with NO `CONSECUTIVE_FAILURES++` → a looping verifier/worker spun silently to MAX_ITER with no diagnostic BLOCK. |
+| Fix | Added `_bump_consecutive_failure` + `_block_with_grace` (run:~167). Both block paths now route through `_block_with_grace`: a recoverable first/transient block is ABSORBED as a soft-fail (worker retries); terminal only on a genuine `infra_failure`, the same canonical reason repeated >= BLOCK_CB_THRESHOLD (the now-LIVE consecutive-blocks CB), or the consecutive-failures CB. `request_info` / unknown verdict / unknown signal now `_bump_consecutive_failure` so the CB fires instead of spinning to MAX_ITER. |
+| Verification | `test-f22-block-grace-cb.zsh` 12/12 — behavioral (absorb first, terminate on infra/repeat/CB-ceiling) + structural (the dead function now has a call site; both block paths + 3 soft-fail paths wired). |
+
+### F-23 — verifier phrasing variant stranded a complete campaign at MAX_ITER  ⚠️ HIGH
+| | |
+|---|---|
+| Symptom | Completion + final-verify hinged on exact byte matches: `recommended == "complete"` (run:3667) and `signal_us_id == "ALL"` (run:2793, 3487, 3667). A verifier returning `"completed"`/`"done"` or a worker emitting `us_id:"all"` (lowercase) → never matched → "passed but did not recommend complete. Continuing." forever until MAX_ITER timeout despite genuine completion. |
+| Fix | Normalize at read: `recommended="${recommended:l}"` + accept `(complete\|completed\|done)`; `signal_us_id="${signal_us_id:u}"` (no-op for well-formed `US-001`). |
+| Verification | `test-f22-block-grace-cb.zsh` structural cases. |
+
+### F-24 — runner-lock stale-recovery ABA race → two leaders on one ROOT  · DEFERRED → D-9
+| | |
+|---|---|
+| Symptom | The per-ROOT runner lock (run:2958) recovers a stale lock with naive `rm -rf "$RUNNER_LOCKDIR"; mkdir` — the SAME empty-owner/ABA race `acquire_slug_lock` was hardened against in F-20, but never ported to the runner-level lock. A second relauncher could `rm -rf` the dir the first just won → two leaders on one ROOT (the runner lock is the only guard for same-ROOT-different-slug). |
+| Status | **NOT fixed this round — REVERTED to original, deferred to D-9.** A first attempt added settle+re-read+post-write-confirm, but the codex re-review correctly noted it only REDUCES the race probabilistically, not closes it (a delayed recoverer can still delete a winner's dir; the timing-based confirm is no hard guarantee). A half-fix gives false confidence → reverted (original restored; pre-existing rare race, no regression). The CORRECT fix delegates the runner lock to the proven race-safe `acquire_slug_lock` (file-based, F-20-hardened, 9/9 tested) + a metadata sidecar — tracked as D-9. |
+
+### F-25 — `$?`-in-`if !`-body in run_single_verifier (latent, F-10 sibling)  · MEDIUM
+| | |
+|---|---|
+| Symptom | `if ! poll_for_signal …; then local verifier_poll_rc=$?` (run:2668) captured the if-statement status, not poll's rc — the rc==2 branch was dead (currently benign: both arms `return 1`). The exact pattern F-10 fixed at the main verifier poll site, missed here. |
+| Fix | Capture rc directly after a bare call; keep the rc==2 "sentinel already written" branch live. |
+
+### F-26 — `atomic_write` swallowed cat/mv failures (truncated sentinels)  · MEDIUM
+| | |
+|---|---|
+| Symptom | `atomic_write` (lib:240) did `cat > tmp; mv tmp target` with no error checks. A truncated tmp (ENOSPC/SIGPIPE/full disk) was atomically renamed into the canonical path; a half-written complete/blocked/status sentinel passes existence checks and mis-drives or falsely terminates the campaign. Used by every sentinel/status writer. |
+| Fix | Check both stages; on failure drop the tmp, leave the target untouched, return 1. Success behaviour unchanged. |
+
+## DEFERRED backlog (real, verified, NOT rushed — each needs design / carries regression risk)
+
+| ID | Sev | Finding | Why deferred / recommended fix |
+|----|-----|---------|--------------------------------|
+| D-1 | HIGH | `FINAL_VERIFIER_MODEL`/`ENGINE`/`EFFORT` + `CONSENSUS_MODEL`/`FINAL_CONSENSUS_MODEL` are declared, CLI-parsed, logged, but **never used in dispatch** — every verify (per-US AND final) runs at `$VERIFIER_MODEL`. The "final = stricter" contract (user's verification philosophy) is unmet by the model knob (consensus still works). | Wire `FINAL_*` into the ALL/final-verify dispatch (single-verify when `signal_us_id==ALL`, `run_sequential_final_verify`, consensus final round). Touches dispatch → needs careful per-path change + a real-LLM final-verify test. Default likely == per-US so real-world impact is low until set; correctness gap is real. |
+| D-2 | HIGH | A4/codex-exit synth (`_bug8_check_synth_allowed`) never validates done-claim `.iteration`/`.us_id` freshness; a stale/wrong-US done-claim → leader synthesizes a signal with the wrong us_id → wrong US credited to the durable ledger. The operator-recovery validator already has these checks (lib `_validate_operator_recovery_artifacts`). | Port the iteration-match + mtime-newer-than-worker-prompt checks into the autonomous synth gate. Needs care: workers don't always write `.iteration` reliably → risk of false-reject; requires a stub-LLM test of the A4 path. |
+| D-3 | MED-HIGH | Leader-side verdict validation: `verdict=pass` is accepted with no check of `.verified_acs` (empty-array passes) and the verdict's own `.us_id` is never cross-checked against the signal us_id (a wrong-US-graded verifier credits the wrong US). | Add a soft guard: on a present-and-mismatched verdict `.us_id`, treat as fail + log. Making empty `verified_acs` a hard fail is risky (a correct verifier that doesn't populate the array would false-fail — observed: the LOW SV campaign passed with `verified_acs:0`). Needs the verifier prompt to GUARANTEE the field first, then a leader hard-gate. |
+| D-4 | MED | `run_sequential_final_verify` has no 3-strike retry (F-10 asymmetry); a single transient poll failure at the most expensive end-of-campaign moment charges a false fail / can route an rc==2 (sentinel already written) into the fix loop. | Wrap its poll in the same `replace_worker_pane`+re-dispatch 3-strike used at the main verifier site; distinguish rc==2 as terminal. |
+| D-5 | MED | State not restored on relaunch: model-upgrade state (`WORKER_MODEL`/`_MODEL_UPGRADED`/`_SAME_US_FAIL_COUNT`) resets to default; `CONSECUTIVE_BLOCKS`/`LAST_BLOCK_REASON` are in-memory only (so the now-live F-22 block CB resets across relaunch, and operator-recovery reads `.consecutive_blocks` as always-0). | Persist these in `update_status` JSON + restore in the F-13 block. Mechanical but touches the status schema; test for upgrade-survives-relaunch + block-CB-survives-relaunch. |
+| D-6 | MED | `check_no_progress` (run:1705) gives byte-stasis grace only to codex idle UI; a claude worker whose pane is byte-static for 600s while genuinely working (tool output not streamed to the TUI) would BLOCK. | LOW empirical likelihood (claude TUI animates a timer/spinner → pane changes → resets). Changing it risks MASKING a real freeze. Being observed via the live dogfood rather than speculatively changed. If dogfood shows a false no-progress block on a healthy worker, add an `_ACTIVE_TASK_RE` grace mirroring the codex idle grace. |
+| D-7 | MED | Heartbeat safety net (`check_heartbeat`/stale-CB) is inert in the primary TUI launch path (the trigger `.sh` that writes the heartbeat isn't executed; liveness rests on dead-pane + no-progress + prompt-stall). | Either emit a leader-side heartbeat from the poll loop, or remove the dead heartbeat code + document. Lower priority (the active detectors cover liveness). |
+| D-8 | MED | Consensus path: verdict-file lock discarded between rounds + codex null-verdict has no retry (claude does); `paste_to_pane` uses a tmux-server-global buffer name (cross-leader ABA when two leaders share one server); `cleanup` not re-entrancy-guarded (EXIT+INT/TERM double-fire). | Consensus is opt-in/off-by-default; paste-ABA + cleanup-double-fire are rare. Each is a contained fix; batch in a consensus/cleanup hardening pass. |
+
+Decision: F-22..F-26 are the high-value, low-regression, "leader stops terminating where it should recover" core + a safety-write fix — shipped with tests. D-1..D-8 are real and verified; deferred to avoid rushing dispatch rewiring / verification-rigor changes that could weaken or over-strict verification without a dedicated real-LLM gate.
+
+## Codex re-review of F-22..F-26 (resolution)
+
+A codex review of the F-22..F-26 diff returned 4 issues; each verified against the
+code and resolved:
+- **F-22a (codex HIGH) — DISMISSED.** codex noted `_classify_cross_us_or_metric`
+  never returns `infra_failure`, so `_block_with_grace`'s infra-immediate-terminate
+  branch is unreachable for the two block callers. Not a bug: a Worker/Verifier
+  self-reported `blocked` is by nature a SEMANTIC block (infra failures are handled
+  upstream in `poll_for_signal`, which writes its own infra_failure sentinels), so
+  grace is the correct behavior for these callers; the infra branch is harmless
+  defensive code (correct if any future caller passes infra). Kept.
+- **F-22b (codex HIGH) — FIXED.** `CONSECUTIVE_BLOCKS`/`LAST_BLOCK_REASON` were not
+  reset on a pass/partial-progress, so the now-live block CB counted blocks with an
+  intervening success as "consecutive." Now reset in the `pass` + partial-progress
+  branches. (`test-f22` case 5b + structural.)
+- **F-24 (codex HIGH) — REVERTED → D-9.** The partial fix only reduces the race;
+  reverted to avoid a false-confidence half-fix. Proper fix (acquire_slug_lock
+  delegation) tracked as D-9.
+- **F-26 (codex MEDIUM) — FIXED.** `write_complete_sentinel` + `write_blocked_sentinel`
+  now check `${pipestatus[-1]}` and `log_error` + `return 1` on a failed
+  `atomic_write` instead of logging false success.
+- **F-25 (codex) — CONFIRMED CORRECT.**
+
+| ID | Sev | Finding | Recommended fix |
+|----|-----|---------|-----------------|
+| D-9 | HIGH | Runner-lock (per-ROOT) stale-recovery ABA race (was F-24, reverted). | Delegate the runner lock to `acquire_slug_lock` (file-based, F-20-hardened) + write JSON metadata to a `${RUNNER_LOCKFILE_PATH}.meta` sidecar; update `cleanup` to remove the file+sidecar instead of the dir. Reuses the proven race-safe primitive; needs a duplicate-runner contract test. |
+
+Net shipped this round: **F-22 (+F-22b), F-23, F-25, F-26** — all verified, deterministic tests green (`test-f22-block-grace-cb.zsh` 14/14, full fault-injection + lock + sv-gate:fast 71/71 + npm test:node 387/387). F-24→D-9 deferred.

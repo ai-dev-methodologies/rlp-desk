@@ -164,6 +164,34 @@ _check_consecutive_blocks() {
   return 0
 }
 
+# F-22: bump the consecutive-failure counter for a soft-fail (request_info,
+# unknown verdict/status). Returns 0 if the circuit breaker is now tripped
+# (caller writes a sentinel + returns 1), 1 if still under threshold (continue).
+# Closes the "silently loop to MAX_ITER without ever firing the CB" gap for
+# verdict/status values the case-statement did not previously account for.
+_bump_consecutive_failure() {
+  (( CONSECUTIVE_FAILURES++ ))
+  (( CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD )) && return 0
+  return 1
+}
+
+# F-22: decide a worker/verifier BLOCK with grace. This is the call site that
+# was MISSING — _check_consecutive_blocks was dead code (defined, never invoked),
+# so the consecutive-blocks circuit breaker (governance §8) never ran and a
+# SINGLE transient "blocked" (a fresh-context LLM mis-emitting the status, a
+# formatting slip) terminated the whole campaign. Returns 0 = TERMINATE (caller
+# writes the sentinel + returns 1); 1 = ABSORB as a soft-fail (loop continues,
+# Worker retries). Forced terminal when: the category is a genuine infra_failure,
+# the same canonical reason repeats >= BLOCK_CB_THRESHOLD, or the consecutive-
+# failures CB trips. Otherwise a recoverable first/transient block is absorbed.
+_block_with_grace() {
+  local reason="$1" category="${2:-metric_failure}"
+  _check_consecutive_blocks "$reason" "$category" "${ITERATION:-0}" || return 0
+  [[ "$category" == "infra_failure" ]] && return 0
+  _bump_consecutive_failure && return 0
+  return 1
+}
+
 # --- Engine Selection (auto-detect from model format) ---
 # claude models (haiku/sonnet/opus) with :effort → claude engine + effort
 # codex models (gpt-*/spark) with :reasoning → codex engine + reasoning
@@ -2665,12 +2693,17 @@ run_single_verifier() {
   else
     # Claude: use full poll_for_signal with heartbeat/nudge
     log "  Polling for verify-verdict.json ($suffix)..."
-    if ! poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier$suffix"; then
-      local verifier_poll_rc=$?
+    # F-25: capture rc DIRECTLY (not inside `if ! cmd; then … $?`, which yields the
+    # if-statement status, not poll's rc — the same latent bug fixed at the main
+    # verifier poll site). Keeps the rc==2 "sentinel already written" branch live.
+    poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier$suffix"
+    local verifier_poll_rc=$?
+    if (( verifier_poll_rc != 0 )); then
       if (( verifier_poll_rc == 2 )); then
+        log_debug "[GOV] run_single_verifier poll hard-fail (rc=2, sentinel already written)"
         return 1
       fi
-      log_error "Verifier$suffix poll failed"
+      log_error "Verifier$suffix poll failed (rc=$verifier_poll_rc)"
       return 1
     fi
   fi
@@ -3476,6 +3509,10 @@ main() {
         # Read us_id from signal for per-US scoping
         local signal_us_id=""
         signal_us_id=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
+        # F-23: normalize case so a Worker emitting "all"/"All" still triggers the
+        # final/ALL verify + completion paths (which match "ALL" exactly). US ids
+        # are already uppercase ("US-001"), so this is a no-op for well-formed ids.
+        signal_us_id="${signal_us_id:u}"
         log "  Worker claims done (us_id=${signal_us_id:-all}). Dispatching Verifier..."
 
         # AC1: capture verifier start timestamp
@@ -3626,6 +3663,10 @@ main() {
         verdict=$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)
         local recommended
         recommended=$(jq -r '.recommended_state_transition' "$VERDICT_FILE" 2>/dev/null)
+        # F-23: normalize so a verifier's phrasing variant doesn't strand a
+        # genuinely-complete campaign at MAX_ITER. "Complete"/"completed"/"done"
+        # all mean complete; comparison below is lowercase-exact.
+        recommended="${recommended:l}"
         local verdict_summary
         verdict_summary=$(jq -r '.summary // "no summary"' "$VERDICT_FILE" 2>/dev/null)
 
@@ -3640,6 +3681,11 @@ main() {
             CONSENSUS_ROUND=0
             _SAME_US_FAIL_COUNT=0
             _LAST_FAILED_US=""
+            # F-22b: a pass is real progress — reset the consecutive-BLOCKS state
+            # too so the now-live block CB counts only blocks with NO intervening
+            # success ("consecutive" in the true sense, not cumulative).
+            CONSECUTIVE_BLOCKS=0
+            LAST_BLOCK_REASON=""
             if (( _MODEL_UPGRADED )); then
               log "  Worker model restored: ${WORKER_MODEL} → ${_ORIGINAL_WORKER_MODEL} (pass verdict)"
               log_debug "[DECIDE] iter=$ITERATION phase=model_select model_restore=true from=${WORKER_MODEL} to=${_ORIGINAL_WORKER_MODEL}"
@@ -3664,7 +3710,7 @@ main() {
               _append_verified_ledger "$signal_us_id"   # F-14: durable source-of-truth
               update_status "verifier" "pass_us"
               # Worker will do next US on next iteration
-            elif [[ "$recommended" == "complete" || "$signal_us_id" == "ALL" ]]; then
+            elif [[ "$recommended" == (complete|completed|done) || "$signal_us_id" == "ALL" ]]; then
               # Final full verify passed or complete recommended
               write_complete_sentinel "$verdict_summary"
               update_status "complete" "pass"
@@ -3700,6 +3746,9 @@ main() {
             # Partial progress resets consecutive failures (progress was made)
             if [[ "$VERIFIED_US" != "$_prev_verified" ]]; then
               CONSECUTIVE_FAILURES=0
+              # F-22b: partial progress also resets the consecutive-blocks state.
+              CONSECUTIVE_BLOCKS=0
+              LAST_BLOCK_REASON=""
               log "  Progress detected — consecutive_failures reset to 0"
               log_debug "[GOV] iter=$ITERATION consecutive_failures_reset=partial_progress"
             fi
@@ -3768,31 +3817,66 @@ main() {
             log "  Questions: \"$verdict_summary_ri\""
             log "  Treating as soft fail — Worker will see verdict in next iteration."
             update_status "verifier" "request_info"
+            # F-22: count request_info toward the CB so a verifier looping on
+            # request_info trips the breaker instead of spinning to MAX_ITER.
+            if _bump_consecutive_failure; then
+              write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive non-advancing verdicts (request_info)" "" "repeat_axis"
+              update_status "blocked" "consecutive_failures"
+              return 1
+            fi
             ;;
           blocked)
             local _verdict_cat
             _verdict_cat=$(_classify_cross_us_or_metric "$verdict_summary")
-            write_blocked_sentinel "Verifier verdict: blocked - $verdict_summary" "" "$_verdict_cat"
-            update_status "blocked" "verifier_blocked"
-            return 1
+            # F-22: a transient/first "blocked" no longer kills the campaign —
+            # absorb as a soft-fail with grace; terminate only on a genuine infra
+            # block, the same reason repeated >= BLOCK_CB_THRESHOLD, or the CB.
+            if _block_with_grace "Verifier verdict: blocked - $verdict_summary" "$_verdict_cat"; then
+              write_blocked_sentinel "Verifier verdict: blocked - $verdict_summary" "" "$_verdict_cat"
+              update_status "blocked" "verifier_blocked"
+              return 1
+            fi
+            log "  Verifier verdict=blocked absorbed as soft-fail (consecutive_failures=$CONSECUTIVE_FAILURES; reason not yet repeated ${BLOCK_CB_THRESHOLD}×) — Worker will retry."
+            update_status "verifier" "blocked_softfail"
             ;;
           *)
             log_error "Unknown verdict: $verdict"
             update_status "verifier" "unknown_verdict"
+            # F-22: unknown verdict is a soft-fail that counts toward the CB
+            # (was: silent continue to MAX_ITER with no diagnostic BLOCK).
+            if _bump_consecutive_failure; then
+              write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive unrecognized verifier verdicts" "" "repeat_axis"
+              update_status "blocked" "consecutive_failures"
+              return 1
+            fi
             ;;
         esac
         ;;
       blocked)
-        # --- governance.md s7 step 6: blocked -> write sentinel ---
+        # --- governance.md s7 step 6: blocked -> write sentinel (with grace) ---
         local _signal_cat
         _signal_cat=$(_classify_cross_us_or_metric "$signal_summary")
-        write_blocked_sentinel "Worker reported blocked: $signal_summary" "" "$_signal_cat"
-        update_status "blocked" "worker_blocked"
-        return 1
+        # F-22: a transient/first Worker-reported "blocked" no longer kills the
+        # campaign — absorb as a soft-fail with grace (same gate as the verifier
+        # blocked path); terminate only on infra, repeated reason, or the CB.
+        if _block_with_grace "Worker reported blocked: $signal_summary" "$_signal_cat"; then
+          write_blocked_sentinel "Worker reported blocked: $signal_summary" "" "$_signal_cat"
+          update_status "blocked" "worker_blocked"
+          return 1
+        fi
+        log "  Worker status=blocked absorbed as soft-fail (consecutive_failures=$CONSECUTIVE_FAILURES) — re-dispatching Worker."
+        update_status "worker" "blocked_softfail"
         ;;
       *)
         log_error "Unknown signal status: $signal_status"
         update_status "worker" "unknown_status"
+        # F-22: unknown signal status is a soft-fail that counts toward the CB
+        # (was: silent continue to MAX_ITER).
+        if _bump_consecutive_failure; then
+          write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive unrecognized worker signals" "" "repeat_axis"
+          update_status "blocked" "consecutive_failures"
+          return 1
+        fi
         ;;
     esac
 
