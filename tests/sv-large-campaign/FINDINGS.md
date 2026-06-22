@@ -413,3 +413,25 @@ Backlog now: D-1b (consensus-final FINAL_VERIFIER, opt-in), D-6 (no-progress cla
 grace — empirically fine in dogfood), D-7 (heartbeat dead in TUI path), D-8-rest
 (paste-buffer ABA, consensus null-retry — off-by-default). The HIGH/MED "never
 completes" + correctness + durability items are all shipped.
+
+## D-10 + D-11 shipped (fresh convergence audit; codex: D-10 resolved 0, D-11 correct)
+
+A fresh adversarial convergence audit of the post-hardening leader surfaced a NEW
+HIGH the incremental reviews had missed:
+- **D-10 FIXED (HIGH).** poll_for_signal's dead-pane check passed `$WORKER_ENGINE`
+  for BOTH worker and verifier polls. In a mixed-engine campaign (claude worker +
+  codex verifier — the user's config) a healthy codex verifier pane showing `bash`
+  (codex's trigger shell) was judged DEAD by the claude rule → false dead-pane →
+  3-strike → spurious BLOCK (intermittent). Fix: derive the engine from the poll
+  role (*codex*→codex, *claude*→claude, *inal*→FINAL_VERIFIER_ENGINE, *erifier*→
+  VERIFIER_ENGINE, else WORKER_ENGINE). The single-engine ALL verify polls with
+  role "Verifier-final" so the derivation matches the FINAL_VERIFIER_ENGINE it
+  launches (codex R2 closed a residual on that branch).
+- **D-11 FIXED (MED, observability).** CURRENT_US was never assigned → lifecycle
+  sentinels (no-progress/stall/R12) tagged BLOCKED sidecars with us_id=ALL. Now
+  published at worker dispatch (next_us) + verify (signal_us_id).
+- test-dbacklog.zsh 33/33; codex re-review D-10 RESOLVED 0 / D-11 CORRECT.
+- The convergence audit found NO new CRITICAL. Remaining LOW/edge: D-1b
+  (consensus-final FINAL_VERIFIER, opt-in), D-6 (no-progress claude grace —
+  empirically fine), D-7 (heartbeat dead in TUI path), D-8-rest (paste-buffer ABA,
+  consensus null-retry), + a harmless redundant EXIT trap.

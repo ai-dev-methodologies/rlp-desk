@@ -1979,6 +1979,12 @@ write_worker_trigger() {
       fi
     done
   fi
+  # D-11: publish the in-flight US GLOBALLY so the lifecycle-path sentinels
+  # (no-progress, prompt-stall, R12 watchdog) tag their BLOCKED sidecar with the
+  # real us_id (they default to ${CURRENT_US:-ALL}, which was always ALL because
+  # CURRENT_US was never assigned). The verify phase overwrites it with the US
+  # actually under verification.
+  [[ -n "$next_us" ]] && CURRENT_US="$next_us" || CURRENT_US="ALL"
 
   {
     # Per-US PRD injection: substitute full PRD path with per-US split path when available
@@ -2596,8 +2602,19 @@ poll_for_signal() {
     # Dead pane detection during poll: check if claude/codex process died
     local poll_cmd
     poll_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null)
-    # Dead pane detection — delegates to check_dead_pane() for engine-aware logic
-    if check_dead_pane "$poll_cmd" "$WORKER_ENGINE" "$role"; then
+    # Dead pane detection — delegates to check_dead_pane() for engine-aware logic.
+    # D-10: pick the engine for the pane being polled, NOT always WORKER_ENGINE. In
+    # a mixed-engine campaign (e.g. claude worker + codex verifier) the old code
+    # judged the codex verifier's "bash" (codex's trigger shell) as DEAD using the
+    # claude rule → false dead-pane → 3-strike → spurious BLOCK on a live verifier.
+    # Derive from the role string (covers per-US, final, and consensus per-engine).
+    local _dead_engine="$WORKER_ENGINE"
+    if [[ "$role" == *codex* ]]; then _dead_engine="codex"
+    elif [[ "$role" == *claude* ]]; then _dead_engine="claude"
+    elif [[ "$role" == *inal* ]]; then _dead_engine="$FINAL_VERIFIER_ENGINE"
+    elif [[ "$role" == *erifier* ]]; then _dead_engine="$VERIFIER_ENGINE"
+    fi
+    if check_dead_pane "$poll_cmd" "$_dead_engine" "$role"; then
       log "  WARNING: $role pane $pane_id has bare shell ($poll_cmd) — process died during execution"
       log_debug "[GOV] iter=$ITERATION pane_dead_during_poll=true pane=$pane_id cmd=$poll_cmd role=$role"
       # Return failure so caller can handle recovery
@@ -3600,6 +3617,9 @@ main() {
         # final/ALL verify + completion paths (which match "ALL" exactly). US ids
         # are already uppercase ("US-001"), so this is a no-op for well-formed ids.
         signal_us_id="${signal_us_id:u}"
+        # D-11: the US under verification is the in-flight US for lifecycle sentinels
+        # fired during the verify poll (no-progress / stall / R12).
+        [[ -n "$signal_us_id" ]] && CURRENT_US="$signal_us_id"
         log "  Worker claims done (us_id=${signal_us_id:-all}). Dispatching Verifier..."
 
         # AC1: capture verifier start timestamp
@@ -3680,13 +3700,19 @@ main() {
           # stronger FINAL_VERIFIER_*; per-US verifies keep the lighter VERIFIER_*.
           # For signal_us_id != ALL, _v_* alias VERIFIER_* EXACTLY — no behavior
           # change on the per-US hot path.
-          local _v_eng _v_model _v_cxm _v_cxr _v_eff
+          local _v_eng _v_model _v_cxm _v_cxr _v_eff _v_role
           if [[ "$signal_us_id" == "ALL" ]]; then
             _v_eng="$FINAL_VERIFIER_ENGINE"; _v_model="$FINAL_VERIFIER_MODEL"
             _v_cxm="$FINAL_VERIFIER_CODEX_MODEL"; _v_cxr="$FINAL_VERIFIER_CODEX_REASONING"; _v_eff="$FINAL_VERIFIER_EFFORT"
+            # D-10 fix: an ALL verify here runs FINAL_VERIFIER_ENGINE, so the poll's
+            # dead-pane check must derive FINAL_VERIFIER_ENGINE too — use the
+            # "*inal*" role so poll_for_signal's engine derivation matches _v_eng
+            # (else a codex final verifier's "bash" is misjudged with VERIFIER_ENGINE).
+            _v_role="Verifier-final"
           else
             _v_eng="$VERIFIER_ENGINE"; _v_model="$VERIFIER_MODEL"
             _v_cxm="$VERIFIER_CODEX_MODEL"; _v_cxr="$VERIFIER_CODEX_REASONING"; _v_eff="$VERIFIER_EFFORT"
+            _v_role="Verifier"
           fi
 
           local verifier_launch
@@ -3721,7 +3747,7 @@ main() {
             # then local rc=$?` had this latent bug, so its `rc==2` branch was
             # dead and a hard-fail double-wrote a sentinel). rc: 0=verdict,
             # 1=timeout (retryable), 2=hard-failed + infra_failure already recorded.
-            poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier"
+            poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "$_v_role"
             local verifier_poll_rc=$?
             if (( verifier_poll_rc == 0 )); then
               _vpoll_ok=1; break

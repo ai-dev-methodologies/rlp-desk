@@ -113,6 +113,35 @@ sleep 30 & HOLD=$!; echo "$HOLD" > "$RLF"   # simulate a live holder
 [[ $r1 -eq 0 && $r2 -eq 1 ]] && ok "D-9: acquire_slug_lock on the runner file — fresh acquires (0), live holder → busy (1)" || no "D-9 delegation exclusivity (r1=$r1 r2=$r2)"
 kill "$HOLD" 2>/dev/null; rm -rf "$D9"
 
+# ---- D-10: poll dead-pane detection uses the POLLED pane's engine (mixed-engine) ----
+grep -q 'check_dead_pane "$poll_cmd" "$_dead_engine"' "$RUN" \
+  && ok "D-10: dead-pane check uses role-derived engine (not always WORKER_ENGINE)" || no "D-10: per-pane engine derivation missing"
+# behavioral: role → engine (mirror of the derivation)
+derive_eng(){ local role="$1" w="$2" v="$3" fv="$4"
+  if [[ "$role" == *codex* ]]; then print codex
+  elif [[ "$role" == *claude* ]]; then print claude
+  elif [[ "$role" == *inal* ]]; then print "$fv"
+  elif [[ "$role" == *erifier* ]]; then print "$v"
+  else print "$w"; fi; }
+[[ "$(derive_eng Verifier claude codex claude)" == codex ]] && ok "D-10: role=Verifier → VERIFIER_ENGINE (codex), not WORKER_ENGINE (claude)" || no "D-10 verifier engine"
+[[ "$(derive_eng Verifier-final claude claude codex)" == codex ]] && ok "D-10: role=Verifier-final → FINAL_VERIFIER_ENGINE" || no "D-10 final engine"
+[[ "$(derive_eng Verifier-codex claude claude claude)" == codex ]] && ok "D-10: role=Verifier-codex (consensus) → codex" || no "D-10 consensus engine"
+[[ "$(derive_eng Worker claude codex codex)" == claude ]] && ok "D-10: role=Worker → WORKER_ENGINE" || no "D-10 worker engine"
+# the actual check_dead_pane logic (mirror): a codex pane showing 'bash' is ALIVE
+# (codex uses a bash trigger), so judging it with the claude rule false-kills it
+cdp(){ local cmd="$1" eng="${2:-claude}"; [[ -z "$cmd" || "$cmd" == zsh ]] && return 0; [[ "$cmd" == bash && "$eng" != codex ]] && return 0; return 1; }
+cdp bash codex && no "D-10: codex 'bash' wrongly dead" || ok "D-10: codex verifier showing 'bash' → ALIVE (the false-BLOCK that D-10 fixes)"
+cdp bash claude && ok "D-10: claude 'bash' → dead (unchanged)" || no "D-10 claude bash should be dead"
+# D-10 codex-fix: single-engine ALL verify polls with role "Verifier-final" so the
+# dead-pane derivation matches FINAL_VERIFIER_ENGINE (not VERIFIER_ENGINE)
+grep -q '_v_role="Verifier-final"' "$RUN" && grep -q 'poll_for_signal .*"$_v_role"' "$RUN" \
+  && ok "D-10 fix: single-engine ALL poll role=Verifier-final → dead-pane uses FINAL_VERIFIER_ENGINE" || no "D-10 fix: _v_role wiring missing"
+[[ "$(derive_eng Verifier-final claude claude codex)" == codex ]] && ok "D-10 fix: ALL-verify role resolves FINAL_VERIFIER_ENGINE (codex) when VERIFIER=claude" || no "D-10 fix: final-role engine"
+
+# ---- D-11: CURRENT_US published so lifecycle sentinels emit the real us_id ----
+grep -q 'CURRENT_US="$next_us"' "$RUN" && grep -q 'CURRENT_US="$signal_us_id"' "$RUN" \
+  && ok "D-11: CURRENT_US set at worker dispatch (next_us) + verify (signal_us_id)" || no "D-11: CURRENT_US assignment missing"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))
