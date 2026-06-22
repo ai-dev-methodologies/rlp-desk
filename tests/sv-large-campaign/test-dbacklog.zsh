@@ -150,6 +150,34 @@ credit(){ local cur="$1" us="$2"; if echo ",$cur," | grep -q ",$us,"; then print
 [[ "$(credit 'US-001,US-002' 'US-002')" == 'US-001,US-002' ]] && ok "D-12: re-submitted US-002 → not appended (no US-001,US-002,US-002)" || no "D-12 dedup failed"
 [[ "$(credit 'US-001' 'US-002')" == 'US-001,US-002' ]] && ok "D-12: new US-002 → appended" || no "D-12 new-append failed"
 
+# ---- D-5b: model-upgrade state restored on relaunch (restore-priority, gated) ----
+grep -q 'restored_model_upgrade=true' "$RUN" && grep -q '_status_mu" == "1"' "$RUN" \
+  && ok "D-5b: relaunch restores upgraded model, GATED on model_upgraded==1 (fresh campaign keeps CLI model)" || no "D-5b: model-upgrade restore missing/ungated"
+# behavioral: gate logic
+mu_restore(){ local mu="$1"; [[ "$mu" == "1" ]] && print RESTORE || print KEEP_CLI; }
+[[ "$(mu_restore 1)" == RESTORE ]] && ok "D-5b: model_upgraded=1 → restore upgraded model" || no "D-5b restore gate"
+[[ "$(mu_restore 0)" == KEEP_CLI ]] && ok "D-5b: model_upgraded=0 (never upgraded) → keep CLI/env model" || no "D-5b keep gate"
+
+# ---- D-13: per-leader paste buffer (no cross-leader ABA on a global buffer) ----
+grep -q 'rlp-paste-$$-' "$RUN" && grep -vq 'load-buffer -b rlp-paste ' <(grep 'load-buffer' "$RUN") 2>/dev/null \
+  && ok "D-13: paste buffer is per-leader+pane (rlp-paste-\$\$-…), not a server-global name" || no "D-13: per-leader paste buffer missing"
+
+# ---- D-14: consensus codex null-verdict retry (symmetry with claude) ----
+grep -q 'consensus_codex_retry' "$RUN" \
+  && ok "D-14: consensus codex null-verdict retry present (symmetry with claude)" || no "D-14: codex null-retry missing"
+
+# ---- D-15: consensus merged verdict carries us_id (D-3 cross-check applies) ----
+grep -q 'cons_us_id="${2:-' "$RUN" && grep -q '"us_id": "'\''"$cons_us_id"'\''",' "$RUN" \
+  && ok "D-15: consensus merged verdict includes us_id (passed from caller)" || no "D-15: consensus us_id missing"
+# D-15 codex-fix: us_id sanitized to JSON-safe (ALL|US-NNN) before echo-interpolation
+grep -q 'cons_us_id" == (ALL|US-<->)' "$RUN" \
+  && ok "D-15 fix: us_id sanitized to ALL|US-NNN (JSON-safe; no quote/backslash injection)" || no "D-15 fix: us_id sanitize missing"
+sane(){ local u="$1"; [[ "$u" == (ALL|US-<->) ]] && print "$u" || print ALL; }
+[[ "$(sane 'US-007')" == US-007 && "$(sane 'ALL')" == ALL && "$(sane 'x"]}evil')" == ALL ]] && ok "D-15 fix: US-007/ALL pass through; malformed → ALL" || no "D-15 sanitize logic"
+# D-13 codex-fix: redundant explicit delete-buffer removed (paste -d already deletes)
+grep -q 'tmux delete-buffer -b "$_buf"' "$RUN" && no "D-13 fix: redundant delete-buffer still present" \
+  || ok "D-13 fix: redundant hot-path delete-buffer removed (paste -d handles it)"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

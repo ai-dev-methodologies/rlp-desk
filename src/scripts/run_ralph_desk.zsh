@@ -1180,10 +1180,15 @@ check_copy_mode() {
 paste_to_pane() {
   local pane_id="$1"
   local text="$2"
+  # D-8/D-13: per-leader+pane tmux buffer name (was a server-GLOBAL "rlp-paste").
+  # Two leaders sharing one tmux server (different ROOTs) would ABA the single
+  # global buffer — load-A / load-B / paste-A pastes B's text into A's pane. A
+  # name keyed by leader pid + pane closes that.
+  local _buf="rlp-paste-$$-${pane_id//[^0-9A-Za-z]/}"
   local tmpbuf="/tmp/.rlp-desk-paste-$$.tmp"
   echo -n "$text" > "$tmpbuf"
-  tmux load-buffer -b rlp-paste "$tmpbuf" 2>/dev/null
-  tmux paste-buffer -b rlp-paste -d -t "$pane_id" 2>/dev/null
+  tmux load-buffer -b "$_buf" "$tmpbuf" 2>/dev/null
+  tmux paste-buffer -b "$_buf" -d -t "$pane_id" 2>/dev/null   # -d deletes the buffer after paste
   rm -f "$tmpbuf"
 }
 
@@ -2919,6 +2924,14 @@ _should_use_consensus() {
 # --- US-004: Run consensus verification (claude + codex sequentially) ---
 run_consensus_verification() {
   local iter="$1"
+  # D-15: the US under consensus (for the merged verdict's us_id, so the D-3
+  # cross-check applies to consensus too). Falls back to the caller's local
+  # signal_us_id (zsh dynamic scope) then ALL.
+  local cons_us_id="${2:-${signal_us_id:-ALL}}"
+  # D-15 fix: us_id is interpolated into the merged-verdict JSON via echo, so make it
+  # JSON-safe. It is always "ALL" or "US-<digits>"; anything else → ALL (a value
+  # with a quote/backslash/control char would otherwise produce invalid JSON).
+  [[ "$cons_us_id" == (ALL|US-<->) ]] || cons_us_id="ALL"
   local claude_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-claude.json"
   local codex_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-codex.json"
 
@@ -2965,6 +2978,23 @@ run_consensus_verification() {
     fi
     ITER_VERIFIER_CODEX_DURATION_S=$(( $(date +%s) - _codex_t0 ))
     CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
+    # D-14: validate codex verdict is not null/empty — retry once (symmetry with the
+    # claude null-retry above). A transient codex interruption otherwise counts as a
+    # non-pass, burns a consensus round, and can BLOCK after 6 rounds.
+    if [[ -z "$CODEX_VERDICT" || "$CODEX_VERDICT" == "null" ]]; then
+      log "  WARNING: Codex verdict is '$CODEX_VERDICT' — likely interrupted. Retrying codex verifier..."
+      log_debug "[GOV] iter=$iter phase=consensus_codex_retry reason=null_verdict"
+      rm -f "$codex_verdict_file" 2>/dev/null
+      if ! run_single_verifier "$iter" "codex" "$VERIFIER_CODEX_MODEL" "-codex" "$codex_verdict_file"; then
+        log_error "Codex verifier retry also failed"
+        return 1
+      fi
+      CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
+      if [[ -z "$CODEX_VERDICT" || "$CODEX_VERDICT" == "null" ]]; then
+        log_error "Codex verdict still null after retry — consensus cannot proceed"
+        return 1
+      fi
+    fi
     log_debug "[GOV] iter=$iter phase=consensus_codex verdict=$CODEX_VERDICT model=$VERIFIER_CODEX_MODEL reasoning=$VERIFIER_CODEX_REASONING"
 
     log "  Consensus: claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT"
@@ -2980,6 +3010,7 @@ run_consensus_verification() {
       {
         echo '{'
         echo '  "verdict": "pass",'
+        echo '  "us_id": "'"$cons_us_id"'",'
         echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
         echo '  "summary": "Consensus PASS: both claude and codex verified independently",'
         echo '  "recommended_state_transition": "complete",'
@@ -3276,6 +3307,34 @@ main() {
       LAST_BLOCK_REASON="$_status_lbr"
       log "  Restored consecutive_blocks from status.json: $CONSECUTIVE_BLOCKS"
       log_debug "[FLOW] restored_consecutive_blocks_from_status=$CONSECUTIVE_BLOCKS"
+    fi
+    # D-5b (restore-priority, user-chosen): if the Worker was AUTO-upgraded during a
+    # prior segment (model_upgraded==1), restore the upgraded model + its engine
+    # triple + the upgrade bookkeeping, so a crash-relaunch resumes at the upgraded
+    # model (and the architecture-escalation trigger survives) instead of silently
+    # reverting to the base model and re-spending iterations to re-upgrade. Gated on
+    # model_upgraded==1 so it ONLY overrides for the auto-upgrade case (a fresh
+    # campaign that never upgraded keeps the env/CLI model).
+    local _status_mu
+    _status_mu=$(jq -r '.model_upgraded // 0' "$STATUS_FILE" 2>/dev/null)
+    if [[ "$_status_mu" == "1" ]]; then
+      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_sufc
+      _s_wm=$(jq -r '.worker_model // empty' "$STATUS_FILE" 2>/dev/null)
+      _s_we=$(jq -r '.worker_engine // empty' "$STATUS_FILE" 2>/dev/null)
+      _s_wcm=$(jq -r '.worker_codex_model // empty' "$STATUS_FILE" 2>/dev/null)
+      _s_wcr=$(jq -r '.worker_codex_reasoning // empty' "$STATUS_FILE" 2>/dev/null)
+      _s_owm=$(jq -r '.original_worker_model // empty' "$STATUS_FILE" 2>/dev/null)
+      _s_sufc=$(jq -r '.same_us_fail_count // 0' "$STATUS_FILE" 2>/dev/null)
+      if [[ -n "$_s_wm" && -n "$_s_we" ]]; then
+        _MODEL_UPGRADED=1
+        WORKER_MODEL="$_s_wm"; WORKER_ENGINE="$_s_we"
+        [[ -n "$_s_wcm" ]] && WORKER_CODEX_MODEL="$_s_wcm"
+        [[ -n "$_s_wcr" ]] && WORKER_CODEX_REASONING="$_s_wcr"
+        [[ -n "$_s_owm" ]] && _ORIGINAL_WORKER_MODEL="$_s_owm"
+        [[ "$_s_sufc" == <-> ]] && _SAME_US_FAIL_COUNT="$_s_sufc"
+        log "  Restored auto-upgraded Worker model: $WORKER_MODEL ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}, same_us_fails=$_SAME_US_FAIL_COUNT (D-5b restore-priority)"
+        log_debug "[FLOW] restored_model_upgrade=true worker_model=$WORKER_MODEL engine=$WORKER_ENGINE same_us_fail=$_SAME_US_FAIL_COUNT"
+      fi
     fi
   fi
 
@@ -3654,7 +3713,7 @@ main() {
         if (( use_consensus )); then
           # US-004: Run consensus verification (claude + codex sequentially)
           local consensus_rc=0
-          run_consensus_verification "$ITERATION" || consensus_rc=$?
+          run_consensus_verification "$ITERATION" "$signal_us_id" || consensus_rc=$?
 
           if (( consensus_rc == 2 )); then
             # Consensus disagreement — treat as fail, fix loop will handle

@@ -466,3 +466,35 @@ Accepted LOW / by-design (NOT fixed, with rationale):
 CONVERGENCE: F-1..F-26 + D-1..D-12 shipped + codex-clean + tested + dogfood-proven
 (haiku 12-US COMPLETE). Two independent fresh adversarial audits find 0 remaining
 HIGH/CRITICAL. The "never completes" failure class is resolved at the leader level.
+
+## D-5b/D-13/D-14/D-15 shipped — LOW backlog cleanup
+
+Clearing the actionable LOW backlog (codex-reviewed; the 2 codex findings on the
+batch — D-13 redundant delete-buffer, D-15 us_id not JSON-escaped — fixed in place):
+- **D-5b FIXED (user-chosen restore-priority).** Relaunch restores the
+  auto-upgraded Worker model (+ engine triple + _ORIGINAL_WORKER_MODEL +
+  _SAME_US_FAIL_COUNT) when status.json model_upgraded==1 — GATED so a fresh
+  campaign that never upgraded keeps its CLI/env model (no surprise override).
+- **D-13 FIXED.** paste_to_pane uses a per-leader+pane buffer name (was global
+  "rlp-paste") → no cross-leader ABA on a shared tmux server. (delete-buffer
+  redundant with paste -d → removed.)
+- **D-14 FIXED.** consensus codex null-verdict retry (symmetry with claude).
+- **D-15 FIXED.** consensus merged verdict carries us_id (caller-passed), sanitized
+  to ALL|US-NNN (JSON-safe), so the D-3 cross-check applies to consensus too.
+- test-dbacklog.zsh 45/45.
+
+FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
+- **D-1c** consensus model knobs (CONSENSUS_MODEL / FINAL_CONSENSUS_MODEL) are dead
+  (consensus uses VERIFIER_*/VERIFIER_CODEX_* for all rounds) — the same dead-knob
+  class as D-1 but on the opt-in consensus path; needs a design decision (which
+  models for consensus per-US vs final). Deferred pending that decision.
+- **D-7** heartbeat block inert in the TUI launch path (trigger .sh not executed) —
+  liveness is covered by dead-pane + no-progress + prompt-stall; removing the
+  intertwined poll-path block risks more than the harmless skip. Documented.
+- redundant EXIT trap (CLEANUP_DONE-guarded) — harmless.
+
+FINAL STATE: F-1..F-26 + D-1..D-15 shipped, codex-clean, deterministically tested
+(test-dbacklog 45/45 + full fault-injection + lock + sv-gate 71/71 + node 387/387),
+dogfood-proven (haiku 12-US COMPLETE). Two independent fresh adversarial audits →
+0 HIGH/CRITICAL. The "never completes" failure class is resolved; remaining items
+are LOW/opt-in/by-design (D-1c needs a user design decision).
