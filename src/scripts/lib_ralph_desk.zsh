@@ -672,6 +672,12 @@ update_status() {
     verified_us_json=$(echo "$VERIFIED_US" | tr ',' '\n' | jq -R . | jq -s .)
   fi
 
+  # D-5: jq-encode the free-text restore fields so a reason/model with special
+  # chars can't corrupt the status JSON (the rest of this builder is echo-based).
+  local _lbr_json _owm_json
+  _lbr_json=$(printf '%s' "${LAST_BLOCK_REASON:-}" | jq -Rs . 2>/dev/null); [[ -z "$_lbr_json" ]] && _lbr_json='""'
+  _owm_json=$(printf '%s' "${_ORIGINAL_WORKER_MODEL:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owm_json" ]] && _owm_json='""'
+
   # Build consensus fields
   local consensus_json=""
   if [[ "$CONSENSUS_MODE" != "off" ]]; then
@@ -700,6 +706,11 @@ update_status() {
   "consensus_mode": "'"$CONSENSUS_MODE"'",
   "last_result": "'"$last_result"'",
   "consecutive_failures": '"$CONSECUTIVE_FAILURES"',
+  "consecutive_blocks": '"${CONSECUTIVE_BLOCKS:-0}"',
+  "last_block_reason": '"$_lbr_json"',
+  "model_upgraded": '"${_MODEL_UPGRADED:-0}"',
+  "same_us_fail_count": '"${_SAME_US_FAIL_COUNT:-0}"',
+  "original_worker_model": '"$_owm_json"',
   "verified_us": '"$verified_us_json"''"$consensus_json"',
   "updated_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
 }' | atomic_write "$STATUS_FILE"

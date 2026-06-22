@@ -2184,6 +2184,12 @@ TRIGGER_EOF
 # =============================================================================
 
 cleanup() {
+  # D-8: re-entrancy guard. The trap is armed on EXIT INT TERM, so a TERM (cleanup
+  # runs) immediately followed by process exit (EXIT fires cleanup AGAIN) would
+  # double-run the non-idempotent steps — a double runner-lock release can rm a
+  # relaunched leader's lock dir (ABA). Run the body at most once.
+  (( ${CLEANUP_DONE:-0} )) && return 0
+  CLEANUP_DONE=1
   log "Cleaning up..."
 
   # Remove lockfile
@@ -2767,14 +2773,36 @@ run_sequential_final_verify() {
       }
     fi
 
-    # Poll for verdict
+    # Poll for verdict. D-4: distinguish rc==2 (hard-fail, sentinel already
+    # written → terminal) from rc==1 (transient pane race/timeout) and give ONE
+    # replace-pane + re-dispatch retry before failing the US — the F-10 retry
+    # parity the per-US main verifier site has but this final-verify path lacked
+    # (a single transient poll miss falsely failed a US at the most expensive
+    # end-of-campaign moment, charging a bogus consecutive failure).
     rm -f "$VERDICT_FILE"
     local poll_rc=0
     poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
-    if (( poll_rc != 0 )); then
-      log_error "Verifier poll failed for $us (rc=$poll_rc)"
+    if (( poll_rc == 2 )); then
+      log_error "Verifier hard-fail (rc=2, sentinel written) for $us in final verify"
       FAILED_US="$us"
       return 1
+    fi
+    if (( poll_rc == 1 )); then
+      log "  Verifier-final transient poll fail for $us — replacing pane + retrying once (D-4)"
+      replace_worker_pane "$VERIFIER_PANE" "verifier"
+      VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
+      if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+        launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
+      else
+        launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || { FAILED_US="$us"; return 1; }
+      fi
+      rm -f "$VERDICT_FILE"; poll_rc=0
+      poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
+      if (( poll_rc != 0 )); then
+        log_error "Verifier poll failed for $us after replace+retry (rc=$poll_rc)"
+        FAILED_US="$us"
+        return 1
+      fi
     fi
 
     # Bug #7 Fix-Q/R: reap verifier pane between per-US final verifications so
@@ -3172,6 +3200,24 @@ main() {
       CONSECUTIVE_FAILURES="$_status_cf"
       log "  Restored consecutive_failures from status.json: $CONSECUTIVE_FAILURES"
       log_debug "[FLOW] restored_consecutive_failures_from_status=$CONSECUTIVE_FAILURES"
+    fi
+    # D-5: also restore the consecutive-BLOCKS state so the now-live block CB
+    # (F-22) survives a relaunch — otherwise a crash-loop resets it to 0 every
+    # relaunch and the block breaker is evadable (the same durability hole F-13
+    # closed for consecutive_failures). Restore last_block_reason too, else a
+    # restored count is immediately reset on the next block (reason wouldn't match).
+    local _status_cb _status_lbr
+    _status_cb=$(jq -r '.consecutive_blocks // 0' "$STATUS_FILE" 2>/dev/null)
+    _status_lbr=$(jq -r '.last_block_reason // ""' "$STATUS_FILE" 2>/dev/null)
+    # D-5 fix: restore ATOMICALLY — both the count AND the reason, or neither. A
+    # count without its reason is a useless half-state (the next block's reason
+    # wouldn't match the empty LAST_BLOCK_REASON and would reset the count to 1
+    # anyway), so require both to be present before applying.
+    if [[ "$_status_cb" == <-> && "$_status_cb" -gt 0 && -n "$_status_lbr" ]]; then
+      CONSECUTIVE_BLOCKS="$_status_cb"
+      LAST_BLOCK_REASON="$_status_lbr"
+      log "  Restored consecutive_blocks from status.json: $CONSECUTIVE_BLOCKS"
+      log_debug "[FLOW] restored_consecutive_blocks_from_status=$CONSECUTIVE_BLOCKS"
     fi
   fi
 
@@ -3677,6 +3723,11 @@ main() {
 
         case "$verdict" in
           pass)
+            # D-3 fix: snapshot the CB BEFORE the pass-success reset so a wrong-US
+            # "pass" (us_id mismatch, handled below) accumulates the CB across
+            # iterations instead of restarting from 0 each time (the reset on the
+            # next line would otherwise defeat the mismatch soft-fail's CB bound).
+            local _cf_before_pass=$CONSECUTIVE_FAILURES
             CONSECUTIVE_FAILURES=0
             CONSENSUS_ROUND=0
             _SAME_US_FAIL_COUNT=0
@@ -3699,17 +3750,40 @@ main() {
 
             # --- Verified US tracking (both per-us and batch modes) ---
             if [[ -n "$signal_us_id" && "$signal_us_id" != "ALL" ]]; then
-              # Add this US to verified list
-              if [[ -n "$VERIFIED_US" ]]; then
-                VERIFIED_US="${VERIFIED_US},${signal_us_id}"
+              # D-3: cross-check the verdict's OWN us_id against the US the leader
+              # scoped this verify to. If the verifier graded a DIFFERENT US, do
+              # NOT credit signal_us_id (it was not actually verified) — soft-fail
+              # so the Worker re-runs the contracted US. Acts ONLY on a PRESENT
+              # mismatch (absent verdict us_id = trust the scope), so a correctly-
+              # scoped verifier is never affected.
+              local _verdict_us_id
+              _verdict_us_id=$(jq -r '.us_id // empty' "$VERDICT_FILE" 2>/dev/null)
+              _verdict_us_id="${_verdict_us_id:u}"
+              if [[ -n "$_verdict_us_id" && "$_verdict_us_id" != "$signal_us_id" ]]; then
+                log_error "  Verdict us_id mismatch: verifier graded $_verdict_us_id but leader scoped $signal_us_id — NOT crediting (soft-fail)."
+                log_debug "[GOV] iter=$ITERATION verdict_us_id_mismatch verdict_us=$_verdict_us_id signal_us=$signal_us_id"
+                update_status "verifier" "us_id_mismatch"
+                # D-3 fix: undo the pass-entry CB reset so consecutive mismatches
+                # actually accumulate toward the breaker (else each restarts at 0).
+                CONSECUTIVE_FAILURES=$_cf_before_pass
+                if _bump_consecutive_failure; then
+                  write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive verdict us_id mismatches" "" "repeat_axis"
+                  update_status "blocked" "consecutive_failures"
+                  return 1
+                fi
               else
-                VERIFIED_US="$signal_us_id"
+                # Add this US to verified list
+                if [[ -n "$VERIFIED_US" ]]; then
+                  VERIFIED_US="${VERIFIED_US},${signal_us_id}"
+                else
+                  VERIFIED_US="$signal_us_id"
+                fi
+                log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
+                log_debug "[FLOW] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
+                _append_verified_ledger "$signal_us_id"   # F-14: durable source-of-truth
+                update_status "verifier" "pass_us"
+                # Worker will do next US on next iteration
               fi
-              log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
-              log_debug "[FLOW] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
-              _append_verified_ledger "$signal_us_id"   # F-14: durable source-of-truth
-              update_status "verifier" "pass_us"
-              # Worker will do next US on next iteration
             elif [[ "$recommended" == (complete|completed|done) || "$signal_us_id" == "ALL" ]]; then
               # Final full verify passed or complete recommended
               write_complete_sentinel "$verdict_summary"

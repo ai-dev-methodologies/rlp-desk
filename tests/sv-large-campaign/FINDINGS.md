@@ -349,3 +349,33 @@ code and resolved:
 | D-9 | HIGH | Runner-lock (per-ROOT) stale-recovery ABA race (was F-24, reverted). | Delegate the runner lock to `acquire_slug_lock` (file-based, F-20-hardened) + write JSON metadata to a `${RUNNER_LOCKFILE_PATH}.meta` sidecar; update `cleanup` to remove the file+sidecar instead of the dir. Reuses the proven race-safe primitive; needs a duplicate-runner contract test. |
 
 Net shipped this round: **F-22 (+F-22b), F-23, F-25, F-26** — all verified, deterministic tests green (`test-f22-block-grace-cb.zsh` 14/14, full fault-injection + lock + sv-gate:fast 71/71 + npm test:node 387/387). F-24→D-9 deferred.
+
+## D-backlog batch shipped (D-3/D-4/D-5/D-8) — codex re-review R2: 0 issues
+
+Continuing "improve until 0". The inline-verifiable D-items are fixed + codex-clean:
+- **D-3 FIXED** — verdict `pass` branch cross-checks the verdict's own us_id vs the
+  scoped US; a wrong-US "pass" is a CB-bounded soft-fail (not credited). The CB is
+  snapshotted before the pass-success reset so consecutive mismatches accumulate.
+- **D-4 FIXED** — `run_sequential_final_verify` distinguishes rc==2 (terminal) from
+  rc==1 (one replace+re-dispatch retry); F-10 parity for the final-verify path.
+- **D-5 FIXED** — persist + ATOMICALLY restore consecutive_blocks/last_block_reason
+  (+ model-upgrade state persisted) so the F-22 block CB survives a relaunch.
+- **D-8 FIXED (cleanup part)** — cleanup() re-entrancy guard (CLEANUP_DONE) so the
+  EXIT+INT/TERM trap double-fire runs the body once (no double lockfile-release ABA).
+- Tests: `test-dbacklog.zsh` 11/11 + the two codex-found refinements (D-3 CB-accum,
+  D-5 atomic restore) locked as structural guards.
+
+Still open (each needs a DEDICATED test cycle — not inline-verifiable, so not rushed):
+- **D-1** FINAL_VERIFIER_MODEL/ENGINE/EFFORT wiring (final-verify dispatch rewiring;
+  the codex sub-vars also aren't auto-detected at the `_auto_detect_engine FINAL_*`
+  call). HIGH value (user's "final 엄격" philosophy) but needs a real-LLM final-verify
+  test proving the final uses FINAL_* not VERIFIER_*. Don't rewire the just-verified
+  final-verify path blind.
+- **D-2** A4/codex-exit synth done-claim iteration/us_id freshness. Needs a stub-LLM
+  A4-path test (false-reject risk if workers don't write .iteration reliably).
+- **D-9** runner-lock via acquire_slug_lock delegation. High blast radius (startup +
+  cleanup for EVERY campaign); needs an isolated duplicate-runner contract test.
+- **D-6** no-progress claude grace — empirically fine (the 12-US haiku dogfood never
+  false-blocked); observe further before changing the freeze detector.
+- **D-7** heartbeat dead in the TUI launch path; **D-8 rest** (paste-buffer ABA,
+  consensus null-retry) — lower priority / off-by-default paths.
