@@ -435,3 +435,34 @@ HIGH the incremental reviews had missed:
   (consensus-final FINAL_VERIFIER, opt-in), D-6 (no-progress claude grace —
   empirically fine), D-7 (heartbeat dead in TUI path), D-8-rest (paste-buffer ABA,
   consensus null-retry), + a harmless redundant EXIT trap.
+
+## D-12 + CONVERGENCE (2nd fresh audit: NO NEW HIGH/CRITICAL)
+
+A 2nd independent adversarial convergence audit (different angle: verdict/US
+accounting, model-upgrade chain, jq/JSON gate decisions, consensus correctness)
+found **NO new HIGH or CRITICAL** — the leader hardening has CONVERGED at the
+HIGH/CRITICAL bar. One cheap correctness item shipped:
+- **D-12 FIXED.** The verify `pass` branch appended signal_us_id to VERIFIED_US
+  unconditionally; a fresh-context Worker re-submitting an already-verified US
+  (memory drift) produced "US-001,US-001" (coverage-count inflation + ledger
+  double-write — cosmetic, the next-US picker already skipped dups). Added the
+  dedup guard the fail/partial path already had. test-dbacklog 36/36.
+
+Accepted LOW / by-design (NOT fixed, with rationale):
+- **MED-2 / model-upgrade on a D-3 us_id mismatch**: a verifier grading the wrong
+  US doesn't escalate the WORKER model — by design: the mismatch is a VERIFIER-side
+  problem (a stronger worker wouldn't help), and it is already CB-bounded.
+- **LOW-1 (D-5b) model-upgrade state restore**: persisted in status.json but not
+  restored on relaunch (only consecutive_failures/blocks are). Ambiguity: a user
+  may change --worker-model on relaunch, so blindly restoring the upgraded model
+  could override their choice. Deferred (needs a design decision).
+- **LOW-2 consensus merged verdict has no us_id** → the D-3 cross-check is skipped
+  for consensus (absent us_id = trust scope, per D-3's own contract). Low risk (both
+  consensus verifiers see the same scoped prompt). Consensus is opt-in.
+- D-1b (consensus-final FINAL_VERIFIER), D-6 (no-progress claude grace — empirically
+  fine), D-7 (heartbeat dead in TUI path), D-8-rest (paste-buffer ABA, consensus
+  null-retry), redundant EXIT trap — all LOW/edge/off-by-default.
+
+CONVERGENCE: F-1..F-26 + D-1..D-12 shipped + codex-clean + tested + dogfood-proven
+(haiku 12-US COMPLETE). Two independent fresh adversarial audits find 0 remaining
+HIGH/CRITICAL. The "never completes" failure class is resolved at the leader level.

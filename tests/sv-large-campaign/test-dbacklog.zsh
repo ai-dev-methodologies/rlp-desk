@@ -142,6 +142,14 @@ grep -q '_v_role="Verifier-final"' "$RUN" && grep -q 'poll_for_signal .*"$_v_rol
 grep -q 'CURRENT_US="$next_us"' "$RUN" && grep -q 'CURRENT_US="$signal_us_id"' "$RUN" \
   && ok "D-11: CURRENT_US set at worker dispatch (next_us) + verify (signal_us_id)" || no "D-11: CURRENT_US assignment missing"
 
+# ---- D-12: pass-path dedup (re-submitted already-verified US not double-credited) ----
+grep -q 'verified_us_dedup' "$RUN" \
+  && ok "D-12: pass-path dedup guard present (mirrors the fail-path guard)" || no "D-12: pass-path dedup missing"
+# behavioral mirror of the dedup credit
+credit(){ local cur="$1" us="$2"; if echo ",$cur," | grep -q ",$us,"; then print "$cur"; else [[ -n "$cur" ]] && print "$cur,$us" || print "$us"; fi; }
+[[ "$(credit 'US-001,US-002' 'US-002')" == 'US-001,US-002' ]] && ok "D-12: re-submitted US-002 → not appended (no US-001,US-002,US-002)" || no "D-12 dedup failed"
+[[ "$(credit 'US-001' 'US-002')" == 'US-001,US-002' ]] && ok "D-12: new US-002 → appended" || no "D-12 new-append failed"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

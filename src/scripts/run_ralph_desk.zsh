@@ -3853,15 +3853,23 @@ main() {
                   return 1
                 fi
               else
-                # Add this US to verified list
-                if [[ -n "$VERIFIED_US" ]]; then
-                  VERIFIED_US="${VERIFIED_US},${signal_us_id}"
+                # Add this US to verified list. D-12: dedup — a fresh-context Worker
+                # can re-submit an already-verified US (memory drift); don't
+                # double-credit it (mirrors the fail/partial-progress guard, and
+                # keeps VERIFIED_US + the ledger + the coverage count honest).
+                if echo ",$VERIFIED_US," | grep -q ",$signal_us_id,"; then
+                  log "  US $signal_us_id already verified — not re-crediting (dedup)."
+                  log_debug "[FLOW] iter=$ITERATION verified_us_dedup=$signal_us_id"
                 else
-                  VERIFIED_US="$signal_us_id"
+                  if [[ -n "$VERIFIED_US" ]]; then
+                    VERIFIED_US="${VERIFIED_US},${signal_us_id}"
+                  else
+                    VERIFIED_US="$signal_us_id"
+                  fi
+                  log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
+                  log_debug "[FLOW] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
+                  _append_verified_ledger "$signal_us_id"   # F-14: durable source-of-truth
                 fi
-                log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
-                log_debug "[FLOW] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
-                _append_verified_ledger "$signal_us_id"   # F-14: durable source-of-truth
                 update_status "verifier" "pass_us"
                 # Worker will do next US on next iteration
               fi
