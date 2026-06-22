@@ -178,6 +178,43 @@ sane(){ local u="$1"; [[ "$u" == (ALL|US-<->) ]] && print "$u" || print ALL; }
 grep -q 'tmux delete-buffer -b "$_buf"' "$RUN" && no "D-13 fix: redundant delete-buffer still present" \
   || ok "D-13 fix: redundant hot-path delete-buffer removed (paste -d handles it)"
 
+# ---- D-1c: documented consensus cross-verifier model knobs are WIRED (were dead) ----
+# run_single_verifier codex branch honors the passed-in model arg ("model:reasoning")
+# instead of always using the global VERIFIER_CODEX_*.
+grep -qF '_cx_model="$VERIFIER_CODEX_MODEL" _cx_reason="$VERIFIER_CODEX_REASONING"' "$RUN" \
+  && grep -qF 'local _m="${model%%:*}" _r="${model##*:}"' "$RUN" \
+  && grep -qF '_cx_model="$_m"; _cx_reason="$_r"' "$RUN" \
+  && ok "D-1c: codex verifier parses model:reasoning arg (falls back to globals)" || no "D-1c: codex model-arg parse missing"
+# consensus selects per-US vs final model pairs (claude=VERIFIER/FINAL_VERIFIER, codex=CONSENSUS/FINAL_CONSENSUS)
+grep -qF '_cons_claude_model="$FINAL_VERIFIER_MODEL"; _cons_codex_model="$FINAL_CONSENSUS_MODEL"' "$RUN" \
+  && grep -qF '_cons_claude_model="$VERIFIER_MODEL"; _cons_codex_model="$CONSENSUS_MODEL"' "$RUN" \
+  && ok "D-1c: consensus picks final pair for ALL, lighter pair per-US" || no "D-1c: consensus model-pair selection missing"
+# the consensus run_single_verifier calls use the selected models, not the raw globals
+grep -qF 'run_single_verifier "$iter" "claude" "$_cons_claude_model"' "$RUN" \
+  && grep -qF 'run_single_verifier "$iter" "codex" "$_cons_codex_model"' "$RUN" \
+  && ok "D-1c: consensus dispatch threads the selected per-US/final models" || no "D-1c: consensus dispatch not wired to selected models"
+# logic mirror: model:reasoning split for the documented defaults
+cxsplit(){ local m="$1" mo re; if [[ "$m" == *:* ]]; then mo="${m%%:*}"; re="${m##*:}"; else mo="$m"; re="GLOBAL"; fi; print "$mo|$re"; }
+[[ "$(cxsplit 'gpt-5.5:medium')" == 'gpt-5.5|medium' && "$(cxsplit 'gpt-5.5:high')" == 'gpt-5.5|high' && "$(cxsplit 'gpt-5.5')" == 'gpt-5.5|GLOBAL' ]] \
+  && ok "D-1c: model:reasoning split (gpt-5.5:medium→medium, gpt-5.5:high→high, bare→global)" || no "D-1c: split logic"
+# D-1c codex MEDIUM: final consensus claude effort = FINAL_VERIFIER_EFFORT (not VERIFIER_EFFORT).
+# Single-dash ${6-...} preserves an explicitly-passed empty effort (re-review LOW).
+grep -qF 'local effort="${6-$VERIFIER_EFFORT}"' "$RUN" && grep -qF 'build_claude_cmd tui "$model" "" "" "$effort"' "$RUN" \
+  && grep -qF '_cons_claude_effort="$FINAL_VERIFIER_EFFORT"' "$RUN" \
+  && grep -qF 'run_single_verifier "$iter" "claude" "$_cons_claude_model" "-claude" "$claude_verdict_file" "$_cons_claude_effort"' "$RUN" \
+  && ok "D-1c fix(MED): final consensus claude effort threaded (FINAL_VERIFIER_EFFORT for ALL, empty preserved via \${6-})" || no "D-1c fix(MED): claude effort not threaded"
+# \${6-} vs \${6:-} — explicitly-passed empty must NOT collapse to the default
+six(){ local e="${1-DEFAULT}"; print "$e"; }   # mirror of ${6-...} for the passed arg
+[[ "$(six '')" == '' && "$(six)" == DEFAULT && "$(six medium)" == medium ]] \
+  && ok "D-1c fix(MED): \${6-} preserves explicit empty (unset→default, ''→'', val→val)" || no "D-1c fix(MED): \${6-} semantics"
+# D-1c codex LOW: malformed model:reasoning rejected → fall back to globals (xhigh is VALID — re-review LOW)
+grep -qF '"$model" != *:*:*' "$RUN" && grep -qF '"$_r" == (minimal|low|medium|high|xhigh)' "$RUN" \
+  && ok "D-1c fix(LOW): malformed model:reasoning validated (>1 colon / bad reasoning → fallback; xhigh allowed)" || no "D-1c fix(LOW): malformed-spec validation missing"
+# logic mirror: validation accept/reject table (xhigh is a real upgrade-table ceiling level)
+cxvalid(){ local m="$1" mo re; if [[ "$m" == *:* ]]; then mo="${m%%:*}" re="${m##*:}"; if [[ -n "$mo" && "$m" != *:*:* && "$re" == (minimal|low|medium|high|xhigh) ]]; then print "OK:$mo:$re"; else print FALLBACK; fi; else print "BARE:$m"; fi; }
+[[ "$(cxvalid 'gpt-5.5:medium')" == 'OK:gpt-5.5:medium' && "$(cxvalid 'gpt-5.5:xhigh')" == 'OK:gpt-5.5:xhigh' && "$(cxvalid 'gpt-5.5:')" == FALLBACK && "$(cxvalid ':medium')" == FALLBACK && "$(cxvalid 'foo:bar:baz')" == FALLBACK && "$(cxvalid 'gpt-5.5:turbo')" == FALLBACK && "$(cxvalid 'gpt-5.5')" == 'BARE:gpt-5.5' ]] \
+  && ok "D-1c fix(LOW): valid(incl xhigh)→split, empty/multi-colon/unknown→fallback, bare→global" || no "D-1c fix(LOW): validation logic"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

@@ -2667,6 +2667,13 @@ run_single_verifier() {
   local model="$3"        # model for this verifier
   local suffix="$4"       # "-claude" or "-codex"
   local verdict_dest="$5" # where to copy the verdict file
+  # D-1c (codex MEDIUM): claude reasoning effort for this verifier. Final
+  # consensus passes FINAL_VERIFIER_EFFORT; per-US passes VERIFIER_EFFORT.
+  # Defaults to VERIFIER_EFFORT so existing 5-arg callers are unchanged.
+  # Single-dash (${6-...}, not ${6:-...}) so an explicitly-passed EMPTY effort
+  # (e.g. final consensus with FINAL_VERIFIER_EFFORT unset) is preserved rather
+  # than collapsing back to VERIFIER_EFFORT.
+  local effort="${6-$VERIFIER_EFFORT}"
 
   # Write trigger for this engine
   write_verifier_trigger "$iter" "$engine" "$model" "$suffix"
@@ -2707,11 +2714,29 @@ run_single_verifier() {
   # Launch verifier — dispatch to engine-specific function
   local verifier_launch
   if [[ "$engine" = "codex" ]]; then
-    verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    # D-1c: honor the passed-in model arg (consensus passes CONSENSUS_MODEL /
+    # FINAL_CONSENSUS_MODEL as "model:reasoning") instead of always using the
+    # global VERIFIER_CODEX_*; fall back to the globals when no model is given.
+    local _cx_model="$VERIFIER_CODEX_MODEL" _cx_reason="$VERIFIER_CODEX_REASONING"
+    if [[ -n "$model" && "$model" == *:* ]]; then
+      # D-1c (codex LOW): validate "model:reasoning" before splitting. Reject an
+      # empty model, an empty/unknown reasoning, or >1 colon (e.g. "gpt-5.5:",
+      # ":medium", "foo:bar:baz") and fall back to the globals instead of
+      # emitting a bad -m or empty reasoning_effort.
+      local _m="${model%%:*}" _r="${model##*:}"
+      if [[ -n "$_m" && "$model" != *:*:* && "$_r" == (minimal|low|medium|high|xhigh) ]]; then
+        _cx_model="$_m"; _cx_reason="$_r"
+      else
+        log "  WARNING: malformed consensus codex model '$model' — falling back to $_cx_model:$_cx_reason"
+      fi
+    elif [[ -n "$model" ]]; then
+      _cx_model="$model"
+    fi
+    verifier_launch="${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
     launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
-    log_debug "Verifier$suffix codex TUI dispatched"
+    log_debug "Verifier$suffix codex TUI dispatched (model=$_cx_model reasoning=$_cx_reason)"
   else
-    verifier_launch="$(build_claude_cmd tui "$model" "" "" "$VERIFIER_EFFORT")"
+    verifier_launch="$(build_claude_cmd tui "$model" "" "" "$effort")"
     if ! launch_verifier_claude "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"; then
       log_error "Verifier$suffix failed to start"
       return 1
@@ -2932,6 +2957,18 @@ run_consensus_verification() {
   # JSON-safe. It is always "ALL" or "US-<digits>"; anything else → ALL (a value
   # with a quote/backslash/control char would otherwise produce invalid JSON).
   [[ "$cons_us_id" == (ALL|US-<->) ]] || cons_us_id="ALL"
+  # D-1c: wire the documented consensus cross-verifier model knobs. Primary
+  # (claude) uses VERIFIER_MODEL/FINAL_VERIFIER_MODEL; cross (codex) uses
+  # CONSENSUS_MODEL/FINAL_CONSENSUS_MODEL ("model:reasoning"). Final (ALL)
+  # picks the stricter pair; per-US picks the lighter pair.
+  local _cons_claude_model _cons_codex_model _cons_claude_effort
+  if [[ "$cons_us_id" == "ALL" ]]; then
+    _cons_claude_model="$FINAL_VERIFIER_MODEL"; _cons_codex_model="$FINAL_CONSENSUS_MODEL"
+    _cons_claude_effort="$FINAL_VERIFIER_EFFORT"   # codex MEDIUM: final claude effort
+  else
+    _cons_claude_model="$VERIFIER_MODEL"; _cons_codex_model="$CONSENSUS_MODEL"
+    _cons_claude_effort="$VERIFIER_EFFORT"
+  fi
   local claude_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-claude.json"
   local codex_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-codex.json"
 
@@ -2945,7 +2982,7 @@ run_consensus_verification() {
 
     # Run claude verifier first
     local _claude_t0=$(date +%s)
-    if ! run_single_verifier "$iter" "claude" "$VERIFIER_MODEL" "-claude" "$claude_verdict_file"; then
+    if ! run_single_verifier "$iter" "claude" "$_cons_claude_model" "-claude" "$claude_verdict_file" "$_cons_claude_effort"; then
       log_error "Claude verifier failed in consensus round $CONSENSUS_ROUND"
       return 1
     fi
@@ -2956,7 +2993,7 @@ run_consensus_verification() {
       log "  WARNING: Claude verdict is '$CLAUDE_VERDICT' — likely interrupted. Retrying claude verifier..."
       log_debug "[GOV] iter=$iter phase=consensus_claude_retry reason=null_verdict"
       rm -f "$claude_verdict_file" 2>/dev/null
-      if ! run_single_verifier "$iter" "claude" "$VERIFIER_MODEL" "-claude" "$claude_verdict_file"; then
+      if ! run_single_verifier "$iter" "claude" "$_cons_claude_model" "-claude" "$claude_verdict_file" "$_cons_claude_effort"; then
         log_error "Claude verifier retry also failed"
         return 1
       fi
@@ -2966,13 +3003,13 @@ run_consensus_verification() {
         return 1
       fi
     fi
-    log_debug "[GOV] iter=$iter phase=consensus_claude verdict=$CLAUDE_VERDICT model=$VERIFIER_MODEL"
+    log_debug "[GOV] iter=$iter phase=consensus_claude verdict=$CLAUDE_VERDICT model=$_cons_claude_model"
 
     # consensus-fail-fast removed (complexity vs value too low)
 
     # Run codex verifier second
     local _codex_t0=$(date +%s)
-    if ! run_single_verifier "$iter" "codex" "$VERIFIER_CODEX_MODEL" "-codex" "$codex_verdict_file"; then
+    if ! run_single_verifier "$iter" "codex" "$_cons_codex_model" "-codex" "$codex_verdict_file"; then
       log_error "Codex verifier failed in consensus round $CONSENSUS_ROUND"
       return 1
     fi
@@ -2985,7 +3022,7 @@ run_consensus_verification() {
       log "  WARNING: Codex verdict is '$CODEX_VERDICT' — likely interrupted. Retrying codex verifier..."
       log_debug "[GOV] iter=$iter phase=consensus_codex_retry reason=null_verdict"
       rm -f "$codex_verdict_file" 2>/dev/null
-      if ! run_single_verifier "$iter" "codex" "$VERIFIER_CODEX_MODEL" "-codex" "$codex_verdict_file"; then
+      if ! run_single_verifier "$iter" "codex" "$_cons_codex_model" "-codex" "$codex_verdict_file"; then
         log_error "Codex verifier retry also failed"
         return 1
       fi
@@ -2995,7 +3032,7 @@ run_consensus_verification() {
         return 1
       fi
     fi
-    log_debug "[GOV] iter=$iter phase=consensus_codex verdict=$CODEX_VERDICT model=$VERIFIER_CODEX_MODEL reasoning=$VERIFIER_CODEX_REASONING"
+    log_debug "[GOV] iter=$iter phase=consensus_codex verdict=$CODEX_VERDICT model=$_cons_codex_model"
 
     log "  Consensus: claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT"
     local _combined_action="retry"
