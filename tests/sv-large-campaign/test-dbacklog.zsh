@@ -87,6 +87,32 @@ _guarded(){ (( ${CLEANUP_DONE:-0} )) && return 0; CLEANUP_DONE=1; _ran=$((_ran+1
 _guarded; _guarded; _guarded
 [[ $_ran -eq 1 ]] && ok "D-8: guarded cleanup body runs exactly once across 3 invocations" || no "D-8: guard ran body $_ran times"
 
+# ---- D-1: FINAL_VERIFIER_* is WIRED into the final-verify dispatch (was dead) ----
+grep -q 'FINAL_VERIFIER_CODEX_MODEL FINAL_VERIFIER_CODEX_REASONING FINAL_VERIFIER_EFFORT' "$RUN" \
+  && ok "D-1: FINAL_VERIFIER codex sub-vars are auto-detected (parsing fixed)" || no "D-1: FINAL_VERIFIER auto-detect not fixed"
+grep -q 'FINAL_VERIFIER_ENGINE" = "codex"' "$RUN" && grep -q 'build_claude_cmd tui "\$FINAL_VERIFIER_MODEL"' "$RUN" \
+  && ok "D-1: sequential final verify dispatches FINAL_VERIFIER_* (stronger final model)" || no "D-1: sequential final not wired to FINAL_VERIFIER_*"
+grep -q 'signal_us_id" == "ALL" \]\]; then' "$RUN" && grep -q '_v_eng="\$FINAL_VERIFIER_ENGINE"' "$RUN" \
+  && ok "D-1: single-engine ALL verify uses FINAL_VERIFIER_*; per-US aliases VERIFIER_* (no hot-path change)" || no "D-1: single-engine ALL not wired"
+
+# ---- D-9: runner-lock delegated to acquire_slug_lock (atomic pid-IS-the-lock) ----
+# The dir-based mkdir+pid-file design had a fundamental acquire/pid-write gap a
+# recovery mutex couldn't close (codex D-9 R2); now it reuses the F-20-proven
+# acquire_slug_lock (whose own race-safety is covered by test_zsh4_lock 9/9).
+grep -q 'acquire_slug_lock "$RUNNER_LOCKFILE_PATH"' "$RUN" \
+  && ok "D-9: runner-lock delegates to acquire_slug_lock (no acquire/pid-write gap)" || no "D-9: acquire_slug_lock delegation missing"
+grep -q '_rl_mutex' "$RUN" && no "D-9: the insufficient inline recovery-mutex is still present (should be removed)" \
+  || ok "D-9: insufficient inline recovery-mutex removed (replaced by delegation)"
+grep -q '"${RUNNER_LOCKFILE_PATH}.meta"' "$RUN" && grep -q '"${RUNNER_LOCKFILE_PATH}.recovery.d"' "$RUN" \
+  && ok "D-9: cleanup removes lockfile + .meta sidecar + .recovery.d (pid-match ownership)" || no "D-9: cleanup not updated for delegation"
+# real end-to-end: acquire_slug_lock on a runner-lock-style file is exclusive
+D9=$(mktemp -d); RLF="$D9/runner.lock"
+( source "$LIB" 2>/dev/null; acquire_slug_lock "$RLF" ) ; r1=$?
+sleep 30 & HOLD=$!; echo "$HOLD" > "$RLF"   # simulate a live holder
+( source "$LIB" 2>/dev/null; acquire_slug_lock "$RLF" ) ; r2=$?
+[[ $r1 -eq 0 && $r2 -eq 1 ]] && ok "D-9: acquire_slug_lock on the runner file — fresh acquires (0), live holder → busy (1)" || no "D-9 delegation exclusivity (r1=$r1 r2=$r2)"
+kill "$HOLD" 2>/dev/null; rm -rf "$D9"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

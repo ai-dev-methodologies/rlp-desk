@@ -233,11 +233,17 @@ FINAL_VERIFIER_EFFORT="${FINAL_VERIFIER_EFFORT:-}"
 # Auto-detect engine from model format for env var path (CLI path uses parse_model_flag)
 _auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT
 _auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING VERIFIER_EFFORT
-_auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE "" "" FINAL_VERIFIER_EFFORT
+_auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE FINAL_VERIFIER_CODEX_MODEL FINAL_VERIFIER_CODEX_REASONING FINAL_VERIFIER_EFFORT
 WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.5}"
 WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high
 VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.5}"
 VERIFIER_CODEX_REASONING="${VERIFIER_CODEX_REASONING:-high}"   # low|medium|high
+# D-1: FINAL verifier codex sub-vars (auto-detected above from FINAL_VERIFIER_MODEL,
+# default here when not codex). Wired so the FINAL (ALL) verify can run a stronger
+# model than the per-US verifier — the "final 엄격" knob (FINAL_VERIFIER_MODEL
+# defaults to opus). Distinct from the removed per-iteration verifier auto-upgrade.
+FINAL_VERIFIER_CODEX_MODEL="${FINAL_VERIFIER_CODEX_MODEL:-gpt-5.5}"
+FINAL_VERIFIER_CODEX_REASONING="${FINAL_VERIFIER_CODEX_REASONING:-high}"   # low|medium|high
 CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 
 # --- Verify Mode ---
@@ -2230,12 +2236,15 @@ cleanup() {
     log_debug "cleanup: lockfile not owned by this process, skipping removal"
   fi
 
-  # US-026 R14 P0: remove project-scoped runner lockfile if owned by this slug
+  # US-026 R14 P0 / D-9: remove the project-scoped runner lock if WE own it. The
+  # lock file now holds our bare PID (acquire_slug_lock), so ownership is an exact
+  # pid match — remove the lock file, the metadata sidecar, and the recovery mutex.
   if [[ -f "$RUNNER_LOCKFILE_PATH" ]]; then
-    local own_slug
-    own_slug=$(jq -r '.slug' "$RUNNER_LOCKFILE_PATH" 2>/dev/null)
-    if [[ "$own_slug" == "$SLUG" ]]; then
-      rm -rf "$RUNNER_LOCKDIR" "$RUNNER_LOCKFILE_PATH" 2>/dev/null
+    local own_pid
+    own_pid=$(cat "$RUNNER_LOCKFILE_PATH" 2>/dev/null)
+    if [[ "$own_pid" == "$$" ]]; then
+      rm -f "$RUNNER_LOCKFILE_PATH" "${RUNNER_LOCKFILE_PATH}.meta" 2>/dev/null
+      rm -rf "${RUNNER_LOCKFILE_PATH}.recovery.d" 2>/dev/null
     fi
   fi
 
@@ -2790,15 +2799,18 @@ run_sequential_final_verify() {
     fi
     wait_for_pane_ready "$VERIFIER_PANE" 10 2>/dev/null || true
 
-    # Launch verifier
+    # Launch verifier. D-1: the FINAL (ALL) verify uses FINAL_VERIFIER_* (the
+    # "final 엄격" knob — a configured stronger model, e.g. opus, for the final
+    # gate), NOT the lighter per-US VERIFIER_*. This is the configured-final-model
+    # distinction, distinct from the removed per-iteration verifier auto-upgrade.
     local verifier_launch
-    if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
-      verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
+      verifier_launch="${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
       launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
     else
-      verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL" "" "" "$VERIFIER_EFFORT")"
+      verifier_launch="$(build_claude_cmd tui "$FINAL_VERIFIER_MODEL" "" "" "$FINAL_VERIFIER_EFFORT")"
       launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
-        log_error "Failed to launch verifier for $us"
+        log_error "Failed to launch final verifier for $us"
         FAILED_US="$us"
         return 1
       }
@@ -2822,7 +2834,7 @@ run_sequential_final_verify() {
       log "  Verifier-final transient poll fail for $us — replacing pane + retrying once (D-4)"
       replace_worker_pane "$VERIFIER_PANE" "verifier"
       VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
-      if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+      if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
         launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
       else
         launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || { FAILED_US="$us"; return 1; }
@@ -3043,28 +3055,26 @@ run_consensus_verification() {
 # =============================================================================
 
 main() {
-  # --- US-026 R14 P0: project-scoped runner lockfile (mkdir atomic) ---
-  # Prevents duplicate runners on the same project root regardless of slug.
-  # Different ROOT_HASH allows independent parallel runners across projects.
+  # --- US-026 R14 P0: project-scoped runner lock (per-ROOT, regardless of slug) ---
+  # D-9: delegate to acquire_slug_lock — the F-20-proven, race-safe primitive where
+  # the PID *is* the lock (`set -C` atomic create writes the pid in one redirect),
+  # so there is NO acquire/pid-write gap. The previous dir-based design (mkdir a dir
+  # + a separate pid file) had a fundamental gap between acquiring the dir and
+  # writing the pid that a recovery mutex alone could not close (codex D-9 R2).
+  # Metadata (slug/root) goes to a sidecar for the duplicate message + audit.
+  # Different ROOT_HASH → independent parallel runners across projects.
   mkdir -p "$(dirname "$RUNNER_LOCKFILE_PATH")" 2>/dev/null
-  if ! mkdir "$RUNNER_LOCKDIR" 2>/dev/null; then
+  if acquire_slug_lock "$RUNNER_LOCKFILE_PATH"; then
+    printf '{"pid":%s,"slug":"%s","root":"%s","started_at":"%s"}\n' \
+      "$$" "$SLUG" "$ROOT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${RUNNER_LOCKFILE_PATH}.meta" 2>/dev/null
+  else
     local existing existing_slug
-    existing=$(jq -r '.pid' "$RUNNER_LOCKFILE_PATH" 2>/dev/null || echo 0)
-    existing_slug=$(jq -r '.slug // "unknown"' "$RUNNER_LOCKFILE_PATH" 2>/dev/null || echo unknown)
-    if [[ "$existing" -gt 0 ]] && kill -0 "$existing" 2>/dev/null; then
-      echo "duplicate rlp-desk runner detected on this project root. existing pid=$existing slug=$existing_slug, this attempt slug=$SLUG. exiting." >&2
-      echo "  Recover with: rm -rf '$RUNNER_LOCKDIR' '$RUNNER_LOCKFILE_PATH' (only if pid $existing is confirmed dead)" >&2
-      exit 1
-    fi
-    rm -rf "$RUNNER_LOCKDIR"
-    mkdir "$RUNNER_LOCKDIR" 2>/dev/null || {
-      echo "failed to acquire runner lock after stale cleanup; another wrapper raced ahead. exit 1" >&2
-      exit 1
-    }
-    echo "stale runner lockfile cleaned (pid $existing dead) — acquired" >&2
+    existing=$(cat "$RUNNER_LOCKFILE_PATH" 2>/dev/null)
+    existing_slug=$(jq -r '.slug // "unknown"' "${RUNNER_LOCKFILE_PATH}.meta" 2>/dev/null || echo unknown)
+    echo "duplicate rlp-desk runner detected on this project root. existing pid=${existing:-unknown} slug=$existing_slug, this attempt slug=$SLUG. exiting." >&2
+    echo "  Recover with: rm -f '$RUNNER_LOCKFILE_PATH' '${RUNNER_LOCKFILE_PATH}.meta' && rm -rf '${RUNNER_LOCKFILE_PATH}.recovery.d' (only if pid ${existing:-?} is confirmed dead)" >&2
+    exit 1
   fi
-  printf '{"pid":%s,"slug":"%s","root":"%s","started_at":"%s"}\n' \
-    "$$" "$SLUG" "$ROOT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUNNER_LOCKFILE_PATH"
 
   # --- Lockfile: prevent duplicate execution (ZSH-4 race-safe, v0.17.1) ---
   # Delegates to acquire_slug_lock (lib_ralph_desk.zsh): atomic set -C fast path +
@@ -3665,15 +3675,29 @@ main() {
           fi
           wait_for_pane_ready "$VERIFIER_PANE" 10 2>/dev/null || true
 
-          local verifier_launch
-          if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
-            verifier_launch="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+          # D-1: a final/ALL verify reaching the single-engine path (batch mode, or
+          # any ALL verify not handled by the per-us sequential path) uses the
+          # stronger FINAL_VERIFIER_*; per-US verifies keep the lighter VERIFIER_*.
+          # For signal_us_id != ALL, _v_* alias VERIFIER_* EXACTLY — no behavior
+          # change on the per-US hot path.
+          local _v_eng _v_model _v_cxm _v_cxr _v_eff
+          if [[ "$signal_us_id" == "ALL" ]]; then
+            _v_eng="$FINAL_VERIFIER_ENGINE"; _v_model="$FINAL_VERIFIER_MODEL"
+            _v_cxm="$FINAL_VERIFIER_CODEX_MODEL"; _v_cxr="$FINAL_VERIFIER_CODEX_REASONING"; _v_eff="$FINAL_VERIFIER_EFFORT"
           else
-            verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL" "" "" "$VERIFIER_EFFORT")"
+            _v_eng="$VERIFIER_ENGINE"; _v_model="$VERIFIER_MODEL"
+            _v_cxm="$VERIFIER_CODEX_MODEL"; _v_cxr="$VERIFIER_CODEX_REASONING"; _v_eff="$VERIFIER_EFFORT"
           fi
-          log_debug "[FLOW] iter=$ITERATION phase=verifier engine=$VERIFIER_ENGINE model=$VERIFIER_MODEL scope=${signal_us_id:-all} dispatched=true"
 
-          if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+          local verifier_launch
+          if [[ "$_v_eng" = "codex" ]]; then
+            verifier_launch="${CODEX_BIN:-codex} -m $_v_cxm -c model_reasoning_effort=\"$_v_cxr\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+          else
+            verifier_launch="$(build_claude_cmd tui "$_v_model" "" "" "$_v_eff")"
+          fi
+          log_debug "[FLOW] iter=$ITERATION phase=verifier engine=$_v_eng model=$_v_model scope=${signal_us_id:-all} dispatched=true"
+
+          if [[ "$_v_eng" = "codex" ]]; then
             launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"
           else
             if ! launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"; then
@@ -3712,7 +3736,7 @@ main() {
             (( _vpoll_strike >= 3 )) && break
             replace_worker_pane "$VERIFIER_PANE" "verifier"
             VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
-            if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
+            if [[ "$_v_eng" = "codex" ]]; then
               launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"
             else
               launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch" || true

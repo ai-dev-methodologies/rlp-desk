@@ -390,3 +390,26 @@ reliable `.iteration` — workers omit it). codex caught a cross-platform stat b
 %m` + a `<->` numeric guard (non-numeric → 0 → safe no-op). test-dbacklog.zsh
 16/16; F-6/F-8 (same gate) pass. Remaining: D-1 (design decision), D-9 (dedicated
 contract-test refactor), D-6/D-7/D-8-rest.
+
+## D-1 + D-9 shipped (codex: D-9 resolved 0, D-1 correct)
+
+**D-1 FIXED (user-confirmed).** FINAL_VERIFIER_MODEL/ENGINE/EFFORT were dead (final
+verify ran at per-US VERIFIER_* strength). Now the codex sub-vars are auto-detected
+and the final/ALL verify dispatches FINAL_VERIFIER_* — in run_sequential_final_verify
+(default per-us final path) + the single-engine ALL path (per-US verifies unchanged
+via _v_* aliases). The "final 엄격" knob (default opus), distinct from the removed
+per-iteration verifier auto-upgrade. (Consensus-final still uses VERIFIER_* → D-1b,
+opt-in, deferred.)
+
+**D-9 FIXED via delegation.** The dir-based runner lock (mkdir dir + separate pid
+file) had a fundamental acquire/pid-write gap that a recovery mutex couldn't close
+(two codex rounds proved an inline-mutex insufficient). Replaced with delegation to
+acquire_slug_lock — the F-20-proven primitive where the PID *is* the lock (set -C
+atomic create), so no gap. Metadata → .meta sidecar; cleanup gates on exact pid
+match and removes lockfile + .meta + .recovery.d. The runner lock now reuses the
+9/9-tested acquire_slug_lock; test-dbacklog adds a real exclusivity test.
+
+Backlog now: D-1b (consensus-final FINAL_VERIFIER, opt-in), D-6 (no-progress claude
+grace — empirically fine in dogfood), D-7 (heartbeat dead in TUI path), D-8-rest
+(paste-buffer ABA, consensus null-retry — off-by-default). The HIGH/MED "never
+completes" + correctness + durability items are all shipped.
