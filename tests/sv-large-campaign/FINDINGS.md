@@ -483,18 +483,22 @@ batch — D-13 redundant delete-buffer, D-15 us_id not JSON-escaped — fixed in
   to ALL|US-NNN (JSON-safe), so the D-3 cross-check applies to consensus too.
 - test-dbacklog.zsh 45/45.
 
+### D-1c — FIXED (was deferred; user chose "wire" over "remove")  · LOW (opt-in path)
+| | |
+|---|---|
+| Symptom | `CONSENSUS_MODEL`/`FINAL_CONSENSUS_MODEL` were declared, CLI-parsed, logged, and DOCUMENTED (governance table + command docs) as the consensus codex (cross) verifier models — but `run_consensus_verification` always used `VERIFIER_CODEX_MODEL`/`VERIFIER_CODEX_REASONING` for every round, leaving the knobs dead. The consensus claude side also always used `VERIFIER_MODEL` even for final-ALL (final ≠ stricter). Same documented-but-unwired class as D-1, on the opt-in consensus path. Mis-framed as "vestigial/remove" initially; on inspection it is a documented interface → wired (not removed), confirmed by the user. |
+| Fix | `run_consensus_verification` selects model+effort pairs by scope — final(ALL): claude=`FINAL_VERIFIER_MODEL`, codex=`FINAL_CONSENSUS_MODEL`, effort=`FINAL_VERIFIER_EFFORT`; per-US: claude=`VERIFIER_MODEL`, codex=`CONSENSUS_MODEL`, effort=`VERIFIER_EFFORT`. `run_single_verifier` codex branch parses the passed `model:reasoning` arg with validation (non-empty model, single colon, reasoning ∈ minimal\|low\|medium\|high\|xhigh; else WARN + fall back to globals); gained an optional 6th `effort` arg via `${6-$VERIFIER_EFFORT}` (single-dash so an explicit empty is preserved). Strengthens final consensus claude sonnet→opus, consistent with D-1. |
+| Verification | test-dbacklog.zsh 53/53 (+8 D-1c incl. the two codex-fix rounds: MED final-claude-effort, LOW malformed-spec/`${6-}`/xhigh). 3 codex rounds (round 1: 2 issues → fixed; round 2: 2 new → fixed; fresh round: **0 issues**). sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. Commit 3e673df (main + branch). |
+
 FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
-- **D-1c** consensus model knobs (CONSENSUS_MODEL / FINAL_CONSENSUS_MODEL) are dead
-  (consensus uses VERIFIER_*/VERIFIER_CODEX_* for all rounds) — the same dead-knob
-  class as D-1 but on the opt-in consensus path; needs a design decision (which
-  models for consensus per-US vs final). Deferred pending that decision.
 - **D-7** heartbeat block inert in the TUI launch path (trigger .sh not executed) —
   liveness is covered by dead-pane + no-progress + prompt-stall; removing the
   intertwined poll-path block risks more than the harmless skip. Documented.
 - redundant EXIT trap (CLEANUP_DONE-guarded) — harmless.
 
-FINAL STATE: F-1..F-26 + D-1..D-15 shipped, codex-clean, deterministically tested
-(test-dbacklog 45/45 + full fault-injection + lock + sv-gate 71/71 + node 387/387),
-dogfood-proven (haiku 12-US COMPLETE). Two independent fresh adversarial audits →
-0 HIGH/CRITICAL. The "never completes" failure class is resolved; remaining items
-are LOW/opt-in/by-design (D-1c needs a user design decision).
+FINAL STATE: F-1..F-26 + D-1..D-15 + D-1c shipped, codex-clean, deterministically
+tested (test-dbacklog 53/53 + full fault-injection + lock 9/9 + sv-gate 71/71 +
+node 387/387), dogfood-proven (haiku 12-US COMPLETE). Multiple independent fresh
+adversarial audits → 0 HIGH/CRITICAL. The "never completes" failure class is
+resolved; remaining items are LOW/by-design (D-7 + redundant trap, documented).
+**Literal 0 actionable findings.**
