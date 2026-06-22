@@ -750,6 +750,37 @@ _bug8_check_synth_allowed() {
     return 1
   fi
 
+  # Gate 1b (D-2): done-claim FRESHNESS. A done-claim that lingered from a PRIOR
+  # run/iteration (e.g. a relaunch where the inter-iteration cleanup did not run)
+  # must NOT be synthesized into a verify signal for THIS iteration — it would
+  # credit a stale/wrong US into the durable ledger. The Worker writes its
+  # done-claim DURING this iteration, so a fresh claim is strictly NEWER than this
+  # iteration's worker-prompt; an older claim is stale. mtime-based on purpose:
+  # done-claim carries no reliable .iteration field (workers omit it), so an
+  # iteration match would false-reject every claim and break the A4 synth path.
+  local _dc_wp_file="$LOGS_DIR/iter-$(printf '%03d' "$iter").worker-prompt.md"
+  if [[ -f "$_dc_wp_file" ]]; then
+    # mtime, cross-platform: GNU `stat -c %Y` FIRST (on Linux `stat -f %m` means
+    # --file-system + %m=mount-point, returns a non-numeric path with exit 0 so a
+    # `-f`-first order would silently mis-read); macOS BSD `stat -c` errors → falls
+    # through to `stat -f %m` (the BSD mtime). Correct on both; `echo 0` = unknown.
+    local _dc_mt _wp_mt
+    _dc_mt=$(stat -c %Y "$DONE_CLAIM_FILE" 2>/dev/null || stat -f %m "$DONE_CLAIM_FILE" 2>/dev/null || echo 0)
+    _wp_mt=$(stat -c %Y "$_dc_wp_file" 2>/dev/null || stat -f %m "$_dc_wp_file" 2>/dev/null || echo 0)
+    [[ "$_dc_mt" == <-> ]] || _dc_mt=0   # guard: ignore any non-numeric stat output
+    [[ "$_wp_mt" == <-> ]] || _wp_mt=0
+    if (( _dc_mt > 0 && _wp_mt > 0 && _dc_mt < _wp_mt )); then
+      log_error "  Bug #8: done-claim is STALE (mtime $_dc_mt < this iteration's worker-prompt $_wp_mt) — refusing to synthesize from a prior-run claim."
+      log_debug "[GOV] iter=$iter bug8=block_stale_done_claim dc_mt=$_dc_mt wp_mt=$_wp_mt"
+      write_blocked_sentinel \
+        "done-claim is stale (older than this iteration's worker dispatch) — refusing to synthesize a verify signal from a prior-run claim" \
+        "$us_id" \
+        "infra_failure"
+      _emit_a4_fallback_audit "$us_id" "$iter" "blocked_stale_done_claim"
+      return 1
+    fi
+  fi
+
   # Gate 2: git toplevel must equal $ROOT (canonicalized — macOS resolves
   # /var → /private/var, NTFS may have 8.3 short paths; compare realpaths).
   local _bug8_top _bug8_top_canon _bug8_root_canon

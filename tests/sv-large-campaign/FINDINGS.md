@@ -379,3 +379,14 @@ Still open (each needs a DEDICATED test cycle — not inline-verifiable, so not 
   false-blocked); observe further before changing the freeze detector.
 - **D-7** heartbeat dead in the TUI launch path; **D-8 rest** (paste-buffer ABA,
   consensus null-retry) — lower priority / off-by-default paths.
+
+## D-2 shipped — A4 done-claim freshness gate (codex review: 0 issues)
+
+**D-2 FIXED.** `_bug8_check_synth_allowed` Gate 1b refuses to synthesize a verify
+signal from a done-claim older than THIS iteration's worker-prompt (a lingering
+prior-run claim would credit a stale/wrong US). mtime-based (done-claim has no
+reliable `.iteration` — workers omit it). codex caught a cross-platform stat bug
+(GNU `stat -f %m` = mount-point) → corrected to GNU-first `stat -c %Y || stat -f
+%m` + a `<->` numeric guard (non-numeric → 0 → safe no-op). test-dbacklog.zsh
+16/16; F-6/F-8 (same gate) pass. Remaining: D-1 (design decision), D-9 (dedicated
+contract-test refactor), D-6/D-7/D-8-rest.

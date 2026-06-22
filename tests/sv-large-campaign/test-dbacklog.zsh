@@ -67,6 +67,17 @@ grep -q 'Verifier hard-fail (rc=2' "$RUN" && grep -q 'replacing pane + retrying 
   && ok "D-4: sequential final verify retries rc==1 (replace+re-dispatch) and is terminal on rc==2" \
   || no "D-4: sequential final-verify retry/terminal split missing"
 
+# ---- D-2: A4 done-claim freshness (mtime-based; stale prior-run claim rejected) ----
+grep -q 'block_stale_done_claim' "$RUN" && grep -q '_dc_mt < _wp_mt' "$RUN" \
+  && ok "D-2: A4 synth gate rejects a done-claim older than this iteration's worker-prompt" \
+  || no "D-2: stale done-claim freshness gate missing"
+# behavioral mirror of the mtime decision
+stale_decide(){ local dc=$1 wp=$2; (( dc > 0 && wp > 0 && dc < wp )) && print STALE || print FRESH; }
+[[ "$(stale_decide 100 200)" == STALE ]] && ok "D-2: claim mtime(100) < worker-prompt(200) → STALE (reject)" || no "D-2 stale not caught"
+[[ "$(stale_decide 300 200)" == FRESH ]] && ok "D-2: claim mtime(300) > worker-prompt(200) → FRESH (synthesize)" || no "D-2 fresh wrongly rejected"
+[[ "$(stale_decide 200 200)" == FRESH ]] && ok "D-2: equal mtime → FRESH (1s granularity safe, not stale)" || no "D-2 equal wrongly rejected"
+[[ "$(stale_decide 0 200)"   == FRESH ]] && ok "D-2: missing stat (0) → FRESH (no false-reject when mtime unavailable)" || no "D-2 zero-mtime false-reject"
+
 # ---- D-8: cleanup re-entrancy guard (idempotent under EXIT+INT/TERM double-fire) ----
 grep -q 'CLEANUP_DONE' "$RUN" \
   && ok "D-8: cleanup has a re-entrancy guard (CLEANUP_DONE)" || no "D-8: cleanup re-entrancy guard missing"
