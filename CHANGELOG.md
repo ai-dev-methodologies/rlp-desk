@@ -11,6 +11,16 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.18.1] — 2026-06-25
+
+### Fixed
+- End-of-campaign resilience: when the last user story passes its per-US verify, the
+  leader now runs the final verification directly instead of dispatching one more
+  worker iteration solely to hand off to the final verify. That extra round-trip was a
+  fragile dependency on a healthy worker at the very end of a campaign (a worker stall
+  or API rate-limit at that moment could block a campaign whose work was already
+  complete and verified). Per-US campaigns now finalize without it.
+
 ## [0.18.0] — 2026-06-24
 
 **Leader hardening: campaigns that complete.** The `--mode tmux` leader's decision
