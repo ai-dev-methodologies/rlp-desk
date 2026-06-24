@@ -350,6 +350,9 @@ BASELINE_COMMIT=""       # git HEAD at campaign start (captured before loop)
 CAMPAIGN_REPORT_GENERATED=0  # guard against double-generation in cleanup trap
 SV_REPORT_GENERATED=0       # guard against double-generation in generate_sv_report
 VERIFIED_US=""           # comma-separated list of verified US IDs (per-us mode)
+_FINALIZE_PENDING=0      # D-16: armed when the last per-US pass completes coverage;
+                         # the next loop top synthesizes an ALL verify signal and
+                         # skips the (fragile) worker round-trip to emit it.
 CONSENSUS_ROUND=0        # current consensus round for current US
 US_LIST=""               # comma-separated US IDs from PRD (per-us mode)
 LOCKFILE_ACQUIRED=0
@@ -2818,6 +2821,17 @@ run_single_verifier() {
 # --- Sequential final verify: run per-US scoped verifiers instead of one big ALL verify ---
 # Returns 0 if all US pass + integration check pass, 1 if any US fails, 2 if integration fails.
 # Sets FAILED_US global on failure.
+# D-16: true when every US in US_LIST is already present in VERIFIED_US.
+# Used to arm leader-driven finalize after the last per-US pass.
+_all_us_verified() {
+  [[ -n "$US_LIST" ]] || return 1
+  local _us
+  for _us in $(echo "$US_LIST" | tr ',' ' '); do
+    echo ",$VERIFIED_US," | grep -q ",$_us," || return 1
+  done
+  return 0
+}
+
 run_sequential_final_verify() {
   local iter="$1"
   FAILED_US=""
@@ -3487,6 +3501,28 @@ main() {
       fi
     fi
 
+    # D-16: leader-driven finalize. The previous iteration's last per-US pass
+    # completed coverage and armed _FINALIZE_PENDING instead of dispatching a
+    # worker round-trip to emit an ALL signal. Synthesize that ALL verify signal
+    # ourselves and skip the worker; the existing verify path (signal_us_id=ALL →
+    # run_sequential_final_verify) handles completion AND the fix-loop on failure.
+    # Operator recovery (PR-A) takes precedence — only finalize if it did not claim
+    # this iteration. A crash before this point loses the flag and safely falls
+    # back to the worker round-trip (the pre-D-16 path).
+    if (( _FINALIZE_PENDING )) && [[ "$SKIP_NEXT_WORKER" -eq 0 ]]; then
+      _FINALIZE_PENDING=0
+      log "  Leader finalize (D-16): all US verified ($VERIFIED_US) — synthesizing ALL verify signal, skipping worker round-trip."
+      log_debug "[FLOW] iter=$ITERATION d16_finalize=true verified_us=$VERIFIED_US"
+      printf '{"iteration": %d, "status": "verify", "us_id": "ALL", "summary": "leader finalize (D-16: all per-US verified)", "timestamp": "%s"}\n' \
+        "$ITERATION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$SIGNAL_FILE"
+      update_status "verify" "running"
+      SKIP_NEXT_WORKER=1
+    else
+      # Any normally-dispatched iteration clears a stale arm (defensive; the flag
+      # is consumed above on the immediately-following iteration in practice).
+      _FINALIZE_PENDING=0
+    fi
+
     if (( ! SKIP_NEXT_WORKER )); then
       # --- governance.md s7 step 8 (cleanup): Clean previous iteration signals ---
       # Bug #7 Fix-R cleanup: unlock 0o444 sentinels written by the previous
@@ -3967,7 +4003,18 @@ main() {
                   _append_verified_ledger "$signal_us_id"   # F-14: durable source-of-truth
                 fi
                 update_status "verifier" "pass_us"
-                # Worker will do next US on next iteration
+                # D-16: if this pass completed coverage (every US in US_LIST is now
+                # verified), arm leader-driven finalize so the NEXT loop top runs the
+                # sequential final verify DIRECTLY — instead of a worker round-trip
+                # whose only job is to emit an ALL signal (a fragile extra LLM
+                # iteration, observed hanging on an API rate-limit in SV CRITICAL).
+                if [[ "$VERIFY_MODE" == "per-us" && -n "$US_LIST" ]] && _all_us_verified; then
+                  _FINALIZE_PENDING=1
+                  log "  Coverage complete ($VERIFIED_US) — arming leader finalize (D-16, no worker round-trip)."
+                  log_debug "[FLOW] iter=$ITERATION d16_arm_finalize=true verified_us=$VERIFIED_US"
+                else
+                  : # more US remain → Worker will do next US on next iteration
+                fi
               fi
             elif [[ "$recommended" == (complete|completed|done) || "$signal_us_id" == "ALL" ]]; then
               # Final full verify passed or complete recommended

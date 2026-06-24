@@ -215,6 +215,30 @@ cxvalid(){ local m="$1" mo re; if [[ "$m" == *:* ]]; then mo="${m%%:*}" re="${m#
 [[ "$(cxvalid 'gpt-5.5:medium')" == 'OK:gpt-5.5:medium' && "$(cxvalid 'gpt-5.5:xhigh')" == 'OK:gpt-5.5:xhigh' && "$(cxvalid 'gpt-5.5:')" == FALLBACK && "$(cxvalid ':medium')" == FALLBACK && "$(cxvalid 'foo:bar:baz')" == FALLBACK && "$(cxvalid 'gpt-5.5:turbo')" == FALLBACK && "$(cxvalid 'gpt-5.5')" == 'BARE:gpt-5.5' ]] \
   && ok "D-1c fix(LOW): valid(incl xhigh)→split, empty/multi-colon/unknown→fallback, bare→global" || no "D-1c fix(LOW): validation logic"
 
+# ---- D-16: last-US pass finalizes directly (leader-synthesized ALL signal, no worker round-trip) ----
+# Was: after the last per-US pass, the leader dispatched a worker round-trip whose only job
+# was to emit an ALL signal — a fragile extra LLM iteration (observed hanging on an API
+# rate-limit in SV CRITICAL, blocking a campaign whose work was already done).
+grep -qF '_FINALIZE_PENDING=0      # D-16' "$RUN" \
+  && ok "D-16: _FINALIZE_PENDING global declared (survives the loop-local SKIP_NEXT_WORKER)" || no "D-16: finalize flag missing"
+grep -qF '_all_us_verified()' "$RUN" \
+  && ok "D-16: _all_us_verified coverage helper present" || no "D-16: coverage helper missing"
+# arm: the per-US pass branch sets _FINALIZE_PENDING when coverage completes
+grep -qF '_all_us_verified; then' "$RUN" && grep -qF '_FINALIZE_PENDING=1' "$RUN" \
+  && ok "D-16: pass-branch arms finalize on coverage-complete" || no "D-16: arm missing"
+# consume: the loop top synthesizes an ALL verify signal + reuses SKIP_NEXT_WORKER (proven recovery path)
+grep -qF 'if (( _FINALIZE_PENDING )) && [[ "$SKIP_NEXT_WORKER" -eq 0 ]]; then' "$RUN" \
+  && grep -qF '"status": "verify", "us_id": "ALL"' "$RUN" \
+  && grep -qF 'SKIP_NEXT_WORKER=1' "$RUN" \
+  && ok "D-16: loop-top synthesizes ALL verify signal + skips worker (reuses SKIP_NEXT_WORKER)" || no "D-16: finalize-synth missing"
+# operator-recovery precedence + the existing worker-ALL-signal final-verify trigger still intact
+grep -qF 'signal_us_id" == "ALL" && "$VERIFY_MODE" == "per-us" && -n "$US_LIST"' "$RUN" \
+  && ok "D-16: downstream final-verify trigger (signal_us_id=ALL) unchanged — D-16 only changes HOW we reach it" || no "D-16: final-verify trigger drifted"
+# logic mirror: coverage check (all US present → arm; any missing → don't)
+allverif(){ local list="$1" verified="$2" us; for us in $(echo "$list" | tr ',' ' '); do echo ",$verified," | grep -q ",$us," || { print NO; return; }; done; print YES; }
+[[ "$(allverif 'US-001' 'US-001')" == YES && "$(allverif 'US-001,US-002' 'US-001')" == NO && "$(allverif 'US-001,US-002' 'US-001,US-002')" == YES && "$(allverif '' 'US-001')" == YES ]] \
+  && ok "D-16: coverage logic (full→arm, partial→wait); note empty US_LIST guarded separately in helper" || no "D-16: coverage logic"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))
