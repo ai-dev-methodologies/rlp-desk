@@ -32,16 +32,33 @@ src/commands/rlp-desk.md        → ~/.claude/commands/rlp-desk.md
 src/governance.md               → ~/.claude/ralph-desk/governance.md
 src/model-upgrade-table.md      → ~/.claude/ralph-desk/model-upgrade-table.md
 src/node/**                     → ~/.claude/ralph-desk/node/   (recursive, v0.12.0+)
+src/scripts/run_ralph_desk.zsh  → ~/.claude/ralph-desk/run_ralph_desk.zsh   (v0.14.0+, see below)
+src/scripts/lib_ralph_desk.zsh  → ~/.claude/ralph-desk/lib_ralph_desk.zsh   (v0.14.0+)
+src/scripts/init_ralph_desk.zsh → ~/.claude/ralph-desk/init_ralph_desk.zsh  (v0.14.0+)
 ```
 
-**Legacy shell wrappers (synced ONLY via `bash install.sh` curl path)**:
-`src/scripts/{init,run,lib}_ralph_desk.zsh` ship in the npm tarball but are
-**not** installed by `postinstall.js` (Node-canonical design from v5.7+;
-`npm install` actively removes them — see `tests/node/us008-cli-entrypoint.test.mjs:47`
-for the contract). They remain in the source tree for shell-only environments
-that install via `bash install.sh` (curl from GitHub). v0.13.0 path migration
-(`.rlp-desk/`) is mirrored in those scripts so legacy shell users get the same
-behavior. Treat zsh wrappers as opt-in, not part of the canonical sync.
+**zsh leader is the production `--mode tmux` backend (v0.14.0 inversion — NOT opt-in)**:
+`src/scripts/{run,lib,init}_ralph_desk.zsh` are **synced by `postinstall.js`** to
+`~/.claude/ralph-desk/{run,lib,init}_ralph_desk.zsh` (flat path), AND ship via
+`bash install.sh` (curl). The Node CLI does **not** run campaigns itself for
+`--mode tmux`: `src/node/run.mjs` shells out to
+`~/.claude/ralph-desk/run_ralph_desk.zsh` (run.mjs:296) and hard-errors if it is
+missing ("run `npm install` to sync"). So the zsh leader is canonical, not legacy.
+The contract is pinned by `tests/node/us008-cli-entrypoint.test.mjs` AC8.1:
+"postinstall installs the Node runtime **AND** the zsh tmux runner under
+`~/.claude/ralph-desk`". (History: a pre-v0.14.0 design made the Node leader the
+only `--mode tmux` backend and had postinstall *delete* the zsh files; that broke
+production tmux flows — no heartbeat / copy-mode guard / prompt-stall in Node — so
+v0.14.0 restored the zsh runner as canonical. Any doc text saying "npm install
+removes the zsh wrappers" is describing that obsolete design.) v0.13.0 `.rlp-desk/`
+path migration is mirrored in these scripts.
+
+**Sync consequence:** a commit that changes only a `src/scripts/*_ralph_desk.zsh`
+file STILL requires local sync (it is a runtime file). The canonical channel is
+`npm install` / postinstall (files are `chmod 0o444` + banner-headed — never edit
+the installed copies). Verify with the banner-aware recipe in §4.5 (for the
+shebanged `.zsh`, strip the line-2 banner: `sed '/^# .*DO NOT EDIT/d' <installed>`
+then diff against `src/scripts/<file>.zsh`).
 
 **v0.12.0+ note (v5.7 §4.10)**: installed files are write-protected (`chmod 0o444`)
 + banner-headed (`<!-- DO NOT EDIT ... -->` for `.md`, `# ...` for shell, `// ...`
