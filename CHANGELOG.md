@@ -11,6 +11,45 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.18.0] — 2026-06-24
+
+**Leader hardening: campaigns that complete.** The `--mode tmux` leader's decision
+gates used to TERMINATE where they should RECOVER, so campaigns could stall at
+`--max-iter` or block on a single transient slip. This release resolves that
+"never completes" failure class.
+
+### Fixed
+- A single transient `blocked` verdict no longer ends the campaign. A fresh-context
+  Worker/Verifier mis-emitting `blocked` once now gets grace (soft-fail + retry);
+  termination only on a genuine infra failure or a repeated/consecutive block.
+- Verifier phrasing variants (`completed`/`done`, lowercase `all`) no longer strand a
+  genuinely-complete campaign at the iteration cap — recommendation/us_id normalized at read.
+- Mixed-engine dead-pane detection: a dead pane is detected per role when Worker and
+  Verifier run different engines (e.g. claude worker + codex verifier).
+- No double-credit of a re-submitted User Story on the verify pass-path.
+- Final verification now retries a single transient poll failure instead of charging a
+  false fail at the end of the campaign.
+- Durable sentinels: atomic writes detect truncation (disk-full/SIGPIPE) instead of
+  renaming a half-written file into the canonical path.
+- Race-safe locks: the runner-lock and per-slug lock close an ABA/empty-owner race that
+  could let two leaders run on one project root.
+- Done-claim freshness gate: auto-synthesis rejects a stale/wrong-US done-claim, preventing
+  the wrong User Story from being credited.
+- Model-upgrade state survives relaunch: a resumed campaign keeps the upgraded worker model
+  instead of resetting to the CLI default.
+- codex 0.141 worker compatibility: the directory-trust prompt is accepted and MCP disabled
+  so codex workers don't block on startup.
+
+### Changed
+- Stronger final verification: `--final-verifier-model` / `--final-verifier-effort` are now
+  actually used for the final ALL-verify pass (previously every verify ran at the per-US
+  model). "Final = stricter" now holds.
+- Consensus cross-verifier model knobs now take effect: `--consensus-model` (per-US, lighter)
+  and `--final-consensus-model` (final, stricter) are wired into the consensus path —
+  previously documented but inert.
+- Verifier FORMAT meta-gates softened cross-engine while correctness gates stay strict
+  (fewer false fails on phrasing, no weakening of substance).
+
 ## [0.17.0] — 2026-06-19
 
 **BREAKING (ADR-001): `node run.mjs run <slug> --mode agent` (the deprecated Node-leader direct-CLI alpha) now hard-errors.** Per the schedule announced in 0.16.0, the `--mode agent` entry point exits 2 with a redirect, and the Node-CLI default mode flips from `agent` to `tmux` (the canonical production leader). The `src/node/**` engine modules are retained (they back the Native Agent() path and the test suite); only the direct-CLI `--mode agent` *dispatch entry* was removed. **Migration:** replace `node run.mjs run <slug> --mode agent` with `--mode tmux`. The slash command's `--mode native` default is unaffected.
