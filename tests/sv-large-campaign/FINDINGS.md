@@ -496,9 +496,17 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
   intertwined poll-path block risks more than the harmless skip. Documented.
 - redundant EXIT trap (CLEANUP_DONE-guarded) — harmless.
 
-FINAL STATE: F-1..F-26 + D-1..D-15 + D-1c shipped, codex-clean, deterministically
-tested (test-dbacklog 53/53 + full fault-injection + lock 9/9 + sv-gate 71/71 +
-node 387/387), dogfood-proven (haiku 12-US COMPLETE). Multiple independent fresh
-adversarial audits → 0 HIGH/CRITICAL. The "never completes" failure class is
-resolved; remaining items are LOW/by-design (D-7 + redundant trap, documented).
-**Literal 0 actionable findings.**
+### D-16 — last per-US pass finalizes directly (no fragile worker round-trip)  · MED (resilience)
+| | |
+|---|---|
+| Symptom | Empirically derived from the v0.18.0 release SV trio (CRITICAL attempt 1). In per-us mode, after the LAST US passes its per-US verify, the leader credited VERIFIED_US and looped to dispatch ANOTHER worker iteration whose only job was to emit a `us_id="ALL"` signal — the trigger for `run_sequential_final_verify`. That worker round-trip is a fragile extra LLM iteration: in SV CRITICAL att.1 the opus worker hit an Anthropic API rate-limit at exactly that step, froze, and the frozen-pane guard BLOCKED a campaign whose work (12 tests green, all ACs) was already done. The transition to final-verify depended on either the verifier emitting `recommended=complete` OR the worker emitting an ALL signal — both fragile. |
+| Fix | When the last per-US pass completes coverage (`_all_us_verified`: every US in `US_LIST` is in `VERIFIED_US`), arm a new global `_FINALIZE_PENDING` (needed because `SKIP_NEXT_WORKER` is loop-`local`). The next loop top synthesizes the ALL verify signal itself (`atomic_write` to `SIGNAL_FILE`) + sets `SKIP_NEXT_WORKER=1`, reusing the proven PR-A operator-recovery skip path. Downstream (`signal_us_id=ALL` → `run_sequential_final_verify` → complete OR fix-loop) is UNCHANGED — only HOW the ALL signal is produced changes. Operator-recovery takes precedence (`&& SKIP_NEXT_WORKER==0`); a crash mid-finalize loses the in-memory flag and safely falls back to the worker round-trip. |
+| Verification | test-dbacklog 59/59 (+6 D-16: flag/helper/arm/synth/downstream-unchanged/coverage-logic). codex review 0 issues (4 invariants cleared: global scope, locked-0o444-signal overwrite [mv/rename succeeds — empirically confirmed], no done-claim gate on the verify route, fix-loop fall-through identical). sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. **Real-LLM SV E2E (single-US):** leader logged "arming leader finalize" → "synthesizing ALL verify signal, skipping worker round-trip" → "Sequential final verify: ALL PASSED" → COMPLETE, arm→final-verify in 2s (no worker round-trip). Commit 71c378f (main; post-0.18.0, UNRELEASED). |
+
+FINAL STATE: F-1..F-26 + D-1..D-16 + D-1c. v0.18.0 SHIPPED (F-1..F-26 + D-1..D-15
++ D-1c). D-16 committed post-release (main 71c378f), UNRELEASED — candidate for the
+next patch/minor. codex-clean, deterministically tested (test-dbacklog 59/59 + full
+fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387), dogfood-proven (haiku
+12-US COMPLETE) + fresh release SV trio (LOW/MED/CRIT COMPLETE, BROKEN BLOCKED).
+The "never completes" failure class is resolved; remaining items are LOW/by-design
+(D-7 + redundant trap; D-17 rate-limit-grace = speculative, deferred).
