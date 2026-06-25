@@ -360,6 +360,35 @@ finalpath(){ local m="$1"; if suc "$m" ALL; then print CONSENSUS; else print SEQ
 [[ "$(finalpath off)" == SEQUENTIAL && "$(finalpath final-only)" == CONSENSUS && "$(finalpath all)" == CONSENSUS ]] \
   && ok "D-21: final ALL verify path — off→sequential(single), final-only/all→consensus(claude+codex)" || no "D-21: final-path routing logic"
 
+# ---- D-23: US extraction heading-anchored + consistent (initial == live re-split) ----
+# Initial US_LIST + expected_us used unanchored `grep -oE 'US-[0-9]+'` → phantom US
+# ids from prose/dependencies inflated the list + coverage and made _all_us_verified
+# (D-16) require a never-verifiable phantom (D-16 never armed). Now heading-anchored,
+# matching count_prd_us (the live re-split). (Independently flagged: codex audit NEW-3.)
+grep -qF "US_LIST=\$(grep -oE '^### US-[0-9]+' \"\$prd_file\" | sed 's/^### //'" "$RUN" \
+  && grep -qF "expected_us=\$(grep -oE '^### US-[0-9]+' \"\$prd_file\" | sed 's/^### //'" "$RUN" \
+  && ok "D-23: initial US_LIST + expected_us heading-anchored (^### US-), matching count_prd_us" || no "D-23: extraction not anchored"
+grep -qF 'if [[ -n "$current_us_list" ]]; then' "$LIB" && grep -qF 'no blank-overwrite' "$LIB" \
+  && ok "D-23: check_prd_update keeps prior US_LIST when re-split empty (no blank-overwrite)" || no "D-23: blank-overwrite guard missing"
+grep -qF 'refusing vacuous pass' "$RUN" \
+  && ok "D-23: run_sequential_final_verify refuses empty US_LIST (no vacuous COMPLETE)" || no "D-23: vacuous-pass guard missing"
+anchored(){ grep -oE '^### US-[0-9]+' <<<"$1" | sed 's/^### //' | sort -u | tr '\n' ','; }
+[[ "$(anchored $'### US-001: a\n- builds on US-009\n### US-002: b')" == 'US-001,US-002,' ]] \
+  && ok "D-23: prose 'US-009' mention NOT counted as a story (only ### headings)" || no "D-23: phantom-US logic"
+# D-24: _extract_prd_us_list matches BOTH 2-hash (## test-spec) and 3-hash (### PRD)
+grep -qF "grep -oE '^#{2,3}[[:space:]]+US-[0-9]+" "$LIB" \
+  && ok "D-24: _extract_prd_us_list matches ## and ### (was ## only → empty on canonical ### PRD)" || no "D-24: extractor not 2-3 hash"
+ext2v3(){ grep -oE '^#{2,3}[[:space:]]+US-[0-9]+([[:space:]:-]|$)' <<<"$1" | grep -oE 'US-[0-9]+' | sort -u | tr '\n' ','; }
+[[ "$(ext2v3 $'### US-001: a\n## US-002: b')" == 'US-001,US-002,' && "$(ext2v3 '### US-005: x')" == 'US-005,' ]] \
+  && ok "D-24: extractor logic (### PRD + ## test-spec both matched; 3-hash no longer empty)" || no "D-24: extractor logic"
+# D-24 (codex review b): _lint_test_density awk story-block guards now ^#{2,3} (was ^## only →
+# AC count 0 on every 3-hash PRD story → density lint vacuously skipped at run:897 `[[ ac==0 ]] && continue`).
+grep -qF '$0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)"' "$LIB" && grep -qF 'in_us && /^#{2,3}[[:space:]]+US-[0-9]+/' "$LIB" \
+  && ok "D-24 fix(b): lint AC/test awk story-block guards are ^#{2,3} (count ACs on canonical 3-hash PRD)" || no "D-24 fix(b): lint awk still 2-hash"
+aclint(){ awk -v us="$2" '$0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next } in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 } in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ { c++ } END { print c+0 }' <<<"$1"; }
+[[ "$(aclint $'### US-001: a\n- AC1: x\n- AC2: y\n### US-002: b' US-001)" -eq 2 ]] \
+  && ok "D-24 fix(b): AC count = 2 on a 3-hash PRD story (was 0 → vacuous lint pass)" || no "D-24 fix(b): AC count logic"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

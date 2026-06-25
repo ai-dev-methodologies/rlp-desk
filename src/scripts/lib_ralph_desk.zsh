@@ -786,12 +786,19 @@ _verify_session_alive() {
 }
 
 # --- US-022 (R10 P2-J): Normalized PRD US-list extractor ---
-# Recognises `## US-005:`, `## US-005 -`, and bare `## US-005` headings.
+# Recognises `### US-005:`, `## US-005:`, `## US-005 -`, and bare headings.
 # Returns one US-NNN per line, sorted unique.
+# D-24: the canonical PRD US heading is `### US-NNN:` (3 hashes — see init
+# `### US-` + count_prd_us + split_prd_by_us). The prior `^##[[:space:]]` (exactly
+# 2 hashes) did NOT match a 3-hash heading, so on a real PRD this returned EMPTY.
+# That silently broke `_quarantine_stale_signal` (the "us_id is in the current PRD
+# → keep it" preservation guard never matched → every leftover signal, including a
+# legitimate same-mission one, was quarantined/mv'd at init) and the PRD/test-spec
+# lint (skipped). Accept 2 OR 3 leading hashes so it matches canonical PRDs.
 _extract_prd_us_list() {
   local prd_file="$1"
   [[ -f "$prd_file" ]] || return 0
-  grep -oE '^##[[:space:]]+US-[0-9]+([[:space:]:-]|$)' "$prd_file" 2>/dev/null \
+  grep -oE '^#{2,3}[[:space:]]+US-[0-9]+([[:space:]:-]|$)' "$prd_file" 2>/dev/null \
     | grep -oE 'US-[0-9]+' \
     | sort -u
 }
@@ -849,7 +856,10 @@ _lint_test_density() {
   [[ -f "$spec_file" ]] || { echo "[lint] test-spec missing: $spec_file" >&2; return 0; }
 
   local us_list
-  us_list=$(grep -oE '^##[[:space:]]+US-[0-9]+' "$prd_file" 2>/dev/null | grep -oE 'US-[0-9]+' | sort -u)
+  # D-24: reuse the shared extractor (now matches the canonical 3-hash `### US-`
+  # heading) instead of an inline 2-hash regex that silently returned empty on a
+  # real PRD → the lint skipped every canonical PRD.
+  us_list=$(_extract_prd_us_list "$prd_file")
   [[ -z "$us_list" ]] && return 0
 
   # ZSH-8: prefer the campaign LOGS_DIR. When it is unavailable, avoid a fixed,
@@ -870,16 +880,16 @@ _lint_test_density() {
     # ACs in this US block of the PRD
     local ac_count
     ac_count=$(awk -v us="$us" '
-      $0 ~ "^##[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
-      in_us && /^##[[:space:]]+US-[0-9]+/ { in_us=0 }
+      $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+      in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
       in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ { c++ }
       END { print c+0 }
     ' "$prd_file")
 
     local test_count
     test_count=$(awk -v us="$us" '
-      $0 ~ "^##[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
-      in_us && /^##[[:space:]]+US-[0-9]+/ { in_us=0 }
+      $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+      in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
       in_us && (/^###[[:space:]]+Test[[:space:]]/ || /^\*\*T-/) { c++ }
       END { print c+0 }
     ' "$spec_file")
@@ -1542,7 +1552,17 @@ check_prd_update() {
     log_debug "prd_changed=true prd_hash_prev=${PREV_PRD_HASH:-none} prd_hash_now=${current_hash:-none} us_count_prev=${us_count_prev} us_count_now=${us_count_now} new_us=${new_us:-none}"
     split_prd_by_us "$PRD_FILE" "$SLUG"
     split_test_spec_by_us "$TEST_SPEC_FILE" "$SLUG"
-    US_LIST="$current_us_list"
+    # D-23 (codex NEW-3 defensive): only overwrite US_LIST when the re-split
+    # actually parsed stories. A transient empty result (parse glitch, or a PRD
+    # momentarily mid-edit) must NOT blank a non-empty US_LIST — that loses per-US
+    # scoping (the worker's next_us computation + the coverage count both iterate
+    # US_LIST), silently degrading a per-US campaign mid-flight. Keep the prior
+    # US_LIST when the new parse is empty.
+    if [[ -n "$current_us_list" ]]; then
+      US_LIST="$current_us_list"
+    else
+      log_debug "prd_changed but current_us_list empty — keeping prior US_LIST='$US_LIST' (no blank-overwrite)"
+    fi
   else
     log_debug "prd_changed=false prd_hash_prev=${PREV_PRD_HASH:-none} prd_hash_now=${current_hash:-none} us_count_prev=${us_count_prev} us_count_now=${us_count_now}"
   fi

@@ -2399,7 +2399,10 @@ cleanup() {
       local prd_file="$DESK/plans/prd-$SLUG.md"
       local expected_us=""
       if [[ -f "$prd_file" ]]; then
-        expected_us=$(grep -oE 'US-[0-9]+' "$prd_file" | sort -u | tr '\n' ',' | sed 's/,$//')
+        # D-23: heading-anchored (a US story is a `### US-NNN:` heading, not a
+        # prose/dependency mention) — matches US_LIST + count_prd_us so the
+        # coverage count is not inflated by phantom cross-referenced US ids.
+        expected_us=$(grep -oE '^### US-[0-9]+' "$prd_file" | sed 's/^### //' | sort -u | tr '\n' ',' | sed 's/,$//')
       fi
       local verified_count=$(echo "$VERIFIED_US" | tr ',' '\n' | grep -c 'US-' 2>/dev/null || echo 0)
       local expected_count=$(echo "$expected_us" | tr ',' '\n' | grep -c 'US-' 2>/dev/null || echo 0)
@@ -3008,6 +3011,19 @@ run_sequential_final_verify() {
   local iter="$1"
   FAILED_US=""
 
+  # D-23 (defense-in-depth): an empty US_LIST would run the per-US loop below ZERO
+  # times and fall through to `return 0` — a VACUOUS pass that writes a COMPLETE
+  # sentinel without verifying anything. The sole caller already gates this on
+  # `-n "$US_LIST"` (an empty list routes to the single ALL verifier instead), so
+  # this is never reached today; it is a safe-by-construction guard so a future
+  # ungated caller can't reintroduce a vacuous COMPLETE. Fail (return 1) → fix loop.
+  if [[ -z "$US_LIST" ]]; then
+    log_error "  Sequential final verify: US_LIST is EMPTY — refusing vacuous pass (parse/state error)."
+    log_debug "[FLOW] iter=$iter phase=sequential_final_verify us_list_empty=true action=fail_not_vacuous_pass"
+    FAILED_US="ALL"
+    return 1
+  fi
+
   log "  Sequential final verify: ${US_LIST} (${VERIFY_MODE} mode)"
   log_debug "[FLOW] iter=$iter phase=sequential_final_verify us_list=$US_LIST"
 
@@ -3399,7 +3415,15 @@ main() {
   if [[ "$VERIFY_MODE" = "per-us" ]]; then
     local prd_file="$DESK/plans/prd-$SLUG.md"
     if [[ -f "$prd_file" ]]; then
-      US_LIST=$(grep -oE 'US-[0-9]+' "$prd_file" | sort -u | tr '\n' ',' | sed 's/,$//')
+      # D-23: a US story is a `### US-NNN:` HEADING, not any US-NNN mentioned in
+      # prose/dependencies. The unanchored `grep -oE 'US-[0-9]+'` previously used
+      # here pulled phantom US ids out of cross-references ("builds on US-009",
+      # "Depends on: US-001"), inflating US_LIST + the coverage count and making
+      # _all_us_verified (D-16) require a never-verifiable phantom → D-16 never
+      # armed. It also DISAGREED with the live re-split (count_prd_us, anchored),
+      # so the first PRD edit silently changed the tracked US set. Use the SAME
+      # heading-anchored extraction as count_prd_us so initial == live.
+      US_LIST=$(grep -oE '^### US-[0-9]+' "$prd_file" | sed 's/^### //' | sort -u | tr '\n' ',' | sed 's/,$//')
     fi
 
   # F-14 + status.json promotion (Item-4): VERIFIED_US restore precedence,
@@ -3887,6 +3911,12 @@ main() {
         # stricter FINAL_VERIFIER_MODEL + FINAL_CONSENSUS_MODEL and the designed
         # claude+codex final path). The per-US timeout-prevention split is the off-consensus
         # optimization only.
+        # The `-n "$US_LIST"` precondition is CORRECT and protective: when US_LIST
+        # is empty (a PRD with no `### US-` stories — the init "full PRD fallback"
+        # case), this routes the ALL verify AWAY from the per-US sequential split
+        # (which would iterate zero US and vacuously return 0) and TO the single
+        # ALL verifier below, which performs a REAL verification of the whole PRD.
+        # run_sequential_final_verify also self-guards an empty US_LIST defensively.
         if [[ "$signal_us_id" == "ALL" && "$VERIFY_MODE" == "per-us" && -n "$US_LIST" ]] && ! _should_use_consensus "$signal_us_id"; then
           log "  Final ALL verify: using sequential per-US strategy (timeout prevention)"
           local seq_rc=0
