@@ -11,6 +11,30 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.18.2] — 2026-06-25
+
+Five leader-resilience fixes (per-us, consensus, and config-validation paths), each
+validated by a real-LLM dogfood. Consensus is opt-in; default per-us campaigns benefit
+from the final-verify and config-validation fixes.
+
+### Fixed
+- Final verification is resilient to verifier non-determinism: a user story that already
+  passed its per-US check is re-verified (up to a small bound) on a fail verdict, so a
+  flaky false-fail must reproduce before it charges a fix-loop failure. A single
+  non-deterministic false-fail can no longer block a complete, correct campaign.
+- The `claude` rate-limit banner ("API Error: … temporarily limiting requests … · Rate
+  limited") is now recognized as a transient API condition and routed to the bounded
+  backoff, instead of being misclassified as a frozen-pane deadlock.
+- Numeric configuration knobs (e.g. `--max-iter`, `--cb-threshold`, timeouts) are now
+  validated: a non-integer or out-of-range value falls back to its default with a warning,
+  instead of silently mis-evaluating (a bad `--max-iter` previously could make a campaign
+  run zero iterations).
+- Leader auto-commit recovery no longer blocks a campaign whose work the worker already
+  committed (a commit-timing race previously surfaced as "nothing to commit" → blocked).
+- `--consensus final-only` now actually runs at the final verification in the default
+  per-us verify mode (it was previously bypassed by the sequential final-verify path, so
+  the recommended consensus configuration was a silent no-op in the default mode).
+
 ## [0.18.1] — 2026-06-25
 
 ### Fixed
