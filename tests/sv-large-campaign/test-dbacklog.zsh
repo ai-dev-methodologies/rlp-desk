@@ -389,6 +389,29 @@ aclint(){ awk -v us="$2" '$0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in
 [[ "$(aclint $'### US-001: a\n- AC1: x\n- AC2: y\n### US-002: b' US-001)" -eq 2 ]] \
   && ok "D-24 fix(b): AC count = 2 on a 3-hash PRD story (was 0 → vacuous lint pass)" || no "D-24 fix(b): AC count logic"
 
+# ---- NEW-1 (audit round 2): exit-grace branch validates JSON (not mere existence) ----
+# The main poll-success path gates on `jq -e .`; the heartbeat-exited grace branch
+# accepted mere file existence → a worker that exited with a truncated/empty sentinel
+# was accepted → caller read null/"unknown" status/verdict. Now both gate on jq.
+grep -qF 'if [[ -f "$signal_file" ]] && jq -e . "$signal_file" >/dev/null 2>&1; then' "$RUN" \
+  && ok "NEW-1: heartbeat-exited grace requires VALID JSON (jq -e), matching the main poll gate" || no "NEW-1: exit-grace jq gate missing"
+# logic mirror: truncated JSON rejected, valid accepted
+jqok(){ local f=$(mktemp); printf '%s' "$1" > "$f"; jq -e . "$f" >/dev/null 2>&1 && print VALID || print INVALID; rm -f "$f"; }
+[[ "$(jqok '{"status":"verify"}')" == VALID && "$(jqok '{"status":"ver')" == INVALID && "$(jqok '')" == INVALID ]] \
+  && ok "NEW-1: jq gate accepts complete JSON, rejects truncated/empty (no false 'signal detected')" || no "NEW-1: jq gate logic"
+# ---- NEW-2 (audit round 2): verifier exit-without-verdict NOT routed to worker restart ----
+# handle_worker_exit_claude → restart_worker relaunches a WORKER (WORKER_MODEL + worker
+# trigger; no-op in mixed-engine). A claude verifier that exited without a verdict was
+# routed there. Now a verifier role returns 1 (transient) → caller's D-4 verifier
+# replace+retry relaunches the VERIFIER correctly.
+grep -qF 'verifier_exit_no_verdict=true' "$RUN" && grep -qF 'if [[ "$role" == *erifier* ]]; then' "$RUN" \
+  && ok "NEW-2: verifier exit-without-verdict → return 1 (caller relaunches verifier), not worker restart" || no "NEW-2: verifier-exit routing missing"
+# the verifier guard must come BEFORE handle_worker_exit_claude (worker restart)
+ln_v=$(grep -n 'verifier_exit_no_verdict=true' "$RUN" | head -1 | cut -d: -f1)
+ln_w=$(grep -n 'if handle_worker_exit_claude "\$pane_id" "\$ITERATION" "\$trigger_file"; then' "$RUN" | head -1 | cut -d: -f1)
+[[ -n "$ln_v" && -n "$ln_w" && "$ln_v" -lt "$ln_w" ]] \
+  && ok "NEW-2: verifier guard ($ln_v) precedes worker exit/restart ($ln_w)" || no "NEW-2: ordering (v=$ln_v w=$ln_w)"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

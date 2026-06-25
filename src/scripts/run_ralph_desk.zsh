@@ -2640,7 +2640,13 @@ poll_for_signal() {
       if check_heartbeat_exited "$heartbeat_file"; then
         # Process exited but no signal file -- give a brief grace period
         sleep 3
-        if [[ -f "$signal_file" ]]; then
+        # NEW-1 (audit round 2): require VALID JSON, not mere file existence. The
+        # main poll-success path above already gates on `jq -e .` (the worker writes
+        # the sentinel directly and can leave it empty/truncated/mid-write on exit);
+        # this exit-grace branch must apply the SAME gate, else a truncated sentinel
+        # is accepted and the caller reads a null/"unknown" status/verdict. If the
+        # file exists but is not yet valid JSON, fall through to the exit handler.
+        if [[ -f "$signal_file" ]] && jq -e . "$signal_file" >/dev/null 2>&1; then
           log "  Signal file detected after process exit: $signal_file"
           return 0
         fi
@@ -2657,7 +2663,21 @@ poll_for_signal() {
             return 2
           fi
         fi
-        # Claude path (or verifier of any engine)
+        # NEW-2 (audit round 2): a VERIFIER that exited WITHOUT a valid verdict must
+        # NOT be routed through the WORKER exit/restart path below.
+        # handle_worker_exit_claude → restart_worker relaunches a WORKER (WORKER_MODEL
+        # + the worker trigger, and a NO-OP in mixed-engine `WORKER_ENGINE=codex`
+        # mode) — wrong engine/model/prompt for a verifier, and it would spew worker
+        # output into the verifier pane. Instead, signal a transient poll failure
+        # (rc=1) so the caller's verifier-relaunch logic handles it with the correct
+        # VERIFIER engine/model: run_sequential_final_verify does a D-4 replace+retry;
+        # run_single_verifier / consensus surface it as a verifier failure to retry.
+        if [[ "$role" == *erifier* ]]; then
+          log "  $role exited without a valid verdict — transient poll failure (caller relaunches the verifier)."
+          log_debug "[GOV] iter=$ITERATION verifier_exit_no_verdict=true role=$role action=return1_for_verifier_retry"
+          return 1
+        fi
+        # Worker (claude) path
         if handle_worker_exit_claude "$pane_id" "$ITERATION" "$trigger_file"; then
           # Reset poll timer for the restart
           poll_start=$(date +%s)
