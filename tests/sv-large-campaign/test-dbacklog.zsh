@@ -412,6 +412,27 @@ ln_w=$(grep -n 'if handle_worker_exit_claude "\$pane_id" "\$ITERATION" "\$trigge
 [[ -n "$ln_v" && -n "$ln_w" && "$ln_v" -lt "$ln_w" ]] \
   && ok "NEW-2: verifier guard ($ln_v) precedes worker exit/restart ($ln_w)" || no "NEW-2: ordering (v=$ln_v w=$ln_w)"
 
+# ---- NEW-4 (audit round 2): dirty-detection works in a no-HEAD (zero-commit) repo ----
+# `git diff --name-only HEAD` fails in a repo with no commits → Bug#8 Gate 3 misses a
+# Worker that staged-but-never-committed → F-8 auto-commit recovery skipped. Fix: a
+# HEAD-or-empty-tree base so staged files are detected even before the first commit.
+grep -qF '_git_dirty_base()' "$RUN" && grep -qF 'rev-parse --verify HEAD' "$RUN" \
+  && grep -qF 'hash-object -t tree /dev/null' "$RUN" \
+  && ok "NEW-4: _git_dirty_base() defined (HEAD if present, else git empty-tree)" || no "NEW-4: helper missing"
+grep -qF '_bug8_dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)"' "$RUN" \
+  && grep -qF 'CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)"' "$RUN" \
+  && ok "NEW-4: Gate 3 dirty-check + CAMPAIGN_PREEXISTING_DIRTY both use _git_dirty_base (same base)" || no "NEW-4: sites not wired to helper"
+# logic mirror: empty-tree base catches a staged file in a no-HEAD repo (real git)
+n4=$(mktemp -d); ( cd "$n4"; git init -q; git config user.email t@t; git config user.name t
+  echo x > d.py; git add d.py                              # staged, NO commit, NO HEAD
+  et=$(git hash-object -t tree /dev/null)
+  print "noHEAD_diff_HEAD=[$(git diff --name-only HEAD 2>/dev/null)]"   # empty (broken)
+  print "noHEAD_diff_empty=[$(git diff --name-only "$et" 2>/dev/null)]" # d.py (fixed)
+) > "$n4/out" 2>/dev/null
+[[ "$(grep noHEAD_diff_HEAD $n4/out)" == 'noHEAD_diff_HEAD=[]' && "$(grep noHEAD_diff_empty $n4/out)" == 'noHEAD_diff_empty=[d.py]' ]] \
+  && ok "NEW-4: empty-tree base catches a staged file that 'diff HEAD' misses in a no-commit repo" || no "NEW-4: empty-tree logic ($(tr '\n' ' ' <$n4/out))"
+rm -rf "$n4"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

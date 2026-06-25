@@ -560,7 +560,20 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | NEW-2 | The exit-handler dispatch routed a VERIFIER (any engine) through `handle_worker_exit_claude` → `restart_worker` (WORKER_MODEL + worker trigger; no-op in mixed-engine codex). A claude verifier that exited WITHOUT a valid verdict was mis-restarted as a worker in the verifier pane. Fix: a `[[ "$role" == *erifier* ]] → return 1` guard BEFORE the worker handler; the verifier-poll callers handle rc=1 (run_sequential_final_verify = D-4 replace+retry relaunching FINAL_VERIFIER_*; run_single_verifier/consensus surface it as a verifier failure). codex verifiers also hit this guard (the codex-worker exit branch excludes `*erifier*`); the `*erifier*` glob does not capture the worker role "Worker". |
 | Verification | test-dbacklog 94/94 (+4 NEW-1/NEW-2). codex review 0 issues (jq-gate consistency; both rc=1 callers traced; no verifier reaches handle_worker_exit_claude; glob-safe). sv-gate:fast 71/71, F-22 14/14, lock 9/9, node 387/387 (clean, no flake this run). |
 
-FINAL STATE: F-1..F-26 + D-1..D-24 + D-1c + D-17a + NEW-1/NEW-2 SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
+### NEW-4 (FIXED) — dirty-detection broken in a no-HEAD (zero-commit) repo  · MEDIUM
+| | |
+|---|---|
+| Symptom | `git diff --name-only HEAD` fails (fatal, empty output) in a brand-new `git init` repo run before any commit. So Bug#8 Gate 3's `_bug8_dirty` check and the startup `CAMPAIGN_PREEXISTING_DIRTY` snapshot both returned empty → a Worker that STAGED but never COMMITTED its deliverables was undetected → the F-8 auto-commit recovery was skipped (the Verifier's F-18 committed-state gate is the only remaining backstop). |
+| Fix | New `_git_dirty_base()`: `HEAD` when `git rev-parse --verify HEAD` succeeds, else git's empty-tree object (`git hash-object -t tree /dev/null`, read-only; fallback to the empty-tree SHA). Both dirty-detection sites diff against `$(_git_dirty_base)` so staged-but-never-committed files are caught even before the first commit. In a HEAD repo the base stays HEAD (zero behavior change); the empty-tree diff lists only staged files, not untracked cruft (matches the HEAD-diff semantics it replaces). |
+| Verification | test-dbacklog 97/97 (+3 NEW-4). codex review: Q1/Q2/Q4 clean (HEAD-base unchanged for the common case; empty-tree lists only staged; hash-object side-effect-free); a base-drift concern → traced to within-process safety (CAMPAIGN_PREEXISTING_DIRTY is captured before any Worker dispatch, so no Worker file is in it; the empty-tree→HEAD transition can't drop a real Worker file) and the code comment corrected to scope the claim accurately. sv-gate:fast 71/71, F-22 14/14, lock 9/9, node 387/387. |
+
+### D-25 (report-only, pre-existing — surfaced during NEW-4 review) — relaunch re-captures the dirty snapshot
+| | |
+|---|---|
+| Symptom | `CAMPAIGN_PREEXISTING_DIRTY` is captured once per leader PROCESS at main() startup. On a RELAUNCH (new process) it is re-captured AFTER a prior segment's Worker ran, so a prior-segment uncommitted file lands in the "pre-existing" snapshot and is excluded from the new segment's F-8 auto-commit recovery. |
+| Status | report-only, NOT fixed: (a) PRE-EXISTING, unchanged by NEW-4 (on relaunch HEAD exists so NEW-4's empty-tree path isn't taken); (b) BENIGN — the fresh-context Worker re-does that US and commits it; excluding a prior-segment's abandoned partial file from auto-commit is defensible. A real fix persists the campaign-start snapshot across relaunches (status.json) — a feature change with its own risk; deferred. |
+
+FINAL STATE: F-1..F-26 + D-1..D-25 + D-1c + D-17a + NEW-1/NEW-2/NEW-4 SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
 D-1..D-15 + D-1c) + v0.18.1 (D-16) + **v0.18.2 (D-18 + D-17a + D-19 + D-20 + D-21)** all on
 npm + gh. codex-clean, deterministically tested (test-dbacklog 82/82 + model-upgrade-ladder
 15/15 + full fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387 [parallel-exec flake

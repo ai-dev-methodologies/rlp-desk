@@ -28,6 +28,21 @@ _validate_int_knob() {
   fi
 }
 
+# NEW-4 (audit round 2): the diff base for "uncommitted tracked files" detection.
+# `git diff --name-only HEAD` FAILS (fatal, empty output) in a repo with NO commits
+# (a brand-new `git init` project run before any commit) — so a Worker that STAGES
+# but does not COMMIT its deliverables goes undetected by the Bug #8 Gate 3 dirty
+# check, skipping the F-8 auto-commit recovery (the Verifier's F-18 committed-state
+# gate is then the only backstop). Echo HEAD when it exists, else git's empty-tree
+# object so `git diff --name-only <base>` lists staged-but-never-committed files.
+_git_dirty_base() {
+  if git -C "$ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    echo HEAD
+  else
+    git -C "$ROOT" hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  fi
+}
+
 # =============================================================================
 # Ralph Desk Tmux Runner
 #
@@ -865,7 +880,9 @@ _bug8_check_synth_allowed() {
   # (test-spec) is the real correctness gate for the Worker's committed work; this
   # gate only guards against a Worker that left TRACKED edits uncommitted.
   local _bug8_dirty
-  _bug8_dirty=$(git -C "$ROOT" diff --name-only HEAD 2>/dev/null)
+  # NEW-4: diff against HEAD, or git's empty-tree when the repo has no commits yet,
+  # so a Worker that staged-but-never-committed its work is still detected here.
+  _bug8_dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
   if [[ -n "$_bug8_dirty" ]]; then
     # F-8 recovery (F-19 scoped): by Gate 1 a done-claim exists, so uncommitted
     # TRACKED changes are most likely the Worker's own US work it failed to commit
@@ -879,6 +896,16 @@ _bug8_check_synth_allowed() {
     # The Verifier (test-spec) is the real correctness gate, so a genuine mid-write
     # bail still FAILs verify → fix loop; Bug #8's "no false PASS" intent is
     # preserved by the Verifier, not by abort.
+    # NEW-4 base-drift note (codex re-review): CAMPAIGN_PREEXISTING_DIRTY is captured
+    # once in main() BEFORE the loop / any Worker dispatch, so WITHIN A SINGLE LEADER
+    # PROCESS it holds only operator pre-existing files — no Worker file is in it, and
+    # the within-process empty-tree→HEAD base transition (no-HEAD repo gets its first
+    # commit mid-run) cannot drop a real Worker file. (Caveat, PRE-EXISTING and
+    # unchanged by NEW-4: on a RELAUNCH the snapshot is re-captured at the new
+    # process start, so a prior segment's uncommitted file lands in it and is
+    # excluded — that file is then re-done/committed by the fresh-context Worker, so
+    # it is benign; and on relaunch HEAD already exists, so NEW-4's empty-tree path is
+    # not even taken. Tracked as D-25 report-only, not a NEW-4 regression.)
     local _bug8_worker_files
     _bug8_worker_files=$(comm -23 \
       <(printf '%s\n' "$_bug8_dirty" | sort -u) \
@@ -3570,7 +3597,10 @@ main() {
   # not); untracked cruft is excluded and is never auto-committed. Empty when the
   # tree starts clean. Recorded once; excluded at recovery time in Gate 3.
   typeset -g CAMPAIGN_PREEXISTING_DIRTY
-  CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only HEAD 2>/dev/null)
+  # NEW-4: same HEAD-or-empty-tree base as Gate 3, so the pre-existing-dirty snapshot
+  # and the recovery-time dirty check compare against the SAME baseline (the comm -23
+  # exclusion in Gate 3 only works if both lists are computed against the same base).
+  CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
 
   # Validate scaffold
   validate_scaffold
