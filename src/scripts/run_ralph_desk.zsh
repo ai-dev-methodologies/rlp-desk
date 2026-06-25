@@ -896,7 +896,25 @@ _bug8_check_synth_allowed() {
       log "  Bug #8 F-8 recovery: done-claim + Worker's uncommitted tracked changes — auto-committing $us_id work (files: $_bug8_first5)."
       log_debug "[GOV] iter=$iter bug8=recover_autocommit us_id=$us_id files='$_bug8_first5'"
       local -a _bug8_add=("${(@f)_bug8_worker_files}")
-      if git -C "$ROOT" add -- "${_bug8_add[@]}" && git -C "$ROOT" commit -q -m "chore(leader-recovery): commit Worker's uncommitted $us_id changes (Bug #8 F-8)"; then
+      # D-20 (codex LOW): fail-safe on an empty file list. The upstream
+      # `[[ -z "$_bug8_worker_files" ]]` guard already makes this unreachable, but
+      # never let an empty array turn `git diff --quiet HEAD --` into a whole-tree
+      # check (which could falsely read "already committed" → false PASS). BLOCK.
+      if (( ${#_bug8_add} == 0 )); then
+        log_error "  Bug #8: empty worker-file list at auto-commit (unexpected) — refusing synthesis."
+        write_blocked_sentinel "worker_incomplete_uncommitted: empty file list at auto-commit" "$us_id" "metric_failure"
+        return 1
+      fi
+      if git -C "$ROOT" diff --quiet HEAD -- "${_bug8_add[@]}" 2>/dev/null; then
+        # D-20: the Worker committed these files itself in the window between the
+        # dirty-detection above and now (a reap/commit race) — the working tree is
+        # already clean vs HEAD for them, i.e. the work IS committed. The old code
+        # ran `git add … && git commit`, which exited non-zero ("nothing to commit")
+        # and BLOCKED a correct, fully-committed campaign. Treat "already committed"
+        # as success: proceed to synthesis (the Verifier still gates correctness).
+        log "  Bug #8 F-8 (D-20): Worker files already committed (commit race) — nothing to auto-commit; proceeding."
+        log_debug "[GOV] iter=$iter bug8=autocommit_noop_already_committed us_id=$us_id files='$_bug8_first5'"
+      elif git -C "$ROOT" add -- "${_bug8_add[@]}" && git -C "$ROOT" commit -q -m "chore(leader-recovery): commit Worker's uncommitted $us_id changes (Bug #8 F-8)"; then
         log "  Leader-recovery auto-commit OK (Worker files only) — Verifier will gate correctness."
       else
         log_error "  Bug #8: leader-recovery auto-commit failed. Refusing synthesis. files: $_bug8_first5"

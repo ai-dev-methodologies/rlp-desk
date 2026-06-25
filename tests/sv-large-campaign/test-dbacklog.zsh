@@ -317,6 +317,32 @@ vint(){ local v="$1" def="$2" min="${3:-0}" max="${4:-0}" bad=0; if ! [[ "$v" ==
 [[ "$(vint abc 20 1)" == 20 && "$(vint 5x 6 1)" == 6 && "$(vint 0 20 1)" == 20 && "$(vint 50 20 1)" == 50 && "$(vint 0 3 0)" == 0 && "$(vint 99 3 1 10)" == 3 && "$(vint 7 3 1 10)" == 7 ]] \
   && ok "D-19: validation logic (abc/5x/below-min/above-max → default; valid incl. min=0 → kept)" || no "D-19: validation logic"
 
+# ---- D-20: auto-commit "already committed" race no longer BLOCKs a correct campaign ----
+# The Bug #8 F-8 auto-commit ran `git add … && git commit`; if the Worker committed its
+# own files between dirty-detection and the leader's commit (reap race), `git commit`
+# exited non-zero ("nothing to commit") → the campaign BLOCKED despite the work being
+# fully committed + correct (observed in the D-19 dogfood: f9d1fff committed, pytest 5/5).
+grep -qF 'if git -C "$ROOT" diff --quiet HEAD -- "${_bug8_add[@]}" 2>/dev/null; then' "$RUN" \
+  && grep -qF 'bug8=autocommit_noop_already_committed' "$RUN" \
+  && ok "D-20: auto-commit checks 'already committed' (diff --quiet HEAD) FIRST → proceeds, not BLOCK" || no "D-20: already-committed guard missing"
+# the genuine-commit path (add+commit) is the elif, and a real failure still BLOCKs
+grep -qF 'elif git -C "$ROOT" add -- "${_bug8_add[@]}" && git -C "$ROOT" commit' "$RUN" \
+  && grep -qF 'leader-recovery auto-commit failed' "$RUN" \
+  && ok "D-20: genuine-uncommitted → add+commit (elif); real commit failure still BLOCKs" || no "D-20: commit/block paths drifted"
+# logic mirror: git diff --quiet HEAD distinguishes committed (race→proceed) vs uncommitted (commit)
+_d20=$(mktemp -d); ( cd "$_d20"; git init -q; git config user.email t@t; git config user.name t
+  echo a>a; git add -A; git commit -q -m i
+  echo n>r.py; git add r.py; git commit -q -m worker   # worker committed (race)
+  git diff --quiet HEAD -- r.py && print PROCEED || print COMMIT
+  echo x>c.py; git add c.py                              # staged-uncommitted
+  git diff --quiet HEAD -- c.py && print PROCEED || print COMMIT ) > "$_d20/out" 2>/dev/null
+[[ "$(sed -n 1p $_d20/out)" == PROCEED && "$(sed -n 2p $_d20/out)" == COMMIT ]] \
+  && ok "D-20: committed-file→PROCEED (no block), uncommitted→COMMIT" || no "D-20: diff-quiet logic ($(tr '\n' ',' <$_d20/out))"
+rm -rf "$_d20"
+# D-20 codex LOW: empty file-list fails SAFE (BLOCK), never whole-tree "already committed"
+grep -qF '(( ${#_bug8_add} == 0 ))' "$RUN" && grep -qF 'empty file list at auto-commit' "$RUN" \
+  && ok "D-20 fix(LOW): empty worker-file array → fail-safe BLOCK (no whole-tree false 'already committed')" || no "D-20 fix(LOW): empty-array guard missing"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))
