@@ -2534,9 +2534,22 @@ poll_for_signal() {
     if [[ -n "$pane_output_for_retry" ]] &&
        ( echo "$pane_output_for_retry" | grep -qiE '(^|[^[:digit:]])500([^[:digit:]]|$)' \
       || echo "$pane_output_for_retry" | grep -qiE '(^|[^[:digit:]])529([^[:digit:]]|$)' \
+      || echo "$pane_output_for_retry" | grep -qiE '(^|[^[:digit:]])429([^[:digit:]]|$)' \
       || echo "$pane_output_for_retry" | grep -qi 'overloaded' \
       || echo "$pane_output_for_retry" | grep -qi 'too many requests' \
-      || echo "$pane_output_for_retry" | grep -qi 'service unavailable' ); then
+      || echo "$pane_output_for_retry" | grep -qi 'service unavailable' \
+      || echo "$pane_output_for_retry" | grep -qiE 'api error.*temporarily limiting requests' ); then
+      # D-17a: the last pattern catches the claude TUI rate-limit banner
+      # ("API Error: Server is temporarily limiting requests (not your usage
+      # limit) · Rate limited") that previously fell through to the 600s
+      # frozen-pane BLOCK with a misleading "deadlock" reason. It requires BOTH
+      # the "API Error" banner prefix AND the distinctive multi-word phrase
+      # "temporarily limiting requests" on the SAME line (codex MEDIUM): a Worker
+      # implementing a rate-limiter feature, quoting the phrase, or merely
+      # discussing API rate-limit handling does NOT false-trigger backoff — only
+      # the actual error banner does. Routes to the bounded API backoff below
+      # (5×30s) → recovers a transient limit, else BLOCKs as infra (recoverable),
+      # not as a misleading frozen-pane deadlock.
       is_api_text_retry=1
     fi
 

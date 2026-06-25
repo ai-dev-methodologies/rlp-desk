@@ -272,6 +272,29 @@ fvval(){ local v="$1"; if ! [[ "$v" == <-> ]] || (( v < 1 || v > 10 )); then pri
 [[ "$(fvval 3)" == 3 && "$(fvval 1)" == 1 && "$(fvval 10)" == 10 && "$(fvval abc)" == 3 && "$(fvval 0)" == 3 && "$(fvval 99)" == 3 && "$(fvval '')" == 3 ]] \
   && ok "D-18 fix(HIGH): valid 1..10 pass through; abc/0/99/'' → default 3 (no arith on non-int)" || no "D-18 fix(HIGH): validation logic"
 
+# ---- D-17a: claude rate-limit banner routes to bounded API backoff (was → 600s frozen BLOCK) ----
+# The claude TUI "API Error: ... temporarily limiting requests ... · Rate limited" banner
+# previously did not match the API-error patterns → fell through to the frozen-pane 600s
+# BLOCK with a misleading "deadlock" reason (observed: CRITICAL att.1 + D-16 dogfood att.1).
+# codex MEDIUM fix: single banner-specific pattern (API Error + the distinctive
+# multi-word phrase on one line), NOT loose standalone patterns.
+grep -qF "grep -qiE 'api error.*temporarily limiting requests'" "$RUN" \
+  && ok "D-17a: banner pattern requires 'API Error' + 'temporarily limiting requests' together" || no "D-17a: banner pattern missing"
+grep -qF "grep -qiE '(^|[^[:digit:]])429([^[:digit:]]|\$)'" "$RUN" \
+  && ok "D-17a: HTTP 429 added (mirrors 500/529)" || no "D-17a: 429 missing"
+# loose patterns must be GONE (codex MEDIUM: false-positive on legit rate-limit discussion)
+grep -qF "grep -qiE 'api error.*rate.?limit'" "$RUN" && no "D-17a fix: loose 'api error.*rate.?limit' still present (false-positive risk)" \
+  || ok "D-17a fix(MED): loose patterns removed (no standalone 'temporarily limiting requests' / 'api error.*rate.?limit')"
+# logic mirror: match the real banner + 429; do NOT match legit discussion/feature/quote
+rlmatch(){ echo "$1" | grep -qiE 'api error.*temporarily limiting requests' || echo "$1" | grep -qiE '(^|[^[:digit:]])429([^[:digit:]]|$)'; }
+rlmatch '⏺ API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited' && b1=Y || b1=N
+rlmatch '⏺ API Error: 429 Too Many Requests' && b2=Y || b2=N
+rlmatch 'def rate_limit(n): # implement a rate limiter' && f1=Y || f1=N
+rlmatch '# handle the API error: back off when rate limited (see docs)' && f2=Y || f2=N
+rlmatch 'the server is temporarily limiting requests in my new throttle module' && f3=Y || f3=N
+[[ "$b1" == Y && "$b2" == Y && "$f1" == N && "$f2" == N && "$f3" == N ]] \
+  && ok "D-17a fix(MED): banner+429 match; feature/discussion/quote (incl. 'API error: back off when rate limited', bare 'temporarily limiting requests') do NOT false-trigger" || no "D-17a match/false-positive (b1=$b1 b2=$b2 f1=$f1 f2=$f2 f3=$f3)"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

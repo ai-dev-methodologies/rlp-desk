@@ -516,10 +516,19 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | Fix (IMPLEMENTED) | `run_sequential_final_verify` re-verifies a US that ALREADY passed per-US on a FAIL verdict, up to `FINAL_VERIFY_MAX_ATTEMPTS` (default 3, env-overridable, validated to 1..10) — first pass wins, so a verifier false-fail must REPRODUCE across all attempts before charging a fix-loop failure. Extracted the per-US dispatch/poll/verdict into `_final_verify_one_us` (0=pass / 1=fail verdict / 2=infra-terminal); infra-terminal (rc=2) never retries; a never-per-US-passed US or a genuine regression still fails (max=1, or fails all 3). Does NOT mask real regressions (a consistently-broken US fails all attempts). |
 | Verification | test-dbacklog 67/67 (+8 D-18: knob+validation, helper extraction, reverify gating, return-contract, budget, flake-vs-regression outcome). codex review: 1 HIGH (non-integer knob → silent false-fail under set -u) → fixed (glob-first 1..10 validation, empirically `abc/0/99/''→3`) → re-review 0 issues. sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. **3-US strutils dogfood (real-LLM, isolated tmux): COMPLETE** (same scenario BLOCKED pre-D-18 on verifier flake → stale CB; now ALL PASSED). Committed via feature/d18-final-verify-flake-resilience → ff-merge. |
 
-FINAL STATE: F-1..F-26 + D-1..D-18 + D-1c SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
-D-1..D-15 + D-1c) + v0.18.1 (D-16) on npm + gh; D-18 on main (next release candidate).
-codex-clean, deterministically tested (test-dbacklog 67/67 + full fault-injection +
-lock 9/9 + sv-gate 71/71 + node 387/387), dogfood-proven (haiku 12-US COMPLETE; D-16
-3-US VALIDATED; D-18 3-US COMPLETE) + release SV trio (LOW/MED/CRIT COMPLETE, BROKEN
-BLOCKED). The "never completes" failure class is resolved. Open candidates (report-only,
-deferred): D-17 (rate-limit grace), D-7 (heartbeat inert), redundant EXIT trap.
+### D-17a (FIXED) — claude rate-limit banner misclassified as frozen-pane deadlock  · MED
+| | |
+|---|---|
+| Symptom | The poll loop's API-error recovery (bounded backoff for 500/529/overloaded/too-many-requests/service-unavailable) did NOT recognize the claude TUI rate-limit banner "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited". A rate-limited worker that went idle then fell through to the 600s frozen-pane BLOCK with a MISLEADING "alive but frozen / deadlock" reason. Observed TWICE this session (SV CRITICAL att.1 + D-16 3-US dogfood att.1) — an opus worker rate-limited at end-of-campaign. |
+| Fix | Added two patterns to the API-error detection chain: HTTP `429` (mirrors 529) and a banner-specific `api error.*temporarily limiting requests` (requires BOTH "API Error" AND the distinctive multi-word phrase on ONE line — codex MEDIUM: a bare phrase or "api error … rate limit" co-occurrence would false-trigger on legit rate-limit discussion / a rate-limiter FEATURE US). Now the rate-limit routes to the existing bounded backoff (5×30s — recovers a transient blip) and, if still stuck, BLOCKs as `infra_failure` (accurate, recoverable=restart) instead of a misleading frozen-pane deadlock. |
+| Scope note | D-17b (auto-recovering an idle rate-limited pane by re-prompting) is intentionally DEFERRED — re-dispatching mid-iteration risks duplicate work; the poll/dispatch blast radius is large. D-17a only improves detection/classification + applies the existing backoff window. |
+| Verification | test-dbacklog 71/71 (+4 D-17a incl. the codex-MEDIUM false-positive cases: feature code / "API error: back off when rate limited" discussion / bare phrase all NON-matching). codex review: 1 MEDIUM (loose patterns) fixed → re-review 0 issues. sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. **Real-LLM 2-US dogfood incl. a rate-limiter FEATURE US: COMPLETE, api-error-backoff triggers=0** (the feature's "rate limit" pane text did NOT false-trigger). |
+
+FINAL STATE: F-1..F-26 + D-1..D-18 + D-1c + D-17a SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
+D-1..D-15 + D-1c) + v0.18.1 (D-16) on npm + gh; D-18 + D-17a on main (next release
+candidates). codex-clean, deterministically tested (test-dbacklog 71/71 + full
+fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387), dogfood-proven (haiku 12-US
+COMPLETE; D-16 3-US VALIDATED; D-18 3-US COMPLETE; D-17a 2-US rate-limiter-feature
+COMPLETE no-false-positive) + release SV trio (LOW/MED/CRIT COMPLETE, BROKEN BLOCKED).
+The "never completes" failure class is resolved. Open candidates (report-only, deferred):
+D-17b (idle rate-limited pane auto-reprompt — risky), D-7 (heartbeat inert), redundant EXIT trap.
