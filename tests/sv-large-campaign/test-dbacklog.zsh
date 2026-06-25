@@ -265,8 +265,8 @@ fvres(){ local max="$1"; shift; local a=0 v; for v in "$@"; do (( a++ )); [[ "$v
 [[ "$(fvres 3 fail pass)" == 'PASS@2' && "$(fvres 3 fail fail fail)" == 'FAIL@3' && "$(fvres 1 fail)" == 'FAIL@1' && "$(fvres 3 pass)" == 'PASS@1' ]] \
   && ok "D-18: flake(fail→pass)=PASS@2, real regression(fail×3)=FAIL@3, no-tolerance(max1,fail)=FAIL@1, clean=PASS@1" || no "D-18: reverify outcome logic"
 # D-18 codex HIGH: knob validated — non-integer / out-of-range must NOT mis-evaluate (silent false-fail)
-grep -qF 'if ! [[ "$FINAL_VERIFY_MAX_ATTEMPTS" == <-> ]] || (( FINAL_VERIFY_MAX_ATTEMPTS < 1 || FINAL_VERIFY_MAX_ATTEMPTS > 10 )); then' "$RUN" \
-  && ok "D-18 fix(HIGH): FINAL_VERIFY_MAX_ATTEMPTS validated (integer 1..10, glob-checked before arithmetic)" || no "D-18 fix(HIGH): knob validation missing"
+grep -qF '_validate_int_knob FINAL_VERIFY_MAX_ATTEMPTS 3 1 10' "$RUN" \
+  && ok "D-18 fix(HIGH): FINAL_VERIFY_MAX_ATTEMPTS validated 1..10 (via shared _validate_int_knob helper, D-19)" || no "D-18 fix(HIGH): knob validation missing"
 # logic mirror: validation table (glob-first so arithmetic never runs on non-integer)
 fvval(){ local v="$1"; if ! [[ "$v" == <-> ]] || (( v < 1 || v > 10 )); then print 3; else print "$v"; fi; }
 [[ "$(fvval 3)" == 3 && "$(fvval 1)" == 1 && "$(fvval 10)" == 10 && "$(fvval abc)" == 3 && "$(fvval 0)" == 3 && "$(fvval 99)" == 3 && "$(fvval '')" == 3 ]] \
@@ -294,6 +294,28 @@ rlmatch '# handle the API error: back off when rate limited (see docs)' && f2=Y 
 rlmatch 'the server is temporarily limiting requests in my new throttle module' && f3=Y || f3=N
 [[ "$b1" == Y && "$b2" == Y && "$f1" == N && "$f2" == N && "$f3" == N ]] \
   && ok "D-17a fix(MED): banner+429 match; feature/discussion/quote (incl. 'API error: back off when rate limited', bare 'temporarily limiting requests') do NOT false-trigger" || no "D-17a match/false-positive (b1=$b1 b2=$b2 f1=$f1 f2=$f2 f3=$f3)"
+
+# ---- D-19: systemic numeric-knob validation (generalizes the D-18 fix to ALL knobs) ----
+# A non-integer env value (operator typo, or a bad CLI arg like --max-iter abc threaded
+# into env) mis-evaluates under `set -u` in (( )) arithmetic. Empirically catastrophic:
+# MAX_ITER=abc → the main-loop bound errors → campaign silently runs ZERO iterations;
+# CB_THRESHOLD=5x → EFFECTIVE_CB_THRESHOLD=$((CB_THRESHOLD*2)) errors → CB broken.
+grep -qF '_validate_int_knob() {' "$RUN" && grep -qF 'local _val="${(P)_name}"' "$RUN" \
+  && ok 'D-19: _validate_int_knob helper defined (P-indirect val, two-line local — name set before val under set -u)' || no "D-19: helper missing/unsafe"
+# the catastrophic knobs are validated
+for _k in MAX_ITER CB_THRESHOLD BLOCK_CB_THRESHOLD MAX_NUDGES MAX_RESTARTS ITER_TIMEOUT POLL_INTERVAL PROGRESS_NO_CHANGE_TIMEOUT _API_MAX_RETRIES CODEX_IDLE_GRACE_S; do
+  grep -qE "_validate_int_knob $_k " "$RUN" || { no "D-19: $_k not validated"; _d19miss=1; }
+done
+[[ -z "${_d19miss:-}" ]] && ok "D-19: all catastrophic/arith knobs validated (MAX_ITER, CB_THRESHOLD, … 10 checked)"
+# CB_THRESHOLD validated BEFORE the EFFECTIVE_CB_THRESHOLD=$((*2)) arithmetic
+cb_val_line=$(grep -n '_validate_int_knob CB_THRESHOLD ' "$RUN" | head -1 | cut -d: -f1)
+cb_arith_line=$(grep -n 'EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD' "$RUN" | head -1 | cut -d: -f1)
+[[ -n "$cb_val_line" && -n "$cb_arith_line" && "$cb_val_line" -lt "$cb_arith_line" ]] \
+  && ok "D-19: CB_THRESHOLD validated ($cb_val_line) BEFORE the *2 arithmetic ($cb_arith_line)" || no "D-19: CB_THRESHOLD validation ordering (val=$cb_val_line arith=$cb_arith_line)"
+# logic mirror: helper normalizes bad → default, keeps good, honors min/max
+vint(){ local v="$1" def="$2" min="${3:-0}" max="${4:-0}" bad=0; if ! [[ "$v" == <-> ]]; then bad=1; elif (( v < min )); then bad=1; elif (( max > 0 && v > max )); then bad=1; fi; (( bad )) && print "$def" || print "$v"; }
+[[ "$(vint abc 20 1)" == 20 && "$(vint 5x 6 1)" == 6 && "$(vint 0 20 1)" == 20 && "$(vint 50 20 1)" == 50 && "$(vint 0 3 0)" == 0 && "$(vint 99 3 1 10)" == 3 && "$(vint 7 3 1 10)" == 7 ]] \
+  && ok "D-19: validation logic (abc/5x/below-min/above-max → default; valid incl. min=0 → kept)" || no "D-19: validation logic"
 
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi

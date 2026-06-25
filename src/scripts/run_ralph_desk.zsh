@@ -3,6 +3,31 @@ set -uo pipefail
 # NOTE: We use set -u (undefined var check) and pipefail, but NOT set -e
 # because the main loop uses explicit error checks throughout.
 
+# D-19: validate an env-overridable INTEGER knob. A non-integer value (operator
+# typo, or a bad CLI arg like `--max-iter abc` threaded into the env) otherwise
+# mis-evaluates under `set -u` inside (( )) arithmetic — e.g. a non-integer
+# MAX_ITER makes the main-loop bound error so the campaign silently runs ZERO
+# iterations; a non-integer CB_THRESHOLD breaks the circuit breaker. The `<->`
+# integer glob is checked FIRST (and short-circuits) so the arithmetic never runs
+# on a non-integer. A malformed / below-min / above-max value → the default.
+_validate_int_knob() {
+  local _name="$1" _default="$2" _min="${3:-0}" _max="${4:-0}"
+  local _val="${(P)_name}"
+  local _bad=0
+  if ! [[ "$_val" == <-> ]]; then
+    _bad=1
+  elif (( _val < _min )); then
+    _bad=1
+  elif (( _max > 0 && _val > _max )); then
+    _bad=1
+  fi
+  if (( _bad )); then
+    local _range="min=$_min"; (( _max > 0 )) && _range="$_range, max=$_max"
+    print -r -- "WARNING: $_name='$_val' is not a valid integer ($_range) — using default $_default" >&2
+    eval "$_name=$_default"
+  fi
+}
+
 # =============================================================================
 # Ralph Desk Tmux Runner
 #
@@ -56,6 +81,14 @@ HEARTBEAT_STALE_THRESHOLD="${HEARTBEAT_STALE_THRESHOLD:-120}"
 MAX_RESTARTS="${MAX_RESTARTS:-3}"
 IDLE_NUDGE_THRESHOLD="${IDLE_NUDGE_THRESHOLD:-30}"
 MAX_NUDGES="${MAX_NUDGES:-3}"
+# D-19: validate the numeric knobs above (set -u + (( )) arithmetic safety).
+_validate_int_knob MAX_ITER 20 1
+_validate_int_knob POLL_INTERVAL 5 1
+_validate_int_knob ITER_TIMEOUT 600 1
+_validate_int_knob HEARTBEAT_STALE_THRESHOLD 120 1
+_validate_int_knob MAX_RESTARTS 3 0
+_validate_int_knob IDLE_NUDGE_THRESHOLD 30 1
+_validate_int_knob MAX_NUDGES 3 0
 WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 WITH_SELF_VERIFICATION_REQUESTED="$WITH_SELF_VERIFICATION"  # preserves original user intent for traceability (governance §1f)
 SV_SKIPPED_REASON=""                                         # set when SV is disabled despite user request
@@ -88,6 +121,7 @@ TEST_DENSITY_MODE="${TEST_DENSITY_MODE:-warn}"
 # .sisyphus/mission-abort.json and exits non-zero so contract defects don't
 # silently loop. infra_failure category and the very first iteration are exempt.
 BLOCK_CB_THRESHOLD="${BLOCK_CB_THRESHOLD:-3}"
+_validate_int_knob BLOCK_CB_THRESHOLD 3 1   # D-19
 CONSECUTIVE_BLOCKS=0
 LAST_BLOCK_REASON=""
 
@@ -235,14 +269,12 @@ FINAL_VERIFIER_EFFORT="${FINAL_VERIFIER_EFFORT:-}"
 # non-determinism defeating a complete, correct campaign. A genuinely-regressed US
 # (or one never per-US-passed) still fails on the first attempt.
 FINAL_VERIFY_MAX_ATTEMPTS="${FINAL_VERIFY_MAX_ATTEMPTS:-3}"
-# D-18 (codex HIGH): validate the knob. A non-integer env value ("abc") would
-# mis-evaluate in the `(( ))` arithmetic below — skipping the retry loop and
-# silently FALSE-FAILING a US — and an unbounded value would be ruinously
-# expensive. Accept only a plain integer in 1..10 (the `<->` glob is checked
-# FIRST so the arithmetic never runs on a non-integer); anything else → 3.
-if ! [[ "$FINAL_VERIFY_MAX_ATTEMPTS" == <-> ]] || (( FINAL_VERIFY_MAX_ATTEMPTS < 1 || FINAL_VERIFY_MAX_ATTEMPTS > 10 )); then
-  FINAL_VERIFY_MAX_ATTEMPTS=3
-fi
+# D-18/D-19: a non-integer value ("abc") would mis-evaluate under set -u in the
+# (( )) retry-loop arithmetic — skipping the loop and silently FALSE-FAILING a US
+# — and an unbounded value would be ruinously expensive. Validate to an integer
+# in 1..10 via the shared _validate_int_knob helper (D-19 generalized this
+# per-knob fix into one validator used by every numeric knob).
+_validate_int_knob FINAL_VERIFY_MAX_ATTEMPTS 3 1 10
 
 # Auto-detect engine from model format for env var path (CLI path uses parse_model_flag)
 _auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT
@@ -274,6 +306,7 @@ elif [[ "${FINAL_CONSENSUS:-0}" = "1" ]]; then
 fi
 CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-${CONSENSUS_MODE}}"
 CB_THRESHOLD="${CB_THRESHOLD:-6}"           # consecutive failures before BLOCKED (default: 6)
+_validate_int_knob CB_THRESHOLD 6 1   # D-19: must be valid before the (( *2 )) below
 # Effective CB threshold: doubled when consensus mode active
 if [[ "$CONSENSUS_MODE" != "off" ]]; then
   EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD * 2 ))
@@ -282,6 +315,8 @@ else
 fi
 _API_MAX_RETRIES="${_API_MAX_RETRIES:-5}"
 _API_RETRY_INTERVAL_S="${_API_RETRY_INTERVAL_S:-30}"
+_validate_int_knob _API_MAX_RETRIES 5 1        # D-19
+_validate_int_knob _API_RETRY_INTERVAL_S 30 1  # D-19
 
 # --- Derived Paths ---
 DESK="$ROOT/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}"
@@ -1448,6 +1483,8 @@ typeset -gA PANE_PROMPT_STUCK_SINCE
 typeset -gA PANE_DISMISS_FAILED_COUNT
 PROMPT_STALL_TIMEOUT="${PROMPT_STALL_TIMEOUT:-300}"  # 5 min default
 PROMPT_DISMISS_FAIL_LIMIT="${PROMPT_DISMISS_FAIL_LIMIT:-20}"  # ~100s of fruitless dismiss attempts
+_validate_int_knob PROMPT_STALL_TIMEOUT 300 1      # D-19
+_validate_int_knob PROMPT_DISMISS_FAIL_LIMIT 20 1  # D-19
 
 # v5.7 §4.17: generic no-progress timeout (codex Critic HIGH — closes the gap
 # where an undetected prompt or alive-but-frozen Worker bypasses Layer 4).
@@ -1455,6 +1492,7 @@ PROMPT_DISMISS_FAIL_LIMIT="${PROMPT_DISMISS_FAIL_LIMIT:-20}"  # ~100s of fruitle
 # seconds AND signal file still missing, write BLOCKED `infra_failure` reason
 # `worker_no_progress` so silent infinite-wait is impossible.
 PROGRESS_NO_CHANGE_TIMEOUT="${PROGRESS_NO_CHANGE_TIMEOUT:-600}"  # 10 min default
+_validate_int_knob PROGRESS_NO_CHANGE_TIMEOUT 600 1  # D-19
 typeset -gA PANE_LAST_CHANGE_TS  # epoch when content last changed
 typeset -gA PANE_LAST_CONTENT_FOR_PROGRESS  # captured content for diff
 
@@ -1463,6 +1501,7 @@ typeset -gA PANE_LAST_CONTENT_FOR_PROGRESS  # captured content for diff
 # CODEX_IDLE_GRACE_S (default 120s) before BLOCK. Per-pane bookkeeping to
 # avoid granting it repeatedly. Bug Report #3 (BOS 2026-05-04).
 CODEX_IDLE_GRACE_S="${CODEX_IDLE_GRACE_S:-120}"
+_validate_int_knob CODEX_IDLE_GRACE_S 120 1  # D-19
 typeset -gA PANE_CODEX_IDLE_GRACED
 # v0.14.2: per-verifier-pane trace flag — log the verdict-lookup outcome
 # exactly once per byte-stasis transition. Bug Report #4 (BOS 2026-05-05).

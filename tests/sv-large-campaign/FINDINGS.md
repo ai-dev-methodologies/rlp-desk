@@ -524,11 +524,24 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | Scope note | D-17b (auto-recovering an idle rate-limited pane by re-prompting) is intentionally DEFERRED — re-dispatching mid-iteration risks duplicate work; the poll/dispatch blast radius is large. D-17a only improves detection/classification + applies the existing backoff window. |
 | Verification | test-dbacklog 71/71 (+4 D-17a incl. the codex-MEDIUM false-positive cases: feature code / "API error: back off when rate limited" discussion / bare phrase all NON-matching). codex review: 1 MEDIUM (loose patterns) fixed → re-review 0 issues. sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. **Real-LLM 2-US dogfood incl. a rate-limiter FEATURE US: COMPLETE, api-error-backoff triggers=0** (the feature's "rate limit" pane text did NOT false-trigger). |
 
-FINAL STATE: F-1..F-26 + D-1..D-18 + D-1c + D-17a SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
-D-1..D-15 + D-1c) + v0.18.1 (D-16) on npm + gh; D-18 + D-17a on main (next release
-candidates). codex-clean, deterministically tested (test-dbacklog 71/71 + full
+### D-19 (FIXED) — env-overridable numeric knobs unvalidated → catastrophic under set -u  · HIGH
+| | |
+|---|---|
+| Symptom | `set -uo pipefail` + ~15 numeric knobs read via `${VAR:-default}` with NO integer validation. A non-integer (operator typo / `--max-iter abc`→env) mis-evaluates in `(( ))`. EMPIRICAL: `MAX_ITER=abc` → main loop `for (( ITERATION<=MAX_ITER ))` errors → campaign silently runs ZERO iterations; `CB_THRESHOLD=5x` → `$(( CB_THRESHOLD*2 ))` errors → CB broken. Generalizes the single-knob D-18 fix to the whole class. |
+| Fix | New `_validate_int_knob NAME DEFAULT [MIN] [MAX]` (top of file): two-line `local` (name before `${(P)_name}` under set -u), `<->` glob FIRST (short-circuits → no arith on non-int), range, else WARNING + `eval NAME=DEFAULT`. Called after each numeric knob (CB_THRESHOLD before its `*2`). FINAL_VERIFY_MAX_ATTEMPTS D-18 inline folded into the helper (DRY). |
+| Verification | test-dbacklog 75/75; codex 0 issues; sv-gate 71/71, node 387/387, F-22 14/14, lock 9/9. Real-LLM dogfood w/ 4 INJECTED bad knobs → leader logged 4 WARNINGs, normalized all, EXECUTED the worker (pytest 5/5) not a silent no-op. (That dogfood then BLOCKED on an UNRELATED auto-commit race → D-20, found BY this dogfood.) |
+
+### D-20 (FROM D-19 dogfood) — auto-commit "nothing to commit" race BLOCKs a fully-committed campaign  · HIGH, OPEN
+| | |
+|---|---|
+| Symptom | Bug #8 F-8 leader-recovery auto-commit (run:~896) computes `_bug8_worker_files` from `git diff --name-only`, then `git add -- <files> && git commit`. If the Worker COMMITS its own work between the dirty-detection and the leader's `git commit` (reap/timing race), `git commit` exits non-zero ("nothing to commit") → `&&` fails → leader BLOCKs a campaign whose work is ACTUALLY fully committed + correct. Observed: D-19 dogfood — worker committed reverse.py+test (f9d1fff, pytest 5/5), leader auto-commit then failed → BLOCK. |
+| Status | OPEN (next fix). Candidate: after `git add`, if `git diff --cached --quiet` (nothing staged = already committed) → treat as SUCCESS (proceed), only BLOCK on a genuine commit failure with staged changes. |
+
+FINAL STATE: F-1..F-26 + D-1..D-19 + D-1c + D-17a SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
+D-1..D-15 + D-1c) + v0.18.1 (D-16) on npm + gh; D-18 + D-17a + D-19 on main (next release
+candidates). codex-clean, deterministically tested (test-dbacklog 75/75 + full
 fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387), dogfood-proven (haiku 12-US
 COMPLETE; D-16 3-US VALIDATED; D-18 3-US COMPLETE; D-17a 2-US rate-limiter-feature
-COMPLETE no-false-positive) + release SV trio (LOW/MED/CRIT COMPLETE, BROKEN BLOCKED).
-The "never completes" failure class is resolved. Open candidates (report-only, deferred):
-D-17b (idle rate-limited pane auto-reprompt — risky), D-7 (heartbeat inert), redundant EXIT trap.
+COMPLETE no-false-positive; D-19 4-bad-knob normalize + execute). The "never completes"
+failure class is resolved. OPEN: D-20 (auto-commit race — next). Deferred: D-17b (idle
+rate-limited pane auto-reprompt — risky), D-7 (heartbeat inert), redundant EXIT trap.
