@@ -229,6 +229,20 @@ FINAL_VERIFIER_ENGINE="${FINAL_VERIFIER_ENGINE:-claude}"
 WORKER_EFFORT="${WORKER_EFFORT:-}"
 VERIFIER_EFFORT="${VERIFIER_EFFORT:-}"
 FINAL_VERIFIER_EFFORT="${FINAL_VERIFIER_EFFORT:-}"
+# D-18: max final-verify attempts for a US that ALREADY passed per-US. A verifier
+# fail verdict on already-per-US-passed work must REPRODUCE across all attempts
+# (first pass wins) before it charges a fix-loop failure — guards against verifier
+# non-determinism defeating a complete, correct campaign. A genuinely-regressed US
+# (or one never per-US-passed) still fails on the first attempt.
+FINAL_VERIFY_MAX_ATTEMPTS="${FINAL_VERIFY_MAX_ATTEMPTS:-3}"
+# D-18 (codex HIGH): validate the knob. A non-integer env value ("abc") would
+# mis-evaluate in the `(( ))` arithmetic below — skipping the retry loop and
+# silently FALSE-FAILING a US — and an unbounded value would be ruinously
+# expensive. Accept only a plain integer in 1..10 (the `<->` glob is checked
+# FIRST so the arithmetic never runs on a non-integer); anything else → 3.
+if ! [[ "$FINAL_VERIFY_MAX_ATTEMPTS" == <-> ]] || (( FINAL_VERIFY_MAX_ATTEMPTS < 1 || FINAL_VERIFY_MAX_ATTEMPTS > 10 )); then
+  FINAL_VERIFY_MAX_ATTEMPTS=3
+fi
 
 # Auto-detect engine from model format for env var path (CLI path uses parse_model_flag)
 _auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT
@@ -2832,6 +2846,94 @@ _all_us_verified() {
   return 0
 }
 
+# D-18 helper: one final-verify pass for a single US. Returns 0=pass verdict,
+# 1=fail verdict, 2=infra-terminal (launch/poll hard fail — sentinel handling
+# already done by the poll). Reads/updates globals (VERIFIER_PANE, FINAL_VERIFIER_*,
+# SIGNAL_FILE, VERDICT_FILE, SESSION_CONFIG). Extracted from run_sequential_final_verify
+# so the caller can re-verify a per-US-passed US on a flake without duplicating the
+# dispatch/poll logic. Does NOT set FAILED_US (the caller owns that).
+_final_verify_one_us() {
+  local us="$1" iter="$2"
+
+  # Temporarily override signal file to scope verifier to this US
+  local orig_signal
+  orig_signal=$(cat "$SIGNAL_FILE" 2>/dev/null)
+  echo "{\"status\":\"verify\",\"us_id\":\"$us\",\"summary\":\"sequential final verify\"}" | atomic_write "$SIGNAL_FILE"
+
+  # Write scoped verifier trigger
+  write_verifier_trigger "$iter"
+  local verifier_prompt="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier-prompt.md"
+
+  # Clean verifier pane
+  local verifier_cmd
+  verifier_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null)
+  if [[ "$verifier_cmd" == "node" || "$verifier_cmd" == "claude" || "$verifier_cmd" == "codex" ]]; then
+    tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null; sleep 0.5
+    tmux send-keys -t "$VERIFIER_PANE" "/exit" C-m 2>/dev/null; sleep 2
+  fi
+  wait_for_pane_ready "$VERIFIER_PANE" 10 2>/dev/null || true
+
+  # Launch verifier. D-1: the FINAL (ALL) verify uses FINAL_VERIFIER_* (the
+  # "final 엄격" knob — a configured stronger model, e.g. opus, for the final
+  # gate), NOT the lighter per-US VERIFIER_*. This is the configured-final-model
+  # distinction, distinct from the removed per-iteration verifier auto-upgrade.
+  local verifier_launch
+  if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
+    verifier_launch="${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
+  else
+    verifier_launch="$(build_claude_cmd tui "$FINAL_VERIFIER_MODEL" "" "" "$FINAL_VERIFIER_EFFORT")"
+    launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
+      log_error "Failed to launch final verifier for $us"
+      return 2
+    }
+  fi
+
+  # Poll for verdict. D-4: distinguish rc==2 (hard-fail, sentinel already
+  # written → terminal) from rc==1 (transient pane race/timeout) and give ONE
+  # replace-pane + re-dispatch retry before failing the US — the F-10 retry
+  # parity the per-US main verifier site has but this final-verify path lacked
+  # (a single transient poll miss falsely failed a US at the most expensive
+  # end-of-campaign moment, charging a bogus consecutive failure).
+  rm -f "$VERDICT_FILE"
+  local poll_rc=0
+  poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
+  if (( poll_rc == 2 )); then
+    log_error "Verifier hard-fail (rc=2, sentinel written) for $us in final verify"
+    return 2
+  fi
+  if (( poll_rc == 1 )); then
+    log "  Verifier-final transient poll fail for $us — replacing pane + retrying once (D-4)"
+    replace_worker_pane "$VERIFIER_PANE" "verifier"
+    VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
+    if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
+      launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
+    else
+      launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || return 2
+    fi
+    rm -f "$VERDICT_FILE"; poll_rc=0
+    poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
+    if (( poll_rc != 0 )); then
+      log_error "Verifier poll failed for $us after replace+retry (rc=$poll_rc)"
+      return 2
+    fi
+  fi
+
+  # Bug #7 Fix-Q/R: reap verifier pane between per-US final verifications so
+  # the previous codex/claude TUI cannot continue running while the next per-
+  # US verifier dispatch reuses the same pane.
+  _kill_pane_process "$VERIFIER_PANE" "verifier-final"
+  _lock_sentinel "$VERDICT_FILE"
+  # PR-0b-narrow: stamp leader handshake ack on the verdict (audit-only).
+  _stamp_ack_field "$VERDICT_FILE"
+
+  # Read verdict
+  local verdict
+  verdict=$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)
+  [[ "$verdict" == "pass" ]] && return 0
+  return 1
+}
+
 run_sequential_final_verify() {
   local iter="$1"
   FAILED_US=""
@@ -2842,91 +2944,38 @@ run_sequential_final_verify() {
   for us in $(echo "$US_LIST" | tr ',' ' '); do
     log "  Final verify: checking $us..."
 
-    # Temporarily override signal file to scope verifier to this US
-    local orig_signal
-    orig_signal=$(cat "$SIGNAL_FILE" 2>/dev/null)
-    echo "{\"status\":\"verify\",\"us_id\":\"$us\",\"summary\":\"sequential final verify\"}" | atomic_write "$SIGNAL_FILE"
-
-    # Write scoped verifier trigger
-    write_verifier_trigger "$iter"
-    local verifier_prompt="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier-prompt.md"
-
-    # Clean verifier pane
-    local verifier_cmd
-    verifier_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null)
-    if [[ "$verifier_cmd" == "node" || "$verifier_cmd" == "claude" || "$verifier_cmd" == "codex" ]]; then
-      tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null; sleep 0.5
-      tmux send-keys -t "$VERIFIER_PANE" "/exit" C-m 2>/dev/null; sleep 2
-    fi
-    wait_for_pane_ready "$VERIFIER_PANE" 10 2>/dev/null || true
-
-    # Launch verifier. D-1: the FINAL (ALL) verify uses FINAL_VERIFIER_* (the
-    # "final 엄격" knob — a configured stronger model, e.g. opus, for the final
-    # gate), NOT the lighter per-US VERIFIER_*. This is the configured-final-model
-    # distinction, distinct from the removed per-iteration verifier auto-upgrade.
-    local verifier_launch
-    if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
-      verifier_launch="${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
-      launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
-    else
-      verifier_launch="$(build_claude_cmd tui "$FINAL_VERIFIER_MODEL" "" "" "$FINAL_VERIFIER_EFFORT")"
-      launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
-        log_error "Failed to launch final verifier for $us"
+    # D-18: a US that already passed per-US gets up to FINAL_VERIFY_MAX_ATTEMPTS
+    # final-verify attempts on a FAIL verdict (first pass wins). A verifier
+    # false-fail (non-determinism) on already-correct, per-US-passed work must
+    # REPRODUCE across all attempts before it charges a fix-loop failure — else a
+    # single flake defeats a complete, correct campaign (D-16 dogfood: codex
+    # false-failed pytest-36/36 work → fix-loop churn → stale BLOCK). A US that
+    # never passed per-US (or a genuine regression) fails on the first attempt.
+    local _fv_max=1
+    # FINAL_VERIFY_MAX_ATTEMPTS is validated to 1..10 at declaration, so no clamp here.
+    if echo ",$VERIFIED_US," | grep -q ",$us,"; then _fv_max=$FINAL_VERIFY_MAX_ATTEMPTS; fi
+    local _fv_attempt=0 _fv_rc=1
+    while (( _fv_attempt < _fv_max )); do
+      (( _fv_attempt++ ))
+      _final_verify_one_us "$us" "$iter"; _fv_rc=$?
+      if (( _fv_rc == 2 )); then   # infra-terminal (launch/poll hard fail) — no retry
         FAILED_US="$us"
-        return 1
-      }
-    fi
-
-    # Poll for verdict. D-4: distinguish rc==2 (hard-fail, sentinel already
-    # written → terminal) from rc==1 (transient pane race/timeout) and give ONE
-    # replace-pane + re-dispatch retry before failing the US — the F-10 retry
-    # parity the per-US main verifier site has but this final-verify path lacked
-    # (a single transient poll miss falsely failed a US at the most expensive
-    # end-of-campaign moment, charging a bogus consecutive failure).
-    rm -f "$VERDICT_FILE"
-    local poll_rc=0
-    poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
-    if (( poll_rc == 2 )); then
-      log_error "Verifier hard-fail (rc=2, sentinel written) for $us in final verify"
-      FAILED_US="$us"
-      return 1
-    fi
-    if (( poll_rc == 1 )); then
-      log "  Verifier-final transient poll fail for $us — replacing pane + retrying once (D-4)"
-      replace_worker_pane "$VERIFIER_PANE" "verifier"
-      VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
-      if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
-        launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
-      else
-        launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || { FAILED_US="$us"; return 1; }
-      fi
-      rm -f "$VERDICT_FILE"; poll_rc=0
-      poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
-      if (( poll_rc != 0 )); then
-        log_error "Verifier poll failed for $us after replace+retry (rc=$poll_rc)"
-        FAILED_US="$us"
+        log "  Sequential final verify FAILED at $us (infra)"
+        log_debug "[FLOW] iter=$iter phase=sequential_final_verify failed_us=$us reason=infra attempts=$_fv_attempt"
         return 1
       fi
-    fi
-
-    # Bug #7 Fix-Q/R: reap verifier pane between per-US final verifications so
-    # the previous codex/claude TUI cannot continue running while the next per-
-    # US verifier dispatch reuses the same pane.
-    _kill_pane_process "$VERIFIER_PANE" "verifier-final"
-    _lock_sentinel "$VERDICT_FILE"
-    # PR-0b-narrow: stamp leader handshake ack on the verdict (audit-only).
-    _stamp_ack_field "$VERDICT_FILE"
-
-    # Check verdict
-    local verdict
-    verdict=$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)
-    if [[ "$verdict" != "pass" ]]; then
+      (( _fv_rc == 0 )) && break   # pass verdict
+      log "  Sequential final verify: $us verdict=fail (attempt $_fv_attempt/$_fv_max)"
+      log_debug "[FLOW] iter=$iter phase=sequential_final_verify us=$us attempt=$_fv_attempt/$_fv_max verdict=fail"
+      (( _fv_attempt < _fv_max )) && log "  D-18: re-verifying $us — a per-US-passed US's fail must reproduce to count (verifier flake guard)."
+    done
+    if (( _fv_rc != 0 )); then
       FAILED_US="$us"
-      log "  Sequential final verify FAILED at $us"
-      log_debug "[FLOW] iter=$iter phase=sequential_final_verify failed_us=$us verdict=$verdict"
+      log "  Sequential final verify FAILED at $us (failed all $_fv_attempt/$_fv_max attempt(s))"
+      log_debug "[FLOW] iter=$iter phase=sequential_final_verify failed_us=$us verdict=fail attempts=$_fv_attempt max=$_fv_max"
       return 1
     fi
-    log "  Sequential final verify: $us PASSED"
+    log "  Sequential final verify: $us PASSED$([[ $_fv_attempt -gt 1 ]] && echo " (after $_fv_attempt attempts — earlier verdict was a verifier flake)")"
 
     # Archive per-US final verdict
     cp "$VERDICT_FILE" "$LOGS_DIR/iter-$(printf '%03d' $iter).final-verdict-${us}.json" 2>/dev/null

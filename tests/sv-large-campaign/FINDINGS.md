@@ -509,16 +509,17 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | D-16 result | **VALIDATED.** Real 3-US campaign (sonnet × codex gpt-5.5:high): per-US progression US-001→US-002→US-003, then on US-003 the leader logged "Coverage complete (US-001,US-002,US-003) — arming leader finalize (D-16)" → "synthesizing ALL verify signal, skipping worker round-trip" → 2s later "Sequential final verify: US-001,US-002,US-003" — direct finalize, NO worker round-trip, with MULTIPLE US. Exactly the intended behavior. |
 | Campaign outcome | BLOCKED (`context_limit`, "context unchanged 3 iters stale") — NOT a D-16 defect. The codex FINAL verifier false-failed provably-correct work with oscillating verdicts (final verify FAILED at US-001, then US-003, then US-001…), each entering the fix loop. The work was genuinely complete + correct: **pytest 36/36 passed**, all ACs objectively met (`slugify('  Hello, World! ')=='hello-world'`, `truncate('abcdefgh',4)=='abc…'`, `word_count('Hi, hi!')=={'hi':2}`), all 3 US committed (TDD). The worker had nothing to fix → no changes → stale-context CB → BLOCK. Leader behaved correctly: it did NOT false-complete, and the stale breaker correctly stopped a no-progress loop. |
 
-### D-18 (candidate, from D-16 dogfood) — final-verify defeated by verifier non-determinism  · MED, SPECULATIVE
+### D-18 (FIXED, from D-16 dogfood) — final-verify defeated by verifier non-determinism  · MED
 | | |
 |---|---|
 | Symptom | The sequential final verify re-runs the verifier per-US. When the verifier (codex) false-fails a US that ALREADY passed per-US, it enters the fix loop — but if the code is in fact correct, the worker makes no change, and a flaky verifier keeps false-failing (often a DIFFERENT US each round) → fix loop cannot make progress → stale-context CB → BLOCK of a correct, complete, fully-tested campaign. Independent of D-16 (the OLD worker-round-trip path hits the same final-verify flakiness). |
-| Candidate fix (NOT implemented) | Reconcile per-US-pass vs final-verify-fail: e.g. when the final verify fails a US that already passed per-US AND the worker's last iteration made no file changes (stale), re-verify that US once more before charging a fix-loop failure; or treat "per-US passed + worker no-op + final-verify fail" as a verifier-flake signal (consensus/2nd-opinion) rather than a worker fault. Needs careful design to avoid masking real regressions. Deferred — verifier non-determinism is a known LLM limitation; report-only per the bug-report-not-fix discipline. |
+| Fix (IMPLEMENTED) | `run_sequential_final_verify` re-verifies a US that ALREADY passed per-US on a FAIL verdict, up to `FINAL_VERIFY_MAX_ATTEMPTS` (default 3, env-overridable, validated to 1..10) — first pass wins, so a verifier false-fail must REPRODUCE across all attempts before charging a fix-loop failure. Extracted the per-US dispatch/poll/verdict into `_final_verify_one_us` (0=pass / 1=fail verdict / 2=infra-terminal); infra-terminal (rc=2) never retries; a never-per-US-passed US or a genuine regression still fails (max=1, or fails all 3). Does NOT mask real regressions (a consistently-broken US fails all attempts). |
+| Verification | test-dbacklog 67/67 (+8 D-18: knob+validation, helper extraction, reverify gating, return-contract, budget, flake-vs-regression outcome). codex review: 1 HIGH (non-integer knob → silent false-fail under set -u) → fixed (glob-first 1..10 validation, empirically `abc/0/99/''→3`) → re-review 0 issues. sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. **3-US strutils dogfood (real-LLM, isolated tmux): COMPLETE** (same scenario BLOCKED pre-D-18 on verifier flake → stale CB; now ALL PASSED). Committed via feature/d18-final-verify-flake-resilience → ff-merge. |
 
-FINAL STATE: F-1..F-26 + D-1..D-16 + D-1c SHIPPED. v0.18.0 (F-1..F-26 + D-1..D-15 +
-D-1c) + v0.18.1 (D-16) on npm + gh. codex-clean, deterministically tested
-(test-dbacklog 59/59 + full fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387),
-dogfood-proven (haiku 12-US COMPLETE; D-16 3-US dogfood VALIDATED) + release SV trio
-(LOW/MED/CRIT COMPLETE, BROKEN BLOCKED). The "never completes" failure class is
-resolved. Open candidates (report-only, deferred): D-18 (final-verify vs verifier
-non-determinism), D-17 (rate-limit grace), D-7 (heartbeat inert), redundant EXIT trap.
+FINAL STATE: F-1..F-26 + D-1..D-18 + D-1c SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
+D-1..D-15 + D-1c) + v0.18.1 (D-16) on npm + gh; D-18 on main (next release candidate).
+codex-clean, deterministically tested (test-dbacklog 67/67 + full fault-injection +
+lock 9/9 + sv-gate 71/71 + node 387/387), dogfood-proven (haiku 12-US COMPLETE; D-16
+3-US VALIDATED; D-18 3-US COMPLETE) + release SV trio (LOW/MED/CRIT COMPLETE, BROKEN
+BLOCKED). The "never completes" failure class is resolved. Open candidates (report-only,
+deferred): D-17 (rate-limit grace), D-7 (heartbeat inert), redundant EXIT trap.

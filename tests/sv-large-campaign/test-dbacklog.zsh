@@ -239,6 +239,39 @@ allverif(){ local list="$1" verified="$2" us; for us in $(echo "$list" | tr ',' 
 [[ "$(allverif 'US-001' 'US-001')" == YES && "$(allverif 'US-001,US-002' 'US-001')" == NO && "$(allverif 'US-001,US-002' 'US-001,US-002')" == YES && "$(allverif '' 'US-001')" == YES ]] \
   && ok "D-16: coverage logic (full→arm, partial→wait); note empty US_LIST guarded separately in helper" || no "D-16: coverage logic"
 
+# ---- D-18: final verify is flake-resilient — a per-US-passed US's FAIL verdict must reproduce ----
+# Was: run_sequential_final_verify failed a US on the FIRST fail verdict. A codex
+# final-verifier false-fail (non-determinism) on already-correct, per-US-passed work
+# then entered the fix loop the worker couldn't satisfy → stale-context BLOCK of a
+# complete campaign (observed in the D-16 3-US dogfood, pytest 36/36).
+grep -qF 'FINAL_VERIFY_MAX_ATTEMPTS="${FINAL_VERIFY_MAX_ATTEMPTS:-3}"' "$RUN" \
+  && ok "D-18: FINAL_VERIFY_MAX_ATTEMPTS knob declared (default 3, env-overridable)" || no "D-18: knob missing"
+# dispatch/poll/verdict extracted into a re-runnable helper
+grep -qF '_final_verify_one_us()' "$RUN" && grep -qF '_final_verify_one_us "$us" "$iter"' "$RUN" \
+  && ok "D-18: per-US dispatch extracted to _final_verify_one_us (re-runnable)" || no "D-18: helper missing"
+# already-per-US-passed US gets max attempts; others get 1; reverify only on fail verdict (rc!=2)
+grep -qF 'if echo ",$VERIFIED_US," | grep -q ",$us,"; then _fv_max=$FINAL_VERIFY_MAX_ATTEMPTS; fi' "$RUN" \
+  && grep -qF '(( _fv_rc == 2 ))' "$RUN" && grep -qF '(( _fv_rc == 0 )) && break' "$RUN" \
+  && ok "D-18: per-US-passed→max attempts, infra(rc2)→no retry, pass(rc0)→break" || no "D-18: reverify gating missing"
+# helper must NOT set FAILED_US (caller owns it) and returns 0/1/2
+grep -qF '[[ "$verdict" == "pass" ]] && return 0' "$RUN" \
+  && ok "D-18: helper returns verdict rc (0 pass / 1 fail / 2 infra), caller owns FAILED_US" || no "D-18: helper return contract"
+# logic mirror: attempt budget + first-pass-wins
+fvmax(){ local us="$1" verified="$2" max="$3"; echo ",$verified," | grep -q ",$us," && print "$max" || print 1; }
+[[ "$(fvmax US-001 'US-001,US-002' 3)" == 3 && "$(fvmax US-009 'US-001,US-002' 3)" == 1 ]] \
+  && ok "D-18: budget — per-US-passed US=max(3), never-passed US=1 (genuine regression fails fast)" || no "D-18: budget logic"
+# first-pass-wins + reproduce-to-fail (simulate verdict sequences)
+fvres(){ local max="$1"; shift; local a=0 v; for v in "$@"; do (( a++ )); [[ "$v" == pass ]] && { print "PASS@$a"; return; }; (( a >= max )) && { print "FAIL@$a"; return; }; done; print "FAIL@$a"; }
+[[ "$(fvres 3 fail pass)" == 'PASS@2' && "$(fvres 3 fail fail fail)" == 'FAIL@3' && "$(fvres 1 fail)" == 'FAIL@1' && "$(fvres 3 pass)" == 'PASS@1' ]] \
+  && ok "D-18: flake(fail→pass)=PASS@2, real regression(fail×3)=FAIL@3, no-tolerance(max1,fail)=FAIL@1, clean=PASS@1" || no "D-18: reverify outcome logic"
+# D-18 codex HIGH: knob validated — non-integer / out-of-range must NOT mis-evaluate (silent false-fail)
+grep -qF 'if ! [[ "$FINAL_VERIFY_MAX_ATTEMPTS" == <-> ]] || (( FINAL_VERIFY_MAX_ATTEMPTS < 1 || FINAL_VERIFY_MAX_ATTEMPTS > 10 )); then' "$RUN" \
+  && ok "D-18 fix(HIGH): FINAL_VERIFY_MAX_ATTEMPTS validated (integer 1..10, glob-checked before arithmetic)" || no "D-18 fix(HIGH): knob validation missing"
+# logic mirror: validation table (glob-first so arithmetic never runs on non-integer)
+fvval(){ local v="$1"; if ! [[ "$v" == <-> ]] || (( v < 1 || v > 10 )); then print 3; else print "$v"; fi; }
+[[ "$(fvval 3)" == 3 && "$(fvval 1)" == 1 && "$(fvval 10)" == 10 && "$(fvval abc)" == 3 && "$(fvval 0)" == 3 && "$(fvval 99)" == 3 && "$(fvval '')" == 3 ]] \
+  && ok "D-18 fix(HIGH): valid 1..10 pass through; abc/0/99/'' → default 3 (no arith on non-int)" || no "D-18 fix(HIGH): validation logic"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))
