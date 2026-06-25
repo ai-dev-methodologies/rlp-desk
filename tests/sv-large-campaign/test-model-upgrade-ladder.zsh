@@ -96,6 +96,30 @@ record_us_failure US-001; record_us_failure US-001; record_us_failure US-002
 record_us_failure unknown; record_us_failure ""
 [[ -z "${US_FAIL_HISTORY[unknown]:-}" ]] && ok "record_us_failure: 'unknown'/empty us_id ignored" || no "record_us_failure logged unknown"
 
+# ---- D-5/D-5b relaunch restore CONTRACT: every field the restore block READS
+#      must be a field update_status WRITES (else a rename silently makes the
+#      crash-relaunch restore dead — model-upgrade state lost, CB reset to 0). ----
+RUN="${0:A:h:h:h}/src/scripts/run_ralph_desk.zsh"
+# The 9 fields the restore block (run_ralph_desk.zsh, D-5/D-5b) reads from status.json:
+_restore_reads=(consecutive_blocks last_block_reason model_upgraded same_us_fail_count
+                original_worker_model worker_model worker_engine worker_codex_model worker_codex_reasoning)
+_missing_write=""
+for _f in $_restore_reads; do
+  # restore side actually reads it
+  grep -qE "jq -r '\.$_f " "$RUN" || { no "D-5b contract: restore does not read .$_f (test stale?)"; _missing_write=1; continue; }
+  # write side (update_status in lib) must persist it
+  grep -qE "\"$_f\":" "$LIB" || { no "D-5b contract: update_status does NOT write '$_f' → restore reads it as empty → restore SILENTLY DEAD"; _missing_write=1; }
+done
+[[ -z "$_missing_write" ]] && ok "D-5/D-5b restore contract: all 9 restore-read fields are persisted by update_status (no silent-dead restore)"
+# restore predicate logic mirror: model_upgraded==1 AND worker_model+worker_engine present → restore fires
+restore_fires(){ local mu="$1" wm="$2" we="$3"; [[ "$mu" == "1" && -n "$wm" && -n "$we" ]] && print FIRE || print SKIP }
+[[ "$(restore_fires 1 sonnet claude)" == FIRE && "$(restore_fires 0 sonnet claude)" == SKIP && "$(restore_fires 1 '' claude)" == SKIP && "$(restore_fires 1 sonnet '')" == SKIP ]] \
+  && ok "D-5b restore predicate: fires only when model_upgraded==1 AND worker_model+engine present (fresh campaign keeps CLI model)" || no "D-5b restore predicate logic"
+# CB restore is atomic: count AND reason, or neither (D-5)
+cb_restore(){ local cb="$1" lbr="$2"; [[ "$cb" == <-> && "$cb" -gt 0 && -n "$lbr" ]] && print "RESTORE($cb)" || print SKIP }
+[[ "$(cb_restore 3 'metric: wall')" == 'RESTORE(3)' && "$(cb_restore 3 '')" == SKIP && "$(cb_restore 0 'x')" == SKIP && "$(cb_restore abc 'x')" == SKIP ]] \
+  && ok "D-5 CB restore atomic: count>0 AND non-empty reason required (half-state rejected)" || no "D-5 CB restore atomicity"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}Model-upgrade ladder: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}Model-upgrade ladder: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))
