@@ -546,11 +546,23 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | Verification | test-dbacklog 82/82 (+D-21). codex review 0 issues (5 invariants: fall-through→complete, off-parity, def-order, timeout-tradeoff, no D-18 interaction). sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. **Real-LLM 2-US consensus dogfood: COMPLETE with the final verify actually running consensus — "Consensus round 1/6 → Consensus: claude=pass codex=pass → COMPLETE"** (vs the pre-D-21 dogfood that only ran "Sequential final verify"). |
 
 FINAL STATE: F-1..F-26 + D-1..D-21 + D-1c + D-17a SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
-D-1..D-15 + D-1c) + v0.18.1 (D-16) on npm + gh; D-18 + D-17a + D-19 + D-20 + D-21 on main
-(next release candidates). codex-clean, deterministically tested (test-dbacklog 82/82 + full
-fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387 [parallel-exec flake on live-tmux
-tests, pass in isolation]), dogfood-proven (haiku 12-US COMPLETE; D-16 3-US; D-18 3-US;
-D-17a 2-US rate-limiter-feature no-false-positive; D-19 4-bad-knob normalize+execute; D-20
-1-US; D-21 2-US consensus actually-runs). The "never completes" failure class is resolved.
-Deferred: D-17b (idle rate-limited pane auto-reprompt — risky), D-7 (heartbeat inert),
+D-1..D-15 + D-1c) + v0.18.1 (D-16) + **v0.18.2 (D-18 + D-17a + D-19 + D-20 + D-21)** all on
+npm + gh. codex-clean, deterministically tested (test-dbacklog 82/82 + model-upgrade-ladder
+15/15 + full fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387 [parallel-exec flake
+on live-tmux tests, pass in isolation]), dogfood-proven across ALL 4 verify configs (per-us,
+consensus actually-runs, batch, codex-worker — all COMPLETE; haiku 12-US; D-16/D-18 3-US;
+D-17a rate-limiter-feature no-false-positive; D-19 4-bad-knob normalize+execute; D-20 1-US).
+The "never completes" failure class is resolved.
+
+Model-upgrade ladder (D-5/D-5b territory: check_model_upgrade/get_next_model/record_us_failure):
+natural dogfoods rarely fire it (needs SAME US to fail >=2 consecutive; a competent worker
+passes within one fix — the ladder dogfood COMPLETEd with 0 upgrades). Covered instead by
+`tests/sv-large-campaign/test-model-upgrade-ladder.zsh` (15/15) which SOURCES the real lib
+functions and drives the full ladder deterministically: claude/codex/spark climb, ceiling→
+no-upgrade, counter-reset-after-upgrade, different-US-no-accumulate, LOCK_WORKER_MODEL disable,
+codex model:reasoning split, record_us_failure cumulative. Code-audit + this test → ladder sound.
+
+Deferred (low-value): D-22 (consensus in-function 6-round loop is dead code — round 1 always
+returns; behavior fine, ~140-line de-indent refactor not worth the risk), codex-trust 6×-Enter
+startup latency, D-17b (idle rate-limited pane auto-reprompt — risky), D-7 (heartbeat inert),
 redundant EXIT trap.
