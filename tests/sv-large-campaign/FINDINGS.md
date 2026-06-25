@@ -503,10 +503,22 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | Fix | When the last per-US pass completes coverage (`_all_us_verified`: every US in `US_LIST` is in `VERIFIED_US`), arm a new global `_FINALIZE_PENDING` (needed because `SKIP_NEXT_WORKER` is loop-`local`). The next loop top synthesizes the ALL verify signal itself (`atomic_write` to `SIGNAL_FILE`) + sets `SKIP_NEXT_WORKER=1`, reusing the proven PR-A operator-recovery skip path. Downstream (`signal_us_id=ALL` → `run_sequential_final_verify` → complete OR fix-loop) is UNCHANGED — only HOW the ALL signal is produced changes. Operator-recovery takes precedence (`&& SKIP_NEXT_WORKER==0`); a crash mid-finalize loses the in-memory flag and safely falls back to the worker round-trip. |
 | Verification | test-dbacklog 59/59 (+6 D-16: flag/helper/arm/synth/downstream-unchanged/coverage-logic). codex review 0 issues (4 invariants cleared: global scope, locked-0o444-signal overwrite [mv/rename succeeds — empirically confirmed], no done-claim gate on the verify route, fix-loop fall-through identical). sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. **Real-LLM SV E2E (single-US):** leader logged "arming leader finalize" → "synthesizing ALL verify signal, skipping worker round-trip" → "Sequential final verify: ALL PASSED" → COMPLETE, arm→final-verify in 2s (no worker round-trip). Commit 71c378f (main; post-0.18.0, UNRELEASED). |
 
-FINAL STATE: F-1..F-26 + D-1..D-16 + D-1c. v0.18.0 SHIPPED (F-1..F-26 + D-1..D-15
-+ D-1c). D-16 committed post-release (main 71c378f), UNRELEASED — candidate for the
-next patch/minor. codex-clean, deterministically tested (test-dbacklog 59/59 + full
-fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387), dogfood-proven (haiku
-12-US COMPLETE) + fresh release SV trio (LOW/MED/CRIT COMPLETE, BROKEN BLOCKED).
-The "never completes" failure class is resolved; remaining items are LOW/by-design
-(D-7 + redundant trap; D-17 rate-limit-grace = speculative, deferred).
+### D-16 dogfood (3-US strutils, real-LLM, isolated tmux) — D-16 VALIDATED; surfaced D-18
+| | |
+|---|---|
+| D-16 result | **VALIDATED.** Real 3-US campaign (sonnet × codex gpt-5.5:high): per-US progression US-001→US-002→US-003, then on US-003 the leader logged "Coverage complete (US-001,US-002,US-003) — arming leader finalize (D-16)" → "synthesizing ALL verify signal, skipping worker round-trip" → 2s later "Sequential final verify: US-001,US-002,US-003" — direct finalize, NO worker round-trip, with MULTIPLE US. Exactly the intended behavior. |
+| Campaign outcome | BLOCKED (`context_limit`, "context unchanged 3 iters stale") — NOT a D-16 defect. The codex FINAL verifier false-failed provably-correct work with oscillating verdicts (final verify FAILED at US-001, then US-003, then US-001…), each entering the fix loop. The work was genuinely complete + correct: **pytest 36/36 passed**, all ACs objectively met (`slugify('  Hello, World! ')=='hello-world'`, `truncate('abcdefgh',4)=='abc…'`, `word_count('Hi, hi!')=={'hi':2}`), all 3 US committed (TDD). The worker had nothing to fix → no changes → stale-context CB → BLOCK. Leader behaved correctly: it did NOT false-complete, and the stale breaker correctly stopped a no-progress loop. |
+
+### D-18 (candidate, from D-16 dogfood) — final-verify defeated by verifier non-determinism  · MED, SPECULATIVE
+| | |
+|---|---|
+| Symptom | The sequential final verify re-runs the verifier per-US. When the verifier (codex) false-fails a US that ALREADY passed per-US, it enters the fix loop — but if the code is in fact correct, the worker makes no change, and a flaky verifier keeps false-failing (often a DIFFERENT US each round) → fix loop cannot make progress → stale-context CB → BLOCK of a correct, complete, fully-tested campaign. Independent of D-16 (the OLD worker-round-trip path hits the same final-verify flakiness). |
+| Candidate fix (NOT implemented) | Reconcile per-US-pass vs final-verify-fail: e.g. when the final verify fails a US that already passed per-US AND the worker's last iteration made no file changes (stale), re-verify that US once more before charging a fix-loop failure; or treat "per-US passed + worker no-op + final-verify fail" as a verifier-flake signal (consensus/2nd-opinion) rather than a worker fault. Needs careful design to avoid masking real regressions. Deferred — verifier non-determinism is a known LLM limitation; report-only per the bug-report-not-fix discipline. |
+
+FINAL STATE: F-1..F-26 + D-1..D-16 + D-1c SHIPPED. v0.18.0 (F-1..F-26 + D-1..D-15 +
+D-1c) + v0.18.1 (D-16) on npm + gh. codex-clean, deterministically tested
+(test-dbacklog 59/59 + full fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387),
+dogfood-proven (haiku 12-US COMPLETE; D-16 3-US dogfood VALIDATED) + release SV trio
+(LOW/MED/CRIT COMPLETE, BROKEN BLOCKED). The "never completes" failure class is
+resolved. Open candidates (report-only, deferred): D-18 (final-verify vs verifier
+non-determinism), D-17 (rate-limit grace), D-7 (heartbeat inert), redundant EXIT trap.
