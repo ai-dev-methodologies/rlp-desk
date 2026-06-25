@@ -3879,7 +3879,15 @@ main() {
         update_status "verifier" "running"
 
         # --- Sequential final verify: per-US scoped checks instead of one big ALL verify ---
-        if [[ "$signal_us_id" == "ALL" && "$VERIFY_MODE" == "per-us" && -n "$US_LIST" ]]; then
+        # D-21: do NOT take the sequential single-verifier path when consensus applies to
+        # the final verify — it would BYPASS consensus entirely (run_sequential_final_verify
+        # returns 0 before the consensus check below), so `--consensus final-only` was a
+        # silent no-op in the DEFAULT per-us mode (the recommended consensus config). When
+        # consensus is on, fall through to run_consensus_verification "ALL" (which uses the
+        # stricter FINAL_VERIFIER_MODEL + FINAL_CONSENSUS_MODEL and the designed
+        # claude+codex final path). The per-US timeout-prevention split is the off-consensus
+        # optimization only.
+        if [[ "$signal_us_id" == "ALL" && "$VERIFY_MODE" == "per-us" && -n "$US_LIST" ]] && ! _should_use_consensus "$signal_us_id"; then
           log "  Final ALL verify: using sequential per-US strategy (timeout prevention)"
           local seq_rc=0
           run_sequential_final_verify "$ITERATION" || seq_rc=$?

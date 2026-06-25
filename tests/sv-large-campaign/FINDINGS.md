@@ -538,12 +538,19 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | Fix | A FIRST branch `if git diff --quiet HEAD -- "${_bug8_add[@]}"` — files already clean vs HEAD (worker committed them in the race) → log "already committed — proceeding", fall through to synthesis (Verifier still gates), no commit/block. The prior `git add && git commit` is now the `elif` (genuine uncommitted); real commit failure still `else`→BLOCK. Plus a fail-safe empty-array guard (codex LOW): empty file list → BLOCK, never a whole-tree `git diff`. |
 | Verification | test-dbacklog 79/79 (+D-20). codex review: 1 LOW (empty-array whole-tree) fixed → re-review 0 issues. sv-gate:fast 71/71, F-22 14/14, lock 9/9. node: 3 full-suite runs each flaked on a DIFFERENT timing/live-tmux test (pollForSignal / Bug-7-D), all PASS in isolation → known parallel-exec flake, NOT a D-20 regression (D-20 is zsh-only). Real-LLM 1-US dogfood: COMPLETE (same scenario that BLOCKED in the D-19 dogfood now completes). |
 
-FINAL STATE: F-1..F-26 + D-1..D-20 + D-1c + D-17a SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
-D-1..D-15 + D-1c) + v0.18.1 (D-16) on npm + gh; D-18 + D-17a + D-19 + D-20 on main (next
-release candidates). codex-clean, deterministically tested (test-dbacklog 79/79 + full
+### D-21 (FIXED, from consensus dogfood) — `--consensus final-only` silent no-op in per-us (default) mode  · HIGH
+| | |
+|---|---|
+| Symptom | In per-us mode (the DEFAULT), the final ALL verify is intercepted by `run_sequential_final_verify` (a single-verifier per-US strategy, "timeout prevention") which `write_complete_sentinel; return 0` BEFORE the consensus check (`_should_use_consensus` → `run_consensus_verification`). So `--consensus final-only` (consensus only at the final = the RECOMMENDED consensus config, [[feedback_consensus_final_only]]) was BYPASSED entirely — a silent no-op in the default verify mode. Found by dogfooding consensus: a `--consensus final-only` campaign COMPLETEd but logged only "Sequential final verify", never "Consensus round". |
+| Fix | Gate the sequential interception with `&& ! _should_use_consensus "$signal_us_id"`. When consensus applies to the final (final-only/all + ALL), the sequential path is skipped and the ALL signal falls through to `run_consensus_verification "ALL"` (claude+codex, using the stricter FINAL_VERIFIER_MODEL + FINAL_CONSENSUS_MODEL per D-1c). off-consensus is byte-identical to before (the sequential split is the off-consensus timeout optimization). Tradeoff: consensus-final is one ALL-scoped verify (not per-US chunked) — acceptable for an opt-in feature; that's the designed consensus path. |
+| Verification | test-dbacklog 82/82 (+D-21). codex review 0 issues (5 invariants: fall-through→complete, off-parity, def-order, timeout-tradeoff, no D-18 interaction). sv-gate:fast 71/71, node 387/387, F-22 14/14, lock 9/9. **Real-LLM 2-US consensus dogfood: COMPLETE with the final verify actually running consensus — "Consensus round 1/6 → Consensus: claude=pass codex=pass → COMPLETE"** (vs the pre-D-21 dogfood that only ran "Sequential final verify"). |
+
+FINAL STATE: F-1..F-26 + D-1..D-21 + D-1c + D-17a SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
+D-1..D-15 + D-1c) + v0.18.1 (D-16) on npm + gh; D-18 + D-17a + D-19 + D-20 + D-21 on main
+(next release candidates). codex-clean, deterministically tested (test-dbacklog 82/82 + full
 fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387 [parallel-exec flake on live-tmux
-tests, pass in isolation]), dogfood-proven (haiku 12-US COMPLETE; D-16 3-US VALIDATED;
-D-18 3-US COMPLETE; D-17a 2-US rate-limiter-feature COMPLETE no-false-positive; D-19
-4-bad-knob normalize + execute; D-20 1-US COMPLETE). The "never completes"
-failure class is resolved. OPEN: D-20 (auto-commit race — next). Deferred: D-17b (idle
-rate-limited pane auto-reprompt — risky), D-7 (heartbeat inert), redundant EXIT trap.
+tests, pass in isolation]), dogfood-proven (haiku 12-US COMPLETE; D-16 3-US; D-18 3-US;
+D-17a 2-US rate-limiter-feature no-false-positive; D-19 4-bad-knob normalize+execute; D-20
+1-US; D-21 2-US consensus actually-runs). The "never completes" failure class is resolved.
+Deferred: D-17b (idle rate-limited pane auto-reprompt — risky), D-7 (heartbeat inert),
+redundant EXIT trap.

@@ -343,6 +343,23 @@ rm -rf "$_d20"
 grep -qF '(( ${#_bug8_add} == 0 ))' "$RUN" && grep -qF 'empty file list at auto-commit' "$RUN" \
   && ok "D-20 fix(LOW): empty worker-file array → fail-safe BLOCK (no whole-tree false 'already committed')" || no "D-20 fix(LOW): empty-array guard missing"
 
+# ---- D-21: --consensus final-only is no longer a silent no-op in per-us (default) mode ----
+# Per-us mode's final ALL verify was intercepted by run_sequential_final_verify (single
+# verifier), which returns BEFORE the consensus check → consensus was bypassed entirely.
+# Result: --consensus final-only (the RECOMMENDED consensus config) did nothing in the
+# DEFAULT verify-mode. Fix: gate the sequential interception on `! _should_use_consensus`
+# so the ALL signal falls through to run_consensus_verification "ALL" (final models).
+grep -qF '&& ! _should_use_consensus "$signal_us_id"; then' "$RUN" \
+  && ok "D-21: sequential-final interception gated by !_should_use_consensus (consensus-final falls through)" || no "D-21: consensus gate missing"
+# the downstream consensus path (run_consensus_verification ALL) is still reached
+grep -qF 'run_consensus_verification "$ITERATION" "$signal_us_id"' "$RUN" \
+  && ok "D-21: consensus-final routes to run_consensus_verification (ALL → FINAL_VERIFIER/FINAL_CONSENSUS models)" || no "D-21: consensus call missing"
+# logic mirror: which path does the final ALL verify take per CONSENSUS_MODE?
+suc(){ case "$1" in all) return 0;; final-only) [[ "$2" == ALL ]] && return 0;; *) return 1;; esac }
+finalpath(){ local m="$1"; if suc "$m" ALL; then print CONSENSUS; else print SEQUENTIAL; fi }
+[[ "$(finalpath off)" == SEQUENTIAL && "$(finalpath final-only)" == CONSENSUS && "$(finalpath all)" == CONSENSUS ]] \
+  && ok "D-21: final ALL verify path — off→sequential(single), final-only/all→consensus(claude+codex)" || no "D-21: final-path routing logic"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))
