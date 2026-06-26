@@ -11,6 +11,25 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.18.4] — 2026-06-26
+
+Internal leader-hardening and packaging hygiene. No behavior change on the
+`--mode tmux` (zsh) production path.
+
+### Fixed
+- The published npm package no longer ships a stray ~170 kB local development
+  script (`src/scripts/.run_src_verify.zsh`) that had been accidentally bundled
+  via the `files` allowlist in 0.18.0–0.18.3.
+
+### Internal
+- Node leader (dead code for `--mode tmux`): the verifier dispatch now clears any
+  stale verdict (canonical + legacy path) before launching, so a leftover verdict
+  cannot be misread for the next user story/iteration — defensive parity with the
+  zsh leader's existing guard. Covered by 6 new Node tests (393/393), codex-reviewed.
+- Removed a dead consensus retry-loop and a redundant EXIT trap from the zsh leader
+  (behavior-neutral cleanup).
+- Documented the heartbeat freshness block as inert-by-design (comment-only).
+
 ## [0.18.3] — 2026-06-26
 
 Leader correctness fixes from two fresh adversarial-audit passes, each verified
