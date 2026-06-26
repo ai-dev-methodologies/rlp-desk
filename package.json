@@ -18,6 +18,7 @@
     "src/commands/",
     "src/node/",
     "src/scripts/",
+    "!src/scripts/.run_src_verify.zsh",
     "src/governance.md",
     "src/model-upgrade-table.md",
     "scripts/",
