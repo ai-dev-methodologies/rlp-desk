@@ -449,6 +449,28 @@ pollsim(){ local cleared="$1" stale="$2"; [[ "$cleared" == yes ]] && print WAIT_
 [[ "$(pollsim no 'pass')" == 'STALE:pass' && "$(pollsim yes 'pass')" == WAIT_FRESH ]] \
   && ok "R3: uncleared+stale verdict → returned immediately (bug); cleared → waits for fresh (fix)" || no "R3: poll-stale logic"
 
+# ---- D-22 (ralplan backlog): dead consensus retry-loop removed, behavior-neutral ----
+# run_consensus_verification always returned in "round 1" (both-pass→0, else→synth fail+
+# return 2; outer fix-loop owns retries). The in-function `while (( ROUND < 6 ))`, the
+# `elif (( ROUND >= 6 ))` branch, and the post-loop "failed after 6 rounds" block were dead.
+# Removed; CONSENSUS_ROUND pinned to 1 so status.json consensus_round + verdict "round" unchanged.
+# grep CODE lines only (the D-22 explanatory comments mention these strings; match the
+# actual dead statements, not the comments describing their removal).
+grep -qE '^[[:space:]]*while \(\( CONSENSUS_ROUND < 6 \)\)' "$RUN" && no "D-22: dead while-loop still present" \
+  || ok "D-22: dead while (( CONSENSUS_ROUND < 6 )) loop removed"
+grep -qE '^[[:space:]]*log_error "Consensus failed after 6 rounds"' "$RUN" && no "D-22: dead 'failed after 6 rounds' code still present" \
+  || ok "D-22: dead post-loop 'failed after 6 rounds' code removed"
+grep -qF 'CONSENSUS_ROUND=1' "$RUN" \
+  && ok "D-22: CONSENSUS_ROUND pinned to 1 (status.json consensus_round + verdict round preserved)" || no "D-22: CONSENSUS_ROUND not pinned"
+# both return paths preserved: both-pass→return 0, disagreement→return 2
+awk '/^run_consensus_verification\(\) \{/{p=1} p&&/return 0/{r0=1} p&&/return 2/{r2=1} p&&/^\}/{print (r0&&r2)?"BOTH":"MISSING"; exit}' "$RUN" | grep -qx BOTH \
+  && ok "D-22: both return paths intact (both-pass→0, disagreement→2)" || no "D-22: a return path was lost"
+# ---- redundant EXIT trap removed (CLEANUP_DONE-idempotent; EXIT INT TERM arm covers it) ----
+traps=$(grep -cE "trap '_emit_final_cost_log; cleanup'" "$RUN")
+[[ "$traps" -eq 1 ]] && ok "D-22 batch: exactly one cleanup trap arm (redundant 2nd EXIT trap removed)" || no "D-22 batch: $traps trap arms (want 1)"
+grep -qF "trap '_emit_final_cost_log; cleanup' EXIT INT TERM" "$RUN" \
+  && ok "D-22 batch: surviving trap covers EXIT INT TERM" || no "D-22 batch: trap arm not EXIT INT TERM"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

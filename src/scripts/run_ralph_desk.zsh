@@ -3168,13 +3168,18 @@ run_consensus_verification() {
   local claude_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-claude.json"
   local codex_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-codex.json"
 
-  CONSENSUS_ROUND=0
+  # D-22: this function always returned in "round 1" — both verifiers pass → return 0,
+  # else → synthesize a fail verdict + return 2 (the OUTER leader fix-loop then
+  # re-invokes consensus with a fresh iter). The in-function `while (( ROUND < 6 ))`
+  # loop, the `elif (( ROUND >= 6 ))` branch, and the post-loop "failed after 6 rounds"
+  # block were therefore DEAD CODE. Removed. CONSENSUS_ROUND is pinned to 1 so the
+  # values it still feeds — update_status's status.json `consensus_round` (lib:686) and
+  # the merged-verdict `"round"` field — are byte-identical to the prior round-1 behavior.
+  CONSENSUS_ROUND=1
   CLAUDE_VERDICT=""
   CODEX_VERDICT=""
 
-  while (( CONSENSUS_ROUND < 6 )); do
-    (( CONSENSUS_ROUND++ ))
-    log "  Consensus round $CONSENSUS_ROUND/6..."
+    log "  Consensus verification (claude + codex)..."
 
     # Run claude verifier first
     local _claude_t0=$(date +%s)
@@ -3233,8 +3238,7 @@ run_consensus_verification() {
     log "  Consensus: claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT"
     local _combined_action="retry"
     if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then _combined_action="pass"
-    elif (( CONSENSUS_ROUND >= 6 )); then _combined_action="blocked"
-    fi
+    fi   # D-22: removed dead `elif (( ROUND >= 6 ))` (ROUND is always 1)
     log_debug "[GOV] iter=$iter phase=consensus round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT combined_action=$_combined_action"
 
     # Both pass → success
@@ -3289,46 +3293,27 @@ run_consensus_verification() {
 
     log "  Combined fix contract: $fix_contract"
 
-    # If this is not the last round, the caller will dispatch the Worker with the fix contract
-    # For now, write a fail verdict so the main loop can handle the fix loop
-    if (( CONSENSUS_ROUND < 6 )); then
-      # Create a merged fail verdict for the main loop — include issues from BOTH verdicts
-      local merged_issues="[]"
-      local claude_issues codex_issues
-      claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
-      codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
-      merged_issues=$(echo "$claude_issues $codex_issues" | jq -s 'add // []')
-      {
-        echo '{'
-        echo '  "verdict": "fail",'
-        echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-        echo '  "summary": "Consensus disagreement (round '"$CONSENSUS_ROUND"'/6): claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
-        echo '  "issues": '"$merged_issues"','
-        echo '  "recommended_state_transition": "continue",'
-        echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": '"$CONSENSUS_ROUND"' }'
-        echo '}'
-      } | atomic_write "$VERDICT_FILE"
-      return 2  # special return: consensus disagreement, needs retry
-    fi
-  done
-
-  # Max consensus rounds exceeded — include issues from both verdicts
-  log_error "Consensus failed after 6 rounds"
-  local final_claude_issues final_codex_issues final_merged_issues
-  final_claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
-  final_codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
-  final_merged_issues=$(echo "$final_claude_issues $final_codex_issues" | jq -s 'add // []')
-  {
-    echo '{'
-    echo '  "verdict": "fail",'
-    echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-    echo '  "summary": "Consensus failed after 6 rounds: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
-    echo '  "issues": '"$final_merged_issues"','
-    echo '  "recommended_state_transition": "blocked",'
-    echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": 6 }'
-    echo '}'
-  } | atomic_write "$VERDICT_FILE"
-  return 1
+    # D-22: disagreement → synthesize a merged fail verdict + return 2 (the outer
+    # leader fix-loop owns the retry). This was wrapped in an always-true
+    # `if (( CONSENSUS_ROUND < 6 ))`; that wrapper, the loop `done`, and the
+    # post-loop "Consensus failed after 6 rounds" block are removed as dead code.
+    # Create a merged fail verdict for the main loop — include issues from BOTH verdicts
+    local merged_issues="[]"
+    local claude_issues codex_issues
+    claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
+    codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
+    merged_issues=$(echo "$claude_issues $codex_issues" | jq -s 'add // []')
+    {
+      echo '{'
+      echo '  "verdict": "fail",'
+      echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
+      echo '  "summary": "Consensus disagreement: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
+      echo '  "issues": '"$merged_issues"','
+      echo '  "recommended_state_transition": "continue",'
+      echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": '"$CONSENSUS_ROUND"' }'
+      echo '}'
+    } | atomic_write "$VERDICT_FILE"
+    return 2  # consensus disagreement → outer fix-loop retries
 }
 
 # =============================================================================
@@ -3611,9 +3596,10 @@ main() {
   # Create tmux session with pane IDs (governance.md s7 step 1)
   create_session
 
-  # Set trap for cleanup on exit/error
-  # US-023 R11 P2-K: chain `_emit_final_cost_log` so cost-log.jsonl is never silently empty.
-  trap '_emit_final_cost_log; cleanup' EXIT
+  # D-22 batch: the EXIT cleanup trap is already armed (EXIT INT TERM) right after
+  # lock acquisition above; a second `trap … EXIT` here was redundant (it re-armed
+  # only EXIT with the identical handler — INT/TERM already persist — and cleanup()
+  # is CLEANUP_DONE-idempotent anyway). Removed; the earlier arm covers this scope.
 
   # Initialize context hash for stale detection
   PREV_CONTEXT_HASH=$(compute_context_hash)
