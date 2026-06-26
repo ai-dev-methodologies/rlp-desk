@@ -1146,6 +1146,39 @@ async function writeSentinel(filePath, status, usId, reason, classification = nu
   return result;
 }
 
+// R3-2 (Node parity with zsh R3-1 @ run_ralph_desk.zsh:4074): clear any stale
+// verdict BEFORE dispatching a verifier. pollForSignal returns the first valid
+// JSON it reads with NO mtime/freshness gate (signal-poller.mjs:188-199 plus the
+// last-chance re-read at :253-258), and the verdict file is left on disk after
+// consumption — loop-top only unlockSentinelFile()s without unlinking, and
+// reapProducer reaps the producer pane, not the file. Without this clear, the
+// per-US runFinalSequentialVerify loop re-reads the PREVIOUS US's verdict for the
+// next US (wrong pass/fail), and a finalize iteration that skips loop-top cleanup
+// would accept a leftover verdict.
+//
+// Pass EVERY path the upcoming poll might read. The main-loop verifier poll also
+// hands pollForSignal a `legacySignalFile: paths.legacyVerdictFile` fallback,
+// which the poller reads with the SAME no-freshness-gate last-chance read
+// (signal-poller.mjs:267-274) — so a stale legacy verdict would be accepted if
+// the canonical one is slow. Clearing only the canonical path leaves that hole
+// open (codex R3-2 review, HIGH). Hence the variadic signature: clear canonical
+// AND legacy at both dispatch sites.
+//
+// Unlock-then-unlink mirrors the documented fs.mjs cleanup pattern (drop the
+// 0o444 lock first so unlink can't EACCES on a lock-honoring FS). `force:true`
+// makes a MISSING file a no-op (idempotent-cleanup contract). Any OTHER unlink
+// failure (EPERM/EACCES/parent-dir perms) is deliberately NOT swallowed — a
+// surviving stale verdict would be consumed by the next poll, so we fail loud
+// rather than mis-verify (codex R3-2 review, MEDIUM). This is a deliberate,
+// stricter divergence from zsh R3-1's silent `rm -f "$VERDICT_FILE" 2>/dev/null`.
+export async function clearStaleVerdict(...verdictFiles) {
+  for (const verdictFile of verdictFiles) {
+    if (!verdictFile) continue;
+    await unlockSentinelFile(verdictFile);
+    await fs.rm(verdictFile, { force: true });
+  }
+}
+
 async function runFinalSequentialVerify({
   paths,
   state,
@@ -1163,6 +1196,9 @@ async function runFinalSequentialVerify({
   const verifierModel = state.final_verifier_model;
 
   for (const usId of usList) {
+    // R3-2: clear the prior US's verdict (canonical + legacy) so this US's poll
+    // waits for ITS verdict.
+    await clearStaleVerdict(paths.verdictFile, paths.legacyVerdictFile);
     await dispatchVerifier({
       iteration: state.iteration,
       suffix: `final-${usId}`,
@@ -1992,6 +2028,11 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     state.verifier_model = options.verifierModel ?? 'sonnet';
     state.final_verifier_model = options.finalVerifierModel ?? 'opus';
     await writeStatus(paths, state, options.onStatusChange, options.now);
+    // R3-2: clear any stale verdict (prior iteration / skipped loop-top cleanup)
+    // before launch so the poll below waits for THIS verifier's fresh verdict.
+    // Clear BOTH canonical and legacy — the poll below passes legacyVerdictFile
+    // as a no-freshness-gate fallback.
+    await clearStaleVerdict(paths.verdictFile, paths.legacyVerdictFile);
     await dispatchVerifier({
       iteration: state.iteration,
       paths,
