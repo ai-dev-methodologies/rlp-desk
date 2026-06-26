@@ -11,6 +11,30 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.18.3] — 2026-06-26
+
+Leader correctness fixes from two fresh adversarial-audit passes, each verified
+against the actual code paths. All affect the `--mode tmux` (zsh) production leader.
+
+### Fixed
+- User-story coverage is now derived consistently from `### US-NNN:` headings
+  everywhere. A US id mentioned only in prose/dependencies (e.g. "builds on US-009")
+  no longer inflates the story list or the completion-coverage count — which had
+  prevented some per-US campaigns from recognizing they were complete.
+- Worker/Verifier completion signals are accepted only when they contain valid JSON
+  (a worker that exits having written a truncated/empty signal is no longer treated
+  as a finished result).
+- A Verifier that exits without producing a verdict is now relaunched as a verifier
+  (correct model/prompt) instead of being mis-restarted as a worker.
+- Dirty-work detection now functions in a brand-new repository with no commits yet
+  (previously a Worker that staged but never committed could go undetected).
+- The final verification no longer reads a stale verdict from a previous iteration
+  on recovery/finalize iterations.
+
+### Internal
+- Added deterministic test coverage for the worker model-upgrade ladder and the
+  crash-relaunch state-restore field contract.
+
 ## [0.18.2] — 2026-06-25
 
 Five leader-resilience fixes (per-us, consensus, and config-validation paths), each
