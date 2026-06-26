@@ -586,7 +586,20 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | Symptom | The Node leader's final sequential verifier reads the shared verdict path and `validateArtifact` accepts any parseable file (the Node analog of R3-1). |
 | Status | NON-ACTIONABLE (production dead code): default mode is `tmux` which shells out to the zsh leader (run.mjs:295-297, 455-456); `--mode agent` (the only path that calls `runCampaign`/campaign-main-loop) HARD-ERRORS before runCampaign (ADR-001, run.mjs:489-506); `--mode native` is slash-only and also errors for direct CLI. So campaign-main-loop's verifier is not reachable via any direct-CLI production path. codex confirmed unreachable → documented, not fixed. (If the Node leader is ever revived, port R3-1's rm-before-poll there.) |
 
-FINAL STATE: F-1..F-26 + D-1..D-25 + R3-1 + D-1c + D-17a + NEW-1/NEW-2/NEW-4 SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
+### D-22 (FIXED, ralplan backlog) — dead consensus retry-loop + redundant EXIT trap removed  · cleanup (behavior-neutral)
+| | |
+|---|---|
+| Symptom | `run_consensus_verification` always returned in "round 1" (both-pass→return 0; else→synth fail verdict + return 2; the OUTER leader fix-loop owns retries). Its in-function `while (( CONSENSUS_ROUND < 6 ))` loop, `elif (( ROUND >= 6 ))` branch, and the post-loop "Consensus failed after 6 rounds" block (+ return 1) were unreachable dead code that repeatedly cost re-analysis. A second `trap '… cleanup' EXIT` (after create_session) was redundant (the earlier `EXIT INT TERM` arm covers it; cleanup is CLEANUP_DONE-idempotent). |
+| Fix | Removed both. CONSENSUS_ROUND pinned to 1 so status.json `consensus_round` (lib:686) + the merged-verdict `"round"` field are byte-identical to the prior round-1 behavior; the disagreement synth+return-2 (was an always-true `if (( ROUND < 6 ))`) is now unconditional. Audited with `git diff -w` (only the pin + structural deletions + 2 cosmetic text edits). |
+| Verification | ralplan consensus (Planner→Architect→Critic=codex) APPROVE; codex review 0 issues; test-dbacklog 106/106 (+6 D-22); sv-gate:fast 71/71, F-22 14/14, lock 9/9, node 387/387. |
+
+### D-7 (RESOLVED as document-only, ralplan backlog) — heartbeat block inert by design
+| | |
+|---|---|
+| Symptom | The heartbeat staleness/exit block in poll_for_signal (gated on always-false `[[ -f heartbeat_file ]]`) is inert under TUI launch (the trigger `.sh` heartbeat writer is never executed; liveness is owned by dead-pane/prompt-stall/no-progress/nudge). |
+| Resolution | Architect (ralplan) confirmed the heartbeat/exit cluster (check_heartbeat*, HEARTBEAT_STALE_COUNT, handle_worker_exit_*, restart_worker) is INTERCONNECTED and a reversible governance fallback — excising it is a large cross-cutting deletion that forecloses re-wiring a leader-side heartbeat. Resolved as DOCUMENT-ONLY: added an inert-by-design comment at the block (no code/behavior change; comment-only diff, +14 lines, 0 non-comment changes). Not a defect to fix. |
+
+FINAL STATE: F-1..F-26 + D-1..D-25 + R3-1 + D-22 + D-7(doc) + D-1c + D-17a + NEW-1/NEW-2/NEW-4 SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
 D-1..D-15 + D-1c) + v0.18.1 (D-16) + **v0.18.2 (D-18 + D-17a + D-19 + D-20 + D-21)** all on
 npm + gh. codex-clean, deterministically tested (test-dbacklog 82/82 + model-upgrade-ladder
 15/15 + full fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387 [parallel-exec flake

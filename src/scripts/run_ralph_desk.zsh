@@ -2663,6 +2663,20 @@ poll_for_signal() {
     fi
 
     # Check heartbeat freshness (tmux pattern)
+    # D-7 (INERT BY DESIGN — do not "fix" as a bug): this entire heartbeat block is
+    # gated on `[[ -f "$heartbeat_file" ]]`, which is effectively always FALSE in the
+    # production TUI launch path. The only heartbeat WRITER lives inside the generated
+    # trigger `.sh` scripts (write_worker_trigger / write_verifier_trigger), but the
+    # leader launches the Worker/Verifier as a TUI (launch_worker_claude/codex paste the
+    # CLI + send "Read and execute … prompt.md"); the trigger `.sh` is a fallback that
+    # is never executed, and stale heartbeat files are rm'd at the iteration-cleanup.
+    # So this block (and check_heartbeat / check_heartbeat_exited / the
+    # HEARTBEAT_STALE_COUNT breaker / the exit handlers handle_worker_exit_* /
+    # restart_worker that only IT calls) is inert. It is RETAINED intentionally as a
+    # coherent, reversible governance fallback (governance.md s7 step 5+6): a future
+    # leader-side heartbeat emitter could re-activate it. Liveness in production is
+    # owned by the live net just below — check_dead_pane / check_prompt_stall /
+    # check_no_progress / check_and_nudge_idle_pane — NOT by this heartbeat path.
     if [[ -f "$heartbeat_file" ]]; then
       if check_heartbeat_exited "$heartbeat_file"; then
         # Process exited but no signal file -- give a brief grace period
