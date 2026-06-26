@@ -433,6 +433,22 @@ n4=$(mktemp -d); ( cd "$n4"; git init -q; git config user.email t@t; git config 
   && ok "NEW-4: empty-tree base catches a staged file that 'diff HEAD' misses in a no-commit repo" || no "NEW-4: empty-tree logic ($(tr '\n' ' ' <$n4/out))"
 rm -rf "$n4"
 
+# ---- R3 (audit round 3): inline single-verifier dispatch clears stale verdict before launch ----
+# run_single_verifier + _final_verify_one_us rm $VERDICT_FILE before launch; the inline
+# single-engine verify path relied ONLY on the iteration-start cleanup, which is SKIPPED on
+# SKIP_NEXT_WORKER=1 iterations (operator-recovery / D-16 finalize). On such a skip a stale
+# valid verdict would be returned IMMEDIATELY by poll_for_signal → wrong pass/fail. Now the
+# inline path rm's the verdict before launching, so the poll waits for a fresh one.
+grep -qF 'R3 (audit round 3): remove any stale verdict' "$RUN" \
+  && ok "R3: inline single-verifier dispatch rm's \$VERDICT_FILE before launch (no stale-verdict read on skip iters)" || no "R3: inline stale-verdict guard missing"
+# all THREE verifier-dispatch paths now clear the verdict before polling
+r3n=$(grep -cE 'rm -f "\$VERDICT_FILE"' "$RUN")
+[[ "$r3n" -ge 3 ]] && ok "R3: all 3 verifier-dispatch paths rm \$VERDICT_FILE before launch ($r3n sites)" || no "R3: only $r3n rm sites (want >=3)"
+# logic mirror: poll returns a STALE valid verdict if not cleared; cleared → waits
+pollsim(){ local cleared="$1" stale="$2"; [[ "$cleared" == yes ]] && print WAIT_FRESH || { [[ -n "$stale" ]] && print "STALE:$stale" || print WAIT_FRESH; }; }
+[[ "$(pollsim no 'pass')" == 'STALE:pass' && "$(pollsim yes 'pass')" == WAIT_FRESH ]] \
+  && ok "R3: uncleared+stale verdict → returned immediately (bug); cleared → waits for fresh (fix)" || no "R3: poll-stale logic"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))

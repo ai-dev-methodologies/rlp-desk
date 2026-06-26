@@ -573,7 +573,20 @@ FINAL accepted/deferred (LOW, with rationale — NOT silently skipped):
 | Symptom | `CAMPAIGN_PREEXISTING_DIRTY` is captured once per leader PROCESS at main() startup. On a RELAUNCH (new process) it is re-captured AFTER a prior segment's Worker ran, so a prior-segment uncommitted file lands in the "pre-existing" snapshot and is excluded from the new segment's F-8 auto-commit recovery. |
 | Status | report-only, NOT fixed: (a) PRE-EXISTING, unchanged by NEW-4 (on relaunch HEAD exists so NEW-4's empty-tree path isn't taken); (b) BENIGN — the fresh-context Worker re-does that US and commits it; excluding a prior-segment's abandoned partial file from auto-commit is defensible. A real fix persists the campaign-start snapshot across relaunches (status.json) — a feature change with its own risk; deferred. |
 
-FINAL STATE: F-1..F-26 + D-1..D-25 + D-1c + D-17a + NEW-1/NEW-2/NEW-4 SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
+### R3-1 (FIXED, from fresh adversarial audit round 3) — inline single-verifier reads a stale verdict on skip iterations  · MEDIUM
+| | |
+|---|---|
+| Symptom | The INLINE single-engine verifier dispatch (main verify case, the `else` of `use_consensus`, ~4008) did NOT `rm -f "$VERDICT_FILE"` before launching the verifier + `poll_for_signal "$VERDICT_FILE"` — unlike run_single_verifier (~2849) and _final_verify_one_us (~3018). It relied solely on the iteration-start cleanup (`rm -f SIGNAL/DONE_CLAIM/VERDICT`, ~3725), which is SKIPPED when SKIP_NEXT_WORKER=1 (operator-recovery PR-A / D-16 finalize). On such a skip iteration a stale, valid-JSON VERDICT_FILE from a prior iteration persists → `poll_for_signal` (returns immediately on an existing + `jq -e .`-valid file) reads the STALE verdict → a wrong pass/fail from the previous iteration. |
+| Fix | Added `rm -f "$VERDICT_FILE" 2>/dev/null` right before the inline launch (now all 3 verifier-dispatch paths clear the verdict before polling). codex confirmed: placed before both launch and poll; normal-path no-op (already cleared at iteration start); skip-path safe (verdict not read before the rm). |
+| Verification | test-dbacklog 100/100 (+3 R3). codex review 0 issues. sv-gate:fast 71/71, F-22 14/14, lock 9/9, node 387/387. |
+
+### R3-2 (report-only, from round 3) — Node leader (campaign-main-loop.mjs) verdict-read parity  · non-actionable
+| | |
+|---|---|
+| Symptom | The Node leader's final sequential verifier reads the shared verdict path and `validateArtifact` accepts any parseable file (the Node analog of R3-1). |
+| Status | NON-ACTIONABLE (production dead code): default mode is `tmux` which shells out to the zsh leader (run.mjs:295-297, 455-456); `--mode agent` (the only path that calls `runCampaign`/campaign-main-loop) HARD-ERRORS before runCampaign (ADR-001, run.mjs:489-506); `--mode native` is slash-only and also errors for direct CLI. So campaign-main-loop's verifier is not reachable via any direct-CLI production path. codex confirmed unreachable → documented, not fixed. (If the Node leader is ever revived, port R3-1's rm-before-poll there.) |
+
+FINAL STATE: F-1..F-26 + D-1..D-25 + R3-1 + D-1c + D-17a + NEW-1/NEW-2/NEW-4 SHIPPED/MERGED. v0.18.0 (F-1..F-26 +
 D-1..D-15 + D-1c) + v0.18.1 (D-16) + **v0.18.2 (D-18 + D-17a + D-19 + D-20 + D-21)** all on
 npm + gh. codex-clean, deterministically tested (test-dbacklog 82/82 + model-upgrade-ladder
 15/15 + full fault-injection + lock 9/9 + sv-gate 71/71 + node 387/387 [parallel-exec flake

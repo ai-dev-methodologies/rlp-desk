@@ -4062,6 +4062,17 @@ main() {
           fi
           log_debug "[FLOW] iter=$ITERATION phase=verifier engine=$_v_eng model=$_v_model scope=${signal_us_id:-all} dispatched=true"
 
+          # R3 (audit round 3): remove any stale verdict BEFORE launching, so the
+          # poll below waits for THIS verifier's fresh verdict instead of accepting
+          # a leftover one. run_single_verifier (consensus) and _final_verify_one_us
+          # already rm here; this inline single-engine path relied solely on the
+          # iteration-start cleanup — which is SKIPPED when SKIP_NEXT_WORKER=1
+          # (operator-recovery / D-16 finalize). On such a skip iteration a stale
+          # VERDICT_FILE from a prior iteration would still be on disk and valid
+          # JSON, so poll_for_signal would return it IMMEDIATELY → a wrong pass/fail
+          # read from the previous iteration's verdict. Clear it here unconditionally.
+          rm -f "$VERDICT_FILE" 2>/dev/null
+
           if [[ "$_v_eng" = "codex" ]]; then
             launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"
           else
