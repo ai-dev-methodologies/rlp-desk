@@ -449,6 +449,46 @@ pollsim(){ local cleared="$1" stale="$2"; [[ "$cleared" == yes ]] && print WAIT_
 [[ "$(pollsim no 'pass')" == 'STALE:pass' && "$(pollsim yes 'pass')" == WAIT_FRESH ]] \
   && ok "R3: uncleared+stale verdict → returned immediately (bug); cleared → waits for fresh (fix)" || no "R3: poll-stale logic"
 
+# ---- D-26 (production zsh analog of R3-2 HIGH): legacy verdict cleared alongside canonical ----
+# check_no_progress → _verifier_pane_has_verdict() migrates a stale LEGACY_VERDICT_FILE into
+# canonical (mv) during a verifier wait, so EVERY pre-launch/iteration clear of $VERDICT_FILE
+# must also clear $LEGACY_VERDICT_FILE, else a prior iteration's stale legacy verdict is promoted
+# into THIS iteration's verdict and read by poll_for_signal. R3-1 cleared only canonical.
+d26_unguarded=$(grep -nE 'rm -f .*"\$VERDICT_FILE"' "$RUN" | grep -v 'LEGACY_VERDICT_FILE' | wc -l | tr -d ' ')
+[[ "$d26_unguarded" -eq 0 ]] \
+  && ok "D-26: every \$VERDICT_FILE clear also clears \$LEGACY_VERDICT_FILE (0 unguarded sites)" \
+  || { no "D-26: $d26_unguarded \$VERDICT_FILE clear site(s) omit legacy"; grep -nE 'rm -f .*"\$VERDICT_FILE"' "$RUN" | grep -v LEGACY_VERDICT_FILE; }
+d26_paired=$(grep -cE 'rm -f .*"\$VERDICT_FILE" "\$LEGACY_VERDICT_FILE"' "$RUN")
+[[ "$d26_paired" -ge 5 ]] && ok "D-26: all verdict-clear sites pair canonical+legacy ($d26_paired sites)" || no "D-26: only $d26_paired paired (want >=5)"
+# ordering (codex review HIGH/LOW): in _final_verify_one_us the clear must PRECEDE the launch,
+# else a fast verifier's fresh verdict can be deleted between launch and rm.
+fv_fn=$(awk '/_final_verify_one_us\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUN")
+fv_first_rm=$(print -r -- "$fv_fn" | grep -nE 'rm -f .*VERDICT_FILE' | head -1 | cut -d: -f1)
+fv_first_launch=$(print -r -- "$fv_fn" | grep -nE 'launch_verifier_' | head -1 | cut -d: -f1)
+[[ -n "$fv_first_rm" && -n "$fv_first_launch" && "$fv_first_rm" -lt "$fv_first_launch" ]] \
+  && ok "D-26: _final_verify_one_us clears verdict BEFORE first launch (no fresh-verdict delete race)" \
+  || no "D-26: _final_verify_one_us clear-after-launch ordering (rm=$fv_first_rm launch=$fv_first_launch)"
+# codex poll loop migrates a FRESH legacy verdict instead of relying on the watcher (codex review MEDIUM)
+grep -qF '[[ -f "$VERDICT_FILE" ]] || _migrate_legacy_verdict' "$RUN" \
+  && ok "D-26: codex verifier poll loop migrates a fresh legacy verdict (no reliance on watcher side-effect)" \
+  || no "D-26: codex poll loop missing legacy migrate"
+# behavioral with the REAL _migrate_legacy_verdict: stale legacy is promoted (bug) unless cleared (fix)
+D26=$(mktemp -d)
+awk '/^_migrate_legacy_verdict\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUN" > "$D26/fn.zsh"
+d26_out=$(zsh -c '
+  log(){ :; }; log_debug(){ :; }
+  source "'"$D26"'/fn.zsh"
+  VERDICT_FILE="'"$D26"'/canon.json"; LEGACY_VERDICT_FILE="'"$D26"'/legacy.json"; ITERATION=2
+  print "{\"verdict\":\"pass\",\"us_id\":\"US-OLD\"}" > "$LEGACY_VERDICT_FILE"
+  if _migrate_legacy_verdict && [[ -f "$VERDICT_FILE" ]] && grep -q US-OLD "$VERDICT_FILE"; then print BUG_PROMOTES; fi
+  print "{\"verdict\":\"pass\",\"us_id\":\"US-OLD\"}" > "$LEGACY_VERDICT_FILE"
+  rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE"
+  if ! _migrate_legacy_verdict && [[ ! -f "$VERDICT_FILE" ]]; then print FIX_NO_PROMOTE; fi
+')
+[[ "$d26_out" == *BUG_PROMOTES* ]] && ok "D-26: real _migrate_legacy_verdict promotes a stale legacy verdict (bug surface confirmed)" || no "D-26: legacy-promotion mechanism not reproduced"
+[[ "$d26_out" == *FIX_NO_PROMOTE* ]] && ok "D-26: after the canonical+legacy clear, nothing is promoted (fix closes the hole)" || no "D-26: legacy clear did not prevent promotion"
+rm -rf "$D26"
+
 # ---- D-22 (ralplan backlog): dead consensus retry-loop removed, behavior-neutral ----
 # run_consensus_verification always returned in "round 1" (both-pass→0, else→synth fail+
 # return 2; outer fix-loop owns retries). The in-function `while (( ROUND < 6 ))`, the

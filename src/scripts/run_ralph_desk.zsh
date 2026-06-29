@@ -2859,8 +2859,12 @@ run_single_verifier() {
   tmux send-keys -t "$VERIFIER_PANE" C-l 2>/dev/null
   sleep 0.5
 
-  # Remove previous verdict file
-  rm -f "$VERDICT_FILE" 2>/dev/null
+  # Remove previous verdict file. D-26: clear BOTH canonical AND legacy. The
+  # no-progress watcher's _verifier_pane_has_verdict() migrates any stale legacy
+  # verdict into canonical via `mv` (_migrate_legacy_verdict), so a leftover
+  # legacy file from a prior iteration would be promoted into THIS verifier's
+  # verdict and read by poll_for_signal. R3-1 cleared only canonical.
+  rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE" 2>/dev/null
 
   # Launch verifier — dispatch to engine-specific function
   local verifier_launch
@@ -2903,7 +2907,13 @@ run_single_verifier() {
     codex_poll_start=$(date +%s)
     local _verdict_detected_at=0
     while true; do
-      # Wait for verdict file with valid JSON
+      # Wait for verdict file with valid JSON. D-26 (codex review, MEDIUM):
+      # codex may write to the legacy path (Fix-D); migrate a FRESH legacy
+      # verdict into canonical here so this dedicated codex poll loop doesn't
+      # depend on the no-progress watcher's side effect to find it. The D-26
+      # pre-launch clear guarantees any legacy seen here is THIS verifier's
+      # (not a stale prior-iteration one), so promoting it is correct.
+      [[ -f "$VERDICT_FILE" ]] || _migrate_legacy_verdict
       if [[ -f "$VERDICT_FILE" ]] && jq . "$VERDICT_FILE" >/dev/null 2>&1; then
         if (( _verdict_detected_at == 0 )); then
           _verdict_detected_at=$(date +%s)
@@ -3011,6 +3021,11 @@ _final_verify_one_us() {
   # "final 엄격" knob — a configured stronger model, e.g. opus, for the final
   # gate), NOT the lighter per-US VERIFIER_*. This is the configured-final-model
   # distinction, distinct from the removed per-iteration verifier auto-upgrade.
+  # D-26 + codex-review ordering: clear the stale verdict (canonical + legacy)
+  # BEFORE launch — never AFTER. Clearing after launch risks deleting a fast
+  # verifier's FRESH verdict, and leaves a window where the no-progress watcher
+  # could promote a prior-iteration legacy verdict into this run.
+  rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE"
   local verifier_launch
   if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
     verifier_launch="${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
@@ -3029,7 +3044,7 @@ _final_verify_one_us() {
   # parity the per-US main verifier site has but this final-verify path lacked
   # (a single transient poll miss falsely failed a US at the most expensive
   # end-of-campaign moment, charging a bogus consecutive failure).
-  rm -f "$VERDICT_FILE"
+  # (verdict already cleared BEFORE launch above — D-26/codex ordering.)
   local poll_rc=0
   poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
   if (( poll_rc == 2 )); then
@@ -3040,12 +3055,13 @@ _final_verify_one_us() {
     log "  Verifier-final transient poll fail for $us — replacing pane + retrying once (D-4)"
     replace_worker_pane "$VERIFIER_PANE" "verifier"
     VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
+    rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE"   # D-26: clear BEFORE relaunch (canonical + legacy)
     if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
       launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
     else
       launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || return 2
     fi
-    rm -f "$VERDICT_FILE"; poll_rc=0
+    poll_rc=0
     poll_for_signal "$VERDICT_FILE" "$VERIFIER_HEARTBEAT" "$VERIFIER_PANE" "$verifier_launch" "Verifier-final" || poll_rc=$?
     if (( poll_rc != 0 )); then
       log_error "Verifier poll failed for $us after replace+retry (rc=$poll_rc)"
@@ -3722,7 +3738,7 @@ main() {
       # iteration's reaper before rm so cleanup does not log permission noise.
       _unlock_sentinel "$SIGNAL_FILE"
       _unlock_sentinel "$VERDICT_FILE"
-      rm -f "$SIGNAL_FILE" "$DONE_CLAIM_FILE" "$VERDICT_FILE" 2>/dev/null
+      rm -f "$SIGNAL_FILE" "$DONE_CLAIM_FILE" "$VERDICT_FILE" "$LEGACY_VERDICT_FILE" 2>/dev/null   # D-26: + legacy verdict
       rm -f "$WORKER_HEARTBEAT" "$VERIFIER_HEARTBEAT" 2>/dev/null
 
       # --- Clean previous claude session in panes (one-shot lifecycle) ---
@@ -4071,7 +4087,9 @@ main() {
           # VERDICT_FILE from a prior iteration would still be on disk and valid
           # JSON, so poll_for_signal would return it IMMEDIATELY → a wrong pass/fail
           # read from the previous iteration's verdict. Clear it here unconditionally.
-          rm -f "$VERDICT_FILE" 2>/dev/null
+          # D-26: also clear legacy — the no-progress watcher migrates a stale
+          # legacy verdict into canonical, re-opening the same hole otherwise.
+          rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE" 2>/dev/null
 
           if [[ "$_v_eng" = "codex" ]]; then
             launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"
