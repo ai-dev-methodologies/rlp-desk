@@ -43,14 +43,17 @@ run_scenario() {
 
   local slug="sv-bug-10-test"
   # Create minimal PRD (1 US, deterministic typo fix)
-  mkdir -p .rlp-desk/plans .rlp-desk/prompts .rlp-desk/memos .rlp-desk/logs/$slug/runtime
+  mkdir -p .rlp-desk/plans .rlp-desk/prompts .rlp-desk/memos .rlp-desk/context .rlp-desk/logs/$slug/runtime
+  # v0.13.0+ scaffold validation requires context + memory files (else leader exits "Scaffold validation failed").
+  echo "# $slug - Latest Context" > .rlp-desk/context/$slug-latest.md
+  echo "# $slug - Campaign Memory" > .rlp-desk/memos/$slug-memory.md
   cat > .rlp-desk/plans/prd-$slug.md <<'EOF'
 # PRD: sv-bug-10-test
 
 ## Objective
 Test recovery hygiene on relaunch.
 
-## US-001: Add a single line to README
+### US-001: Add a single line to README
 Append the line "test passed" to README.md.
 
 ### Acceptance Criteria

@@ -35,11 +35,13 @@ run_scenario() {
   git -c user.email=test@test.local -c user.name=test commit -q -m "init"
 
   local slug="sv-bug07-race"
-  mkdir -p .rlp-desk/plans .rlp-desk/prompts .rlp-desk/memos .rlp-desk/logs/$slug/runtime
-
+  mkdir -p .rlp-desk/plans .rlp-desk/prompts .rlp-desk/memos .rlp-desk/context .rlp-desk/logs/$slug/runtime
+  # v0.13.0+ scaffold validation requires context + memory files (else leader exits "Scaffold validation failed").
+  echo "# $slug - Latest Context" > .rlp-desk/context/$slug-latest.md
+  echo "# $slug - Campaign Memory" > .rlp-desk/memos/$slug-memory.md
   cat > .rlp-desk/plans/prd-$slug.md <<'EOF'
 # PRD: sv-bug07-race
-## US-001: trivial
+### US-001: trivial
 - README.md exists
 EOF
   echo "Append 'done' to README.md, write done-claim and iter-signal." > .rlp-desk/prompts/$slug.worker.prompt.md

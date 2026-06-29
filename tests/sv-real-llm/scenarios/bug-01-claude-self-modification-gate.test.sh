@@ -36,11 +36,13 @@ run_scenario() {
   git -c user.email=test@test.local -c user.name=test commit -q -m "init"
 
   local slug="sv-bug01-paths"
-  mkdir -p .rlp-desk/plans .rlp-desk/prompts .rlp-desk/memos .rlp-desk/logs/$slug/runtime
-
+  mkdir -p .rlp-desk/plans .rlp-desk/prompts .rlp-desk/memos .rlp-desk/context .rlp-desk/logs/$slug/runtime
+  # v0.13.0+ scaffold validation requires context + memory files (else leader exits "Scaffold validation failed").
+  echo "# $slug - Latest Context" > .rlp-desk/context/$slug-latest.md
+  echo "# $slug - Campaign Memory" > .rlp-desk/memos/$slug-memory.md
   cat > .rlp-desk/plans/prd-$slug.md <<'EOF'
 # PRD: sv-bug01-paths
-## US-001: write done-claim
+### US-001: write done-claim
 - Worker writes done-claim with us_id=US-001
 EOF
   echo "Append 'done' to README.md, write done-claim and iter-signal." > .rlp-desk/prompts/$slug.worker.prompt.md
@@ -74,9 +76,12 @@ EOF
     ASSERTIONS_PASSED=$((ASSERTIONS_PASSED+1))
   fi
 
-  # A3: sentinel writes ARE present under .rlp-desk/memos/ (positive control)
+  # A3: sentinel writes ARE present under .rlp-desk/memos/ (positive control).
+  # Exclude the pre-created scaffold memory file ($slug-memory.md) so this counts only
+  # RUNTIME memo writes (done-claim, iter-signal, verdict, complete sentinel) — otherwise
+  # the scaffold alone would make A3 PASS even when the campaign wrote nothing.
   local memo_count
-  memo_count=$(ls .rlp-desk/memos/ 2>/dev/null | wc -l | tr -d ' ')
+  memo_count=$(ls .rlp-desk/memos/ 2>/dev/null | grep -vxF "$slug-memory.md" | wc -l | tr -d ' ')
   if (( memo_count > 0 )); then
     echo "ASSERT A3 PASS: .rlp-desk/memos/ has $memo_count files (canonical path)"
     ASSERTIONS_PASSED=$((ASSERTIONS_PASSED+1))

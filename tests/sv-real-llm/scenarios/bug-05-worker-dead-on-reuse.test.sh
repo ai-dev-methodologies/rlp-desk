@@ -35,13 +35,17 @@ run_scenario() {
   git -c user.email=test@test.local -c user.name=test commit -q -m "init"
 
   local slug="sv-bug05-dead-pane"
-  mkdir -p .rlp-desk/plans .rlp-desk/prompts .rlp-desk/memos .rlp-desk/logs/$slug/runtime
+  mkdir -p .rlp-desk/plans .rlp-desk/prompts .rlp-desk/memos .rlp-desk/context .rlp-desk/logs/$slug/runtime
 
   cat > .rlp-desk/plans/prd-$slug.md <<'EOF'
 # PRD: sv-bug05-dead-pane
-## US-001: synthetic
+### US-001: synthetic
 - README.md exists
 EOF
+  # v0.13.0+ scaffold validation requires context + memory files (else the leader
+  # exits "Scaffold validation failed" before any campaign.jsonl is written).
+  echo "# sv-bug05-dead-pane - Latest Context" > .rlp-desk/context/$slug-latest.md
+  echo "# sv-bug05-dead-pane - Campaign Memory" > .rlp-desk/memos/$slug-memory.md
   echo "Append 'done' then write done-claim + iter-signal." > .rlp-desk/prompts/$slug.worker.prompt.md
   echo "Verify, write verdict pass+complete." > .rlp-desk/prompts/$slug.verifier.prompt.md
 

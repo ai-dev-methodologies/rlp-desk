@@ -71,6 +71,24 @@ On FAIL, the captured state bundle holds the campaign artifacts (status.json, se
 
 ## Nightly streak (B3 Stage-2 gate)
 
+> **⚠ KNOWN LIMITATION — B3 telemetry is orphaned on the production path (2026-06-29).**
+> The B3-S1 assertion reads a non-null `lifecycle_metrics` object from `campaign.jsonl`.
+> That field is written **only by the Node leader** (`src/node/runner/campaign-main-loop.mjs`
+> via `src/node/util/lifecycle-metrics.mjs`, PR-B4). The Node leader is reachable only
+> through the Native-agent path — the CLI `run` command hard-errors `--mode agent`
+> (ADR-001) and `--mode tmux` delegates to the **production zsh leader**, whose
+> `write_campaign_jsonl` (lib_ralph_desk.zsh) has **no `lifecycle_metrics` field** and
+> emits only one of the five metrics (`pane_eof_to_cleanup_ms`) to `debug.log`, never to
+> `campaign.jsonl`. So under the production (`--mode tmux`) path the B3 scenarios FAIL
+> B3-S1 and the nightly perpetually reports **INVESTIGATE** — not a flake, a structural
+> gap. Making the gate real on production requires porting the lifecycle collector into
+> the zsh leader's `write_campaign_jsonl` — a converged-tool production change that
+> ralplan consensus deferred (adjacent to the also-deferred PR-B6 metrics-flip). Until
+> that is done, the harness machinery is correct but the underlying B3 telemetry it
+> samples is Node-leader-only. (Fixture drift — US-heading `### ` anchoring per D-23 and
+> the v0.13.0+ context/memory scaffold requirement — was fixed in the scenarios so they
+> at least reach the leader; the orphan is the remaining, separate blocker.)
+
 `harness/nightly-run.sh` is the automation that turns the per-scenario runner into the
 3-night sample that gates the `B3_STAGE2_BLOCKING=1` flip (runbook §7.5.2;
 `docs/plans/v0.15-phase-b3-revalidation-findings.md` §4 + runbook line 275). It runs
