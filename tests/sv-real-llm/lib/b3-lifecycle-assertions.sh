@@ -35,17 +35,21 @@ b3_assert_lifecycle_metrics_present() {
     return 1
   fi
 
+  # Require a NON-EMPTY lifecycle_metrics object — at least one metric carrying at
+  # least one entry. An empty {} (flag on but no metric recorded all run) does NOT
+  # count as telemetry present (it would let a no-op night masquerade as a PASS).
   local lm_object_count
-  lm_object_count=$(jq -s 'map(select(.lifecycle_metrics != null and (.lifecycle_metrics | type == "object"))) | length' \
+  lm_object_count=$(jq -s 'map(select(.lifecycle_metrics != null and (.lifecycle_metrics | type == "object") and ([.lifecycle_metrics[] | length] | add // 0) > 0)) | length' \
     "$jsonl" 2>/dev/null || echo 0)
   if (( lm_object_count >= 1 )); then
-    echo "ASSERT B3-S1 PASS: lifecycle_metrics present in $lm_object_count record(s)"
+    echo "ASSERT B3-S1 PASS: non-empty lifecycle_metrics present in $lm_object_count record(s)"
     ASSERTIONS_PASSED=$((ASSERTIONS_PASSED+1))
     return 0
   fi
 
-  echo "ASSERT B3-S1 FAIL: lifecycle_metrics is null or missing in every campaign.jsonl record"
-  echo "                   Likely cause: RLP_LIFECYCLE_METRICS=1 not propagated, or B4 collector inactive."
+  echo "ASSERT B3-S1 FAIL: no record carries a non-empty lifecycle_metrics object"
+  echo "                   Likely cause: RLP_LIFECYCLE_METRICS=1 not propagated, B4 collector inactive,"
+  echo "                   or every record emitted an empty {} (no metric recorded)."
   ASSERTIONS_FAILED=$((ASSERTIONS_FAILED+1))
   SCENARIO_FAILURE_REASON="B3-S1: B4 telemetry not emitting"
   return 1

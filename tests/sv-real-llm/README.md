@@ -71,32 +71,45 @@ On FAIL, the captured state bundle holds the campaign artifacts (status.json, se
 
 ## Nightly streak (B3 Stage-2 gate)
 
-> **⚠ KNOWN LIMITATION — B3 telemetry is orphaned on the production path (2026-06-29).**
-> The B3-S1 assertion reads a non-null `lifecycle_metrics` object from `campaign.jsonl`.
-> That field is written **only by the Node leader** (`src/node/runner/campaign-main-loop.mjs`
-> via `src/node/util/lifecycle-metrics.mjs`, PR-B4). The Node leader is reachable only
-> through the Native-agent path — the CLI `run` command hard-errors `--mode agent`
-> (ADR-001) and `--mode tmux` delegates to the **production zsh leader**, whose
-> `write_campaign_jsonl` (lib_ralph_desk.zsh) has **no `lifecycle_metrics` field** and
-> emits only one of the five metrics (`pane_eof_to_cleanup_ms`) to `debug.log`, never to
-> `campaign.jsonl`. So under the production (`--mode tmux`) path the B3 scenarios FAIL
-> B3-S1 and the nightly perpetually reports **INVESTIGATE** — not a flake, a structural
-> gap. Making the gate real on production requires porting the lifecycle collector into
-> the zsh leader's `write_campaign_jsonl` — a converged-tool production change that
-> ralplan consensus deferred (adjacent to the also-deferred PR-B6 metrics-flip). Until
-> that is done, the harness machinery is correct but the underlying B3 telemetry it
-> samples is Node-leader-only. (Fixture drift — US-heading `### ` anchoring per D-23 and
-> the v0.13.0+ context/memory scaffold requirement — was fixed in the scenarios so they
-> at least reach the leader; the orphan is the remaining, separate blocker.)
+> **⚠ KNOWN LIMITATION — B3 Stage-2 telemetry is only PARTIALLY wired on the production
+> path; a PASS streak is ADVISORY, not a flip authorization (2026-06-29).**
+> The zsh leader (the production `--mode tmux` backend) now writes a `lifecycle_metrics`
+> object into `campaign.jsonl` (B3 zsh-leader port: `lib_ralph_desk.zsh` accumulates in
+> `LIFECYCLE_RECORDS`, `write_campaign_jsonl` flushes it), so B3-S1 can pass on
+> production. **But only `pane_eof_to_cleanup_ms` is instrumented in the zsh leader** —
+> the other four B3 metrics (`pane_reap_latency_ms`, `iter_signal_write_to_read_ms`,
+> `verdict_write_to_read_ms`, `sentinel_lock_to_unlock_ms`) are measured only by the Node
+> leader (`campaign-main-loop.mjs`, unreachable via `run` per ADR-001), so they **SKIP**
+> in B3-S2 on the zsh path. Worse, the one wired band (`pane_eof_to_cleanup_ms` = 5000ms)
+> was calibrated against the **Node** leader; the zsh `_kill_pane_process` can structurally
+> exceed it (~6.5s worst case), so under `B3_STAGE2_BLOCKING=1` a slow-pane night can
+> false-FAIL (see `feedback_synthetic_baseline_anchor`). **Therefore a PASS streak reports
+> `STREAK_OK_ADVISORY`, NOT `READY_TO_FLIP`** — do not set `B3_STAGE2_BLOCKING=1` off it.
+> DEFERRED follow-ups to make the gate authoritative: (a) instrument the other four metrics
+> in the zsh hot loop; (b) re-run `b3-band-revalidation` against a **zsh-leader** sample and
+> refit the bands. (Fixture drift — US-heading `### ` per D-23 + v0.13.0 context/memory
+> scaffold — was already fixed so the scenarios reach the leader.)
+>
+> **AUTHORITATIVE PROOF of the zsh emit chain is the deterministic, zero-cost
+> `tests/test_b3_pane_reap_integration.sh`** — it drives the real `_kill_pane_process`
+> (the function the leader calls on every pane reap) on a real tmux pane and asserts the
+> resulting `campaign.jsonl` makes B3-S1 PASS. The **real-LLM** scenarios do NOT yet
+> demonstrate B3 end-to-end: bug-05 carries no B3 (it pre-seeds stale panes → no
+> deterministic reap), and bug-07 **SKIPs** B3 whenever its (still-stale) trivial worker
+> prompt fails to drive a completed iteration, so no `campaign.jsonl` is written. Closing
+> that worker-prompt / A1-stream staleness is a separate open item; until then the nightly
+> real-LLM streak does not exercise B3 telemetry — the deterministic test is the gate.
 
 `harness/nightly-run.sh` is the automation that turns the per-scenario runner into the
-3-night sample that gates the `B3_STAGE2_BLOCKING=1` flip (runbook §7.5.2;
-`docs/plans/v0.15-phase-b3-revalidation-findings.md` §4 + runbook line 275). It runs
-bug-05 + bug-07 with `RLP_REAL_LLM_GATE=1 RLP_LIFECYCLE_METRICS=1` **and
-`B3_STAGE2_BLOCKING=1`** — so a Stage-2 band breach FAILs the night (→ INVESTIGATE)
-instead of recording a silent INFO PASS; the flip trigger is 3 consecutive nights
-passing *with* Stage-2 blocking on. It appends a dated verdict to
-`results/nightly-streak.jsonl` and reports the streak.
+3-night sample feeding the (currently advisory) `B3_STAGE2_BLOCKING` decision (runbook
+§7.5.2; `docs/plans/v0.15-phase-b3-revalidation-findings.md` §4). It runs bug-05 + bug-07
+with `RLP_REAL_LLM_GATE=1 RLP_LIFECYCLE_METRICS=1` **and `B3_STAGE2_BLOCKING=1`** — so that
+once a B3 record IS produced, a Stage-2 band breach FAILs the night (→ INVESTIGATE) instead
+of a silent INFO PASS. It appends a dated verdict to `results/nightly-streak.jsonl` and
+reports the streak. Note (see limitation above): bug-05 carries no B3 and bug-07 SKIPs B3
+until the worker-prompt staleness is fixed, so the streak does not currently value-gate B3 —
+a PASS streak is `STREAK_OK_ADVISORY`, not a flip authorization, and the deterministic
+`test_b3_pane_reap_integration.sh` is the real proof of the emit chain.
 
 ```bash
 # one night (LLM cost ~$2-6):
@@ -107,7 +120,10 @@ bash tests/sv-real-llm/harness/nightly-run.sh --eval-only
 ```
 
 Streak verdicts:
-- **READY_TO_FLIP** — N consecutive PASS nights (default 3) → safe to set `B3_STAGE2_BLOCKING=1`.
+- **STREAK_OK_ADVISORY** — N consecutive PASS nights (default 3). ADVISORY only: on the zsh
+  leader only `pane_eof` is value-gated and its band is Node-calibrated, so this does NOT
+  authorize setting `B3_STAGE2_BLOCKING=1` — the zsh band refit + remaining-metric
+  instrumentation must land first (see limitation above).
 - **NOT_YET** — fewer than N PASS nights logged; keep running.
 - **INVESTIGATE** — a FAIL night in the window; do NOT flip. Per runbook §7.5.2: a Stage-1
   fail is a B4 telemetry regression (file an issue); Stage-2 band exceeded → re-run
@@ -124,7 +140,8 @@ real-LLM cost accrues every night, so installation is a deliberate operator step
 1. Replace `__REPO__` (checkout path) and `__EXTRA_PATH__` (dirs for claude/codex/node/jq/tmux).
 2. `cp` it to `~/Library/LaunchAgents/com.rlp-desk.nightly-sv.plist`
 3. `launchctl load ~/Library/LaunchAgents/com.rlp-desk.nightly-sv.plist`
-4. After ≥3 nights: `bash tests/sv-real-llm/harness/nightly-run.sh --eval-only` → expect READY_TO_FLIP.
+4. After ≥3 nights: `bash tests/sv-real-llm/harness/nightly-run.sh --eval-only` → expect
+   STREAK_OK_ADVISORY (advisory only — see the limitation note above before any flip).
 
 (Linux: wrap the same command in a cron entry / systemd timer instead.)
 

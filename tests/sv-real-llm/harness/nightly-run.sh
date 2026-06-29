@@ -58,7 +58,13 @@ evaluate_streak() {
     return 0
   fi
   if (( pass == target )); then
-    echo "READY_TO_FLIP: $target consecutive PASS nights → safe to set B3_STAGE2_BLOCKING=1 (release-blocking Stage 2)"
+    # ADVISORY ONLY — not a flip authorization. On the production zsh leader only
+    # pane_eof_to_cleanup_ms is value-gated (the other 3 B3-S2 metrics are Node-only
+    # and SKIP), and that band is still Node-calibrated. A PASS streak here therefore
+    # does NOT establish that a release-blocking Stage 2 would be sound on the leader
+    # that ships. Do NOT set B3_STAGE2_BLOCKING=1 off this signal until the zsh-leader
+    # band refit lands (deferred follow-up; see README "Known limitation").
+    echo "STREAK_OK_ADVISORY: $target consecutive PASS nights (pane_eof only on zsh; bands Node-calibrated) — NOT yet a B3_STAGE2_BLOCKING flip authorization; zsh band refit required first"
     return 0
   fi
   echo "NOT_YET: $pass/$target PASS in the last $target nights"

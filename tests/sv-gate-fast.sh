@@ -145,14 +145,18 @@ check "B3 helper exports b3_assert_lifecycle_metrics_present" \
   grep -q "^b3_assert_lifecycle_metrics_present()" tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
 check "B3 helper exports b3_assert_lifecycle_metric_within_band" \
   grep -q "^b3_assert_lifecycle_metric_within_band()" tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
-check "B3 bug-05 sources B3 helper + RLP_LIFECYCLE_METRICS=1" \
+check "B3 bug-05 runs the campaign with RLP_LIFECYCLE_METRICS=1 (telemetry on)" \
   grep -q "RLP_LIFECYCLE_METRICS=1" tests/sv-real-llm/scenarios/bug-05-worker-dead-on-reuse.test.sh
-check "B3 bug-05 calls Stage 1 presence assertion" \
-  grep -q "b3_assert_lifecycle_metrics_present" tests/sv-real-llm/scenarios/bug-05-worker-dead-on-reuse.test.sh
+check "B3 bug-05 intentionally asserts NO pane telemetry (stale-pane → no deterministic reap)" \
+  bash -c '! grep -q "b3_assert_lifecycle" tests/sv-real-llm/scenarios/bug-05-worker-dead-on-reuse.test.sh'
 check "B3 bug-07 sources B3 helper + RLP_LIFECYCLE_METRICS=1" \
   grep -q "RLP_LIFECYCLE_METRICS=1" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
 check "B3 bug-07 calls Stage 1 presence assertion" \
   grep -q "b3_assert_lifecycle_metrics_present" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
+check "B3 bug-07 reads campaign.jsonl from the zsh-leader analytics dir (not Node logs/)" \
+  grep -q ".rlp-desk/analytics/" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
+check "B3 deterministic pane-reap integration test exists" \
+  test -f tests/test_b3_pane_reap_integration.sh
 check "B3 bug-06 untouched (structural \$0 retained per plan v3 ADR)" \
   bash -c '! grep -q "RLP_LIFECYCLE_METRICS" tests/sv-real-llm/scenarios/bug-06-claude-worker-idle-noprogress.test.sh'
 
@@ -188,6 +192,8 @@ ZSH_TESTS=(
   tests/test_no_progress_and_default_no.sh
   tests/test_us012_sv_tmux_skip_traceability.sh
   tests/test_b2fix_sentinel_lock.sh
+  tests/test_b3_lifecycle_emit.sh
+  tests/test_b3_pane_reap_integration.sh
 )
 for t in $ZSH_TESTS; do
   check "$(basename $t)" zsh "$t"

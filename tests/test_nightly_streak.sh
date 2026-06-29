@@ -18,7 +18,7 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 ev(){ RLP_NIGHTLY_STREAK_LOG="$1" bash "$NIGHTLY" --eval-only; }
 
 printf '{"date":"d1","night_verdict":"PASS"}\n{"date":"d2","night_verdict":"PASS"}\n{"date":"d3","night_verdict":"PASS"}\n' > "$T/s3.jsonl"
-[[ "$(ev "$T/s3.jsonl")" == READY_TO_FLIP* ]] && ok "3 consecutive PASS → READY_TO_FLIP" || no "3 PASS not READY_TO_FLIP"
+[[ "$(ev "$T/s3.jsonl")" == STREAK_OK_ADVISORY* ]] && ok "3 consecutive PASS → STREAK_OK_ADVISORY" || no "3 PASS not READY_TO_FLIP"
 
 printf '{"date":"d2","night_verdict":"PASS"}\n{"date":"d3","night_verdict":"PASS"}\n' > "$T/s2.jsonl"
 [[ "$(ev "$T/s2.jsonl")" == NOT_YET* ]] && ok "2 PASS (< target) → NOT_YET" || no "2 PASS not NOT_YET"
@@ -30,11 +30,11 @@ printf '{"date":"d1","night_verdict":"PASS"}\n{"date":"d2","night_verdict":"FAIL
 
 # only the LAST `target` nights count: an old FAIL outside the window must not block
 printf '{"date":"d1","night_verdict":"FAIL"}\n{"date":"d2","night_verdict":"PASS"}\n{"date":"d3","night_verdict":"PASS"}\n{"date":"d4","night_verdict":"PASS"}\n' > "$T/s4.jsonl"
-[[ "$(ev "$T/s4.jsonl")" == READY_TO_FLIP* ]] && ok "old FAIL outside last-target window → READY_TO_FLIP" || no "windowing wrong"
+[[ "$(ev "$T/s4.jsonl")" == STREAK_OK_ADVISORY* ]] && ok "old FAIL outside last-target window → STREAK_OK_ADVISORY" || no "windowing wrong"
 
 # custom target via env
 printf '{"date":"d1","night_verdict":"PASS"}\n{"date":"d2","night_verdict":"PASS"}\n' > "$T/s2b.jsonl"
-[[ "$(RLP_NIGHTLY_STREAK_TARGET=2 ev "$T/s2b.jsonl")" == READY_TO_FLIP* ]] && ok "RLP_NIGHTLY_STREAK_TARGET=2 honored (2 PASS → READY)" || no "custom target not honored"
+[[ "$(RLP_NIGHTLY_STREAK_TARGET=2 ev "$T/s2b.jsonl")" == STREAK_OK_ADVISORY* ]] && ok "RLP_NIGHTLY_STREAK_TARGET=2 honored (2 PASS → ADVISORY)" || no "custom target not honored"
 
 # dry-run (no gate) → SKIPPED exit 77, no run, no cost
 out=$(bash "$NIGHTLY" 2>&1); rc=$?

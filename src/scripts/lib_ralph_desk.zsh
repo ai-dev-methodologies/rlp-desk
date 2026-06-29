@@ -424,12 +424,29 @@ _unlock_sentinel() {
 #     "iter=$ITERATION us=$us_id pane=$WORKER_PANE"
 #   log_lifecycle_metric "pane_reap_latency_ms" "$delta" \
 #     "iter=$ITERATION sentinel=done-claim"
+# B3 (zsh-leader port): accumulator the iteration flush drains into campaign.jsonl's
+# `lifecycle_metrics` field. MUST be a parent-shell global appended SYNCHRONOUSLY here
+# (NOT inside the backgrounded `( ) &!` debug write) so write_campaign_jsonl — called
+# later in the same shell — can see it. All current callers run in directly-invoked
+# parent-shell functions; a caller inside `$(...)` or `( )&` would not propagate.
+typeset -ga LIFECYCLE_RECORDS=()
+
 log_lifecycle_metric() {
-  [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]] || return 0
+  [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]] || return 0   # off-path: zero work, no fork
   local metric="$1"
   local value_ms="$2"
   local ctx="${3:-}"
   [[ -n "$metric" && -n "$value_ms" ]] || return 0
+  # Synchronous parent-shell accumulation (drained + reset by write_campaign_jsonl).
+  # jq builds the record so value_ms is a real number and strings are escaped.
+  # Fail-open: a malformed record is skipped, never aborts the caller.
+  local _vm _ts _rec
+  _vm=$(printf '%d' "$value_ms" 2>/dev/null) || _vm=0
+  _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  _rec=$(jq -nc --arg m "$metric" --argjson v "$_vm" --arg ts "$_ts" \
+    '{metric:$m, value_ms:$v, ts:$ts}' 2>/dev/null) && [[ -n "$_rec" ]] \
+    && LIFECYCLE_RECORDS+=("$_rec")
+  # Audit aid (unchanged): backgrounded debug-log line.
   if typeset -f log_debug >/dev/null 2>&1; then
     ( log_debug "[LIFECYCLE] metric=$metric value_ms=$value_ms $ctx" ) &!
   fi
@@ -1009,6 +1026,24 @@ write_campaign_jsonl() {
     us_fail_history_json+="}"
   fi
 
+  # B3 (zsh-leader port): drain LIFECYCLE_RECORDS into a grouped `lifecycle_metrics`
+  # object matching the Node leader's flush() shape ({metric:[{value_ms,ts},...]}).
+  # Shape contract (cross-leader, test-campaign-jsonl-shape.test.mjs): null when the
+  # flag is off; grouped object when on with records; {} when on but no records.
+  # FAIL-OPEN: this is the always-on canonical analytics writer — any jq failure on
+  # the (opt-in) lifecycle field degrades to null and the campaign row STILL writes.
+  local lifecycle_json="null"
+  if [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]]; then
+    if (( ${#LIFECYCLE_RECORDS[@]} > 0 )); then
+      lifecycle_json=$(printf '%s\n' "${LIFECYCLE_RECORDS[@]}" \
+        | jq -s 'group_by(.metric) | map({key: .[0].metric, value: map({value_ms, ts})}) | from_entries' 2>/dev/null) \
+        || lifecycle_json="null"
+      [[ -n "$lifecycle_json" ]] || lifecycle_json="null"
+    else
+      lifecycle_json="{}"
+    fi
+  fi
+
   jq -nc \
     --argjson iter "$iter" \
     --arg us_id "$us_id" \
@@ -1026,8 +1061,12 @@ write_campaign_jsonl() {
     --arg project_root "$ROOT" \
     --arg slug "$SLUG" \
     --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus_mode: $consensus_mode, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, us_fail_history: $us_fail_history, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp}' \
+    --argjson lifecycle_metrics "$lifecycle_json" \
+    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus_mode: $consensus_mode, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, us_fail_history: $us_fail_history, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp, lifecycle_metrics: $lifecycle_metrics}' \
     >> "$CAMPAIGN_JSONL"
+
+  # Reset the accumulator after every flush (snapshot+reset, mirrors Node flush()).
+  LIFECYCLE_RECORDS=()
 }
 
 # --- AC4: Generate campaign-report.md on all terminal states ---

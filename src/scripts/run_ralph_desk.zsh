@@ -3638,6 +3638,11 @@ main() {
   local HARD_CEILING=$(( ITER_TIMEOUT * 3 ))  # logged but NOT enforced — Worker extends indefinitely when active
 
   for (( ITERATION = 1; ITERATION <= MAX_ITER; ITERATION++ )); do
+    # B3 (zsh-leader port): defense-in-depth reset of the lifecycle accumulator at
+    # iteration entry, so metrics from an iteration that ended on a flush-less
+    # return path cannot leak into the next iteration's lifecycle_metrics. The
+    # primary reset is in write_campaign_jsonl after each emit.
+    LIFECYCLE_RECORDS=()
     # US-024 R12 P0: lifecycle check site #2 — verify session/panes alive at iter entry.
     _r12_check_lifecycle "iter_start"
     log ""
