@@ -69,6 +69,47 @@ On FAIL, the captured state bundle holds the campaign artifacts (status.json, se
 - NOT auto-run on every PR by default. Real-LLM cost is bounded by explicit operator action.
 - NOT a stress test or load test. Single-iter, single-US scenarios. Stress is a separate workstream.
 
+## Nightly streak (B3 Stage-2 gate)
+
+`harness/nightly-run.sh` is the automation that turns the per-scenario runner into the
+3-night sample that gates the `B3_STAGE2_BLOCKING=1` flip (runbook §7.5.2;
+`docs/plans/v0.15-phase-b3-revalidation-findings.md` §4 + runbook line 275). It runs
+bug-05 + bug-07 with `RLP_REAL_LLM_GATE=1 RLP_LIFECYCLE_METRICS=1` **and
+`B3_STAGE2_BLOCKING=1`** — so a Stage-2 band breach FAILs the night (→ INVESTIGATE)
+instead of recording a silent INFO PASS; the flip trigger is 3 consecutive nights
+passing *with* Stage-2 blocking on. It appends a dated verdict to
+`results/nightly-streak.jsonl` and reports the streak.
+
+```bash
+# one night (LLM cost ~$2-6):
+RLP_REAL_LLM_GATE=1 bash tests/sv-real-llm/harness/nightly-run.sh
+
+# check streak status without running (no cost):
+bash tests/sv-real-llm/harness/nightly-run.sh --eval-only
+```
+
+Streak verdicts:
+- **READY_TO_FLIP** — N consecutive PASS nights (default 3) → safe to set `B3_STAGE2_BLOCKING=1`.
+- **NOT_YET** — fewer than N PASS nights logged; keep running.
+- **INVESTIGATE** — a FAIL night in the window; do NOT flip. Per runbook §7.5.2: a Stage-1
+  fail is a B4 telemetry regression (file an issue); Stage-2 band exceeded → re-run
+  `node tests/sv-real-llm/lib/b3-band-revalidation.mjs` and refit bands.
+
+Override the target with `RLP_NIGHTLY_STREAK_TARGET=N`. The streak evaluator is pinned by
+`tests/test_nightly_streak.sh` (deterministic, no LLM cost).
+
+### Scheduling (macOS launchd)
+
+`harness/nightly.plist.template` is a LaunchAgent template. It is NOT auto-installed —
+real-LLM cost accrues every night, so installation is a deliberate operator step:
+
+1. Replace `__REPO__` (checkout path) and `__EXTRA_PATH__` (dirs for claude/codex/node/jq/tmux).
+2. `cp` it to `~/Library/LaunchAgents/com.rlp-desk.nightly-sv.plist`
+3. `launchctl load ~/Library/LaunchAgents/com.rlp-desk.nightly-sv.plist`
+4. After ≥3 nights: `bash tests/sv-real-llm/harness/nightly-run.sh --eval-only` → expect READY_TO_FLIP.
+
+(Linux: wrap the same command in a cron entry / systemd timer instead.)
+
 ## Adding a new scenario
 
 1. Copy `scenarios/_template.test.sh` to `scenarios/<bug-id-or-feature>.test.sh`

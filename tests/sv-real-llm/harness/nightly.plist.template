@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd template for the nightly real-LLM B3 Stage-2 sample (runbook §7.5.2).
+  Runs bug-05 + bug-07 once a day and appends a verdict to the streak log; after
+  3 consecutive PASS nights the runner reports READY_TO_FLIP for B3_STAGE2_BLOCKING.
+
+  INSTALL (manual — this is a scheduler that incurs ~$2-6 of LLM cost per night):
+    1. Replace __REPO__ with the absolute path to your rlp-desk checkout.
+    2. Replace __EXTRA_PATH__ with the dirs holding claude / codex / node / jq / tmux
+       (launchd starts with a minimal PATH). Find them with:  dirname "$(which claude codex node jq tmux)"
+    3. cp this file to ~/Library/LaunchAgents/com.rlp-desk.nightly-sv.plist
+    4. launchctl load   ~/Library/LaunchAgents/com.rlp-desk.nightly-sv.plist
+    5. (test now)        launchctl start com.rlp-desk.nightly-sv
+    6. check streak:     bash __REPO__/tests/sv-real-llm/harness/nightly-run.sh --eval-only
+
+  UNINSTALL:
+    launchctl unload ~/Library/LaunchAgents/com.rlp-desk.nightly-sv.plist && \
+      rm ~/Library/LaunchAgents/com.rlp-desk.nightly-sv.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.rlp-desk.nightly-sv</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/tests/sv-real-llm/harness/nightly-run.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RLP_REAL_LLM_GATE</key>
+    <string>1</string>
+    <key>RLP_LIFECYCLE_METRICS</key>
+    <string>1</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:__EXTRA_PATH__</string>
+  </dict>
+
+  <!-- 03:00 local time daily. Adjust Hour/Minute as desired. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__REPO__/tests/sv-real-llm/results/nightly-launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO__/tests/sv-real-llm/results/nightly-launchd.err</string>
+
+  <!-- Do not relaunch on failure; this is a once-a-day sampler, not a daemon. -->
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
