@@ -117,7 +117,12 @@ export async function initCampaign(slug, objective, options = {}) {
 
 export const init = initCampaign;
 
-function normalizeSlug(value) {
+// Exported (D-27): `run.mjs init` now delegates to init_ralph_desk.zsh, which
+// interpolates $SLUG into filesystem paths ($DESK/logs/$SLUG, …) with no
+// validation of its own. The CLI must normalize the slug before delegating so a
+// path-traversal slug (`../../outside`) cannot escape the .rlp-desk tree — the
+// same normalization the in-process initCampaign already applied.
+export function normalizeSlug(value) {
   const slug = (value ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')

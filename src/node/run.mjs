@@ -4,7 +4,8 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { initCampaign } from './init/campaign-initializer.mjs';
+import { initCampaign, normalizeSlug } from './init/campaign-initializer.mjs';
+import { resolveDeskRoot } from './util/desk-root.mjs';
 import { readStatus, generateSVReport } from './reporting/campaign-reporting.mjs';
 import {
   run as runCampaignMain,
@@ -198,18 +199,72 @@ function parseRunOptions(args, cwd) {
   return options;
 }
 
+// D-27: `run.mjs init` delegates to init_ralph_desk.zsh (symmetric with run's
+// --mode tmux → run_ralph_desk.zsh delegation). The previous node initCampaign
+// path baked PLACEHOLDER worker/verifier prompts (a 1-line "Independent verifier
+// for Ralph Desk: <slug>"), so a CLI-driven init→run silently polled forever for
+// a verdict the prompt never told the verifier to write. The zsh init bakes the
+// real governance-laden prompts. (initCampaign stays for the in-process Node
+// leader and test fixtures.)
+//
+// The objective is passed as a SINGLE joined arg, NOT split into flags: the zsh
+// init's `*) OBJECTIVE="$1"` catch-all would otherwise let an option-looking word
+// in free-text prose (e.g. `init slug "support --help output"`) be mis-read as a
+// flag and silently overwrite the objective (codex P2). A single joined string
+// never exactly matches a `--flag` token, so option-looking words are preserved.
+// Advanced init flags (--mode/--verify-mode/--server-*) are intentionally NOT
+// exposed here (matching the pre-D-27 node init, which took objective only); use
+// the /rlp-desk slash command or init_ralph_desk.zsh directly for those.
 async function runInit(args, deps) {
   if (args.length === 0 || args[0] === '--help') {
     write(deps.stdout, 'Usage: node src/node/run.mjs init <slug> [objective]');
     return 0;
   }
 
-  const slug = args[0];
-  const objective = args.slice(1).join(' ').trim() || 'TBD - fill in the objective';
-  const result = await deps.initCampaign(slug, objective, { rootDir: deps.cwd });
-  const deskRoot = result?.paths?.deskRoot ?? path.join(deps.cwd, '.rlp-desk');
-  write(deps.stdout, `Initialized ${slug} in ${deskRoot}`);
-  return 0;
+  // Normalize the slug before delegating — init_ralph_desk.zsh interpolates
+  // $SLUG into paths without validation, so a raw `../../outside` could escape
+  // the .rlp-desk tree (codex P2). normalizeSlug mirrors the in-process path.
+  const slug = normalizeSlug(args[0]);
+
+  // Validate the RLP_DESK_RUNTIME_DIR override before delegating — the zsh init
+  // builds DESK="$ROOT/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}" with no guard, so an
+  // absolute or parent-traversal override would scaffold outside the project
+  // root. resolveDeskRoot throws on exactly those (mirrors the in-process
+  // initCampaign path); main()'s catch surfaces it as a clean exit-1 (codex P2).
+  resolveDeskRoot(deps.cwd, process.env);
+  const objective = args.slice(1).join(' ').trim();
+
+  // P3: an objective that *starts with* an exact init-flag token (`--mode=fresh`,
+  // `--verify-mode`, `--server-*`) would be consumed by init_ralph_desk.zsh's case
+  // arms — the objective silently lost and the init mode quietly changed. The zsh
+  // init has no `--` end-of-options sentinel, so reject with a clear message rather
+  // than corrupt silently. (Prose with a flag-looking word mid-string is fine: the
+  // whole objective is one joined arg, which never matches a case arm.)
+  if (objective && /^--(mode|verify-mode|server-cmd|server-port|server-health)(=|$|\s)/.test(objective)) {
+    write(
+      deps.stderr,
+      `ERROR: objective "${objective}" starts with an init flag token, which the initializer would `
+        + 'misparse. Rephrase the objective (node init takes only <slug> [objective]).',
+    );
+    return 1;
+  }
+
+  const initArgs = objective ? [slug, objective] : [slug];
+
+  const initPath = (deps.zshInitPath ?? defaultZshInitPath)();
+  if (!deps.fileExists(initPath)) {
+    write(
+      deps.stderr,
+      `ERROR: zsh init runner not found at ${initPath}. Run \`npm install rlp-desk\` (or set RLP_DESK_ZSH_INIT_RUNNER) to sync.`,
+    );
+    return 1;
+  }
+
+  // ROOT=deps.cwd so the zsh initializer scaffolds in the CLI's working dir, not
+  // an ambient $ROOT inherited from the environment (init_ralph_desk.zsh honors
+  // $ROOT before $PWD — codex P2). Mirrors the prior node path's explicit rootDir.
+  const spawnInit = deps.spawnZshInit ?? defaultSpawnZshInit;
+  return await spawnInit(initPath, initArgs, { ...process.env, ROOT: deps.cwd }, deps.cwd);
 }
 
 async function runStatusCommand(args, deps) {
@@ -297,6 +352,18 @@ function defaultZshRunnerPath() {
   );
 }
 
+// D-27: default location of the zsh INIT runner installed by postinstall.js,
+// mirroring defaultZshRunnerPath. Overridable via RLP_DESK_ZSH_INIT_RUNNER for
+// development checkouts that point to src/scripts. `run.mjs init` delegates here
+// (symmetric with run's --mode tmux delegation) so the CLI bakes the REAL
+// governance-laden worker/verifier prompts instead of the node placeholder.
+function defaultZshInitPath() {
+  return (
+    process.env.RLP_DESK_ZSH_INIT_RUNNER
+    || path.join(os.homedir(), '.claude', 'ralph-desk', 'init_ralph_desk.zsh')
+  );
+}
+
 // v0.14.0: convert parsed CLI options to env vars consumed by run_ralph_desk.zsh.
 // Names mirror the variables declared in src/scripts/run_ralph_desk.zsh
 // (LOOP_NAME, ROOT, WORKER_MODEL, VERIFIER_MODEL, FINAL_VERIFIER_MODEL,
@@ -342,6 +409,32 @@ function defaultSpawnZsh(zshPath, env, cwd) {
     child.on('exit', (code, signal) => {
       if (signal) {
         resolve(128 + (typeof signal === 'string' ? 0 : signal));
+        return;
+      }
+      resolve(typeof code === 'number' ? code : 0);
+    });
+  });
+}
+
+// D-27: spawn the zsh INIT runner with positional+flag args. Mirrors
+// defaultSpawnZsh but forwards `initArgs` (slug, objective, --mode/--verify-mode/
+// --server-*). stdio inherited so the operator sees init_ralph_desk.zsh's
+// scaffold log + run-command presets in real time.
+function defaultSpawnZshInit(initPath, initArgs, env, cwd) {
+  return new Promise((resolve) => {
+    const child = spawn('zsh', [initPath, ...initArgs], { env, stdio: 'inherit', cwd });
+    child.on('error', (err) => {
+      process.stderr.write(`failed to spawn zsh init runner: ${err.message}\n`);
+      resolve(1);
+    });
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        // Node delivers `signal` as a NAME ("SIGINT"/"SIGTERM"); map it to its
+        // number so the conventional 128+signo exit code (130/143/…) is reported
+        // (codex P3 — the old `typeof signal === 'string' ? 0` collapsed all
+        // signals to 128, hiding which one interrupted init).
+        const signo = os.constants.signals[signal];
+        resolve(typeof signo === 'number' ? 128 + signo : 1);
         return;
       }
       resolve(typeof code === 'number' ? code : 0);
@@ -535,6 +628,11 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
     // installed runner is or isn't present.
     spawnZsh: overrides.spawnZsh,
     zshRunnerPath: overrides.zshRunnerPath,
+    // D-27: init delegation injectables (mirror spawnZsh/zshRunnerPath) so a test
+    // can assert the slug/objective/flag mapping without fork+exec'ing zsh, and
+    // pretend the installed init runner is or isn't present.
+    spawnZshInit: overrides.spawnZshInit,
+    zshInitPath: overrides.zshInitPath,
     fileExists: overrides.fileExists ?? ((p) => fs.existsSync(p)),
   };
 
