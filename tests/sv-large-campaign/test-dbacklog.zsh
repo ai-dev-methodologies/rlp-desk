@@ -511,6 +511,74 @@ traps=$(grep -cE "trap '_emit_final_cost_log; cleanup'" "$RUN")
 grep -qF "trap '_emit_final_cost_log; cleanup' EXIT INT TERM" "$RUN" \
   && ok "D-22 batch: surviving trap covers EXIT INT TERM" || no "D-22 batch: trap arm not EXIT INT TERM"
 
+# ---- D-25 (ralplan consensus, test-only): F-19 cross-relaunch invariant guard ----
+# F-19 invariant: operator pre-existing edits are NEVER swept into a Worker-recovery
+# (Bug #8 F-8) commit — INCLUDING across a relaunch, where CAMPAIGN_PREEXISTING_DIRTY is
+# re-captured and a prior segment's uncommitted file lands in it beside the operator's
+# (the D-25 report-only condition, run_ralph_desk.zsh:899-913). Within-process scoping is
+# covered by test-f8 B/C; this pins the previously-unguarded cross-relaunch boundary.
+# INVARIANT-framed (codex Critic): assert the operator file stays OUT of the recovery
+# commit + stays dirty — NOT the benign quirk (prior-segment file excluded). A future
+# persist-snapshot root fix may legitimately commit the prior-segment file; this test
+# must still hold, so it deliberately does NOT assert anything about prior.py.
+# Extract the REAL F-8 worker-file scoping line (the comm -23 subtraction) so BOTH the
+# structural check AND the behavioral replay are ANCHORED to the actual F-8 code — not a
+# whole-runner grep (which would pass on a stale comment) and not a reimplementation
+# (codex P2). If F-8 stops subtracting CAMPAIGN_PREEXISTING_DIRTY, this extracted line
+# changes and every assertion below fails.
+f8_scope=$(awk '/_bug8_worker_files=\$\(comm -23/{f=1} f{print} f&&/grep -v/{exit}' "$RUN")
+{ print -r -- "$f8_scope" | grep -q 'comm -23' && print -r -- "$f8_scope" | grep -q 'CAMPAIGN_PREEXISTING_DIRTY'; } \
+  && ok "D-25: F-8 worker-file scoping subtracts CAMPAIGN_PREEXISTING_DIRTY via comm -23 (anchored to the F-8 block)" \
+  || no "D-25: F-8 block no longer subtracts CAMPAIGN_PREEXISTING_DIRTY (out=$f8_scope)"
+D25=$(mktemp -d)
+awk '/^_git_dirty_base\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUN" > "$D25/gdb.zsh"
+print -r -- "$f8_scope" > "$D25/f8scope.zsh"   # the REAL extracted F-8 scoping line, sourced below
+mkdir "$D25/repo"
+# behavioral: RELAUNCH sim, then SOURCE the real extracted F-8 comm -23 line to compute
+# _bug8_worker_files (the production code path, not a reimplementation), then auto-commit.
+d25_out=$(zsh -c '
+  log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  source "'"$D25"'/gdb.zsh"
+  cd "'"$D25"'/repo" || exit 9
+  git init -q; git config user.email t@t.local; git config user.name t
+  printf base > op.txt; printf base > prior.py; printf base > fresh.py
+  git add -A; git commit -qm base
+  ROOT="'"$D25"'/repo"
+  printf "\noperator-edit" >> op.txt      # operator pre-existing dirty (tracked)
+  printf "\nprior-worker" >> prior.py     # prior-segment Worker file left uncommitted
+  # RELAUNCH: snapshot re-captured at new process start → holds BOTH op.txt and prior.py
+  CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)")
+  printf "\nfresh-worker" >> fresh.py     # fresh post-relaunch Worker work
+  _bug8_dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)")
+  source "'"$D25"'/f8scope.zsh"           # REAL F-8 comm -23 → sets _bug8_worker_files
+  printf "%s\n" "$_bug8_worker_files" | grep -qx fresh.py && print FRESH_IN_WF
+  printf "%s\n" "$_bug8_worker_files" | grep -qx op.txt && print OP_IN_WF
+  _bug8_add=("${(@f)_bug8_worker_files}")
+  (( ${#_bug8_add} > 0 )) && git -C "$ROOT" add -- "${_bug8_add[@]}" && git -C "$ROOT" commit -qm recovery
+  git -C "$ROOT" diff --quiet HEAD -- fresh.py && print FRESH_COMMITTED
+  git -C "$ROOT" diff --quiet HEAD -- op.txt || print OP_DIRTY
+  git -C "$ROOT" show --name-only --format= HEAD | grep -qx op.txt && print OP_IN_COMMIT
+')
+[[ "$d25_out" == *FRESH_IN_WF* && "$d25_out" == *FRESH_COMMITTED* ]] && ok "D-25: fresh post-relaunch Worker file is scoped in + auto-committed by the real F-8 path" || no "D-25: fresh worker file not recovered (out=$d25_out)"
+[[ "$d25_out" != *OP_IN_WF* && "$d25_out" == *OP_DIRTY* && "$d25_out" != *OP_IN_COMMIT* ]] && ok "D-25 (F-19 invariant): operator pre-existing edit excluded from recovery + stays dirty (real F-8 comm -23)" || no "D-25: F-19 invariant violated (out=$d25_out)"
+mkdir "$D25/repo2"
+# negative control: feed the SAME real F-8 line an EMPTY snapshot → operator file IS scoped in
+d25_neg=$(zsh -c '
+  source "'"$D25"'/gdb.zsh"
+  cd "'"$D25"'/repo2" || exit 9
+  git init -q; git config user.email t@t.local; git config user.name t
+  printf base > op.txt; printf base > fresh.py; git add -A; git commit -qm base
+  ROOT="'"$D25"'/repo2"
+  printf "\noperator-edit" >> op.txt
+  CAMPAIGN_PREEXISTING_DIRTY=""           # exclusion DISABLED
+  printf "\nfresh-worker" >> fresh.py
+  _bug8_dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)")
+  source "'"$D25"'/f8scope.zsh"
+  printf "%s\n" "$_bug8_worker_files" | grep -qx op.txt && print OP_IN_WF
+')
+[[ "$d25_neg" == *OP_IN_WF* ]] && ok "D-25 negative control: with an EMPTY snapshot the real F-8 line scopes the operator file IN (guard is load-bearing)" || no "D-25: negative control did not reproduce the unguarded sweep (out=$d25_neg)"
+rm -rf "$D25"
+
 print ""
 if (( FAIL == 0 )); then print -P "%F{green}D-backlog: $PASS/$((PASS+FAIL)) PASS%f"; else print -P "%F{red}D-backlog: $PASS pass, $FAIL FAIL%f"; fi
 exit $(( FAIL > 0 ))
