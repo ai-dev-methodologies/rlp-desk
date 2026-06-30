@@ -99,6 +99,36 @@ out=$(b3_assert_lifecycle_metric_within_band "$D/nonempty.jsonl" "iter_signal_wr
 [[ "$out" == *SKIP* ]] && ok "B3-S2: unmeasured metric → SKIP (not FAIL)" || no "B3-S2 unmeasured not SKIP ($out)"
 rm -rf "$D"
 
+# 8) NEGATIVE CLAMP: a negative value_ms (e.g. EPOCHREALTIME mis-scale near a second
+# rollover, or a comma-decimal LC_NUMERIC corrupting the ms math) must clamp to 0, NOT
+# land a negative in campaign.jsonl (a negative silently passes the `<= band` check →
+# false PASS). Mirrors the Node collector which clamps non-negative.
+row=$(emit_row 1 "pane_eof_to_cleanup_ms -50")
+[[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics.pane_eof_to_cleanup_ms[0].value_ms')" == "0" ]] \
+  && ok "negative value_ms clamped to 0 (no negative in campaign.jsonl)" || no "negative value_ms NOT clamped ($row)"
+
+# 9) LOCALE ROBUSTNESS (source-structural): the EPOCHREALTIME->ms parse in _kill_pane_process
+# strips the decimal separator before slicing to 13 digits. Under a comma-decimal LC_NUMERIC
+# zsh renders EPOCHREALTIME with ',', so a '.'-only strip is a no-op and the slice corrupts
+# the ms value (runtime behavior is locale+pane dependent, hence a source-structural check).
+# Assert BOTH EPOCHREALTIME-strip sites remove ',' as well as '.'.
+both=$(grep -cE 'EPOCHREALTIME//\.\/}//,/' "$REPO/src/scripts/lib_ralph_desk.zsh")
+[[ "$both" == "2" ]] \
+  && ok "EPOCHREALTIME ms-parse strips both '.' and ',' at both t0/t1 sites (locale-robust)" \
+  || no "EPOCHREALTIME strip not locale-robust (both-separator sites found: $both, want 2)"
+
+# 10) CROSS-LEADER PARITY: the zsh lifecycle_metrics field must match the Node flush() shape
+# (src/node/util/lifecycle-metrics.mjs:88-99): a grouped OBJECT {metric: [{value_ms, ts}, ...]},
+# entries keyed exactly {ts, value_ms}, value_ms a non-negative number (Node Math.max(0,…)).
+# So both the --mode tmux (zsh) and --mode agent (Node) leaders write IDENTICAL-shaped rows.
+row=$(emit_row 1 "pane_eof_to_cleanup_ms 6226" "pane_eof_to_cleanup_ms -3")
+[[ "$(print -r -- "$row" | jq -r '.lifecycle_metrics | type')" == "object" ]] \
+  && ok "parity: lifecycle_metrics is a grouped object (Node flush() shape)" || no "parity: not a grouped object"
+[[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics.pane_eof_to_cleanup_ms[0] | keys')" == '["ts","value_ms"]' ]] \
+  && ok "parity: entry keys == Node {value_ms, ts}" || no "parity: entry keys != Node shape"
+[[ "$(print -r -- "$row" | jq -c '[.lifecycle_metrics.pane_eof_to_cleanup_ms[].value_ms] | min')" == "0" ]] \
+  && ok "parity: negative value_ms clamped to 0 (Node Math.max(0,…) parity)" || no "parity: negative not clamped"
+
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))

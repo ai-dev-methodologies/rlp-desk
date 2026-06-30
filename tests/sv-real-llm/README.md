@@ -71,45 +71,49 @@ On FAIL, the captured state bundle holds the campaign artifacts (status.json, se
 
 ## Nightly streak (B3 Stage-2 gate)
 
-> **⚠ KNOWN LIMITATION — B3 Stage-2 telemetry is only PARTIALLY wired on the production
-> path; a PASS streak is ADVISORY, not a flip authorization (2026-06-29).**
-> The zsh leader (the production `--mode tmux` backend) now writes a `lifecycle_metrics`
-> object into `campaign.jsonl` (B3 zsh-leader port: `lib_ralph_desk.zsh` accumulates in
-> `LIFECYCLE_RECORDS`, `write_campaign_jsonl` flushes it), so B3-S1 can pass on
-> production. **But only `pane_eof_to_cleanup_ms` is instrumented in the zsh leader** —
-> the other four B3 metrics (`pane_reap_latency_ms`, `iter_signal_write_to_read_ms`,
+> **⚠ KNOWN LIMITATION — only 1 of the 5 B3 metrics is wired on the production zsh path,
+> so a PASS streak is ADVISORY, not a flip authorization (updated 2026-06-30).**
+> The zsh leader (the production `--mode tmux` backend) writes a `lifecycle_metrics` object
+> into `campaign.jsonl` (B3 zsh-leader port: `lib_ralph_desk.zsh` accumulates in
+> `LIFECYCLE_RECORDS`, `write_campaign_jsonl` flushes it), and B3-S1 **does** pass on
+> production. **But only `pane_eof_to_cleanup_ms` is instrumented in the zsh leader** — the
+> other four B3 metrics (`pane_reap_latency_ms`, `iter_signal_write_to_read_ms`,
 > `verdict_write_to_read_ms`, `sentinel_lock_to_unlock_ms`) are measured only by the Node
-> leader (`campaign-main-loop.mjs`, unreachable via `run` per ADR-001), so they **SKIP**
-> in B3-S2 on the zsh path. Worse, the one wired band (`pane_eof_to_cleanup_ms` = 5000ms)
-> was calibrated against the **Node** leader; the zsh `_kill_pane_process` can structurally
-> exceed it (~6.5s worst case), so under `B3_STAGE2_BLOCKING=1` a slow-pane night can
-> false-FAIL (see `feedback_synthetic_baseline_anchor`). **Therefore a PASS streak reports
-> `STREAK_OK_ADVISORY`, NOT `READY_TO_FLIP`** — do not set `B3_STAGE2_BLOCKING=1` off it.
-> DEFERRED follow-ups to make the gate authoritative: (a) instrument the other four metrics
-> in the zsh hot loop; (b) re-run `b3-band-revalidation` against a **zsh-leader** sample and
-> refit the bands. (Fixture drift — US-heading `### ` per D-23 + v0.13.0 context/memory
-> scaffold — was already fixed so the scenarios reach the leader.)
+> leader (`campaign-main-loop.mjs`, unreachable via `run` per ADR-001), so they **SKIP** in
+> B3-S2 on the zsh path. The one wired band has been **refit for the zsh leader**
+> (`pane_eof_to_cleanup_ms` = 10000ms, raised from the Node-calibrated 5000ms to envelope
+> the zsh `_kill_pane_process` ~6.5s structural ceiling), so the earlier false-FAIL risk
+> under `B3_STAGE2_BLOCKING=1` is resolved. **A PASS streak therefore reports
+> `STREAK_OK_ADVISORY`, NOT `READY_TO_FLIP`** — do not set `B3_STAGE2_BLOCKING=1` off it,
+> because only 1 of 5 metrics is value-gated on the leader that ships. The single remaining
+> follow-up to make the gate authoritative is instrumenting the other four metrics in the
+> zsh hot loop.
 >
-> **AUTHORITATIVE PROOF of the zsh emit chain is the deterministic, zero-cost
-> `tests/test_b3_pane_reap_integration.sh`** — it drives the real `_kill_pane_process`
-> (the function the leader calls on every pane reap) on a real tmux pane and asserts the
-> resulting `campaign.jsonl` makes B3-S1 PASS. The **real-LLM** scenarios do NOT yet
-> demonstrate B3 end-to-end: bug-05 carries no B3 (it pre-seeds stale panes → no
-> deterministic reap), and bug-07 **SKIPs** B3 whenever its (still-stale) trivial worker
-> prompt fails to drive a completed iteration, so no `campaign.jsonl` is written. Closing
-> that worker-prompt / A1-stream staleness is a separate open item; until then the nightly
-> real-LLM streak does not exercise B3 telemetry — the deterministic test is the gate.
+> **PROOF the zsh emit chain works (deterministic + both verify routes e2e):**
+> - Deterministic (zero-cost): `tests/test_b3_pane_reap_integration.sh` drives the REAL
+>   `_kill_pane_process` (the function the leader calls on every pane reap) on a real tmux
+>   pane → `campaign.jsonl` → B3-S1 PASS. `tests/test_post_sentinel_reap_lock.sh` pins the
+>   Bug #7 reap+lock-freeze invariant the same way.
+> - Real-LLM, single-ALL verify route: `scenarios/b3-lifecycle-e2e.test.sh` pre-seeds an
+>   operator-recovery state with an empty US_LIST → one live verifier reap (run:4152) →
+>   `pane_eof_to_cleanup_ms` in `campaign.jsonl` → B3-S1 + B3-S2 PASS. The nightly's sole
+>   B3 gate.
+> - Real-LLM, per-US sequential-split route: `scenarios/bug-07-post-sentinel-race.test.sh`
+>   uses a `### US-001` PRD so the ALL verify takes the per-US split (run:3991), exercising
+>   the worker reap (run:3838) AND verifier reaps (run:2968/3075) — its `campaign.jsonl`
+>   carries 2 lifecycle records. (bug-05 still carries no B3: it pre-seeds stale panes, so
+>   there is no deterministic reap to measure.)
 
 `harness/nightly-run.sh` is the automation that turns the per-scenario runner into the
 3-night sample feeding the (currently advisory) `B3_STAGE2_BLOCKING` decision (runbook
-§7.5.2; `docs/plans/v0.15-phase-b3-revalidation-findings.md` §4). It runs bug-05 + bug-07
-with `RLP_REAL_LLM_GATE=1 RLP_LIFECYCLE_METRICS=1` **and `B3_STAGE2_BLOCKING=1`** — so that
-once a B3 record IS produced, a Stage-2 band breach FAILs the night (→ INVESTIGATE) instead
-of a silent INFO PASS. It appends a dated verdict to `results/nightly-streak.jsonl` and
-reports the streak. Note (see limitation above): bug-05 carries no B3 and bug-07 SKIPs B3
-until the worker-prompt staleness is fixed, so the streak does not currently value-gate B3 —
-a PASS streak is `STREAK_OK_ADVISORY`, not a flip authorization, and the deterministic
-`test_b3_pane_reap_integration.sh` is the real proof of the emit chain.
+§7.5.2; `docs/plans/v0.15-phase-b3-revalidation-findings.md` §4). It runs **`b3-lifecycle-e2e`
+only** (the sole scenario that validates B3 end-to-end on the live zsh leader) with
+`RLP_REAL_LLM_GATE=1 RLP_LIFECYCLE_METRICS=1` **and `B3_STAGE2_BLOCKING=1`** — so a Stage-2
+band breach FAILs the night (→ INVESTIGATE) instead of a silent INFO PASS. It appends a
+dated, scenario-set-stamped (`"set":"b3-e2e"`) verdict to `results/nightly-streak.jsonl`
+and reports the streak; `evaluate_streak` counts only `set=b3-e2e` nights so stale
+old-regime lines cannot leak in. The streak DOES value-gate B3 (`pane_eof_to_cleanup_ms`)
+end-to-end; it stays `STREAK_OK_ADVISORY` only because the other four metrics are Node-only.
 
 ```bash
 # one night (LLM cost ~$2-6):
@@ -120,11 +124,11 @@ bash tests/sv-real-llm/harness/nightly-run.sh --eval-only
 ```
 
 Streak verdicts:
-- **STREAK_OK_ADVISORY** — N consecutive PASS nights (default 3). ADVISORY only: on the zsh
-  leader only `pane_eof` is value-gated and its band is Node-calibrated, so this does NOT
-  authorize setting `B3_STAGE2_BLOCKING=1` — the zsh band refit + remaining-metric
-  instrumentation must land first (see limitation above).
-- **NOT_YET** — fewer than N PASS nights logged; keep running.
+- **STREAK_OK_ADVISORY** — N consecutive `set=b3-e2e` PASS nights (default 3). ADVISORY only:
+  on the zsh leader only `pane_eof_to_cleanup_ms` is value-gated (its band IS now zsh-refit
+  to 10000ms), so this does NOT authorize setting `B3_STAGE2_BLOCKING=1` — the remaining-metric
+  instrumentation (the other four, currently Node-only) must land first (see limitation above).
+- **NOT_YET** — fewer than N `set=b3-e2e` PASS nights logged; keep running.
 - **INVESTIGATE** — a FAIL night in the window; do NOT flip. Per runbook §7.5.2: a Stage-1
   fail is a B4 telemetry regression (file an issue); Stage-2 band exceeded → re-run
   `node tests/sv-real-llm/lib/b3-band-revalidation.mjs` and refit bands.

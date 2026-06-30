@@ -21,7 +21,7 @@
 #   one real verifier pane. The ONLY live LLM is that verifier, and its task is
 #   trivial-and-explicit: write one fixed verdict JSON to one fixed path. The leader then:
 #     - reaps the verifier pane (_kill_pane_process, run:4152) → fires
-#       pane_eof_to_cleanup_ms (the lone zsh-wired B3 metric, lib:372), and
+#       pane_eof_to_cleanup_ms (the lone zsh-wired B3 metric, lib _kill_pane_process ~342), and
 #     - reads verdict=pass and (signal_us_id==ALL) → run:4260 branch →
 #       write_campaign_jsonl (run:4264) → exit 0.
 #   That single verify phase produces a campaign.jsonl carrying the metric. (Empty

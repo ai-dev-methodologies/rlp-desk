@@ -155,6 +155,17 @@ check "B3 bug-07 calls Stage 1 presence assertion" \
   grep -q "b3_assert_lifecycle_metrics_present" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
 check "B3 bug-07 reads campaign.jsonl from the zsh-leader analytics dir (not Node logs/)" \
   grep -q ".rlp-desk/analytics/" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
+# b3-lifecycle-e2e is the PRIMARY live B3 carrier (the nightly's sole B3 gate).
+check "B3 e2e scenario exists (primary live B3 carrier)" \
+  test -f tests/sv-real-llm/scenarios/b3-lifecycle-e2e.test.sh
+check "B3 e2e sources the helper BEFORE the cleanup trap (bash-3.2 RETURN-trap-on-source fix)" \
+  bash -c 's=$(grep -n "source \"\$_b3_lib\"" tests/sv-real-llm/scenarios/b3-lifecycle-e2e.test.sh | head -1 | cut -d: -f1); t=$(grep -nE "^[[:space:]]*trap .* RETURN" tests/sv-real-llm/scenarios/b3-lifecycle-e2e.test.sh | head -1 | cut -d: -f1); [ -n "$s" ] && [ -n "$t" ] && [ "$s" -lt "$t" ]'
+check "B3 e2e asserts Stage 1 presence + reads the zsh analytics dir" \
+  bash -c 'grep -q "b3_assert_lifecycle_metrics_present" tests/sv-real-llm/scenarios/b3-lifecycle-e2e.test.sh && grep -q ".rlp-desk/analytics/" tests/sv-real-llm/scenarios/b3-lifecycle-e2e.test.sh'
+check "B3 e2e passes --final-verifier-model haiku (ALL routes through FINAL_VERIFIER_MODEL)" \
+  grep -q "final-verifier-model haiku" tests/sv-real-llm/scenarios/b3-lifecycle-e2e.test.sh
+check "B3 pane_eof band refit to 10000ms (envelopes zsh _kill_pane_process ~6.5s ceiling)" \
+  grep -q "B3_BAND_PANE_EOF_CLEANUP_MS=10000" tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
 check "B3 deterministic pane-reap integration test exists" \
   test -f tests/test_b3_pane_reap_integration.sh
 check "B3 bug-06 untouched (structural \$0 retained per plan v3 ADR)" \
@@ -194,6 +205,7 @@ ZSH_TESTS=(
   tests/test_b2fix_sentinel_lock.sh
   tests/test_b3_lifecycle_emit.sh
   tests/test_b3_pane_reap_integration.sh
+  tests/test_post_sentinel_reap_lock.sh
 )
 for t in $ZSH_TESTS; do
   check "$(basename $t)" zsh "$t"

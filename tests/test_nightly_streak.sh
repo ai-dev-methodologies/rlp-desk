@@ -2,7 +2,7 @@
 # Deterministic regression for the nightly real-LLM harness streak evaluator
 # (tests/sv-real-llm/harness/nightly-run.sh). No LLM cost: exercises only the pure
 # `--eval-only` streak verdict against mock streak logs, plus the dry-run gate.
-# The nightly run itself (bug-05/bug-07 real-LLM) is operator-driven; this pins the
+# The nightly run itself (b3-lifecycle-e2e real-LLM) is operator-driven; this pins the
 # 3-night-PASS-streak gating that decides the B3_STAGE2_BLOCKING flip (runbook §7.5.2).
 set -uo pipefail
 REPO="${0:A:h:h}"

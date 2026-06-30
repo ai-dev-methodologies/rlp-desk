@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PR-B3 (v0.15.4) — shared two-stage lifecycle metric assertions for SV real-
-# LLM scenarios. Sourced by bug-05 and bug-07 (bug-06 is structural-only).
+# LLM scenarios. Sourced by b3-lifecycle-e2e (primary B3 carrier) and bug-07.
 #
 # Plan: docs/plans/v0.15-phase-b-plan-v3.md §B3.
 # Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §4.2 (synthetic baseline

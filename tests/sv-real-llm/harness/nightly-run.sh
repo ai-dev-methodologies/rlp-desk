@@ -43,7 +43,7 @@ STREAK_TARGET="${RLP_NIGHTLY_STREAK_TARGET:-3}"
 SCENARIOS=(b3-lifecycle-e2e)
 
 # --- streak evaluation (pure: reads $1 log, target $2; prints a verdict line) ---
-# Verdicts: READY_TO_FLIP | NOT_YET | INVESTIGATE. grep-based (no jq dep) so it is
+# Verdicts: STREAK_OK_ADVISORY | NOT_YET | INVESTIGATE. grep-based (no jq dep) so it is
 # robust and unit-testable with a mock log.
 evaluate_streak() {
   local log="$1" target="$2"

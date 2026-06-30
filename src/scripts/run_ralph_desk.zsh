@@ -3638,10 +3638,17 @@ main() {
   local HARD_CEILING=$(( ITER_TIMEOUT * 3 ))  # logged but NOT enforced — Worker extends indefinitely when active
 
   for (( ITERATION = 1; ITERATION <= MAX_ITER; ITERATION++ )); do
-    # B3 (zsh-leader port): defense-in-depth reset of the lifecycle accumulator at
-    # iteration entry, so metrics from an iteration that ended on a flush-less
-    # return path cannot leak into the next iteration's lifecycle_metrics. The
-    # primary reset is in write_campaign_jsonl after each emit.
+    # B3 (zsh-leader port): reset the lifecycle accumulator at iteration entry.
+    # CORRECTNESS (not a telemetry-loss bug — verified): a "continue"/start-failed
+    # iteration `continue`s BEFORE write_campaign_jsonl (e.g. worker-continue at the
+    # `continue)` case, verifier start_failed), so it writes NO campaign.jsonl row at
+    # all. This matches the Node leader, whose appendIterationAnalytics
+    # (campaign-main-loop.mjs:2101/2117/2156) appends a row ONLY on pass/fail/blocked,
+    # never on continue. A pane reap on such an iteration therefore leaves records here
+    # with no row to flush into; discarding them at the NEXT iteration entry prevents
+    # MIS-ATTRIBUTING them to that next row. On flushed paths write_campaign_jsonl already
+    # drained+reset, so this is a no-op. (Both leaders intentionally do not capture
+    # reap telemetry on row-less continue iterations — a parity-matched design choice.)
     LIFECYCLE_RECORDS=()
     # US-024 R12 P0: lifecycle check site #2 — verify session/panes alive at iter entry.
     _r12_check_lifecycle "iter_start"

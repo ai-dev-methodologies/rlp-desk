@@ -355,7 +355,7 @@ _kill_pane_process() {
   if [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]]; then
     zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
     if [[ -n "${EPOCHREALTIME:-}" ]]; then
-      local _b4_t0_str="${EPOCHREALTIME//./}"
+      local _b4_t0_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' — comma-decimal LC_NUMERIC renders EPOCHREALTIME with ','
       _b4_t0_ms=${_b4_t0_str:0:13}
     fi
   fi
@@ -367,7 +367,7 @@ _kill_pane_process() {
     wait_for_pane_ready "$pane_id" 5 2>/dev/null || true
   fi
   if (( _b4_t0_ms > 0 )); then
-    local _b4_t1_str="${EPOCHREALTIME//./}"
+    local _b4_t1_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' (locale-robust, matches t0)
     local _b4_t1_ms=${_b4_t1_str:0:13}
     log_lifecycle_metric "pane_eof_to_cleanup_ms" $((_b4_t1_ms - _b4_t0_ms)) \
       "pane=$pane_id role=$role"
@@ -442,6 +442,9 @@ log_lifecycle_metric() {
   # Fail-open: a malformed record is skipped, never aborts the caller.
   local _vm _ts _rec
   _vm=$(printf '%d' "$value_ms" 2>/dev/null) || _vm=0
+  (( _vm < 0 )) && _vm=0   # clamp non-negative (mirror Node collector): a negative ms
+                           # (EPOCHREALTIME mis-scale / locale corruption / clock skew)
+                           # would silently pass the B3-S2 `<= band` check → false PASS.
   _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   _rec=$(jq -nc --arg m "$metric" --argjson v "$_vm" --arg ts "$_ts" \
     '{metric:$m, value_ms:$v, ts:$ts}' 2>/dev/null) && [[ -n "$_rec" ]] \
