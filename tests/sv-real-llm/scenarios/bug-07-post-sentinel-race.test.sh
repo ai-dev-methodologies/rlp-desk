@@ -24,10 +24,17 @@ run_scenario() {
   ASSERTIONS_FAILED=0
   SCENARIO_FAILURE_REASON=""
 
-  # Resolve the B3 assertion lib to an ABSOLUTE path BEFORE cd'ing into the sandbox —
-  # BASH_SOURCE[0] is relative when run-scenario.sh is invoked with a relative path, so
-  # resolving after the sandbox cd produced "/lib/..." (missing) → B3 silently SKIPPED.
+  # Resolve + SOURCE the B3 assertion lib to an ABSOLUTE path BEFORE cd'ing into the
+  # sandbox AND BEFORE the cleanup trap. Two reasons:
+  #  (1) BASH_SOURCE[0] is relative when run-scenario.sh is invoked with a relative path,
+  #      so resolving after the sandbox cd produced "/lib/..." (missing) → B3 SKIPPED.
+  #  (2) bash 3.2 gotcha: a `trap ... RETURN` fires when a `source` completes — sourcing
+  #      the lib AFTER the `rm -rf $sandbox` trap would delete the sandbox mid-assertion
+  #      (campaign.jsonl included). Source here, pre-trap; nested b3_assert_* calls later
+  #      do NOT fire the RETURN trap.
   local _b3_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/lib/b3-lifecycle-assertions.sh"
+  # shellcheck source=tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
+  [[ -f "$_b3_lib" ]] && source "$_b3_lib"
 
   local sandbox_dir
   sandbox_dir=$(mktemp -d -t "sv-real-llm-${SCENARIO_ID}.XXXXXX")
@@ -127,10 +134,9 @@ EOF
   # deterministic proof of the emit chain is tests/test_b3_pane_reap_integration.sh
   # (real _kill_pane_process → campaign.jsonl → B3-S1 PASS).
   # ────────────────────────────────────────────────────────────────────────
-  # _b3_lib was resolved to an absolute path at run_scenario top (pre-sandbox-cd).
-  if [[ -f "$_b3_lib" ]]; then
-    # shellcheck source=tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
-    source "$_b3_lib"
+  # The b3 lib was sourced at run_scenario top (pre-trap — see the bash-3.2 RETURN-trap
+  # note there); do NOT re-source here or it would fire the cleanup trap.
+  if typeset -f b3_assert_lifecycle_metrics_present >/dev/null 2>&1; then
     # The production zsh leader writes campaign.jsonl to its analytics dir
     # ($DESK/analytics/${SLUG}--${md5(ROOT):0:8}/campaign.jsonl, run_ralph_desk.zsh:365-366),
     # NOT the Node leader's .rlp-desk/logs/$slug/ path. Glob the hash component.

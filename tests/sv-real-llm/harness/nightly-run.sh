@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Nightly real-LLM B3 Stage-2 sample runner (runbook §7.5.2).
 #
-# Runs the two B3 lifecycle scenarios (bug-05, bug-07) with the real-LLM gate AND
-# lifecycle telemetry enabled, appends a dated verdict to
-# results/nightly-streak.jsonl, and evaluates the 3-night PASS streak that gates the
-# `B3_STAGE2_BLOCKING=1` flip (PR-B6 precondition; see
-# docs/plans/v0.15.4-release-runbook.md §7.5.2 and
+# Runs the B3 end-to-end scenario `b3-lifecycle-e2e` (the ONLY scenario that validates
+# B3 telemetry on the live zsh leader: a pre-seeded recovery → verifier-pane reap →
+# pane_eof_to_cleanup_ms in campaign.jsonl) with the real-LLM gate AND lifecycle
+# telemetry enabled, appends a dated verdict to results/nightly-streak.jsonl, and
+# evaluates the 3-night PASS streak that gates the `B3_STAGE2_BLOCKING=1` flip
+# (PR-B6 precondition; see docs/plans/v0.15.4-release-runbook.md §7.5.2 and
 # docs/plans/v0.15-phase-b3-revalidation-findings.md §4).
+#
+# NOTE (2026-06-30): bug-05/bug-07 were previously the nightly's B3 scenarios but no
+# longer validate B3 — bug-05 carries no B3 (stale-pane → no deterministic reap) and
+# bug-07 SKIPs B3 until its worker-prompt staleness is fixed (separate open item). The
+# night verdict therefore gates on b3-lifecycle-e2e only; running the two stale scenarios
+# here would burn LLM cost for an always-FAIL/SKIP that says nothing about B3.
 #
 # This is the missing automation piece: the scenarios + Stage 1/2 assertions already
 # exist (run-scenario.sh, lib/b3-lifecycle-assertions.sh); this script schedules them,
@@ -33,7 +40,7 @@ RESULTS_DIR="$(cd "$RESULTS_DIR" && pwd)"
 STREAK_LOG="${RLP_NIGHTLY_STREAK_LOG:-$RESULTS_DIR/nightly-streak.jsonl}"
 STREAK_TARGET="${RLP_NIGHTLY_STREAK_TARGET:-3}"
 
-SCENARIOS=(bug-05-worker-dead-on-reuse bug-07-post-sentinel-race)
+SCENARIOS=(b3-lifecycle-e2e)
 
 # --- streak evaluation (pure: reads $1 log, target $2; prints a verdict line) ---
 # Verdicts: READY_TO_FLIP | NOT_YET | INVESTIGATE. grep-based (no jq dep) so it is
@@ -44,8 +51,17 @@ evaluate_streak() {
     echo "NOT_YET: 0/$target consecutive PASS nights logged (no streak log yet)"
     return 0
   fi
+  # Count ONLY this scenario-set's nights. The streak log is append-only and may carry
+  # lines from a prior scenario set (pre-2026-06-30 nights gated on bug05+bug07, not
+  # b3-e2e). Mixing them would let stale old-regime PASS nights count toward the b3-e2e
+  # streak — a false READY-after-one-real-night. Filter on the "set" stamp; lines without
+  # it are old-regime and excluded.
   local recent total pass fail
-  recent=$(tail -n "$target" "$log")
+  recent=$(grep '"set":"b3-e2e"' "$log" | tail -n "$target")
+  if [[ -z "$recent" ]]; then
+    echo "NOT_YET: 0/$target consecutive PASS nights logged for set=b3-e2e (no b3-e2e nights yet)"
+    return 0
+  fi
   total=$(printf '%s\n' "$recent" | grep -c '"night_verdict"')
   pass=$(printf '%s\n' "$recent" | grep -c '"night_verdict":"PASS"')
   fail=$(printf '%s\n' "$recent" | grep -c '"night_verdict":"FAIL"')
@@ -59,12 +75,13 @@ evaluate_streak() {
   fi
   if (( pass == target )); then
     # ADVISORY ONLY — not a flip authorization. On the production zsh leader only
-    # pane_eof_to_cleanup_ms is value-gated (the other 3 B3-S2 metrics are Node-only
-    # and SKIP), and that band is still Node-calibrated. A PASS streak here therefore
-    # does NOT establish that a release-blocking Stage 2 would be sound on the leader
-    # that ships. Do NOT set B3_STAGE2_BLOCKING=1 off this signal until the zsh-leader
-    # band refit lands (deferred follow-up; see README "Known limitation").
-    echo "STREAK_OK_ADVISORY: $target consecutive PASS nights (pane_eof only on zsh; bands Node-calibrated) — NOT yet a B3_STAGE2_BLOCKING flip authorization; zsh band refit required first"
+    # pane_eof_to_cleanup_ms is value-gated (its band IS now zsh-refit, 2026-06-30); the
+    # other 3 B3-S2 metrics are Node-only and SKIP on the --mode tmux path. A PASS streak
+    # therefore establishes pane_eof soundness but NOT the full intended Stage-2 coverage.
+    # Flipping B3_STAGE2_BLOCKING release-wide is a judgment call left to the operator:
+    # the remaining follow-up is instrumenting the other 3 metrics in the zsh hot loop
+    # (see README "Known limitation").
+    echo "STREAK_OK_ADVISORY: $target consecutive PASS nights (pane_eof zsh-refit + value-gated; other 3 metrics Node-only/SKIP) — pane_eof Stage-2 is sound; full-coverage flip still pending the remaining-metric instrumentation"
     return 0
   fi
   echo "NOT_YET: $pass/$target PASS in the last $target nights"
@@ -91,30 +108,29 @@ export RLP_LIFECYCLE_METRICS=1
 export B3_STAGE2_BLOCKING=1
 DATE=$(date -u +%Y-%m-%d)
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-# codex P1: scalar verdicts, NOT `declare -A` — macOS launchd runs /bin/bash (3.2),
-# which has no associative arrays. The scenario set is fixed (bug-05, bug-07).
-oc_05=""; oc_07=""
+# codex P1: scalar verdict, NOT `declare -A` — macOS launchd runs /bin/bash (3.2),
+# which has no associative arrays. The B3 gate scenario is b3-lifecycle-e2e.
+oc_b3e2e=""
 for s in "${SCENARIOS[@]}"; do
   echo "─── nightly: $s ───"
   RLP_REAL_LLM_GATE=1 RLP_LIFECYCLE_METRICS=1 B3_STAGE2_BLOCKING=1 bash "$SCRIPT_DIR/run-scenario.sh" "$SCENARIOS_DIR/$s.test.sh"
   rc=$?
   v="FAIL"; [[ "$rc" -eq 0 ]] && v="PASS"; [[ "$rc" -eq 77 ]] && v="SKIPPED"
   case "$s" in
-    bug-05-*) oc_05="$v" ;;
-    bug-07-*) oc_07="$v" ;;
+    b3-lifecycle-e2e) oc_b3e2e="$v" ;;
   esac
 done
 
-# A night is PASS only if BOTH scenarios PASS — which, with B3_STAGE2_BLOCKING=1, means
-# Stage 1 present AND Stage 2 within bands. SKIPPED (gate/prereq not satisfied) or FAIL
-# → not a valid PASS night.
-if [[ "$oc_05" == "PASS" && "$oc_07" == "PASS" ]]; then night_verdict="PASS"; else night_verdict="FAIL"; fi
+# A night is PASS only if the B3 e2e scenario PASSes — which, with B3_STAGE2_BLOCKING=1,
+# means Stage 1 (lifecycle_metrics present) AND Stage 2 (pane_eof within the zsh-refit
+# band). SKIPPED (gate/prereq not satisfied) or FAIL → not a valid PASS night.
+if [[ "$oc_b3e2e" == "PASS" ]]; then night_verdict="PASS"; else night_verdict="FAIL"; fi
 
-printf '{"date":"%s","ts":"%s","bug05":"%s","bug07":"%s","night_verdict":"%s"}\n' \
-  "$DATE" "$TS" "$oc_05" "$oc_07" "$night_verdict" >> "$STREAK_LOG"
+printf '{"date":"%s","ts":"%s","set":"b3-e2e","b3_e2e":"%s","night_verdict":"%s"}\n' \
+  "$DATE" "$TS" "$oc_b3e2e" "$night_verdict" >> "$STREAK_LOG"
 
 echo "═════════════════════════════════════════════════════════════════"
-echo "Night $DATE: bug05=$oc_05 bug07=$oc_07 → $night_verdict"
+echo "Night $DATE: b3-lifecycle-e2e=$oc_b3e2e → $night_verdict"
 echo -n "  "; evaluate_streak "$STREAK_LOG" "$STREAK_TARGET"
 echo "═════════════════════════════════════════════════════════════════"
 

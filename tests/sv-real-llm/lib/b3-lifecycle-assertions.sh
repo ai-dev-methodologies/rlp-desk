@@ -115,24 +115,24 @@ b3_assert_lifecycle_metric_within_band() {
   return 0
 }
 
-# Tolerance bands — refit 2026-05-07 from pre-merge revalidation harness
-# (tests/sv-real-llm/lib/b3-band-revalidation.mjs, 5-iter Node-leader sample
-# with stub poll + real tmux + real reaper). Plan v3 §B3 AC3.5 specified
-# refit when |drift| > 25% vs B1 §4.2 Option-C synthetic; all 4 metrics
-# breached, so bands have been tightened. Multiplier raised from 2× to 3×
-# to absorb real-LLM jitter (the harness has no LLM in the worker/verifier
-# panes). pane_eof_to_cleanup_ms keeps 5000ms to envelope the
-# killPaneProcess worst-case (gracePeriodMs=800 + exitTimeoutMs=5000).
+# Tolerance bands.
 #
-# Empirical sample (2026-05-07 N=5-10):
-#   iter_signal_write_to_read_ms p95=853  → 3000 (3× + headroom)
-#   verdict_write_to_read_ms     p95=885  → 3000 (3× + headroom)
-#   pane_eof_to_cleanup_ms       p95=834  → 5000 (worst-case envelope)
-#   pane_reap_latency_ms         p95=834  → 6000 (3× + done-claim observe headroom)
+# iter_signal / verdict / pane_reap_latency: Node-leader synthetic bands (2026-05-07,
+# b3-band-revalidation.mjs, 5-iter Node sample). These three metrics are NOT emitted by
+# the zsh leader (Node-only), so on the production --mode tmux path they only ever SKIP.
 #
-# Re-run rule: any future >25% drift in ANY metric requires revalidation
-# refit before merge. Use `node tests/sv-real-llm/lib/b3-band-revalidation.mjs`.
+# pane_eof_to_cleanup_ms: REFIT 2026-06-30 against a real ZSH-leader sample (scenario
+# b3-lifecycle-e2e, live verifier-pane reap). The zsh `_kill_pane_process`
+# (lib_ralph_desk.zsh:342) is STRUCTURALLY slower than the Node killPaneProcess: it does
+# `C-c; sleep 0.5; C-c; sleep 1; wait_for_pane_ready <pane> 5` → a hard ceiling of
+# 0.5+1+5 = 6.5s (6500ms). The Node-calibrated 5000ms band false-FAILED under
+# B3_STAGE2_BLOCKING=1 (observed max 6331ms). Band raised to 10000ms = structural
+# ceiling (6500) + ~54% jitter/scheduling headroom; still catches a true regression
+# (a reap exceeding 10s means wait_for_pane_ready is retry-looping or a sleep changed).
+#   Observed zsh sample 2026-06-30 (N=2 reaps, one run): [6331, 1553] ms.
+#
+# Re-run rule: any future >25% drift requires a fresh zsh-leader sample + refit.
 B3_BAND_ITER_SIGNAL_MS=3000
 B3_BAND_VERDICT_MS=3000
-B3_BAND_PANE_EOF_CLEANUP_MS=5000
+B3_BAND_PANE_EOF_CLEANUP_MS=10000
 B3_BAND_PANE_REAP_LATENCY_MS=6000
