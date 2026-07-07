@@ -29,6 +29,18 @@ log_error() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2
 }
 
+# _file_mtime() — GNU-first mtime lookup with a numeric guard (IMP-01).
+# On GNU coreutils, `stat -f %m` (BSD-first order) *succeeds* printing
+# filesystem info instead of failing, so a BSD-first `||` chain never falls
+# through to `-c %Y` and callers get a non-numeric mtime. GNU-first avoids
+# that; the numeric guard protects against any other non-numeric result.
+_file_mtime() {
+  local mt
+  mt=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
+  [[ $mt == <-> ]] || mt=0
+  print -r -- "$mt"
+}
+
 # build_claude_cmd() — centralized claude CLI command builder
 # Single source of truth for all claude invocation flags (--mcp-config, DISABLE_OMC, --effort, etc.)
 # Inspired by codex-plugin-cc companion pattern: CLI abstraction in one place.
@@ -526,9 +538,9 @@ _validate_operator_recovery_artifacts() {
   # before any leader-written prompt).
   if [[ -f "$prompt_file" ]]; then
     local prompt_mtime sig_mtime done_mtime
-    prompt_mtime=$(stat -f %m "$prompt_file" 2>/dev/null || stat -c %Y "$prompt_file" 2>/dev/null || print 0)
-    sig_mtime=$(stat -f %m "$sig_file" 2>/dev/null || stat -c %Y "$sig_file" 2>/dev/null || print 0)
-    done_mtime=$(stat -f %m "$done_file" 2>/dev/null || stat -c %Y "$done_file" 2>/dev/null || print 0)
+    prompt_mtime=$(_file_mtime "$prompt_file")
+    sig_mtime=$(_file_mtime "$sig_file")
+    done_mtime=$(_file_mtime "$done_file")
     if (( sig_mtime <= prompt_mtime )); then
       RECOVERY_FAIL_REASON="iter-signal.json mtime ($sig_mtime) not strictly newer than worker-prompt mtime ($prompt_mtime)"; return 1
     fi
@@ -1410,7 +1422,7 @@ write_blocked_sentinel() {
     for hf in "$mem_file" "$lat_file"; do
       if [[ -f "$hf" ]]; then
         local f_mt
-        f_mt=$(stat -f %m "$hf" 2>/dev/null || stat -c %Y "$hf" 2>/dev/null || echo 0)
+        f_mt=$(_file_mtime "$hf")
         if (( hygiene_now - f_mt > 300 )); then
           hygiene_violated=true
           break
@@ -1659,23 +1671,45 @@ check_stale_context() {
 # Error Detection
 # =============================================================================
 
-# --- US-003: API error detector using tmux pane buffer ---
+# --- IMP-07: single API-error detector over PRE-CAPTURED pane text ---
+# rc 0 = an API/service/rate-limit outage is on screen (caller should backoff);
+# rc 1 = not an API error. Consolidates the old poll-loop inline sniff AND the
+# drifted is_api_error() re-grep into one function, capturing the pane ONCE.
+#
+# codex B1 (false-positive fix): a bare numeric code (500|529|429) counts as an
+# API error ONLY when co-located with an API/service/rate-limit-SPECIFIC phrase
+# on the last ~10 lines — a generic `error`/`Error:` token is NOT sufficient. So
+# ordinary worker output like `Error: expected status 500` or
+# `expect(res.status).toBe(429)` no longer terminal-BLOCKs a healthy worker.
+# The genuine outage phrases (overloaded / too many requests / service
+# unavailable / the D-17a "API Error … temporarily limiting requests" banner)
+# stay unconditional — real rate-limits still route to the bounded backoff.
+detect_api_error() {
+  local text="$1"
+  [[ -n "$text" ]] || return 1
+  local tail
+  tail=$(print -r -- "$text" | tail -n 10)
+
+  # Unconditional outage phrases — the signal on their own (any adjacency).
+  if print -r -- "$tail" | grep -qiE 'overloaded|too many requests|service unavailable|api error.*temporarily limiting requests'; then
+    return 0
+  fi
+  # Bare numeric codes require an API/service/rate-limit-specific context token.
+  if print -r -- "$tail" | grep -qiE '(^|[^[:digit:]])(500|529|429)([^[:digit:]]|$)' \
+     && print -r -- "$tail" | grep -qiE 'api error|overloaded|rate[ -]?limit|service unavailable|temporarily limiting|too many requests|quota'; then
+    return 0
+  fi
+  return 1
+}
+
+# --- US-003 (retained shim): pane-id API error detector.
+# Legacy signature that captures the pane itself, now delegating to the
+# pre-captured detect_api_error so there is a single detection contract.
 is_api_error() {
   local pane_id="$1"
   local pane_output
   pane_output=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
-  if [[ -z "$pane_output" ]]; then
-    return 1
-  fi
-
-  if echo "$pane_output" | grep -qiE '(^|[^[:digit:]])500([^[:digit:]]|$)' \
-    || echo "$pane_output" | grep -qiE '(^|[^[:digit:]])529([^[:digit:]]|$)' \
-    || echo "$pane_output" | grep -qi 'overloaded' \
-    || echo "$pane_output" | grep -qi 'too many requests' \
-    || echo "$pane_output" | grep -qi 'service unavailable'; then
-    return 0
-  fi
-  return 1
+  detect_api_error "$pane_output"; return $?
 }
 
 # =============================================================================

@@ -11,6 +11,7 @@ import {
   run as runCampaignMain,
   detectLegacyDeskInRunMode,
   buildPaths,
+  resolveAnalyticsPointer,
 } from './runner/campaign-main-loop.mjs';
 import { isClaudeEngine } from './cli/command-builder.mjs';
 
@@ -102,7 +103,7 @@ function parseInteger(value, flag) {
   return parsed;
 }
 
-function parseRunOptions(args, cwd) {
+export function parseRunOptions(args, cwd) {
   const options = {
     rootDir: cwd,
     ...RUN_DEFAULTS,
@@ -113,6 +114,15 @@ function parseRunOptions(args, cwd) {
     switch (token) {
       case '--mode':
         options.mode = consumeValue(args, index, token);
+        // IMP-02: --mode is a closed set. An unrecognized value used to fall
+        // through every dispatch guard into the deprecated Node leader
+        // (runCampaign) — a one-character typo defeated the ADR-001 hard-error.
+        // 'agent' stays in this allowlist INTENTIONALLY: a valid `--mode agent`
+        // must reach the ADR-001 hard-error + redirect at dispatch, not be
+        // rejected here as unknown. Do not shrink this list to two.
+        if (!['tmux', 'native', 'agent'].includes(options.mode)) {
+          throw new Error(`unknown --mode: ${options.mode} (valid: tmux, native, agent)`);
+        }
         index += 1;
         break;
       case '--worker-model':
@@ -215,6 +225,21 @@ function parseRunOptions(args, cwd) {
 // Advanced init flags (--mode/--verify-mode/--server-*) are intentionally NOT
 // exposed here (matching the pre-D-27 node init, which took objective only); use
 // the /rlp-desk slash command or init_ralph_desk.zsh directly for those.
+// IMP-08: guard the destructive/read commands (run/status/clean) against a
+// path-traversal slug. Unlike `init`, these must NOT normalize the slug —
+// normalizeSlug('../../x') === 'x', which would silently RETARGET the command
+// onto a real neighboring campaign `x` (and a containment assert would pass,
+// since `x` is inside deskRoot). We REJECT any slug that is not already in
+// canonical form, matching the zsh leader's hard-reject guard. A canonical
+// slug (lowercase [a-z0-9-], no leading/trailing/`..`/separator) is unchanged;
+// uppercase/traversal/separator inputs throw.
+function requireCanonicalSlug(raw) {
+  if (raw !== normalizeSlug(raw)) {
+    throw new Error(`invalid slug: ${JSON.stringify(raw)} — must be lowercase [a-z0-9-] with no path separators`);
+  }
+  return raw;
+}
+
 async function runInit(args, deps) {
   if (args.length === 0 || args[0] === '--help') {
     write(deps.stdout, 'Usage: node src/node/run.mjs init <slug> [objective]');
@@ -273,7 +298,8 @@ async function runStatusCommand(args, deps) {
     return 0;
   }
 
-  write(deps.stdout, await deps.readStatus(args[0], { rootDir: deps.cwd }));
+  const slug = requireCanonicalSlug(args[0]); // IMP-08
+  write(deps.stdout, await deps.readStatus(slug, { rootDir: deps.cwd }));
   return 0;
 }
 
@@ -287,9 +313,18 @@ async function runCleanCommand(args, deps) {
     write(deps.stdout, 'Usage: node src/node/run.mjs clean <slug> [--kill-session]');
     return 0;
   }
-  const slug = args[0];
+  const slug = requireCanonicalSlug(args[0]); // IMP-08
   const killSession = args.includes('--kill-session');
   const paths = buildPaths(deps.cwd, slug);
+
+  // IMP-08 defense-in-depth: even with the canonical-slug guard above, refuse
+  // to rmSync anything that resolves outside deskRoot. (The guard is the real
+  // fix — a normalized traversal like `x` would pass this containment check —
+  // but this catches any future path-construction bug.)
+  const deskRootResolved = path.resolve(paths.deskRoot);
+  if (!path.resolve(paths.runtimeDir).startsWith(deskRootResolved + path.sep)) {
+    throw new Error(`refusing to clean outside deskRoot: ${paths.runtimeDir}`);
+  }
 
   // --kill-session: read the session name from runtime/session-config.json
   // BEFORE removing runtime, then best-effort tmux teardown.
@@ -487,13 +522,19 @@ async function runTmuxViaZsh(slug, options, deps) {
   if (options.withSelfVerification) {
     try {
       const paths = buildPaths(options.rootDir, slug);
+      // IMP-03: the zsh leader writes campaign.jsonl under the hashed
+      // analytics/<slug>--<hash>/ dir and records it in the hash-free pointer
+      // analytics/<slug>.current. Resolve through the pointer so the SV report
+      // reads the analytics the leader ACTUALLY wrote; absent/stale pointer →
+      // legacy buildPaths locations (pre-pointer behavior, no worse).
+      const pointed = await resolveAnalyticsPointer(paths.deskRoot, slug);
       const sv = await generateSVReport({
         slug,
         logsDir: paths.campaignLogDir,
         prdFile: paths.prdFile,
         testSpecFile: paths.testSpecFile,
-        analyticsFile: paths.analyticsFile,
-        outputDir: paths.analyticsDir,
+        analyticsFile: pointed?.analyticsFile ?? paths.analyticsFile,
+        outputDir: pointed?.analyticsDir ?? paths.analyticsDir,
       });
       write(deps.stdout, `\nSelf-verification report (tmux post-pass): ${sv.summary ?? 'generated'}`);
     } catch (err) {
@@ -514,7 +555,7 @@ async function runRunCommand(args, deps) {
     return 0;
   }
 
-  const slug = args[0];
+  const slug = requireCanonicalSlug(args[0]); // IMP-08
   const options = parseRunOptions(args.slice(1), deps.cwd);
 
   // v0.13.0: warn when Claude worker runs in tmux mode. Claude Code's

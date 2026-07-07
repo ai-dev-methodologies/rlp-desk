@@ -85,6 +85,11 @@ _git_dirty_base() {
 
 # --- Environment Variables ---
 SLUG="${LOOP_NAME:?ERROR: LOOP_NAME is required. Set it to the campaign slug.}"
+# IMP-08: fail-fast slug guard (mirrors init_ralph_desk.zsh + Node
+# requireCanonicalSlug) — SLUG is interpolated raw into $DESK/logs/$SLUG,
+# mkdir, rm, analytics paths, so reject a traversal/separator/uppercase slug
+# BEFORE any filesystem op. Superset of normalizeSlug output → no valid slug breaks.
+[[ "$SLUG" =~ '^[a-z0-9][a-z0-9-]*$' ]] || { print -u2 "ERROR: invalid slug: $SLUG (must be lowercase [a-z0-9-], no path separators)"; exit 2; }
 ROOT="${ROOT:-$PWD}"
 MAX_ITER="${MAX_ITER:-20}"
 WORKER_MODEL="${WORKER_MODEL:-haiku}"
@@ -361,6 +366,9 @@ TEST_SPEC_FILE="$DESK/plans/test-spec-$SLUG.md"
 # rollup). With v0.12.0 the canonical location is project-local; cross-project
 # rollup is the Leader's responsibility via ~/.claude/ralph-desk/registry.jsonl
 # (Worker/Verifier prompts never reference the registry path — see §4.11.c).
+# IMP-03: this hash is INTRA-MACHINE-ONLY (a stable per-machine dir suffix);
+# cross-platform parity is intentionally NOT required — the <slug>.current
+# pointer file (written at analytics mkdir in main) is the cross-leader contract.
 ANALYTICS_SLUG_HASH=$(echo -n "$ROOT" | md5 -q 2>/dev/null || md5sum <<< "$ROOT" | cut -d' ' -f1)
 ANALYTICS_DIR="$DESK/analytics/${SLUG}--${ANALYTICS_SLUG_HASH:0:8}"
 CAMPAIGN_JSONL="$ANALYTICS_DIR/campaign.jsonl"
@@ -1282,11 +1290,34 @@ paste_to_pane() {
   # global buffer — load-A / load-B / paste-A pastes B's text into A's pane. A
   # name keyed by leader pid + pane closes that.
   local _buf="rlp-paste-$$-${pane_id//[^0-9A-Za-z]/}"
-  local tmpbuf="/tmp/.rlp-desk-paste-$$.tmp"
-  echo -n "$text" > "$tmpbuf"
-  tmux load-buffer -b "$_buf" "$tmpbuf" 2>/dev/null
+  # IMP-09: never write the prompt to a predictable world-readable /tmp file
+  # (`/tmp/.rlp-desk-paste-$$.tmp` was PID-predictable, umask-perm'd, and
+  # followed a pre-planted symlink — a content leak + clobber vector on shared
+  # hosts, on the hot path of every dispatch). Prefer piping via `tmux
+  # load-buffer -` (stdin, no temp file). Probe once (cached) since the stdin
+  # form is standard but has no floor guarantee here.
+  if [[ -z "${_RLP_TMUX_STDIN_OK:-}" ]]; then
+    if printf '' | tmux load-buffer -b __rlp_probe - 2>/dev/null; then
+      tmux delete-buffer -b __rlp_probe 2>/dev/null
+      _RLP_TMUX_STDIN_OK=1
+    else
+      _RLP_TMUX_STDIN_OK=0
+    fi
+    typeset -g _RLP_TMUX_STDIN_OK
+  fi
+  if (( _RLP_TMUX_STDIN_OK )); then
+    print -rn -- "$text" | tmux load-buffer -b "$_buf" - 2>/dev/null
+  else
+    # Fallback: 0600 mktemp with INLINE cleanup (used synchronously here). Do
+    # NOT install an EXIT trap — that would overwrite the runner's global
+    # `_emit_final_cost_log; cleanup` EXIT trap (codex B2).
+    local tmpbuf
+    tmpbuf=$(mktemp "${TMPDIR:-/tmp}/.rlp-desk-paste.XXXXXX") || return 1
+    print -rn -- "$text" > "$tmpbuf"
+    tmux load-buffer -b "$_buf" "$tmpbuf" 2>/dev/null
+    rm -f "$tmpbuf"
+  fi
   tmux paste-buffer -b "$_buf" -d -t "$pane_id" 2>/dev/null   # -d deletes the buffer after paste
-  rm -f "$tmpbuf"
 }
 
 # --- governance.md s7 step 5: Send with copy-mode guard and retry ---
@@ -2509,6 +2540,7 @@ poll_for_signal() {
   local role="$5"  # "worker" or "verifier"
   local nudge_count=0
   local api_retry_count=0
+  local _prev_api_tail=""   # IMP-07: last pane tail, to reset backoff on progress
   local poll_start
   poll_start=$(date +%s)
 
@@ -2614,33 +2646,30 @@ poll_for_signal() {
       fi
     fi
 
-    # API transient-error recovery with bounded backoff
+    # API transient-error recovery with bounded backoff (IMP-07).
+    # Capture the pane ONCE and run the single detect_api_error contract (which
+    # replaces both the old inline OR-chain AND the redundant is_api_error
+    # re-grep). detect_api_error anchors bare 500/429/529 to API-specific
+    # context (D-17a banner / overloaded / rate-limit / service-unavailable /
+    # too-many-requests / quota), so ordinary worker output containing a numeric
+    # code (e.g. `expect(res.status).toBe(500)`) no longer false-BLOCKs.
     local pane_output_for_retry
     pane_output_for_retry=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    # Reset the backoff counter when the pane makes PROGRESS (content changed):
+    # a persistent error banner accumulates toward BLOCK, but new output means
+    # the worker is alive, so a stale earlier hit should not count against it.
+    local _cur_api_tail
+    _cur_api_tail=$(print -r -- "$pane_output_for_retry" | tail -n 10)
+    if [[ "$_cur_api_tail" != "$_prev_api_tail" ]]; then
+      api_retry_count=0
+    fi
+    _prev_api_tail="$_cur_api_tail"
     local is_api_text_retry=0
-    if [[ -n "$pane_output_for_retry" ]] &&
-       ( echo "$pane_output_for_retry" | grep -qiE '(^|[^[:digit:]])500([^[:digit:]]|$)' \
-      || echo "$pane_output_for_retry" | grep -qiE '(^|[^[:digit:]])529([^[:digit:]]|$)' \
-      || echo "$pane_output_for_retry" | grep -qiE '(^|[^[:digit:]])429([^[:digit:]]|$)' \
-      || echo "$pane_output_for_retry" | grep -qi 'overloaded' \
-      || echo "$pane_output_for_retry" | grep -qi 'too many requests' \
-      || echo "$pane_output_for_retry" | grep -qi 'service unavailable' \
-      || echo "$pane_output_for_retry" | grep -qiE 'api error.*temporarily limiting requests' ); then
-      # D-17a: the last pattern catches the claude TUI rate-limit banner
-      # ("API Error: Server is temporarily limiting requests (not your usage
-      # limit) · Rate limited") that previously fell through to the 600s
-      # frozen-pane BLOCK with a misleading "deadlock" reason. It requires BOTH
-      # the "API Error" banner prefix AND the distinctive multi-word phrase
-      # "temporarily limiting requests" on the SAME line (codex MEDIUM): a Worker
-      # implementing a rate-limiter feature, quoting the phrase, or merely
-      # discussing API rate-limit handling does NOT false-trigger backoff — only
-      # the actual error banner does. Routes to the bounded API backoff below
-      # (5×30s) → recovers a transient limit, else BLOCKs as infra (recoverable),
-      # not as a misleading frozen-pane deadlock.
+    if detect_api_error "$pane_output_for_retry"; then
       is_api_text_retry=1
     fi
 
-    if (( is_api_text_retry )) || is_api_error "$pane_id"; then
+    if (( is_api_text_retry )); then
       (( api_retry_count++ ))
       log_debug "[FLOW] iter=$ITERATION api_retry=${api_retry_count}/${_API_MAX_RETRIES} role=${role} reason=tmux_pane_api_error"
       if (( api_retry_count >= _API_MAX_RETRIES )); then
@@ -3390,6 +3419,14 @@ main() {
 
   # --- Analytics directory: always create (campaign.jsonl + metadata.json are always-on) ---
   mkdir -p "$ANALYTICS_DIR" 2>/dev/null
+  # IMP-03: hash-free pointer so Node-side readers (SV post-pass in run.mjs)
+  # can locate this campaign's analytics dir without reproducing the intra-
+  # machine md5 suffix. Written HERE (executed-main, after the mkdir above) —
+  # NOT at the top-level config-parse block — so merely sourcing this script
+  # (verify harnesses) has no filesystem side effect. Runs before
+  # validate_scaffold; a later scaffold-validation failure leaves at worst a
+  # consistent unused pointer (readers fall back when the target is absent).
+  print -r -- "$ANALYTICS_DIR" > "$DESK/analytics/${SLUG}.current" 2>/dev/null
 
   # --- debug.log versioning (in analytics dir, --debug only) ---
   if (( DEBUG )) && [[ -f "$DEBUG_LOG" ]]; then

@@ -15,7 +15,7 @@ rlp-desk routes Worker → Verifier handoff through a **single sentinel file per
 3. **Strict ordering: detect → reap → wait shell → next dispatch.** The Leader does NOT dispatch the next role (Verifier after Worker, next-iter Worker after Verifier) until the producing pane's `pane_current_command` has returned to `zsh|bash|sh`. AC-H1 of PR-0b-narrow strengthens this with `waitForProcessExit`.
 4. **First-writer-wins for terminal sentinels.** `blocked.md` and `complete.md` are written via `O_EXCL` (`writeSentinelExclusive`); concurrent error paths cannot trample the canonical exit reason.
 
-The same contract is implemented twice (`src/node/runner/campaign-main-loop.mjs` for `--mode agent`, `src/scripts/run_ralph_desk.zsh` for `--mode tmux`) with bit-for-bit parity on `(reason_text, reason_category, failure_category)` — verified by `tests/test-bug8-refuse-synthesis.sh` Scenario 4.
+The production implementation of this contract is `src/scripts/run_ralph_desk.zsh` (the `--mode tmux` leader). `src/node/runner/campaign-main-loop.mjs` is a **dormant mirror** of the same contract — it is NOT a live second leader: `--mode agent` hard-errors (ADR-001) and `--mode native` runs the slash-command session as the leader (its own `Agent()` dispatch), so the Node leader's `run()` is CLI-unreachable. The mirror is retained for the Native-agent engine/tests; where both are exercised they agree on `(reason_text, reason_category, failure_category)` — see `tests/test-bug8-refuse-synthesis.sh` Scenario 4 — but the zsh leader is the source of truth, and the Node copy may drift (e.g. it lacks the zsh heartbeat / copy-mode / prompt-stall guards).
 
 ---
 

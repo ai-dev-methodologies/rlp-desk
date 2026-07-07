@@ -142,6 +142,36 @@ export function buildPaths(rootDir, slug, env = process.env) {
 };
 }
 
+// IMP-03: resolve the zsh leader's analytics location through its pointer file.
+// The production zsh leader writes campaign.jsonl under
+// `analytics/<slug>--<md5(ROOT):0:8>/` (an intra-machine hash the Node side
+// intentionally does NOT reproduce — cross-platform hash parity is a non-goal)
+// and records the resolved dir in the hash-free pointer
+// `analytics/<slug>.current`. Readers resolve through the pointer; a missing
+// pointer or a stale pointer (target dir gone) returns null so callers fall
+// back to the legacy buildPaths locations — no worse than the pre-pointer
+// behavior.
+export async function resolveAnalyticsPointer(deskRoot, slug) {
+  const pointerFile = path.join(deskRoot, 'analytics', `${slug}.current`);
+  let target;
+  try {
+    target = (await fs.readFile(pointerFile, 'utf8')).trim();
+  } catch {
+    return null;
+  }
+  if (!target) return null;
+  try {
+    const stat = await fs.stat(target);
+    if (!stat.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  return {
+    analyticsDir: target,
+    analyticsFile: path.join(target, 'campaign.jsonl'),
+  };
+}
+
 // Bug #8 PR-B: default git working-tree probe. Inline (~20 LoC) — no new
 // module per Architect/Critic codex iter 6 consensus. Tests inject a stub via
 // run() option `checkWorkingTree`.

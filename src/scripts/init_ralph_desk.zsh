@@ -14,6 +14,13 @@ set -euo pipefail
 # =============================================================================
 
 SLUG="${1:?Usage: $0 <slug> [objective] [--mode fresh|improve] [--verify-mode per-us|batch] [--server-cmd CMD] [--server-port PORT] [--server-health URL]}"
+# IMP-08: fail-fast slug guard. SLUG is interpolated raw into filesystem paths
+# ($DESK/logs/$SLUG, mkdir, rm), so a `../..`/separator/uppercase slug could
+# escape the .rlp-desk tree. This regex is a superset of the Node normalizeSlug
+# output (lowercase [a-z0-9-], no leading/trailing/collapsed `-`), so no valid
+# slug is rejected; it blocks `.`, `/`, `..`, uppercase, and spaces BEFORE any
+# mkdir/rm. Mirrors the Node reject-guard (run.mjs requireCanonicalSlug).
+[[ "$SLUG" =~ '^[a-z0-9][a-z0-9-]*$' ]] || { print -u2 "ERROR: invalid slug: $SLUG (must be lowercase [a-z0-9-], no path separators)"; exit 2; }
 MODE=""
 OBJECTIVE="TBD - fill in the objective"
 SERVER_CMD=""

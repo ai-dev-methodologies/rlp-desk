@@ -619,9 +619,12 @@ export async function readStatus(slug, options = {}) {
 
   return [
     `Campaign: ${slug}`,
-    `Iteration: ${status.iteration ?? 0} / ${status.max_iterations ?? 100}`,
+    // IMP-04: the production zsh leader writes `max_iter` and omits
+    // `final_verifier_model`; `max_iterations` is the Node-leader schema.
+    // Read both so `status` renders correctly for either producer.
+    `Iteration: ${status.iteration ?? 0} / ${status.max_iter ?? status.max_iterations ?? 100}`,
     `Phase: ${status.phase ?? 'unknown'}`,
-    `Worker Model: ${status.worker_model ?? 'unknown'} | Verifier: ${status.verifier_model ?? 'unknown'} (per-US) / ${status.final_verifier_model ?? 'unknown'} (final)`,
+    `Worker Model: ${status.worker_model ?? 'unknown'} | Verifier: ${status.verifier_model ?? 'unknown'} (per-US)${status.final_verifier_model ? ` / ${status.final_verifier_model} (final)` : ''}`,
     `Verified US: ${verifiedUs}`,
     `Consecutive Failures: ${status.consecutive_failures ?? 0}`,
     `Updated: ${updatedAt} (elapsed: ${elapsed})`,

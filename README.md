@@ -238,7 +238,7 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--mode agent\|tmux` | agent | tmux=zsh Leader (stable, production), agent=Node Leader (alpha) |
+| `--mode tmux\|native\|agent` | tmux | tmux=zsh Leader (production default); native=slash-command-only; agent=hard-errors (ADR-001) |
 | `--worker-model MODEL` | haiku | Worker model. `name`=claude, `name:reasoning`=codex |
 | `--lock-worker-model` | off | Disable auto model upgrade on failure |
 | `--verifier-model MODEL` | sonnet | per-US verification model (lighter) |
@@ -284,24 +284,25 @@ RLP Desk has three execution modes, all honoring the same governance protocol. *
 > - **`--mode native`** (the slash-command **default**) — the current Claude Code session is the Leader,
 >   dispatching via `Agent()`. Works anywhere (no tmux), good for short/interactive use, but is a
 >   second-class companion: no iteration watchdog, turn-based pauses possible. Not for long unattended runs.
-> - **`--mode agent`** (direct Node CLI) — **deprecated alpha**, on a removal schedule (ADR-001). Prints a
->   SCHEDULED-REMOVAL banner. Do not use for new work; prefer `--mode tmux`.
+> - **`--mode agent`** (direct Node CLI) — **HARD-ERRORS (exit 2)** per [ADR-001](docs/plans/adr-001-leader-consolidation.md).
+>   The direct-CLI Node leader was retired; the Node leader code (`campaign-main-loop.mjs`) is a dormant mirror
+>   used only by the `--mode native` slash path's `Agent()` engine and its tests. Use `--mode tmux`.
 
 ### Environment Compatibility
 
-| Environment | Native (default) | Tmux (canonical) | Agent (deprecated) |
+| Environment | Native (slash-only) | Tmux (canonical, CLI default) | Agent |
 |-------------|------------------|------------------|--------------------|
-| Claude Code (any terminal) | **Works** | Requires tmux | Works |
-| Inside tmux session | **Works** | **Works** — panes split in current window | Works |
-| Outside tmux session | **Works** | **Rejected** — "start tmux first" | Works |
+| Claude Code (any terminal) | **Works** (slash) | Requires tmux | Hard-errors (ADR-001) |
+| Inside tmux session | **Works** (slash) | **Works** — panes split in current window | Hard-errors (ADR-001) |
+| Outside tmux session | **Works** (slash) | **Rejected** — "start tmux first" | Hard-errors (ADR-001) |
 
 ### Choosing Your Mode
 
 | Need | Use |
 |------|-----|
-| Production / autonomous / overnight / CI campaigns | `--mode tmux` (canonical) |
-| Quick interactive exploration, no tmux available | `--mode native` (default) |
-| (legacy direct-Node-CLI workflows) | `--mode agent` — deprecated; migrate to `--mode tmux` |
+| Production / autonomous / overnight / CI campaigns | `--mode tmux` (canonical, CLI default) |
+| Quick interactive exploration, no tmux available | `/rlp-desk run … --mode native` (slash-command only) |
+| ~~Direct-Node-CLI~~ | `--mode agent` hard-errors (ADR-001) — use `--mode tmux` |
 
 ### Native Mode (slash-command default) — "Smart Mode"
 

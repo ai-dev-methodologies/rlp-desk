@@ -47,7 +47,10 @@ run_is_api_error() {
   local tmpdir fn_body
   tmpdir=$(mktemp -d)
 
-  fn_body=$(extract_fn "is_api_error")
+  # IMP-07: is_api_error now delegates to detect_api_error — extract both.
+  fn_detect=$(extract_fn "detect_api_error")
+  fn_body="$fn_detect
+$(extract_fn "is_api_error")"
 
   cat > "$tmpdir/tmux" <<'TMUX_STUB'
 #!/usr/bin/env bash
@@ -94,13 +97,17 @@ run_poll_for_signal() {
   local tmpdir fn_is_api fn_poll
   tmpdir=$(mktemp -d)
 
-  fn_is_api=$(extract_fn "is_api_error")
+  # IMP-07: poll uses detect_api_error (is_api_error kept for the shim path).
+  fn_is_api="$(extract_fn "detect_api_error")
+$(extract_fn "is_api_error")"
   fn_poll=$(extract_fn "poll_for_signal")
 
   cat > "$tmpdir/tmux" <<'TMUX_STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "capture-pane" ]]; then
-  printf '%s' "ERROR: API request failed: 529"
+  # IMP-07: a REAL API outage banner (bare 529 now needs API-specific context;
+  # "overloaded" is an unconditional outage phrase → still detected).
+  printf '%s' "API Error: 529 overloaded"
 elif [[ "$1" == "display-message" ]]; then
   if [[ "$2" == "-p" && "$3" == "#{pane_current_command}" ]]; then
     echo "claude"
@@ -168,12 +175,26 @@ test_ac1_happy_529() {
 }
 
 test_ac1_happy_500() {
+  # IMP-07: a bare 500 now requires API-specific context (an "API Error" banner
+  # here) — a generic "error: 500" no longer counts (see AC3 below).
   local rc
-  rc=$(run_is_api_error "gateway error: 500")
+  rc=$(run_is_api_error "API Error: 500 upstream")
   if [[ "$rc" == "0" ]]; then
-    pass "AC1-happy: detects 500 in pane buffer"
+    pass "AC1-happy: detects 500 in an API Error banner"
   else
-    fail "AC1-happy: did not detect 500 in pane buffer"
+    fail "AC1-happy: did not detect 500 in an API Error banner"
+  fi
+}
+
+test_ac1_fp_generic_error_500() {
+  # IMP-07 codex B1: ordinary test/app output with a bare code and only a
+  # GENERIC error token must NOT be misclassified as an API error.
+  local rc
+  rc=$(run_is_api_error "Error: expected status 500")
+  if [[ "$rc" == "1" ]]; then
+    pass "AC1-FP: generic 'Error: expected status 500' is not an API error"
+  else
+    fail "AC1-FP: generic error+500 misclassified as API error (regression)"
   fi
 }
 
@@ -291,6 +312,7 @@ echo "Target: $RUN"
 printf '\n--- AC1: API error detection ---\n'
 test_ac1_happy_529
 test_ac1_happy_500
+test_ac1_fp_generic_error_500
 test_ac1_boundary_overloaded_casefold
 
 printf '\n--- AC2: Retry behavior ---\n'

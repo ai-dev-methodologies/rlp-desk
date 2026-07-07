@@ -206,6 +206,10 @@ ZSH_TESTS=(
   tests/test_b3_lifecycle_emit.sh
   tests/test_b3_pane_reap_integration.sh
   tests/test_post_sentinel_reap_lock.sh
+  tests/test_imp01_stat_mtime_gnu.sh
+  tests/test_imp07_api_sniff_context.sh
+  tests/test_imp08_slug_guard.sh
+  tests/test_imp09_paste_no_tmpfile.sh
 )
 for t in $ZSH_TESTS; do
   check "$(basename $t)" zsh "$t"
