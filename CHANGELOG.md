@@ -11,6 +11,46 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.18.6] — 2026-07-07
+
+Leader hardening, cross-platform correctness, and safety guards on the
+`--mode tmux` (zsh) production path, plus documentation accuracy fixes.
+
+### Security
+- Campaign slug is now validated (`^[a-z0-9][a-z0-9-]*$`) before any filesystem
+  work in both the init and run leaders, and in the `clean`/`run`/`status` CLI
+  commands. A slug containing path separators or `..` is refused up front instead
+  of being interpolated into `mkdir`/`rm` paths.
+- Worker/verifier prompt hand-off no longer writes a predictable world-readable
+  temp file under `/tmp`. It pipes through the tmux paste buffer directly, with a
+  `0600` fallback that is cleaned up inline.
+
+### Fixed
+- Recovery freshness checks now read file modification time correctly on Linux
+  (GNU `stat` is tried first), fixing a case where the recovery gate could
+  misbehave on GNU/coreutils systems.
+- `status` output no longer depends on fields the zsh leader never writes; the
+  iteration ceiling and the optional final-verifier segment render from the
+  fields that are actually present.
+- API-overload detection in the poll loop is now anchored to the tail of the pane
+  so an unrelated line mentioning a bare status code is not mistaken for a real
+  API error; the retry counter resets when the worker makes progress.
+- `--with-self-verification` reads the analytics output the zsh leader actually
+  wrote (via a pointer file), with a fallback to the legacy location.
+
+### Changed
+- An unknown `--mode` value now fails fast with a clear error instead of silently
+  falling through.
+
+### Docs
+- README, protocol reference, and signal-protocol docs now state the three run
+  modes accurately: `tmux` is the production default (zsh leader), `native` is
+  slash-command only, and `agent` hard-errors (ADR-001).
+
+### Internal
+- `npm install` upgrade path is hardened against a previously write-locked
+  (`0o444`) install tree.
+
 ## [0.18.4] — 2026-06-26
 
 Internal leader-hardening and packaging hygiene. No behavior change on the
