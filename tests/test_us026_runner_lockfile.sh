@@ -3,11 +3,12 @@
 # Validates:
 #   - RUNNER_LOCKFILE_PATH variable defined with project-root hash
 #   - shasum||sha1sum||cksum fallback chain present
-#   - mkdir atomic lock pattern (RUNNER_LOCKDIR)
+#   - atomic acquire via acquire_slug_lock (set -C noclobber + .recovery.d mutex)
 #   - Behavioural: same root duplicate → reject; different root → allowed; stale pid → cleaned
 
 ROOT_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT_REPO/src/scripts/run_ralph_desk.zsh"
+LIB="$ROOT_REPO/src/scripts/lib_ralph_desk.zsh"
 
 PASS=0
 FAIL=0
@@ -38,15 +39,19 @@ assert_one "$RUN" 'RUNNER_LOCKDIR=' \
 assert_one "$RUN" 'shasum.*sha1sum.*cksum' \
   "AC2: shasum || sha1sum || cksum fallback chain"
 
-# AC3: mkdir atomic pattern (not test-then-write)
-assert_one "$RUN" 'mkdir.*RUNNER_LOCKDIR' \
-  "AC3-a: mkdir RUNNER_LOCKDIR atomic acquire"
-assert_one "$RUN" 'kill -0.*existing' \
-  "AC3-b: stale pid detection via kill -0"
+# AC3: atomic acquire (ZSH-4/D-9 redesign). The runner delegates to
+# acquire_slug_lock (lib_ralph_desk.zsh), whose primitive is a `set -C` noclobber
+# PID-write with kill -0 stale-owner detection and a `.recovery.d` mkdir mutex.
+# The old `.lock.d` RUNNER_LOCKDIR is vestigial; atomicity/stale/parallel semantics
+# are still exercised behaviourally by AC5–AC7 below.
+assert_one "$RUN" 'acquire_slug_lock "\$RUNNER_LOCKFILE_PATH"' \
+  "AC3-a: runner acquires project lock atomically via acquire_slug_lock"
+assert_one "$LIB" 'kill -0 "\$lock_pid"' \
+  "AC3-b: stale pid detection via kill -0 on lock owner (acquire_slug_lock)"
 
-# AC4: cleanup trap rm -rf RUNNER_LOCKDIR
-assert_one "$RUN" 'rm -rf.*RUNNER_LOCKDIR' \
-  "AC4: cleanup trap removes RUNNER_LOCKDIR"
+# AC4: cleanup removes the lock file + recovery mutex when we own it.
+assert_one "$RUN" 'rm -rf.*RUNNER_LOCKFILE_PATH.*recovery' \
+  "AC4: cleanup removes lock recovery mutex (.recovery.d)"
 
 # AC5: Behavioural — duplicate same-root reject
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rlp-us026-XXXX")

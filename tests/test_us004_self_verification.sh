@@ -263,10 +263,10 @@ _run_init() {
   # Sets up minimal temp dir, runs init, returns exit code via $INIT_RC
   # Caller must unset TMPD after use
   TMPD=$(mktemp -d)
-  mkdir -p "$TMPD/.claude/ralph-desk/plans" \
-           "$TMPD/.claude/ralph-desk/logs/$1" \
-           "$TMPD/.claude/ralph-desk/memos" \
-           "$TMPD/.claude/ralph-desk/context"
+  mkdir -p "$TMPD/.rlp-desk/plans" \
+           "$TMPD/.rlp-desk/logs/$1" \
+           "$TMPD/.rlp-desk/memos" \
+           "$TMPD/.rlp-desk/context"
   local slug="$1"; shift
   local obj="$1"; shift
   ROOT="$TMPD" zsh "$INIT" "$slug" "$obj" "$@" >"$TMPD/stdout.txt" 2>"$TMPD/stderr.txt"
@@ -289,11 +289,11 @@ rm -rf "$TMPD"
 
 # AC2-runtime-negative: --mode improve with PRD+debug.log creates debug-v1.log (version_file works)
 _run_init "$SLUG_T" "obj"  # first run — creates PRD + scaffold
-PRD_PATH="$TMPD/.claude/ralph-desk/plans/prd-$SLUG_T.md"
-touch "$TMPD/.claude/ralph-desk/logs/$SLUG_T/debug.log"
+PRD_PATH="$TMPD/.rlp-desk/plans/prd-$SLUG_T.md"
+touch "$TMPD/.rlp-desk/logs/$SLUG_T/debug.log"
 ROOT="$TMPD" zsh "$INIT" "$SLUG_T" "obj" --mode improve >"$TMPD/stdout2.txt" 2>"$TMPD/stderr2.txt"
 RC2=$?
-if [[ $RC2 -eq 0 ]] && [[ -f "$TMPD/.claude/ralph-desk/logs/$SLUG_T/debug-v1.log" ]]; then
+if [[ $RC2 -eq 0 ]] && [[ -f "$TMPD/.rlp-desk/logs/$SLUG_T/debug-v1.log" ]]; then
   pass "AC2-runtime-negative: --mode improve creates debug-v1.log (version_file functional)"
 else
   fail "AC2-runtime-negative: --mode improve creates debug-v1.log (exit=$RC2, stderr: $(cat "$TMPD/stderr2.txt"))"
@@ -302,10 +302,10 @@ rm -rf "$TMPD"
 
 # AC2-runtime-boundary: --mode fresh with PRD+debug.log creates debug-v1.log
 _run_init "$SLUG_T" "obj"  # first run — creates PRD
-touch "$TMPD/.claude/ralph-desk/logs/$SLUG_T/debug.log"
+touch "$TMPD/.rlp-desk/logs/$SLUG_T/debug.log"
 ROOT="$TMPD" zsh "$INIT" "$SLUG_T" "obj" --mode fresh >"$TMPD/stdout3.txt" 2>"$TMPD/stderr3.txt"
 RC3=$?
-if [[ $RC3 -eq 0 ]] && [[ -f "$TMPD/.claude/ralph-desk/logs/$SLUG_T/debug-v1.log" ]]; then
+if [[ $RC3 -eq 0 ]] && [[ -f "$TMPD/.rlp-desk/logs/$SLUG_T/debug-v1.log" ]]; then
   pass "AC2-runtime-boundary: --mode fresh exits 0 and creates debug-v1.log"
 else
   fail "AC2-runtime-boundary: --mode fresh exits 0 and creates debug-v1.log (exit=$RC3, stderr: $(cat "$TMPD/stderr3.txt"))"
@@ -314,10 +314,10 @@ rm -rf "$TMPD"
 
 # AC4-runtime-happy: --mode fresh deletes old PRD content (fresh PRD created from template)
 _run_init "$SLUG_T" "obj"  # create initial PRD
-echo "old-unique-prd-marker-abc123" > "$TMPD/.claude/ralph-desk/plans/prd-$SLUG_T.md"
+echo "old-unique-prd-marker-abc123" > "$TMPD/.rlp-desk/plans/prd-$SLUG_T.md"
 ROOT="$TMPD" zsh "$INIT" "$SLUG_T" "obj" --mode fresh >/dev/null 2>&1
 RC4=$?
-PRESERVED=$(grep -c 'old-unique-prd-marker-abc123' "$TMPD/.claude/ralph-desk/plans/prd-$SLUG_T.md" 2>/dev/null) || PRESERVED=0
+PRESERVED=$(grep -c 'old-unique-prd-marker-abc123' "$TMPD/.rlp-desk/plans/prd-$SLUG_T.md" 2>/dev/null) || PRESERVED=0
 if [[ $RC4 -eq 0 ]] && [[ $PRESERVED -eq 0 ]]; then
   pass "AC4-runtime-happy: --mode fresh exits 0 and removes old PRD content"
 else
@@ -327,10 +327,10 @@ rm -rf "$TMPD"
 
 # AC5-runtime-happy: --mode improve preserves PRD content unchanged
 _run_init "$SLUG_T" "obj"  # create initial PRD
-echo "preserve-this-prd-content-xyz" > "$TMPD/.claude/ralph-desk/plans/prd-$SLUG_T.md"
+echo "preserve-this-prd-content-xyz" > "$TMPD/.rlp-desk/plans/prd-$SLUG_T.md"
 ROOT="$TMPD" zsh "$INIT" "$SLUG_T" "obj" --mode improve >/dev/null 2>&1
 RC5=$?
-PRESERVED2=$(grep -c 'preserve-this-prd-content-xyz' "$TMPD/.claude/ralph-desk/plans/prd-$SLUG_T.md" 2>/dev/null) || PRESERVED2=0
+PRESERVED2=$(grep -c 'preserve-this-prd-content-xyz' "$TMPD/.rlp-desk/plans/prd-$SLUG_T.md" 2>/dev/null) || PRESERVED2=0
 if [[ $RC5 -eq 0 ]] && [[ $PRESERVED2 -ge 1 ]]; then
   pass "AC5-runtime-happy: --mode improve exits 0 and preserves PRD content"
 else
@@ -354,7 +354,7 @@ rm -rf "$TMPD"
 _run_init "$SLUG_T" "obj" --mode improve  # no PRD exists
 RC13=$?
 NOTE_LINE=$(grep -c 'treating as first\|no PRD' "$TMPD/stdout.txt" 2>/dev/null) || NOTE_LINE=0
-PRD_CREATED=$([ -f "$TMPD/.claude/ralph-desk/plans/prd-$SLUG_T.md" ] && echo 1 || echo 0)
+PRD_CREATED=$([ -f "$TMPD/.rlp-desk/plans/prd-$SLUG_T.md" ] && echo 1 || echo 0)
 if [[ $RC13 -eq 0 ]] && [[ $NOTE_LINE -ge 1 ]] && [[ $PRD_CREATED -eq 1 ]]; then
   pass "AC13-runtime-happy: --mode with no PRD exits 0, prints note, creates fresh PRD"
 else

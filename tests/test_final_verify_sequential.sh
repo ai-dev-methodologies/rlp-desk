@@ -35,7 +35,7 @@ test_ac1_loops_us_list() {
 test_ac1_calls_scoped_verifier() {
   local fn_body
   fn_body=$(awk '/^run_sequential_final_verify\(\)/,/^}/' "$RUN")
-  if echo "$fn_body" | grep -q 'write_verifier_trigger\|launch_verifier\|run_single_verifier'; then
+  if echo "$fn_body" | grep -q '_final_verify_one_us\|write_verifier_trigger\|launch_verifier\|run_single_verifier'; then
     pass "AC1-3: function dispatches scoped verifier per US"
   else
     fail "AC1-3: function does not dispatch scoped verifier"

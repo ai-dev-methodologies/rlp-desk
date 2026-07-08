@@ -102,9 +102,14 @@ run_test "AC3-boundary: ITER_TIMEOUT default is still 600 in run_ralph_desk.zsh"
 # AC4: Consensus round cap 3->6 across all 3 files
 # =============================================================================
 
-# AC4-happy: CONSENSUS_ROUND compared against 6 in run_ralph_desk.zsh (>= 2 spots)
-count=$(count_grep 'CONSENSUS_ROUND < 6\|CONSENSUS_ROUND >= 6' "$RUN")
-run_test "AC4-happy: CONSENSUS_ROUND compared against 6 in run_ralph_desk.zsh" "$(( count >= 2 ))" "1"
+# AC4-happy: consensus mode elevates the round budget via CB_THRESHOLD*2 doubling.
+# D-22 (5fb2f65) removed the in-function `while (( CONSENSUS_ROUND < 6 ))` loop as
+# dead code (CONSENSUS_ROUND is pinned to 1) and relocated round-bounding to the
+# OUTER leader fix-loop, where consensus mode doubles the CB budget. This asserts
+# that consensus-gated doubling is wired (the current enforcement of an elevated
+# consensus round cap), replacing the removed in-function CONSENSUS_ROUND-vs-6 spots.
+count=$(grep -A2 'CONSENSUS_MODE" != "off"' "$RUN" 2>/dev/null | grep -c 'CB_THRESHOLD \* 2')
+run_test "AC4-happy: consensus mode elevates round budget via CB_THRESHOLD*2 doubling in run_ralph_desk.zsh" "$(( count >= 1 ))" "1"
 
 # AC4-negative: zero CONSENSUS_ROUND-vs-3 comparisons remain in run_ralph_desk.zsh
 count=$(count_grep 'CONSENSUS_ROUND < 3\|CONSENSUS_ROUND >= 3' "$RUN")

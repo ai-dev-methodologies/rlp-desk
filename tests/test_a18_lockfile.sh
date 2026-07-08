@@ -12,6 +12,7 @@ fail() { echo "  FAIL: $1"; (( FAIL++ )); }
 
 extract_fn() {
   local fn_name="$1"
+  local file="${2:-$RUN}"
   awk -v fn="$fn_name" '
     $0 ~ fn"\\(\\) \{" { in_fn=1; depth=0 }
     in_fn {
@@ -25,16 +26,16 @@ extract_fn() {
       }
       print
     }
-  ' "$RUN"
+  ' "$file"
 }
 
 setup_scaffold() {
   local root="$1"
-  mkdir -p "$root/.claude/ralph-desk"/{prompts,context,memos,logs,plans}
-  printf '# Worker\n' > "$root/.claude/ralph-desk/prompts/${SLUG}.worker.prompt.md"
-  printf '# Verifier\n' > "$root/.claude/ralph-desk/prompts/${SLUG}.verifier.prompt.md"
-  printf '# Context\n' > "$root/.claude/ralph-desk/context/${SLUG}-latest.md"
-  printf '# Memory\n' > "$root/.claude/ralph-desk/memos/${SLUG}-memory.md"
+  mkdir -p "$root/.rlp-desk"/{prompts,context,memos,logs,plans}
+  printf '# Worker\n' > "$root/.rlp-desk/prompts/${SLUG}.worker.prompt.md"
+  printf '# Verifier\n' > "$root/.rlp-desk/prompts/${SLUG}.verifier.prompt.md"
+  printf '# Context\n' > "$root/.rlp-desk/context/${SLUG}-latest.md"
+  printf '# Memory\n' > "$root/.rlp-desk/memos/${SLUG}-memory.md"
 }
 
 build_tmux_stub() {
@@ -49,20 +50,19 @@ shift
 
 case "$cmd" in
   display-message)
-    if [[ "${1-}" == "-p" ]]; then
-      local arg="${2-}"
-      if [[ "$arg" == "#{session_name}" ]]; then
-        echo "rlp-desk-${LOOP_NAME}-stub"
-      else
-        echo "%0"
-      fi
-      exit 0
-    fi
-    echo "%0"
+    # US-024 R12 P0 _r12_check_lifecycle polls #{pane_dead}/#{session_name} via
+    # `tmux display-message -p -t <target> '<format>'` — the format is always the
+    # LAST argument, not a fixed position, so match on that instead of $2.
+    last="${@: -1}"
+    case "$last" in
+      '#{session_name}') echo "rlp-desk-${LOOP_NAME}-stub" ;;
+      '#{pane_dead}') echo "0" ;;
+      *) echo "%0" ;;
+    esac
     exit 0
     ;;
 
-  list-sessions|new-session|select-pane|set-option|send-keys|kill-pane|kill-session|attach-session)
+  list-sessions|new-session|select-pane|set-option|send-keys|kill-pane|kill-session|attach-session|has-session)
     exit 0
     ;;
 
@@ -102,14 +102,14 @@ run_runner() {
 run_runner_with_complete() {
   local root="$1"
   local out="$2"
-  touch "$root/.claude/ralph-desk/memos/${SLUG}-complete.md"
+  touch "$root/.rlp-desk/memos/${SLUG}-complete.md"
   run_runner "$root" "$out"
 }
 
 run_runner_with_blocked() {
   local root="$1"
   local out="$2"
-  touch "$root/.claude/ralph-desk/memos/${SLUG}-blocked.md"
+  touch "$root/.rlp-desk/memos/${SLUG}-blocked.md"
   run_runner "$root" "$out"
 }
 
@@ -127,15 +127,17 @@ test_ac1_happy() {
 
   sleep 120 &
   pid=$!
-  printf '%d' "$pid" > "$root/.claude/ralph-desk/logs/.rlp-desk-${SLUG}.lock"
+  printf '%d' "$pid" > "$root/.rlp-desk/logs/.rlp-desk-${SLUG}.lock"
 
   out="$root/ac1-happy.out"
   run_runner "$root" "$out"
   rc=$?
 
+  # ZSH-4 lock redesign (commit 88aa034) reworded the message: it no longer
+  # echoes the pid in "Kill $pid or rm ..." — it now says "Kill it or rm ...".
   if [[ "$rc" -eq 1 ]] &&
      grep -F "Another instance is already running" "$out" >/dev/null 2>&1 &&
-     grep -F "Kill $pid or rm $root/.claude/ralph-desk/logs/.rlp-desk-${SLUG}.lock" "$out" >/dev/null 2>&1; then
+     grep -F "Kill it or rm $root/.rlp-desk/logs/.rlp-desk-${SLUG}.lock" "$out" >/dev/null 2>&1; then
     pass "AC1-happy: active runner prints pid + remediation"
   else
     fail "AC1-happy: active runner did not reject with expected message"
@@ -153,15 +155,15 @@ test_ac1_negative() {
 
   sleep 120 &
   pid=$!
-  printf '%d' "$pid" > "$root/.claude/ralph-desk/logs/.rlp-desk-${SLUG}.lock"
+  printf '%d' "$pid" > "$root/.rlp-desk/logs/.rlp-desk-${SLUG}.lock"
 
   out="$root/ac1-negative.out"
   run_runner "$root" "$out"
   rc=$?
 
-  if [[ "$rc" -eq 1 ]] && [[ -f "$root/.claude/ralph-desk/logs/.rlp-desk-${SLUG}.lock" ]]; then
+  if [[ "$rc" -eq 1 ]] && [[ -f "$root/.rlp-desk/logs/.rlp-desk-${SLUG}.lock" ]]; then
     local lock_pid
-    lock_pid="$(cat "$root/.claude/ralph-desk/logs/.rlp-desk-${SLUG}.lock")"
+    lock_pid="$(cat "$root/.rlp-desk/logs/.rlp-desk-${SLUG}.lock")"
     if [[ "$lock_pid" == "$pid" ]]; then
       pass "AC1-negative: active lockfile is retained when denied"
     else
@@ -177,10 +179,14 @@ test_ac1_negative() {
 }
 
 test_ac1_boundary() {
-  local body
-  body=$(extract_fn "main")
-  if echo "$body" | grep -F 'if kill -0 "$lock_pid"' >/dev/null 2>&1 &&
-     echo "$body" | grep -F 'Another instance is already running' >/dev/null 2>&1; then
+  # ZSH-4 lock redesign (commit 88aa034) moved the live-PID check out of main()
+  # and into acquire_slug_lock() (lib_ralph_desk.zsh); main() only reports the
+  # failure once acquire_slug_lock returns non-zero. Check both halves.
+  local main_body lock_body
+  main_body=$(extract_fn "main")
+  lock_body=$(extract_fn "acquire_slug_lock" "$(dirname "$RUN")/lib_ralph_desk.zsh")
+  if echo "$lock_body" | grep -F 'kill -0 "$lock_pid"' >/dev/null 2>&1 &&
+     echo "$main_body" | grep -F 'Another instance is already running' >/dev/null 2>&1; then
     pass "AC1-boundary: active lockpath checks PID with kill -0"
   else
     fail "AC1-boundary: active lockpath missing kill -0 branch or message"
@@ -195,19 +201,25 @@ test_ac2_happy() {
   local root out rc
   root="$(mktemp -d)"
   setup_scaffold "$root"
-  printf '99999' > "$root/.claude/ralph-desk/logs/.rlp-desk-${SLUG}.lock"
+  printf '99999' > "$root/.rlp-desk/logs/.rlp-desk-${SLUG}.lock"
 
   out="$root/ac2-happy.out"
   run_runner_with_complete "$root" "$out"
   rc=$?
 
-  if [[ "$rc" -eq 0 ]] && grep -F 'Stale lock detected (PID 99999 not running), recovering' "$out" >/dev/null 2>&1; then
-    pass "AC2-happy: stale lock logs recovery warning and proceeds"
+  # ZSH-4 lock redesign (commit 88aa034) removed the old "Stale lock detected"
+  # log line — acquire_slug_lock() (lib_ralph_desk.zsh) now recovers a
+  # dead-owner lock silently under a race-safe mkdir mutex. The observable
+  # contract is behavioral: a lock held by a non-running PID must NOT block
+  # the runner, and the campaign must proceed to completion.
+  if [[ "$rc" -eq 0 ]] &&
+     ! grep -F "Another instance is already running" "$out" >/dev/null 2>&1; then
+    pass "AC2-happy: stale lock (dead PID) does not block and campaign proceeds"
   else
-    fail "AC2-happy: stale lock recovery warning/proceed behavior missing"
+    fail "AC2-happy: stale lock recovery/proceed behavior missing"
   fi
 
-  if [[ ! -f "$root/.claude/ralph-desk/logs/.rlp-desk-${SLUG}.lock" ]]; then
+  if [[ ! -f "$root/.rlp-desk/logs/.rlp-desk-${SLUG}.lock" ]]; then
     pass "AC2-negative: stale lock cleanup removes stale lockfile"
   else
     fail "AC2-negative: stale lockfile remains after recovery"
@@ -215,8 +227,10 @@ test_ac2_happy() {
 }
 
 test_ac2_negative() {
+  # ZSH-4 lock redesign moved the rewrite out of main() and into
+  # acquire_slug_lock() (lib_ralph_desk.zsh).
   local body
-  body=$(extract_fn "main")
+  body=$(extract_fn "acquire_slug_lock" "$(dirname "$RUN")/lib_ralph_desk.zsh")
   if echo "$body" | grep -F 'echo $$ > "$lockfile"' >/dev/null 2>&1; then
     pass "AC2-negative: stale branch rewrites lockfile"
   else
@@ -225,12 +239,16 @@ test_ac2_negative() {
 }
 
 test_ac2_boundary() {
+  # The old exact "Stale lock detected ... recovering" log line is gone. The
+  # current boundary is structural: a dead-owner lock is recovered under a
+  # dedicated recovery mutex (not blindly clobbered by every contender).
   local body
-  body=$(extract_fn "main")
-  if echo "$body" | grep -F 'Stale lock detected (PID ${lock_pid:-unknown} not running), recovering' >/dev/null 2>&1; then
-    pass "AC2-boundary: stale warning message includes pid + recovering"
+  body=$(extract_fn "acquire_slug_lock" "$(dirname "$RUN")/lib_ralph_desk.zsh")
+  if echo "$body" | grep -F 'rmutex="${lockfile}.recovery.d"' >/dev/null 2>&1 &&
+     echo "$body" | grep -F 'mkdir "$rmutex"' >/dev/null 2>&1; then
+    pass "AC2-boundary: stale (dead-owner) lock recovery is serialized under a dedicated mutex"
   else
-    fail "AC2-boundary: stale warning message format changed"
+    fail "AC2-boundary: stale-lock recovery mutex boundary missing"
   fi
 }
 
@@ -247,7 +265,7 @@ test_ac3_happy() {
   run_runner_with_complete "$root" "$out"
   rc=$?
 
-  if [[ "$rc" -eq 0 ]] && [[ ! -f "$root/.claude/ralph-desk/logs/.rlp-desk-${SLUG}.lock" ]]; then
+  if [[ "$rc" -eq 0 ]] && [[ ! -f "$root/.rlp-desk/logs/.rlp-desk-${SLUG}.lock" ]]; then
     pass "AC3-happy: COMPLETE terminal path removes lockfile"
   else
     fail "AC3-happy: COMPLETE terminal path did not remove lockfile"
@@ -257,9 +275,12 @@ test_ac3_happy() {
 }
 
 test_ac3_negative() {
+  # US-023 R11 P2-K chained `_emit_final_cost_log` ahead of `cleanup` in the
+  # trap body, so the exact old literal 'trap cleanup EXIT INT TERM' is gone;
+  # cleanup is still trapped on EXIT/INT/TERM, just via a compound command.
   local body
   body=$(extract_fn "main")
-  if echo "$body" | grep -F 'trap cleanup EXIT INT TERM' >/dev/null 2>&1; then
+  if echo "$body" | grep -E "trap '.*cleanup' EXIT INT TERM" >/dev/null 2>&1; then
     pass "AC3-negative: cleanup trap includes EXIT, INT, TERM"
   else
     fail "AC3-negative: cleanup trap missing EXIT/INT/TERM"

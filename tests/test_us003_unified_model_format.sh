@@ -205,12 +205,12 @@ echo ""
 echo "--- L3 E2E: flag application in startup log ---"
 
 TMP_L3="$(mktemp -d)"; TMPDIRS+=("$TMP_L3")
-mkdir -p "$TMP_L3/.claude/ralph-desk/plans" \
-         "$TMP_L3/.claude/ralph-desk/memos" \
-         "$TMP_L3/.claude/ralph-desk/prompts" \
-         "$TMP_L3/.claude/ralph-desk/context" \
-         "$TMP_L3/.claude/ralph-desk/logs/e2eslug"
-touch "$TMP_L3/.claude/ralph-desk/plans/prd-e2eslug.md"
+mkdir -p "$TMP_L3/.rlp-desk/plans" \
+         "$TMP_L3/.rlp-desk/memos" \
+         "$TMP_L3/.rlp-desk/prompts" \
+         "$TMP_L3/.rlp-desk/context" \
+         "$TMP_L3/.rlp-desk/logs/e2eslug"
+touch "$TMP_L3/.rlp-desk/plans/prd-e2eslug.md"
 
 # L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows gpt-5.5
 L3_OUT_1=$(LOOP_NAME=e2eslug ROOT="$TMP_L3" TMUX=test \

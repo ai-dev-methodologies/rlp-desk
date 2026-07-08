@@ -11,7 +11,7 @@ ROOT_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 INIT="$ROOT_REPO/src/scripts/init_ralph_desk.zsh"
 GOV="$ROOT_REPO/src/governance.md"
 LOOP="$ROOT_REPO/src/node/runner/campaign-main-loop.mjs"
-DOCS="$ROOT_REPO/docs/multi-mission-orchestration.md"
+DOCS="$ROOT_REPO/docs/rlp-desk/multi-mission-orchestration.md"
 
 PASS=0
 FAIL=0

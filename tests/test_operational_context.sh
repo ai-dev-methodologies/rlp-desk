@@ -131,9 +131,9 @@ fi
 # E2E: run init WITHOUT server options, check no operational context
 tmpdir2=$(mktemp -d)
 TMPDIRS+=("$tmpdir2")
-mkdir -p "$tmpdir2/.claude/ralph-desk"/{plans,prompts,memos,context,logs}
+mkdir -p "$tmpdir2/.rlp-desk"/{plans,prompts,memos,context,logs}
 (cd "$tmpdir2" && ROOT="$tmpdir2" zsh "$INIT" "test-e2e" "Test objective" 2>/dev/null)
-worker_prompt="$tmpdir2/.claude/ralph-desk/prompts/test-e2e.worker.prompt.md"
+worker_prompt="$tmpdir2/.rlp-desk/prompts/test-e2e.worker.prompt.md"
 if [[ -f "$worker_prompt" ]]; then
   if grep -q 'Operational Context' "$worker_prompt" 2>/dev/null; then
     fail "AC4-2: Operational context injected WITHOUT server options"
@@ -147,9 +147,9 @@ fi
 # E2E: run init WITH server options, check operational context present
 tmpdir3=$(mktemp -d)
 TMPDIRS+=("$tmpdir3")
-mkdir -p "$tmpdir3/.claude/ralph-desk"/{plans,prompts,memos,context,logs}
+mkdir -p "$tmpdir3/.rlp-desk"/{plans,prompts,memos,context,logs}
 (cd "$tmpdir3" && ROOT="$tmpdir3" zsh "$INIT" "test-e2e-server" "Server project" --server-cmd "npm run dev" --server-port "7001" 2>/dev/null)
-worker_prompt_srv="$tmpdir3/.claude/ralph-desk/prompts/test-e2e-server.worker.prompt.md"
+worker_prompt_srv="$tmpdir3/.rlp-desk/prompts/test-e2e-server.worker.prompt.md"
 if [[ -f "$worker_prompt_srv" ]]; then
   if grep -q 'Operational Context' "$worker_prompt_srv" 2>/dev/null; then
     pass "AC4-3: Operational context injected WITH server options"
@@ -173,7 +173,7 @@ else
 fi
 
 # Check verifier prompt too
-verifier_prompt_srv="$tmpdir3/.claude/ralph-desk/prompts/test-e2e-server.verifier.prompt.md"
+verifier_prompt_srv="$tmpdir3/.rlp-desk/prompts/test-e2e-server.verifier.prompt.md"
 if [[ -f "$verifier_prompt_srv" ]]; then
   if grep -q 'Operational Verification' "$verifier_prompt_srv" 2>/dev/null; then
     pass "AC4-6: Operational verification in verifier prompt WITH server options"

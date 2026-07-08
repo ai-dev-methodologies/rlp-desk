@@ -128,9 +128,13 @@ test_r14_lockfile_atomicity() {
   elif ! mkdir "$l2" 2>/dev/null; then
     fail "R14: different-root mkdir blocked (multi-project parallel broken)"
   else
-    grep -q 'mkdir.*RUNNER_LOCKDIR' "$RUN" && \
+    # D-9 (358e89d): the dir-based runner lock (mkdir "$RUNNER_LOCKDIR" + separate
+    # pid file) was replaced by delegation to acquire_slug_lock — the set -C
+    # atomic-noclobber primitive where the PID *is* the lock — to close the
+    # acquire/pid-write race. Anti-tautology now pins the current acquisition call.
+    grep -q 'acquire_slug_lock "\$RUNNER_LOCKFILE_PATH"' "$RUN" && \
       grep -q 'shasum.*sha1sum.*cksum' "$RUN" && \
-      pass "R14: atomic mkdir blocks same-root, allows different-root, AND patched in run_ralph_desk.zsh + shasum chain (anti-tautology)" || \
+      pass "R14: atomic mkdir blocks same-root, allows different-root, AND runner lock acquired via acquire_slug_lock in run_ralph_desk.zsh + shasum chain (anti-tautology)" || \
       fail "R14: pattern missing in run_ralph_desk.zsh"
   fi
   rm -rf "$td"

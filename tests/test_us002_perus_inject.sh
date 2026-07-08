@@ -182,7 +182,7 @@ echo "--- L3 E2E: Full init + inject ---"
 
 TMP_E2E="$(mktemp -d)"; TMPDIRS+=("$TMP_E2E")
 ROOT="$TMP_E2E" zsh "$INIT" e2eslug "test" >/dev/null 2>&1 || true
-PLANS_E2E="$TMP_E2E/.claude/ralph-desk/plans"
+PLANS_E2E="$TMP_E2E/.rlp-desk/plans"
 cat > "$PLANS_E2E/prd-e2eslug.md" << 'E2E_PRD'
 # PRD: e2eslug
 ### US-001: First Story

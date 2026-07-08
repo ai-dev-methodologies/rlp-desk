@@ -58,6 +58,11 @@ extract_s8() {
 # Args: tmpdir cb_threshold verify_consensus effective_cb with_sv
 run_sc_harness() {
   local tmpdir="$1" cb="${2:-3}" vc="${3:-0}" ecb="${4:-3}" sv="${5:-0}"
+  # US-005 replaced the boolean VERIFY_CONSENSUS field in session-config.json
+  # with a unified CONSENSUS_MODE string (off|all|final-only) — the JSON-write
+  # block below reads $CONSENSUS_MODE directly, not $VERIFY_CONSENSUS.
+  local consensus_mode="off"
+  [[ "$vc" -eq 1 ]] && consensus_mode="all"
   {
     echo '#!/bin/zsh'
     echo "SESSION_NAME=\"test-session\"; SLUG=\"test-slug\"; BASELINE_COMMIT=\"abc123\""
@@ -66,7 +71,7 @@ run_sc_harness() {
     echo "WORKER_ENGINE=\"claude\"; VERIFIER_ENGINE=\"claude\""
     echo "WORKER_CODEX_MODEL=\"\"; WORKER_CODEX_REASONING=\"\""
     echo "VERIFIER_CODEX_MODEL=\"\"; VERIFIER_CODEX_REASONING=\"\""
-    echo "VERIFY_MODE=\"per-us\"; VERIFY_CONSENSUS=$vc; CONSENSUS_SCOPE=\"final\""
+    echo "VERIFY_MODE=\"per-us\"; VERIFY_CONSENSUS=$vc; CONSENSUS_SCOPE=\"final\"; CONSENSUS_MODE=\"$consensus_mode\""
     echo "MAX_ITER=10; POLL_INTERVAL=30; ITER_TIMEOUT=600"
     echo "HEARTBEAT_STALE_THRESHOLD=3; MAX_RESTARTS=3"
     echo "IDLE_NUDGE_THRESHOLD=120; MAX_NUDGES=5"
@@ -204,7 +209,8 @@ test_ac2_happy() {
   if [[ -f "$tmpdir/session-config.json" ]]; then
     local has_cb has_vc
     has_cb=$(grep -c '"cb_threshold": 5' "$tmpdir/session-config.json")
-    has_vc=$(grep -c '"verify_consensus": 1' "$tmpdir/session-config.json")
+    # US-005: verify_consensus (bool) was replaced by consensus_mode (off|all|final-only)
+    has_vc=$(grep -c '"consensus_mode": "all"' "$tmpdir/session-config.json")
     if (( has_cb >= 1 && has_vc >= 1 )); then
       # Also verify campaign-report has consensus label (PRD AC2 subclause)
       local tmpdir2
@@ -273,7 +279,7 @@ echo "--- AC3: runtime init --mode improve ---"
 test_ac3_happy() {
   local tmpdir
   tmpdir=$(mktemp -d)
-  local desk="$tmpdir/.claude/ralph-desk"
+  local desk="$tmpdir/.rlp-desk"
   mkdir -p "$desk/plans"
   echo "ORIGINAL_PRD_CONTENT_AC3_MARKER" > "$desk/plans/prd-test-slug.md"
   ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" --mode improve >/dev/null 2>&1
@@ -288,7 +294,7 @@ test_ac3_happy() {
 test_ac3_negative() {
   local tmpdir
   tmpdir=$(mktemp -d)
-  local desk="$tmpdir/.claude/ralph-desk"
+  local desk="$tmpdir/.rlp-desk"
   mkdir -p "$desk/plans" "$desk/memos"
   echo "ORIGINAL_PRD_AC3_NEG" > "$desk/plans/prd-test-slug.md"
   echo "{}" > "$desk/memos/test-slug-done-claim.json"
@@ -304,7 +310,7 @@ test_ac3_negative() {
 test_ac3_boundary() {
   local tmpdir
   tmpdir=$(mktemp -d)
-  local desk="$tmpdir/.claude/ralph-desk"
+  local desk="$tmpdir/.rlp-desk"
   mkdir -p "$desk/plans"
   echo "MARKER" > "$desk/plans/prd-test-slug.md"
   ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" --mode improve >/dev/null 2>&1
@@ -332,7 +338,7 @@ echo "--- AC4: runtime init --mode fresh ---"
 test_ac4_happy() {
   local tmpdir
   tmpdir=$(mktemp -d)
-  local desk="$tmpdir/.claude/ralph-desk"
+  local desk="$tmpdir/.rlp-desk"
   mkdir -p "$desk/plans"
   echo "ORIGINAL_PRD_AC4_MARKER" > "$desk/plans/prd-test-slug.md"
   ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" --mode fresh >/dev/null 2>&1
@@ -349,7 +355,7 @@ test_ac4_happy() {
 test_ac4_negative() {
   local tmpdir
   tmpdir=$(mktemp -d)
-  local desk="$tmpdir/.claude/ralph-desk"
+  local desk="$tmpdir/.rlp-desk"
   mkdir -p "$desk/plans"
   echo "MARKER_AC4_NEG" > "$desk/plans/prd-test-slug.md"
   local output
@@ -365,7 +371,7 @@ test_ac4_negative() {
 test_ac4_boundary() {
   local tmpdir
   tmpdir=$(mktemp -d)
-  local desk="$tmpdir/.claude/ralph-desk"
+  local desk="$tmpdir/.rlp-desk"
   mkdir -p "$desk/plans"
   echo "MARKER_AC4_BND" > "$desk/plans/prd-test-slug.md"
   # Use --mode=fresh (= form) instead of --mode fresh
@@ -576,7 +582,9 @@ test_ac8_negative() {
 test_ac8_boundary() {
   local has_init has_guard
   # CAMPAIGN_REPORT_GENERATED=0 init is inside generate_campaign_report() which is now in LIB
-  has_init=$(( $(grep -c 'CAMPAIGN_REPORT_GENERATED=0' "$RUN" 2>/dev/null || echo 0) + $(grep -c 'CAMPAIGN_REPORT_GENERATED=0' "$LIB" 2>/dev/null || echo 0) ))
+  # NOTE: grep -c already prints "0" (with exit 1) on no match, so `|| echo 0`
+  # double-emitted a second "0" line and broke the $(( )) arithmetic below.
+  has_init=$(( $(grep -c 'CAMPAIGN_REPORT_GENERATED=0' "$RUN" 2>/dev/null) + $(grep -c 'CAMPAIGN_REPORT_GENERATED=0' "$LIB" 2>/dev/null) ))
   has_guard=$(extract_fn generate_campaign_report | grep -c 'CAMPAIGN_REPORT_GENERATED.*return 0')
   if (( has_init >= 1 && has_guard >= 1 )); then
     pass "AC8-boundary: guard initialized ($has_init) and checked ($has_guard)"

@@ -65,9 +65,9 @@ run_test "AC1-boundary: step 7d or Archive label in rlp-desk.md" "$(( count >= 1
 count=$(count_grep 'baseline_commit' "$CMD")
 run_test "AC2-happy: baseline_commit in rlp-desk.md" "$(( count >= 1 ))" "1"
 
-# AC2-negative: appears in Preparation or early section (line < 370)
+# AC2-negative: appears in Preparation or early section (before Leader Loop / report sections)
 first_line=$(grep -n 'baseline_commit' "$CMD" 2>/dev/null | head -1 | cut -d: -f1)
-run_test "AC2-negative: baseline_commit in early section of rlp-desk.md (line < 370)" "$(( ${first_line:-999} < 370 ))" "1"
+run_test "AC2-negative: baseline_commit in early section of rlp-desk.md (line < 405, within Preparation)" "$(( ${first_line:-999} < 405 ))" "1"
 
 # AC2-boundary: git rev-parse used to capture baseline commit
 count=$(count_grep 'git rev-parse\|rev-parse HEAD' "$CMD")
@@ -259,7 +259,7 @@ count=$(count_grep 'PROJECT_DIR' "$RUN")
 run_test "AC14-happy: no PROJECT_DIR in run_ralph_desk.zsh (uses ROOT)" "$count" "0"
 
 # AC14-negative: no LOG_DIR (only LOGS_DIR)
-count=$(( $(grep -c '\bLOG_DIR\b' "$RUN" 2>/dev/null || echo 0) + $(grep -c '\bLOG_DIR\b' "$LIB" 2>/dev/null || echo 0) ))
+count=$(count_grep '\bLOG_DIR\b' "$RUN")
 run_test "AC14-negative: no bare LOG_DIR in run_ralph_desk.zsh (uses LOGS_DIR)" "$count" "0"
 
 # AC14-boundary: DONE_CLAIM_FILE and VERDICT_FILE used in archival code

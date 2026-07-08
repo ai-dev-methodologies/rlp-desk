@@ -44,8 +44,11 @@ assert_one "$RUN" '_attempts >= 5' \
   "AC3-a: 5-attempt threshold present"
 assert_one "$RUN" 'sleep 1' \
   "AC3-b: 1-second sleep between polls"
-# No contradictory "3 retries" or "4s budget" wording
-n_contradict=$(grep -cE '3 retries|4s budget|3 × 1s' "$RUN" 2>/dev/null | head -1)
+# No contradictory "3 retries" or "4s budget" wording in the R12 lifecycle poll.
+# Exclude the unrelated verifier-process restart message ("Verifier process
+# dead/stuck after 3 retries", added in Bug #8 hardening) — that is a distinct
+# subsystem, not the pane-lifecycle budget this AC guards.
+n_contradict=$(grep -E '3 retries|4s budget|3 × 1s' "$RUN" 2>/dev/null | grep -cv 'Verifier process')
 [[ -z "$n_contradict" ]] && n_contradict=0
 [[ "$n_contradict" -eq 0 ]] && pass "AC3-c: no contradictory '3 retries' / '4s' wording (got $n_contradict)" \
                             || fail "AC3-c: stale 3-retry wording present ($n_contradict)"

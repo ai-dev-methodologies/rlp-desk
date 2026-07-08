@@ -96,7 +96,7 @@ test_ac1_happy_preserves_customized_test_spec_on_improve() {
   dir="$(new_tmp)"
   run_init "$dir" ac14a15 "test" ""
 
-  local ts="$dir/.claude/ralph-desk/plans/test-spec-ac14a15.md"
+  local ts="$dir/.rlp-desk/plans/test-spec-ac14a15.md"
   cat > "$ts" <<'TS_END'
 # Test Spec: ac14a15
 ## Verification Commands
@@ -119,7 +119,7 @@ test_ac1_negative_fresh_mode_is_not_a_noop_for_test_spec() {
   dir="$(new_tmp)"
   run_init "$dir" ac14a15b "test" ""
 
-  local ts="$dir/.claude/ralph-desk/plans/test-spec-ac14a15b.md"
+  local ts="$dir/.rlp-desk/plans/test-spec-ac14a15b.md"
   printf '%s\n' "CUSTOMIZED test-spec marker" > "$ts"
   run_init "$dir" ac14a15b "test" "fresh"
 
@@ -133,7 +133,7 @@ test_ac1_boundary_markerless_spec_stays_unchanged_on_improve() {
   dir="$(new_tmp)"
   run_init "$dir" ac14a15c "test" ""
 
-  local ts="$dir/.claude/ralph-desk/plans/test-spec-ac14a15c.md"
+  local ts="$dir/.rlp-desk/plans/test-spec-ac14a15c.md"
   cat > "$ts" <<'TS_END'
 # Test Spec: markerless
 No US sections here.
@@ -148,33 +148,38 @@ TS_END
 
 
 echo ""
-echo "--- AC2: sentinels deleted on improve without PRD ---"
+echo "--- AC2: sentinels deleted on improve re-execution ---"
+# Note (contract update, v0.10.1 a3183e0): --mode with no PRD now hits the
+# no-PRD-fallback (MODE reset, treated as first-run — see test_us004 AC13),
+# which skips the whole re-execution cleanup block including sentinel
+# deletion. So exercising sentinel cleanup requires the PRD to still be
+# present when --mode improve runs (cleanup is gated on PRD, not on mode
+# alone). PRD is left in place instead of removed to reach that code path.
 
 # AC2-happy
-test_ac2_happy_deletes_complete_sentinel_with_prd_missing() {
+test_ac2_happy_deletes_complete_sentinel_on_improve() {
   local dir
   dir="$(new_tmp)"
   run_init "$dir" ac14a15s2 "test" ""
 
-  printf '%s\n' "completed" > "$dir/.claude/ralph-desk/memos/ac14a15s2-complete.md"
-  rm -f "$dir/.claude/ralph-desk/plans/prd-ac14a15s2.md"
+  printf '%s\n' "completed" > "$dir/.rlp-desk/memos/ac14a15s2-complete.md"
   run_init "$dir" ac14a15s2 "test" "improve"
 
-  assert_file_missing "$dir/.claude/ralph-desk/memos/ac14a15s2-complete.md" \
-    "AC2-happy: complete sentinel deleted when PRD is absent"
+  assert_file_missing "$dir/.rlp-desk/memos/ac14a15s2-complete.md" \
+    "AC2-happy: complete sentinel deleted on improve re-execution"
 }
 
 # AC2-negative
 test_ac2_negative_no_complete_file_is_idempotent() {
   local dir
   dir="$(new_tmp)"
-  local memodir="$dir/.claude/ralph-desk/memos"
+  local memodir="$dir/.rlp-desk/memos"
   mkdir -p "$memodir"
 
   local keep_file="$memodir/ac14a15s3-keep.md"
   printf '%s\n' "keep" > "$keep_file"
 
-  rm -f "$dir/.claude/ralph-desk/plans/prd-ac14a15s3.md"
+  rm -f "$dir/.rlp-desk/plans/prd-ac14a15s3.md"
 
   local status=0
   ROOT="$dir" zsh "$INIT" ac14a15s3 "test" --mode "improve" >/dev/null 2>&1 || status=$?
@@ -185,20 +190,19 @@ test_ac2_negative_no_complete_file_is_idempotent() {
 }
 
 # AC2-boundary
-test_ac2_boundary_deletes_blocked_too_when_prd_missing() {
+test_ac2_boundary_deletes_blocked_too_on_improve() {
   local dir
   dir="$(new_tmp)"
   run_init "$dir" ac14a15s4 "test" ""
 
-  printf '%s\n' "completed" > "$dir/.claude/ralph-desk/memos/ac14a15s4-complete.md"
-  printf '%s\n' "blocked" > "$dir/.claude/ralph-desk/memos/ac14a15s4-blocked.md"
-  rm -f "$dir/.claude/ralph-desk/plans/prd-ac14a15s4.md"
+  printf '%s\n' "completed" > "$dir/.rlp-desk/memos/ac14a15s4-complete.md"
+  printf '%s\n' "blocked" > "$dir/.rlp-desk/memos/ac14a15s4-blocked.md"
   run_init "$dir" ac14a15s4 "test" "improve"
 
-  assert_file_missing "$dir/.claude/ralph-desk/memos/ac14a15s4-complete.md" \
-    "AC2-boundary: complete sentinel deleted on improve without PRD"
-  assert_file_missing "$dir/.claude/ralph-desk/memos/ac14a15s4-blocked.md" \
-    "AC2-boundary: blocked sentinel deleted on improve without PRD"
+  assert_file_missing "$dir/.rlp-desk/memos/ac14a15s4-complete.md" \
+    "AC2-boundary: complete sentinel deleted on improve re-execution"
+  assert_file_missing "$dir/.rlp-desk/memos/ac14a15s4-blocked.md" \
+    "AC2-boundary: blocked sentinel deleted on improve re-execution"
 }
 
 
@@ -211,7 +215,7 @@ test_ac3_happy_fresh_regenerates_customized_test_spec() {
   dir="$(new_tmp)"
   run_init "$dir" ac14a15f "test" ""
 
-  local ts="$dir/.claude/ralph-desk/plans/test-spec-ac14a15f.md"
+  local ts="$dir/.rlp-desk/plans/test-spec-ac14a15f.md"
   printf '%s\n' "CUSTOMIZED test-spec marker" > "$ts"
   run_init "$dir" ac14a15f "test" "fresh"
 
@@ -225,7 +229,7 @@ test_ac3_negative_improve_does_not_replace_test_spec() {
   dir="$(new_tmp)"
   run_init "$dir" ac14a15f2 "test" ""
 
-  local ts="$dir/.claude/ralph-desk/plans/test-spec-ac14a15f2.md"
+  local ts="$dir/.rlp-desk/plans/test-spec-ac14a15f2.md"
   printf '%s\n' "DO-NOT-REPLACE" > "$ts"
   run_init "$dir" ac14a15f2 "test" "improve"
 
@@ -239,7 +243,7 @@ test_ac3_boundary_fresh_mode_clears_stale_per_us_test_spec_splits() {
   dir="$(new_tmp)"
   run_init "$dir" ac14a15f3 "test" ""
 
-  local ts="$dir/.claude/ralph-desk/plans/test-spec-ac14a15f3.md"
+  local ts="$dir/.rlp-desk/plans/test-spec-ac14a15f3.md"
   cat > "$ts" <<'TS_END'
 # Test Spec: ac14a15f3
 ## Verification Commands
@@ -256,14 +260,14 @@ TS_END
 
   run_init "$dir" ac14a15f3 "test" "improve"
   local split_before
-  split_before=$(ls "$dir/.claude/ralph-desk/plans/test-spec-ac14a15f3-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+  split_before=$(ls "$dir/.rlp-desk/plans/test-spec-ac14a15f3-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
   assert_eq "$split_before" 2 "AC3-boundary: improve generates per-US test-spec splits"
 
   printf '# Test Spec: ac14a15f3\n## Verification Commands\n### Test\nzsh -n src/scripts/init_ralph_desk.zsh\n' > "$ts"
   run_init "$dir" ac14a15f3 "test" "fresh"
 
   local split_after
-  split_after=$(ls "$dir/.claude/ralph-desk/plans/test-spec-ac14a15f3-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+  split_after=$(ls "$dir/.rlp-desk/plans/test-spec-ac14a15f3-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
   assert_eq "$split_after" 0 "AC3-boundary: fresh mode clears stale per-US split files when markers disappear"
 }
 
@@ -272,9 +276,9 @@ test_ac1_happy_preserves_customized_test_spec_on_improve
 test_ac1_negative_fresh_mode_is_not_a_noop_for_test_spec
 test_ac1_boundary_markerless_spec_stays_unchanged_on_improve
 
-test_ac2_happy_deletes_complete_sentinel_with_prd_missing
+test_ac2_happy_deletes_complete_sentinel_on_improve
 test_ac2_negative_no_complete_file_is_idempotent
-test_ac2_boundary_deletes_blocked_too_when_prd_missing
+test_ac2_boundary_deletes_blocked_too_on_improve
 
 test_ac3_happy_fresh_regenerates_customized_test_spec
 test_ac3_negative_improve_does_not_replace_test_spec

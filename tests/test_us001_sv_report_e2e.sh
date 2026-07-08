@@ -99,7 +99,11 @@ run_sv_function() {
   local logs="$tmpdir/logs"
 
   # Write header (bash expands $tmpdir, $logs, $with_sv here — intentional)
+  # RC-1 (d288dce): generate_sv_report() early-returns when $TMUX is set (SV is
+  # Agent-mode only). This harness exercises the Agent-mode path, so it must clear
+  # any ambient TMUX inherited by `zsh -f` (the test runner may itself be in tmux).
   cat > "$tmpdir/run.zsh" << EOF
+unset TMUX
 WITH_SELF_VERIFICATION=$with_sv
 SV_REPORT_GENERATED=0
 LOGS_DIR="$logs"
@@ -275,6 +279,7 @@ $sv_marker
 EOF
 
   cat > "$tmpdir/run.zsh" << EOF2
+unset TMUX
 WITH_SELF_VERIFICATION=$with_sv
 SV_REPORT_GENERATED=0
 LOGS_DIR="$logs"
@@ -438,6 +443,7 @@ write_mock_claude_ok "$tmpdir/bin"
 
 # Run generate_sv_report with LOGS_DIR != ANALYTICS_DIR
 cat > "$tmpdir/run_s9.zsh" << EOF
+unset TMUX
 WITH_SELF_VERIFICATION=1
 SV_REPORT_GENERATED=0
 LOGS_DIR="$logs"
@@ -469,6 +475,7 @@ fi
 # AC2 versioning with distinct dirs: pre-create 001 in LOGS_DIR → next run creates 002 in LOGS_DIR
 echo "existing" > "$logs/self-verification-report-001.md"
 cat > "$tmpdir/run_s9b.zsh" << EOF
+unset TMUX
 WITH_SELF_VERIFICATION=1
 SV_REPORT_GENERATED=0
 LOGS_DIR="$logs"

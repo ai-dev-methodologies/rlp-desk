@@ -37,12 +37,26 @@ _run_should_use_consensus() {
     return
   fi
 
+  # US-005 (later revision) unified VERIFY_CONSENSUS + FINAL_CONSENSUS +
+  # CONSENSUS_SCOPE into a single CONSENSUS_MODE knob (off|all|final-only);
+  # _should_use_consensus() now branches on $CONSENSUS_MODE alone. The
+  # legacy-flag -> CONSENSUS_MODE translation lives at module top-level (not
+  # inside the function), so pull it straight from source instead of
+  # re-implementing — and re-drifting from — it here.
+  local legacy_map
+  legacy_map=$(sed -n '/^CONSENSUS_MODE="\${CONSENSUS_MODE:-off}"/,/^fi$/p' "$RUN" 2>/dev/null)
+  if [[ -z "$legacy_map" ]]; then
+    SHOULD_RC=127
+    return
+  fi
+
   local tmp_script
   tmp_script=$(mktemp /tmp/us005_XXXXXX.zsh)
   {
     printf 'FINAL_CONSENSUS=%s\n' "$fc"
     printf 'VERIFY_CONSENSUS=%s\n' "$vc"
     printf 'CONSENSUS_SCOPE=%s\n' "$cs"
+    printf '%s\n' "$legacy_map"
     printf '%s\n' "$func_body"
     printf "_should_use_consensus '%s'\n" "$signal_us_id"
     printf 'exit $?\n'
@@ -76,7 +90,7 @@ NOCODEX_PATH="$TMP_BINS:/usr/bin:/bin"
 TMP_ZDOTDIR="$(mktemp -d)"; TMPDIRS+=("$TMP_ZDOTDIR")
 
 TMP_NOCODEX="$(mktemp -d)"; TMPDIRS+=("$TMP_NOCODEX")
-mkdir -p "$TMP_NOCODEX/.claude/ralph-desk/logs/testslug"
+mkdir -p "$TMP_NOCODEX/.rlp-desk/logs/testslug"
 
 echo "=== US-005: --final-consensus option ==="
 echo ""
@@ -127,14 +141,16 @@ fi
 
 # AC1-L1-5 (negative): FINAL_CONSENSUS=0 reflected as 0 in startup log (not accidentally enabled)
 TMP_NOFC="$(mktemp -d)"; TMPDIRS+=("$TMP_NOFC")
-mkdir -p "$TMP_NOFC/.claude/ralph-desk/logs/nofcslug"
+mkdir -p "$TMP_NOFC/.rlp-desk/logs/nofcslug"
 NOFC_OUT=$(LOOP_NAME=nofcslug ROOT="$TMP_NOFC" TMUX=test FINAL_CONSENSUS=0 \
   zsh "$RUN" 2>/dev/null || true)
-fc_count=$(echo "$NOFC_OUT" | grep -c "Final consensus: 0" 2>/dev/null) || fc_count=0
+# US-005 (later revision) replaced the "Final consensus: 0/1" startup log line
+# with the unified "Consensus mode:  off|all|final-only".
+fc_count=$(echo "$NOFC_OUT" | grep -cE "Consensus mode:[[:space:]]+off" 2>/dev/null) || fc_count=0
 if [[ "$fc_count" -ge 1 ]]; then
-  pass "AC1-L1-5: FINAL_CONSENSUS=0 → startup log shows 'Final consensus: 0' (negative: not accidentally 1)"
+  pass "AC1-L1-5: FINAL_CONSENSUS=0 → startup log shows 'Consensus mode: off' (negative: not accidentally enabled)"
 else
-  fail "AC1-L1-5: startup log should show 'Final consensus: 0' when flag absent (got: '$(echo "$NOFC_OUT" | grep -i "consensus" | head -3)')"
+  fail "AC1-L1-5: startup log should show 'Consensus mode: off' when flag absent (got: '$(echo "$NOFC_OUT" | grep -i "consensus" | head -3)')"
 fi
 
 echo ""
@@ -233,12 +249,14 @@ assert_eq "$SYNTAX_RC" "0" "L3-E2E-1: zsh -n syntax check passes"
 
 # L3-E2E-2: --final-consensus CLI flag reflected in startup log
 TMP_L3="$(mktemp -d)"; TMPDIRS+=("$TMP_L3")
-mkdir -p "$TMP_L3/.claude/ralph-desk/logs/e2eslug"
+mkdir -p "$TMP_L3/.rlp-desk/logs/e2eslug"
 L3_OUT=$(LOOP_NAME=e2eslug ROOT="$TMP_L3" TMUX=test \
   zsh "$RUN" --final-consensus 2>/dev/null || true)
-c=$(echo "$L3_OUT" | grep -ci "final.consensus.*1\|final consensus.*1" 2>/dev/null) || c=0
+# --final-consensus is legacy compat for --consensus final-only (CONSENSUS_MODE),
+# logged as "Consensus mode:  final-only" rather than a "final consensus: 1" line.
+c=$(echo "$L3_OUT" | grep -ciE "Consensus mode:[[:space:]]+final-only" 2>/dev/null) || c=0
 if [[ "$c" -ge 1 ]]; then
-  pass "L3-E2E-2: --final-consensus flag reflected in startup log"
+  pass "L3-E2E-2: --final-consensus flag reflected in startup log (Consensus mode: final-only)"
 else
   fail "L3-E2E-2: --final-consensus flag should appear in startup log (output: '$(echo "$L3_OUT" | head -8)')"
 fi

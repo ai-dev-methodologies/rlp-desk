@@ -45,21 +45,21 @@ echo "--- AC1: PRD split into per-US files ---"
 # AC1-L1-1: 2-US PRD creates exactly 2 split files (happy path)
 TMP_AC1="$(mktemp -d)"; TMPDIRS+=("$TMP_AC1")
 ROOT="$TMP_AC1" zsh "$INIT" ac1test "test" >/dev/null 2>&1 || true
-cat > "$TMP_AC1/.claude/ralph-desk/plans/prd-ac1test.md" << 'AC1_PRD'
+cat > "$TMP_AC1/.rlp-desk/plans/prd-ac1test.md" << 'AC1_PRD'
 # PRD: ac1test
 ### US-001: Alpha Story
 Body of alpha.
 ### US-002: Beta Story
 Body of beta only.
 AC1_PRD
-rm -f "$TMP_AC1/.claude/ralph-desk/plans/test-spec-ac1test.md"
+rm -f "$TMP_AC1/.rlp-desk/plans/test-spec-ac1test.md"
 ROOT="$TMP_AC1" zsh "$INIT" ac1test "test" --mode improve >/dev/null 2>&1 || true
 
-ac1_count=$(ls "$TMP_AC1/.claude/ralph-desk/plans/prd-ac1test-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+ac1_count=$(ls "$TMP_AC1/.rlp-desk/plans/prd-ac1test-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
 assert_eq "$ac1_count" 2 "AC1-L1-1: 2-US PRD creates exactly 2 split files"
 
 # AC1-L1-2: US-001 split file contains its own section body text
-ac1_us1="$TMP_AC1/.claude/ralph-desk/plans/prd-ac1test-US-001.md"
+ac1_us1="$TMP_AC1/.rlp-desk/plans/prd-ac1test-US-001.md"
 if [[ -f "$ac1_us1" ]]; then
   c=$(grep -c "Body of alpha" "$ac1_us1" 2>/dev/null) || c=0
   assert_one "$c" "AC1-L1-2: US-001 split file contains US-001 section body"
@@ -68,7 +68,7 @@ else
 fi
 
 # AC1-L1-3: US-002 split file contains US-002 body and NOT US-001 body (content isolation)
-ac1_us2="$TMP_AC1/.claude/ralph-desk/plans/prd-ac1test-US-002.md"
+ac1_us2="$TMP_AC1/.rlp-desk/plans/prd-ac1test-US-002.md"
 if [[ -f "$ac1_us2" ]]; then
   c=$(grep -c "Body of beta only" "$ac1_us2" 2>/dev/null) || c=0
   assert_one "$c" "AC1-L1-3: US-002 split file contains US-002 section body"
@@ -82,7 +82,7 @@ fi
 # AC1-L2-4: 3-US PRD creates exactly 3 split files (boundary: minimum for "3+" PRD requirement)
 TMP3="$(mktemp -d)"; TMPDIRS+=("$TMP3")
 ROOT="$TMP3" zsh "$INIT" threeustest "test" >/dev/null 2>&1 || true
-cat > "$TMP3/.claude/ralph-desk/plans/prd-threeustest.md" << 'PRD3_END'
+cat > "$TMP3/.rlp-desk/plans/prd-threeustest.md" << 'PRD3_END'
 # PRD: threeustest
 ### US-001: First Story
 Content for US-001.
@@ -91,17 +91,17 @@ Content for US-002 only.
 ### US-003: Third Story
 Content for US-003.
 PRD3_END
-rm -f "$TMP3/.claude/ralph-desk/plans/test-spec-threeustest.md"
+rm -f "$TMP3/.rlp-desk/plans/test-spec-threeustest.md"
 ROOT="$TMP3" zsh "$INIT" threeustest "test" --mode improve >/dev/null 2>&1 || true
-split3=$(ls "$TMP3/.claude/ralph-desk/plans/prd-threeustest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+split3=$(ls "$TMP3/.rlp-desk/plans/prd-threeustest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
 assert_eq "$split3" 3 "AC1-L2-4: 3-US PRD creates exactly 3 split files"
 
 # AC1-L2-5: content isolation in 3-US case (US-001 contains own body, not other US bodies)
-if [[ -f "$TMP3/.claude/ralph-desk/plans/prd-threeustest-US-001.md" ]]; then
-  c=$(grep -c "Content for US-001" "$TMP3/.claude/ralph-desk/plans/prd-threeustest-US-001.md" 2>/dev/null) || c=0
+if [[ -f "$TMP3/.rlp-desk/plans/prd-threeustest-US-001.md" ]]; then
+  c=$(grep -c "Content for US-001" "$TMP3/.rlp-desk/plans/prd-threeustest-US-001.md" 2>/dev/null) || c=0
   assert_one "$c" "AC1-L2-5: US-001 split file contains US-001 content (3-US case)"
   c=$(grep -c "Content for US-002\|Content for US-003" \
-    "$TMP3/.claude/ralph-desk/plans/prd-threeustest-US-001.md" 2>/dev/null) || c=0
+    "$TMP3/.rlp-desk/plans/prd-threeustest-US-001.md" 2>/dev/null) || c=0
   assert_zero "$c" "AC1-L2-5-iso: US-001 split file has no other-US body text (3-US case)"
 else
   fail "AC1-L2-5: US-001 split file not found in 3-US test"
@@ -111,16 +111,16 @@ fi
 # AC1-L2-6: single-US PRD creates 1 split file and preserves original full PRD
 TMP_SINGLE="$(mktemp -d)"; TMPDIRS+=("$TMP_SINGLE")
 ROOT="$TMP_SINGLE" zsh "$INIT" single1us "test" >/dev/null 2>&1 || true
-cat > "$TMP_SINGLE/.claude/ralph-desk/plans/prd-single1us.md" << 'PRD1_END'
+cat > "$TMP_SINGLE/.rlp-desk/plans/prd-single1us.md" << 'PRD1_END'
 # PRD: single1us
 ### US-001: Only Story
 Content for single US-001 here.
 PRD1_END
-rm -f "$TMP_SINGLE/.claude/ralph-desk/plans/test-spec-single1us.md"
+rm -f "$TMP_SINGLE/.rlp-desk/plans/test-spec-single1us.md"
 ROOT="$TMP_SINGLE" zsh "$INIT" single1us "test" --mode improve >/dev/null 2>&1 || true
-split1=$(ls "$TMP_SINGLE/.claude/ralph-desk/plans/prd-single1us-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+split1=$(ls "$TMP_SINGLE/.rlp-desk/plans/prd-single1us-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
 assert_eq "$split1" 1 "AC1-L2-6: single-US PRD creates exactly 1 split file"
-if [[ -f "$TMP_SINGLE/.claude/ralph-desk/plans/prd-single1us.md" ]]; then
+if [[ -f "$TMP_SINGLE/.rlp-desk/plans/prd-single1us.md" ]]; then
   pass "AC1-L2-6-full: original full PRD preserved after split"
 else
   fail "AC1-L2-6-full: original full PRD NOT preserved after split"
@@ -129,16 +129,16 @@ fi
 # AC1-L3-neg: ## US-NNN: (double-hash) must NOT trigger PRD splitting (wrong marker format)
 TMP_NEG="$(mktemp -d)"; TMPDIRS+=("$TMP_NEG")
 ROOT="$TMP_NEG" zsh "$INIT" negmarktest "test" >/dev/null 2>&1 || true
-cat > "$TMP_NEG/.claude/ralph-desk/plans/prd-negmarktest.md" << 'PRD_NEG'
+cat > "$TMP_NEG/.rlp-desk/plans/prd-negmarktest.md" << 'PRD_NEG'
 # PRD: negmarktest
 ## US-001: First Story
 Content for story one.
 ## US-002: Second Story
 Content for story two.
 PRD_NEG
-rm -f "$TMP_NEG/.claude/ralph-desk/plans/test-spec-negmarktest.md"
+rm -f "$TMP_NEG/.rlp-desk/plans/test-spec-negmarktest.md"
 ROOT="$TMP_NEG" zsh "$INIT" negmarktest "test" --mode improve >/dev/null 2>&1 || true
-neg_split=$(ls "$TMP_NEG/.claude/ralph-desk/plans/prd-negmarktest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+neg_split=$(ls "$TMP_NEG/.rlp-desk/plans/prd-negmarktest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
 assert_zero "$neg_split" "AC1-L3-neg: ## US-NNN: (double-hash) does NOT trigger PRD splitting"
 
 # ===========================================================
@@ -153,7 +153,7 @@ echo "--- AC2: test-spec split per US ---"
 # AC2-L1-1: test-spec with 2 US markers creates 2 split files
 TMP_TS="$(mktemp -d)"; TMPDIRS+=("$TMP_TS")
 ROOT="$TMP_TS" zsh "$INIT" tstest "test" >/dev/null 2>&1 || true
-cat > "$TMP_TS/.claude/ralph-desk/plans/test-spec-tstest.md" << 'TS_END'
+cat > "$TMP_TS/.rlp-desk/plans/test-spec-tstest.md" << 'TS_END'
 # Test Spec: tstest
 ## Verification Commands
 ### Build
@@ -171,11 +171,11 @@ Some tests for US-001.
 Some tests for US-002.
 TS_END
 ROOT="$TMP_TS" zsh "$INIT" tstest "test" >/dev/null 2>&1 || true
-ts_count=$(ls "$TMP_TS/.claude/ralph-desk/plans/test-spec-tstest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+ts_count=$(ls "$TMP_TS/.rlp-desk/plans/test-spec-tstest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
 assert_ge "$ts_count" 2 "AC2-L1-1: test-spec with 2 US markers creates 2 split files"
 
 # AC2-L1-2: each split test-spec file includes the global ## Verification Commands block
-for ts_split in "$TMP_TS/.claude/ralph-desk/plans/test-spec-tstest-US-"*.md; do
+for ts_split in "$TMP_TS/.rlp-desk/plans/test-spec-tstest-US-"*.md; do
   [[ -f "$ts_split" ]] || continue
   vc_count=$(grep -c "^## Verification Commands" "$ts_split" 2>/dev/null) || vc_count=0
   if [[ "$vc_count" -ge 1 ]]; then
@@ -186,9 +186,9 @@ for ts_split in "$TMP_TS/.claude/ralph-desk/plans/test-spec-tstest-US-"*.md; do
 done
 
 # AC2-L1-3: split test-spec file contains its US-specific section content
-if [[ -f "$TMP_TS/.claude/ralph-desk/plans/test-spec-tstest-US-001.md" ]]; then
+if [[ -f "$TMP_TS/.rlp-desk/plans/test-spec-tstest-US-001.md" ]]; then
   c=$(grep -c "Some tests for US-001" \
-    "$TMP_TS/.claude/ralph-desk/plans/test-spec-tstest-US-001.md" 2>/dev/null) || c=0
+    "$TMP_TS/.rlp-desk/plans/test-spec-tstest-US-001.md" 2>/dev/null) || c=0
   assert_one "$c" "AC2-L1-3: test-spec-US-001 split file contains US-001 section content"
 else
   fail "AC2-L1-3: test-spec-US-001 split file not created"
@@ -197,7 +197,7 @@ fi
 # AC2-L2-4: stale test-spec per-US files removed when markers disappear (boundary)
 TMP_TS_STALE="$(mktemp -d)"; TMPDIRS+=("$TMP_TS_STALE")
 ROOT="$TMP_TS_STALE" zsh "$INIT" tsstaletest "test" >/dev/null 2>&1 || true
-cat > "$TMP_TS_STALE/.claude/ralph-desk/plans/test-spec-tsstaletest.md" << 'TS_STALE1'
+cat > "$TMP_TS_STALE/.rlp-desk/plans/test-spec-tsstaletest.md" << 'TS_STALE1'
 # Test Spec: tsstaletest
 ## Verification Commands
 ### Build
@@ -212,13 +212,13 @@ Tests for US-001.
 ### L1
 Tests for US-002.
 TS_STALE1
-rm -f "$TMP_TS_STALE/.claude/ralph-desk/plans/prd-tsstaletest.md"
+rm -f "$TMP_TS_STALE/.rlp-desk/plans/prd-tsstaletest.md"
 ROOT="$TMP_TS_STALE" zsh "$INIT" tsstaletest "test" --mode improve >/dev/null 2>&1 || true
-ts_initial=$(ls "$TMP_TS_STALE/.claude/ralph-desk/plans/test-spec-tsstaletest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+ts_initial=$(ls "$TMP_TS_STALE/.rlp-desk/plans/test-spec-tsstaletest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
 printf '# Test Spec: tsstaletest\n## Verification Commands\n### Build\nzsh -n src/scripts/init_ralph_desk.zsh\n' \
-  > "$TMP_TS_STALE/.claude/ralph-desk/plans/test-spec-tsstaletest.md"
+  > "$TMP_TS_STALE/.rlp-desk/plans/test-spec-tsstaletest.md"
 ROOT="$TMP_TS_STALE" zsh "$INIT" tsstaletest "test" --mode improve >/dev/null 2>&1 || true
-ts_stale=$(ls "$TMP_TS_STALE/.claude/ralph-desk/plans/test-spec-tsstaletest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+ts_stale=$(ls "$TMP_TS_STALE/.rlp-desk/plans/test-spec-tsstaletest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$ts_initial" -ge 2 ]]; then
   assert_zero "$ts_stale" "AC2-L2-4: stale test-spec per-US files removed on markerless re-run"
 else
@@ -246,8 +246,8 @@ assert_ge "$ret0_count" 1 "AC3-L1-2: init script uses return 0 for graceful no-m
 # AC3-L3-3: functional: init exits 0 with markerless PRD (must NOT crash)
 TMP_NOMARK="$(mktemp -d)"; TMPDIRS+=("$TMP_NOMARK")
 ROOT="$TMP_NOMARK" zsh "$INIT" noustest "test" >/dev/null 2>&1 || true
-printf '%s\n' "no markers here just text" > "$TMP_NOMARK/.claude/ralph-desk/plans/prd-noustest.md"
-rm -f "$TMP_NOMARK/.claude/ralph-desk/plans/test-spec-noustest.md"
+printf '%s\n' "no markers here just text" > "$TMP_NOMARK/.rlp-desk/plans/prd-noustest.md"
+rm -f "$TMP_NOMARK/.rlp-desk/plans/test-spec-noustest.md"
 ROOT="$TMP_NOMARK" zsh "$INIT" noustest "test" --mode improve >/dev/null 2>&1
 init_exit=$?
 if [[ $init_exit -eq 0 ]]; then
@@ -259,20 +259,20 @@ fi
 # AC3-L3-4: stale per-US PRD split files cleaned on markerless re-run (must NOT linger)
 TMP_STALE="$(mktemp -d)"; TMPDIRS+=("$TMP_STALE")
 ROOT="$TMP_STALE" zsh "$INIT" staletest "test" >/dev/null 2>&1 || true
-cat > "$TMP_STALE/.claude/ralph-desk/plans/prd-staletest.md" << 'STALE_PRD'
+cat > "$TMP_STALE/.rlp-desk/plans/prd-staletest.md" << 'STALE_PRD'
 # PRD
 ### US-001: First
 Content.
 ### US-002: Second
 Content.
 STALE_PRD
-rm -f "$TMP_STALE/.claude/ralph-desk/plans/test-spec-staletest.md"
+rm -f "$TMP_STALE/.rlp-desk/plans/test-spec-staletest.md"
 ROOT="$TMP_STALE" zsh "$INIT" staletest "test" --mode improve >/dev/null 2>&1 || true
-stale_initial=$(ls "$TMP_STALE/.claude/ralph-desk/plans/prd-staletest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
-printf 'no markers here\n' > "$TMP_STALE/.claude/ralph-desk/plans/prd-staletest.md"
-rm -f "$TMP_STALE/.claude/ralph-desk/plans/test-spec-staletest.md"
+stale_initial=$(ls "$TMP_STALE/.rlp-desk/plans/prd-staletest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+printf 'no markers here\n' > "$TMP_STALE/.rlp-desk/plans/prd-staletest.md"
+rm -f "$TMP_STALE/.rlp-desk/plans/test-spec-staletest.md"
 ROOT="$TMP_STALE" zsh "$INIT" staletest "test" --mode improve >/dev/null 2>&1 || true
-stale_after=$(ls "$TMP_STALE/.claude/ralph-desk/plans/prd-staletest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
+stale_after=$(ls "$TMP_STALE/.rlp-desk/plans/prd-staletest-US-"*.md 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$stale_initial" -ge 2 ]]; then
   assert_zero "$stale_after" "AC3-L3-4: markerless re-run removes $stale_initial stale per-US split files"
 else
