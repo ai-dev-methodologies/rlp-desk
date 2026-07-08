@@ -132,14 +132,14 @@ The haiku run showed 0 Worker model upgrades despite struggle. On inspection thi
 | Fix | Give the Verifier the same 3-strike + `replace_worker_pane` retry before BLOCK (more invasive: verify-dispatch retry loop, engine-aware re-dispatch). |
 | Status | **FIXED + fault-injection-verified.** Added a 3-strike replace+re-dispatch loop at the verifier-poll site (mirrors the Worker's Bug-Report-#5 breaker). `tests/sv-large-campaign/test-f10-verifier-poll-retry.zsh` → 4/4 PASS (transient 2× → recovers; 3× → BLOCK; rc==2 → no-retry). **The fault-injection test caught a real latent bug** (F-10b): the original `if ! poll; then local rc=$?` captured the *if-statement* status (always 0), NOT poll's rc — so the `rc==2` ("hard-failed, do-not-retry, infra_failure already recorded") branch was DEAD and every poll failure double-wrote a sentinel. Fixed by capturing the rc directly. NOT committed. |
 
-## F-11 — Worker/Verifier pane-start failure hard-BLOCKs instead of replace+retry  · MED-HIGH
+## F-11 — Worker/Verifier pane-start failure hard-BLOCKs instead of replace+retry  · MED-HIGH → FIXED
 | | |
 |---|---|
 | Symptom | If `launch_worker_*` fails to bring the pane up (the F6.1 "send-keys before shell ready" spawn race — transient), the campaign BLOCKs immediately. |
 | Fix | `replace_worker_pane` + one retry before BLOCK. |
 | Status | **FIXED + fault-injection-verified.** Confirmed at the Worker-dispatch site (both engines). Now replaces the pane + retries once before BLOCK. `tests/sv-large-campaign/test-f11-worker-start-retry.zsh` → 3/3 PASS (1 transient → recovers; 2 consecutive → BLOCK). NOT committed. |
 
-## F-12 — `verify_partial_malformed` → mission_abort instead of fix loop  · MED
+## F-12 — `verify_partial_malformed` → mission_abort instead of fix loop  · MED → FIXED
 | | |
 |---|---|
 | Symptom | A fresh-context Worker formatting slip (empty `verified_acs` on a `verify_partial` signal) hard-aborts the campaign. |
@@ -155,7 +155,7 @@ The haiku run showed 0 Worker model upgrades despite struggle. On inspection thi
 | Fix | Restore `consecutive_failures` from status.json alongside `verified_us`. |
 | Status | **FIXED + verified** (`tests/sv-large-campaign/test-f13-cb-counter-restore.zsh` → 4/4 PASS). NOT committed. |
 
-## F-14 — VERIFIED_US restored via sed-parse of LLM prose (fresh-context drift risk)  · MED
+## F-14 — VERIFIED_US restored via sed-parse of LLM prose (fresh-context drift risk)  · MED → FIXED
 | | |
 |---|---|
 | Symptom | Which US are "done" is recovered by sed-parsing the Worker's prose `## Completed Stories` in memory.md (`run_ralph_desk.zsh:3036`); a fresh-context formatting drift can mis-restore VERIFIED_US. |
@@ -173,7 +173,7 @@ The haiku run showed 0 Worker model upgrades despite struggle. On inspection thi
 | Status | **FIXED + verified.** N×M matrix re-run: **ALL 4 cells PASS** — C1 codex×codex, C2 codex×claude, C3 claude×codex, C4 claude×claude (OVERALL PASS). |
 | F-3 note | DISMISSED (false alarm): `cell-result.json` IS populated by `write_result()` with `cell_id/worker_engine/verifier_engine/outcome`; an earlier inspection queried wrong keys (`cell/worker/status`) → null. The matrix ledger was always correct. |
 
-## F-16 — codex 0.141 worker blocks the production campaign ("worker not active")  · OPEN (codex path)
+## F-16 — codex 0.141 worker blocks the production campaign ("worker not active")  · FIXED
 | | |
 |---|---|
 | Symptom | A real f6mini campaign with a codex worker (`WORKER_MODEL=gpt-5.5`, codex 0.141) × claude verifier BLOCKED at iter 1 / 44s: `[infra_failure] 3 consecutive monitor failures (worker not active)`. claude workers complete the same campaign. |
