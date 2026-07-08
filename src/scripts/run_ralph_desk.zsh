@@ -3447,6 +3447,8 @@ main() {
   fi
 
   # --- metadata.json: always write at campaign start (cross-project identification) ---
+  local _metadata_consensus=0
+  [[ "$CONSENSUS_MODE" != "off" ]] && _metadata_consensus=1
   jq -n \
     --arg slug "$SLUG" \
     --arg project_root "$ROOT" \
@@ -3461,7 +3463,7 @@ main() {
     --argjson with_sv_requested "$WITH_SELF_VERIFICATION_REQUESTED" \
     --arg sv_skipped_reason "$SV_SKIPPED_REASON" \
     --arg lane_mode "$LANE_MODE" \
-    --argjson consensus "${VERIFY_CONSENSUS:-0}" \
+    --argjson consensus "$_metadata_consensus" \
     '{slug: $slug, project_root: $project_root, project_name: $project_name, campaign_status: $campaign_status, start_time: $start_time, end_time: $end_time, worker_model: $worker_model, verifier_model: $verifier_model, debug: $debug, with_self_verification: $with_sv, with_self_verification_requested: $with_sv_requested, sv_skipped_reason: $sv_skipped_reason, lane_mode: $lane_mode, consensus: $consensus}' \
     > "$METADATA_FILE"
 
@@ -3505,8 +3507,8 @@ main() {
       log_debug "[OPTION] expected_flow=worker(all)->verify(ALL)->COMPLETE"
     fi
 
-    if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
-      log_debug "[OPTION] consensus_flow=each_verify_runs_claude+codex_both_must_pass"
+    if [[ "$CONSENSUS_MODE" != "off" ]]; then
+      log_debug "[OPTION] consensus_flow=mode=$CONSENSUS_MODE each_verify_runs_claude+codex_both_must_pass"
     fi
   fi
 
