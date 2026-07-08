@@ -11,6 +11,23 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.18.7] — 2026-07-08
+
+Test-harness correctness release. No runtime behavior changes; the shipped
+tarball delta is the `test:zsh` script fix in `package.json`.
+
+### Fixed
+- `npm run test:zsh` now dispatches each shell test suite to its declared
+  interpreter (shebang-aware). It previously forced zsh onto bash-shebang
+  suites, where `BASH_SOURCE` is empty — those suites mis-resolved their
+  repo root and failed regardless of product correctness.
+- Repaired the 18 shell test suites that drifted while the harness was
+  broken: v0.13.0 `.rlp-desk/` runtime-path migration mirrored into test
+  fixtures, assertions re-pointed to the current lock/consensus/final-verify
+  implementations (with in-test provenance comments), and 3 latent
+  test-harness bugs fixed (tmux stub format-argument matching; `grep -c`
+  double-zero arithmetic breakage). Full shell suite now green: 68/68 files.
+
 ## [0.18.6] — 2026-07-07
 
 Leader hardening, cross-platform correctness, and safety guards on the
