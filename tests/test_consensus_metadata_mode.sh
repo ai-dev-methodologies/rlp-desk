@@ -65,6 +65,25 @@ _read_consensus() {
   jq -r '.consensus' "$analytics_dir/metadata.json" 2>/dev/null || echo "JQ_ERROR"
 }
 
+# Helper: read the `effective_cb_threshold=N` value out of a scaffold's
+# debug.log (requires the run to have been invoked with DEBUG=1). Echoes
+# NO_POINTER / NO_DEBUG_LOG / NO_MATCH on missing data.
+_read_effective_cb_threshold() {
+  local tmp="$1" slug="$2"
+  local pointer="$tmp/.rlp-desk/analytics/${slug}.current"
+  if [[ ! -f "$pointer" ]]; then
+    echo "NO_POINTER"
+    return
+  fi
+  local debug_log
+  debug_log="$(cat "$pointer")/debug.log"
+  if [[ ! -f "$debug_log" ]]; then
+    echo "NO_DEBUG_LOG"
+    return
+  fi
+  grep -o 'effective_cb_threshold=[0-9]*' "$debug_log" | head -1 | cut -d= -f2 || echo "NO_MATCH"
+}
+
 echo "=== Consensus metadata.json mode reproducer ==="
 echo ""
 
@@ -130,6 +149,53 @@ if [[ -f "$F_DEBUG_LOG" ]]; then
 else
   fail "(f) debug.log not found at expected path '$F_DEBUG_LOG'"
 fi
+
+echo ""
+
+# ============================================================
+# EFFECTIVE_CB_THRESHOLD ordering bug (D-22 contract: consensus mode doubles
+# the CB budget via CB_THRESHOLD*2 -- tests/test_us002_consensus_stability.sh
+# AC4-happy). EFFECTIVE_CB_THRESHOLD is computed from CONSENSUS_MODE at
+# module-parse time, BEFORE the CLI arg-parsing loop (--consensus, etc.)
+# finalizes CONSENSUS_MODE. So CLI-driven consensus modes never get the
+# doubling, while env-var-driven CONSENSUS_MODE (set before the script
+# starts) does, since it's already resolved by the time the earlier
+# computation runs.
+# ============================================================
+
+# (g) CLI `--consensus final-only` -> effective CB threshold doubled (6*2=12)
+G_SLUG="cbcli1"
+G_TMP=$(_new_scaffold "$G_SLUG")
+LOOP_NAME="$G_SLUG" ROOT="$G_TMP" TMUX=test DEBUG=1 \
+  zsh "$RUN" --consensus final-only >/dev/null 2>&1 || true
+assert_eq "$(_read_effective_cb_threshold "$G_TMP" "$G_SLUG")" "12" \
+  "(g) CLI --consensus final-only -> effective_cb_threshold doubled to 12"
+
+# (h) CLI `--consensus all` -> effective CB threshold doubled (6*2=12)
+H_SLUG="cbcli2"
+H_TMP=$(_new_scaffold "$H_SLUG")
+LOOP_NAME="$H_SLUG" ROOT="$H_TMP" TMUX=test DEBUG=1 \
+  zsh "$RUN" --consensus all >/dev/null 2>&1 || true
+assert_eq "$(_read_effective_cb_threshold "$H_TMP" "$H_SLUG")" "12" \
+  "(h) CLI --consensus all -> effective_cb_threshold doubled to 12"
+
+# (i) negative: no consensus flags -> base threshold unchanged (6)
+I_SLUG="cbnone1"
+I_TMP=$(_new_scaffold "$I_SLUG")
+LOOP_NAME="$I_SLUG" ROOT="$I_TMP" TMUX=test DEBUG=1 \
+  zsh "$RUN" >/dev/null 2>&1 || true
+assert_eq "$(_read_effective_cb_threshold "$I_TMP" "$I_SLUG")" "6" \
+  "(i) no consensus flags -> effective_cb_threshold unchanged at 6"
+
+# (j) env CONSENSUS_MODE=all (pre-parse path) -> doubled (6*2=12). Guards
+# against regressing the currently-working env-var activation path while
+# fixing the CLI-flag path.
+J_SLUG="cbenv1"
+J_TMP=$(_new_scaffold "$J_SLUG")
+LOOP_NAME="$J_SLUG" ROOT="$J_TMP" TMUX=test DEBUG=1 CONSENSUS_MODE=all \
+  zsh "$RUN" >/dev/null 2>&1 || true
+assert_eq "$(_read_effective_cb_threshold "$J_TMP" "$J_SLUG")" "12" \
+  "(j) env CONSENSUS_MODE=all (pre-parse) -> effective_cb_threshold doubled to 12"
 
 echo ""
 echo "=== RESULTS: $PASS passed, $FAIL failed ==="
