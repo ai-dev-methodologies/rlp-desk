@@ -327,12 +327,10 @@ fi
 CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-${CONSENSUS_MODE}}"
 CB_THRESHOLD="${CB_THRESHOLD:-6}"           # consecutive failures before BLOCKED (default: 6)
 _validate_int_knob CB_THRESHOLD 6 1   # D-19: must be valid before the (( *2 )) below
-# Effective CB threshold: doubled when consensus mode active
-if [[ "$CONSENSUS_MODE" != "off" ]]; then
-  EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD * 2 ))
-else
-  EFFECTIVE_CB_THRESHOLD=$CB_THRESHOLD
-fi
+# Effective CB threshold (doubled when consensus mode is active) is computed
+# after CLI arg parsing below, once CONSENSUS_MODE is fully resolved --
+# --consensus/--final-consensus/--verify-consensus reassign it later in this
+# file, and computing it here would miss CLI-driven consensus activation.
 _API_MAX_RETRIES="${_API_MAX_RETRIES:-5}"
 _API_RETRY_INTERVAL_S="${_API_RETRY_INTERVAL_S:-30}"
 _validate_int_knob _API_MAX_RETRIES 5 1        # D-19
@@ -4590,6 +4588,16 @@ while (( _cli_i <= $# )); do
   (( _cli_i++ ))
 done
 unset _cli_i _cli_parsed _cli_rest
+
+# Effective CB threshold: doubled when consensus mode is active. Computed
+# here (after CLI parsing, not at module top) so CLI-driven consensus
+# (--consensus, --final-consensus, --verify-consensus) gets the doubling too,
+# not just the legacy-flag/env-var CONSENSUS_MODE activation resolved above.
+if [[ "$CONSENSUS_MODE" != "off" ]]; then
+  EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD * 2 ))
+else
+  EFFECTIVE_CB_THRESHOLD=$CB_THRESHOLD
+fi
 
 # Require tmux — tmux mode only works inside an active tmux session
 if [[ -z "${TMUX:-}" ]]; then
