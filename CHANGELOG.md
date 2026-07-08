@@ -11,6 +11,25 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.18.8] — 2026-07-09
+
+Consensus reporting and circuit-breaker budget fixes on the `--mode tmux`
+(zsh) leader.
+
+### Fixed
+- Campaign `metadata.json` now derives its `consensus` field from the unified
+  `CONSENSUS_MODE` (off|all|final-only). It previously read the legacy
+  `VERIFY_CONSENSUS` flag, so campaigns started with `--consensus all`,
+  `--consensus final-only`, or `--final-consensus` were falsely recorded as
+  `consensus: 0`. The `consensus_flow` debug line had the same legacy read and
+  now fires for every active consensus mode, including the mode name.
+- `EFFECTIVE_CB_THRESHOLD` (the consecutive-failure circuit-breaker budget,
+  doubled when consensus is active) is now computed after CLI flags are
+  parsed. It was previously fixed at module load, so CLI-driven consensus
+  modes never received the doubled budget (env-driven activation was
+  unaffected). Covered by the new deterministic suite
+  `tests/test_consensus_metadata_mode.sh` (10 cases, TDD red→green).
+
 ## [0.18.7] — 2026-07-08
 
 Test-harness correctness release. No runtime behavior changes; the shipped
