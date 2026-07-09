@@ -1,10 +1,14 @@
 # RLP Desk
 
-> Fresh-context iterative loops for Claude Code — autonomous task completion with independent verification.
+> Autonomous Claude Code campaigns — durable on-disk state, independent verifier governance, and cross-family consensus.
 
-RLP Desk brings [Geoffrey Huntley's Ralph Loop](https://ghuntley.com/ralph/) philosophy to Claude Code. Inspired by [OpenAI Codex's long-horizon tasks](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex/) and [design-desk](https://github.com/derrickchoi-openai/design-desk), it orchestrates fresh-context workers and verifiers through Claude Code's `Agent()` tool.
+RLP Desk runs long-horizon Claude Code campaigns as a Worker/Verifier loop, and stakes its reliability on three things:
 
-**Key insight**: Each iteration starts fresh. No accumulated context drift. The filesystem is the only memory.
+- **Durable file-based state** — campaign status, done-claims, and verify-verdicts are written to disk as crash-safe, sentinel-locked files. Kill the session, the terminal, the pane — the campaign resumes from where the files left off, and every claim and verdict is resumable and inspectable with `jq`.
+- **Independent verifier governance** — a separate fresh-context agent checks the Worker's claims against real evidence, governed by Iron Laws (no completion claims without fresh evidence) and an Evidence Gate protocol (IDENTIFY → RUN → READ → VERIFY → only then claim), with anti-rubber-stamp guidance against reflexive passes.
+- **Cross-family consensus** — Worker and Verifier can run on different model families (Claude × Codex/GPT); in consensus mode, both must independently PASS before a campaign completes.
+
+This rides on a **fresh-context loop**: each Worker/Verifier iteration starts with no prior conversation, reading only the PRD and the on-disk campaign state. That statelessness is the mechanism — durable state and independent verification are what it buys you, not the headline.
 
 ```
 [Your Session = LEADER]

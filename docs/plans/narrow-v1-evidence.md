@@ -211,3 +211,76 @@ Commit: `1b24ea3` — `fix(us-002): restore contract-pinning tests + precise
 taxonomy wording (codex round 1)` (4 files changed: CHANGELOG.md,
 `docs/plans/narrow-v1-test-inventory.md`, `tests/structural-archive/README.md`,
 `git mv` of `test_us007_verifier_anti_rubber_stamp.sh` back to `tests/`).
+
+## US-003: Declare the support matrix (docs-only)
+
+AC1: added a `## Supported Platforms` section to `README.md` naming macOS
+(primary dev) and Ubuntu Linux (CI/server) as supported, everything else
+best-effort/unsupported. AC2: no code changes — confirmed the IMP-01
+GNU-first `stat` dual-path (`src/scripts/lib_ralph_desk.zsh:39`,
+`src/scripts/run_ralph_desk.zsh:847-848`) is untouched and still serves
+both platforms (`stat -c %Y` GNU/Linux first, `stat -f %m` BSD/macOS
+fallback).
+
+Gate results: `npm run sv-gate:fast` 85/85 pass.
+
+Commit: `6c1b48f` — `docs: US-003 — declare supported platform matrix`.
+
+## US-004: Two-tier release process (docs-only)
+
+AC1: restructured CLAUDE.md's `### Release Workflow` section into
+`#### Tier-1 (default, dogfood)` (commit → FF merge to `main` → `git tag
+vX.Y.Z` → local sync via `npm install` → retained §4.5 sync verification;
+no `npm publish`, no A1-A2/P5 registry ceremony) and `#### Tier-2
+(registry release, on-demand: external users / quarterly)` (the existing
+numbered runbook body, kept intact — steps 0/1-7/7a unchanged in content,
+only re-indented under the new heading). AC2: added a 3-line scope
+preamble to `docs/plans/v0.15.4-release-runbook.md` stating it applies to
+Tier-2 releases only, pointing to CLAUDE.md for Tier-1. AC3: the `Local
+File Sync (ABSOLUTE — no exceptions)` section's existing text is
+unchanged; appended one sentence noting it applies to both tiers. AC4
+(shipping this campaign as Tier-1 with `git tag v0.19.0`) is executed at
+campaign end, not per-US.
+
+Gate results: `npm run sv-gate:fast` 85/85 pass;
+`bash tests/test_us002_governance_cb_table.sh` 10/10 pass (unaffected —
+targets `governance.md` §7¾/§8, not CLAUDE.md);
+`bash tests/test_us007_verifier_anti_rubber_stamp.sh` 12/12 pass
+(unaffected — targets `src/scripts/init_ralph_desk.zsh`'s verifier
+template, not CLAUDE.md).
+
+Commit: `b356e61` — `docs: US-004 — two-tier release process (Tier-1
+dogfood / Tier-2 registry)`.
+
+## US-005: Reposition README (docs-only)
+
+AC1: rewrote the README's opening tagline and first section (previously
+"Fresh-context iterative loops... brings Ralph Loop philosophy...") to
+lead with three pillars: durable file-based campaign state (crash-safe,
+sentinel-locked status/done-claim/verify-verdict files, resumable and
+`jq`-inspectable), independent verifier governance (Iron Laws, Evidence
+Gate IDENTIFY→RUN→READ→VERIFY→claim, anti-rubber-stamp guidance), and
+cross-family consensus (claude × codex, both-must-pass mode) —
+terminology cross-checked against the existing "Verification Policy"
+and "Verification Strategy" sections further down the same README so the
+pitch doesn't introduce new vocabulary. The fresh-context loop is now
+introduced as the mechanism those three ride on, in the paragraph after
+the pillar list, with the ASCII Leader/Worker/Verifier diagram retained
+immediately below it. Ralph Loop / OpenAI Codex / design-desk attribution
+was dropped from the opening paragraph (no longer needed there) but
+remains intact in the existing `### Lineage` table further down — no
+attribution was removed from the document, only de-duplicated. AC2: no
+new feature claims — grepped the full diff and file for "cross-machine";
+zero hits before and after.
+
+Also added the required CHANGELOG `[Unreleased]` → `### Docs` entry
+covering all three US (support matrix, two-tier release, README
+repositioning).
+
+Gate results: `npm run sv-gate:fast` 85/85 pass;
+`bash tests/test_us002_governance_cb_table.sh` 10/10 pass;
+`bash tests/test_us007_verifier_anti_rubber_stamp.sh` 12/12 pass (both
+unaffected — neither targets README.md or CHANGELOG.md).
+
+Commit: this evidence entry lands together with the US-005 README/
+CHANGELOG commit (see repo log for SHA).

@@ -42,6 +42,18 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
   See `docs/plans/narrow-v1-test-inventory.md` for the full per-file
   classification and rationale.
 
+### Docs
+- US-003/US-004/US-005: declared the supported platform matrix (macOS primary,
+  Ubuntu Linux CI/server, best-effort elsewhere) in the README; restructured
+  CLAUDE.md's Release Workflow into two tiers (Tier-1 default dogfood: commit
+  → FF merge → `git tag` → local sync + retained §4.5 verification, no
+  registry ceremony; Tier-2 on-demand registry release: the existing full
+  runbook), with `docs/plans/v0.15.4-release-runbook.md` scoped to Tier-2
+  only; and repositioned the README's opening pitch around the durable
+  file-based state, independent verifier governance, and cross-family
+  (claude x codex) consensus moat, with the fresh-context loop described as
+  the mechanism rather than the headline.
+
 ### Planned (not yet shipped)
 - v0.15.5 candidate: flip `RLP_LIFECYCLE_METRICS=1` default to ON (gated on 3 consecutive nightly real-LLM SV passes per `docs/plans/v0.15.4-release-runbook.md` §7.5.2).
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
