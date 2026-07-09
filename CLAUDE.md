@@ -24,7 +24,7 @@
 - If any scenario FAIL: fix the issue, re-run the failing scenario, then re-verify all 3.
 
 ### Local File Sync (ABSOLUTE — no exceptions)
-After every commit that changes ANY src/ file, sync ALL distributable files to local install. Not just the changed ones — ALL of them. Then verify with the **banner-aware procedure below** (NOT naive `diff -q` / `diff -rq` — post-v0.12.0 installed files have line-1 banners that naive diff treats as drift; see §4.5 verification recipe).
+After every commit that changes ANY src/ file, sync ALL distributable files to local install. Not just the changed ones — ALL of them. Then verify with the **banner-aware procedure below** (NOT naive `diff -q` / `diff -rq` — post-v0.12.0 installed files have line-1 banners that naive diff treats as drift; see §4.5 verification recipe). This applies to BOTH release tiers (Tier-1 dogfood and Tier-2 registry — see Release Workflow below).
 
 **Runtime files (always sync via `npm install` / postinstall.js — Node canonical):**
 ```
@@ -116,6 +116,19 @@ the source of truth remains the `src/` tree.
 
 
 ### Release Workflow
+Two tiers. **Tier-1 is the default** — use Tier-2 only when publishing to the registry.
+
+#### Tier-1 (default, dogfood)
+No npm publish, no registry ceremony — just land the change and sync it locally.
+1. All changes committed
+2. FF merge to `main`
+3. `git tag vX.Y.Z`
+4. Local sync via `npm install` (postinstall runs from the working copy)
+5. **Retained sync verification (§4.5)**: banner-aware body-diff + recursive Node-tree check + chmod 0o444 spot check. These are SYNC checks, kept in Tier-1 — NOT the Tier-2 publish ceremony.
+- NO `npm publish`. NO A1-A2/P5 registry preflight/post-verify.
+
+#### Tier-2 (registry release, on-demand: external users / quarterly)
+The full runbook below — use when publishing a version external users will install via npm.
 0. **Preflight (auto, all BLOCKING)** per `docs/plans/v0.15.4-release-runbook.md` §1: A1 `gh auth status` / A2 `npm publish --dry-run` (auth+scope; pre-bump tolerates EPUBLISHCONFLICT) / A3 sv-gate-fast / A4 `npm run test:node` / A5 trigger-file diff oracle (anchor uses commit SHA, not git tag — `npm version --no-git-tag-version` policy means `vX.Y.Z` tags do not exist locally).
 1. All changes committed and pushed
 2. `npm version patch|minor|major --no-git-tag-version`
