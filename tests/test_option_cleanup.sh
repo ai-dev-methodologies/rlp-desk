@@ -8,6 +8,7 @@ LIB="$ROOT_DIR/src/scripts/lib_ralph_desk.zsh"
 GOV="$ROOT_DIR/src/governance.md"
 CMD="$ROOT_DIR/src/commands/rlp-desk.md"
 README="$ROOT_DIR/README.md"
+MODELS_JSON="$ROOT_DIR/src/node/models.json"
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); echo "  PASS: $1"; }
@@ -195,26 +196,31 @@ fi
 echo ""
 echo "--- 4. gpt-5.3-codex removal ---"
 
-# G1: get_next_model has no gpt-5.3-codex (non-spark) entries
-fn_body=$(extract_fn "get_next_model")
-if echo "$fn_body" | grep -q 'gpt-5.3-codex:'; then
-  fail "G1: get_next_model still has gpt-5.3-codex (non-spark) entries"
+# US-001: the upgrade ladder moved out of get_next_model()'s source text into
+# the single-sourced data file src/node/models.json (read via jq at runtime by
+# both the zsh and Node loaders). G1-G3 now check the shipped ladder data
+# directly instead of grepping the function body, which no longer contains
+# literal model-name strings.
+
+# G1: shipped ladder has no gpt-5.3-codex (non-spark) entries
+if jq -e '.upgrades | keys | any(startswith("gpt-5.3-codex:"))' "$MODELS_JSON" >/dev/null 2>&1; then
+  fail "G1: models.json still has gpt-5.3-codex (non-spark) entries"
 else
-  pass "G1: gpt-5.3-codex (non-spark) removed from get_next_model"
+  pass "G1: gpt-5.3-codex (non-spark) removed from models.json"
 fi
 
 # G2: spark paths still exist
-if echo "$fn_body" | grep -q 'spark:'; then
-  pass "G2: spark paths still in get_next_model"
+if jq -e '.upgrades | keys | any(startswith("gpt-5.3-codex-spark:"))' "$MODELS_JSON" >/dev/null 2>&1; then
+  pass "G2: spark paths still in models.json"
 else
-  fail "G2: spark paths missing from get_next_model"
+  fail "G2: spark paths missing from models.json"
 fi
 
 # G3: gpt-5.5 paths still exist
-if echo "$fn_body" | grep -q 'gpt-5.5:'; then
-  pass "G3: gpt-5.5 paths still in get_next_model"
+if jq -e '.upgrades | keys | any(startswith("gpt-5.5:"))' "$MODELS_JSON" >/dev/null 2>&1; then
+  pass "G3: gpt-5.5 paths still in models.json"
 else
-  fail "G3: gpt-5.5 paths missing from get_next_model"
+  fail "G3: gpt-5.5 paths missing from models.json"
 fi
 
 # ============================================================

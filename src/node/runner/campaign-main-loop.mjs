@@ -10,6 +10,7 @@ import { shellQuote } from '../util/shell-quote.mjs';
 import { ONE_MILLION_BETA, wantsOneMillionContext } from '../constants.mjs';
 import { initCampaign } from '../init/campaign-initializer.mjs';
 import { LEGACY_DESK_REL, resolveDeskRoot } from '../util/desk-root.mjs';
+import { loadModelLadder } from '../model-ladder.mjs';
 import {
   lockSentinelFile as defaultLockSentinelFile,
   stampAckField as defaultStampAckField,
@@ -44,14 +45,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 const REQUIRED_SCAFFOLD_NAMES = ['workerPrompt', 'verifierPrompt', 'memoryFile', 'prdFile', 'testSpecFile'];
-const MODEL_UPGRADES = {
-  'gpt-5.5:medium': 'gpt-5.5:high',
-  'gpt-5.5:high': 'gpt-5.5:xhigh',
-  'gpt-5.5:xhigh': 'BLOCKED',
-  'gpt-5.3-codex-spark:medium': 'gpt-5.3-codex-spark:high',
-  'gpt-5.3-codex-spark:high': 'gpt-5.3-codex-spark:xhigh',
-  'gpt-5.3-codex-spark:xhigh': 'BLOCKED',
-};
+// US-001: single-sourced from src/node/models.json (see src/node/model-ladder.mjs).
+// Loaded once at module import — mirrors the previous module-level constant.
+const MODEL_UPGRADES = loadModelLadder();
 
 // v0.14.2 Bug Report #4 Fix-D: codex occasionally lands the verdict at the
 // pre-v0.13.0 `.claude/ralph-desk/memos/` path despite prompt instructions.
@@ -334,7 +330,10 @@ function buildFixContract(verdict) {
   return `${lines.join('\n')}\n`;
 }
 
-function nextWorkerModel(currentModel, consecutiveFailures) {
+// Exported for direct unit testing (US-001: tests/node/models-ladder.test.mjs
+// exercises the ""->'BLOCKED' ceiling normalization and the :low->:medium
+// alignment against the real shipped MODEL_UPGRADES map).
+export function nextWorkerModel(currentModel, consecutiveFailures) {
   if (consecutiveFailures < 3) {
     return currentModel;
   }

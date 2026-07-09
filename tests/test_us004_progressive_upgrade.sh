@@ -22,6 +22,15 @@ extract_fn() {
   if [[ -z "$body" ]]; then
     body=$(sed -n "/^${fn_name}() {$/,/^}$/p" "$LIB" 2>/dev/null)
   fi
+  # US-001: get_next_model resolves its shipped ladder relative to $LIB_DIR
+  # (normally set by run_ralph_desk.zsh before sourcing the lib). Isolated
+  # single-function harnesses never source run_ralph_desk.zsh, so LIB_DIR
+  # would be unset and every extraction would silently fall back to the
+  # 3-entry emergency ladder instead of the real src/node/models.json.
+  if [[ "$fn_name" == "get_next_model" && -n "$body" ]]; then
+    body="LIB_DIR=\"$ROOT_DIR/src/scripts\"
+$body"
+  fi
   echo "$body"
 }
 

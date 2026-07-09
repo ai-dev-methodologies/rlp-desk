@@ -147,25 +147,60 @@ get_model_string() {
 #   claude: "haiku"|"sonnet"|"opus"
 #   codex:  "gpt-5.5:medium"|"gpt-5.5:high"|"gpt-5.5:xhigh"|"gpt-5.3-codex-spark:medium"|...
 # Output: next model string, or empty string if at ceiling
+#
+# US-001: single-sourced from src/node/models.json (shipped default ladder),
+# with an optional user override at
+# ${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json} (never touched
+# by postinstall). Precedence: override -> shipped -> a 3-entry emergency
+# inline ladder (identical to the Node emergency ladder in
+# src/node/model-ladder.mjs, cross-checked by an equivalence test).
+# Malformed/unreadable JSON at any layer falls through to the next layer with
+# exactly one logged warning per call (every call site invokes this via
+# command substitution, i.e. a subshell, so a cross-call "already warned"
+# flag can't survive anyway — each resolution warns at most once); this
+# never crashes the campaign.
+# Shipped-file resolution tries the installed flat layout first
+# ($LIB_DIR/node/models.json), then the source-checkout layout
+# ($LIB_DIR/../node/models.json — this script lives in src/scripts/).
+#
+# Resolved fresh on every call (no array caching): call volume is at most a
+# handful per campaign (only on repeated same-US failure), so a jq
+# subprocess per call is not a meaningful cost, and it keeps this function
+# runnable in isolation via the single-function extraction harnesses in
+# tests/test_us004_progressive_upgrade.sh and tests/test_option_cleanup.sh.
 get_next_model() {
   local current="$1"
-  case "$current" in
-    # Claude upgrade path (Worker only — Verifier fixed)
-    haiku)          echo "sonnet"         ;;
-    sonnet)         echo "opus"           ;;
-    opus)           echo ""               ;;
-    # Codex GPT Pro (spark) upgrade path
-    gpt-5.3-codex-spark:low)    echo "gpt-5.3-codex-spark:medium" ;;
-    gpt-5.3-codex-spark:medium) echo "gpt-5.3-codex-spark:high"   ;;
-    gpt-5.3-codex-spark:high)   echo "gpt-5.3-codex-spark:xhigh"  ;;
-    gpt-5.3-codex-spark:xhigh)  echo ""                           ;;  # spark ceiling
-    # Codex Non-Pro upgrade path
-    gpt-5.5:low)    echo "gpt-5.5:medium" ;;
-    gpt-5.5:medium) echo "gpt-5.5:high"   ;;
-    gpt-5.5:high)   echo "gpt-5.5:xhigh"  ;;
-    gpt-5.5:xhigh)  echo ""               ;;
-    *)              echo ""               ;;  # unknown → treat as ceiling
-  esac
+  local override_file="${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json}"
+  local ladder_file="" shipped_candidate
+
+  if [[ -f "$override_file" ]] && jq -e '.upgrades | type == "object"' "$override_file" >/dev/null 2>&1; then
+    ladder_file="$override_file"
+  else
+    if [[ -f "$override_file" && "${_MODEL_LADDER_WARNED:-0}" != 1 ]]; then
+      _MODEL_LADDER_WARNED=1
+      log_error "model ladder: override file '$override_file' unreadable or malformed; falling through"
+    fi
+    for shipped_candidate in "$LIB_DIR/node/models.json" "$LIB_DIR/../node/models.json"; do
+      if [[ -f "$shipped_candidate" ]] && jq -e '.upgrades | type == "object"' "$shipped_candidate" >/dev/null 2>&1; then
+        ladder_file="$shipped_candidate"
+        break
+      fi
+    done
+    if [[ -z "$ladder_file" ]]; then
+      if [[ "${_MODEL_LADDER_WARNED:-0}" != 1 ]]; then
+        _MODEL_LADDER_WARNED=1
+        log_error "model ladder: shipped defaults not found under '$LIB_DIR'; using emergency inline ladder (haiku, sonnet, opus only)"
+      fi
+      case "$current" in
+        haiku)  echo "sonnet" ;;
+        sonnet) echo "opus"   ;;
+        *)      echo ""       ;;  # opus / unknown → ceiling
+      esac
+      return 0
+    fi
+  fi
+
+  jq -r --arg m "$current" '.upgrades[$m] // ""' "$ladder_file" 2>/dev/null
 }
 
 # check_model_upgrade() — evaluate and apply Worker model upgrade on repeated same-US failure

@@ -3,6 +3,28 @@
 Progressive Worker model upgrade on consecutive failure per US.
 CB default: 6. Override: `--cb-threshold N`. Worker only — Verifier fixed at campaign start.
 
+**US-001 (single-source ladder):** the tables below are a reference view of
+the single shipped ladder file, `src/node/models.json`
+(`{"upgrades": {"<model>": "<next-or-empty>"}}`, empty string = ceiling). Both
+the zsh runner (`get_next_model()` in `lib_ralph_desk.zsh`) and the Node
+runner (`loadModelLadder()` in `src/node/model-ladder.mjs`) read that same
+file at runtime instead of hardcoding the ladder independently — this
+document no longer drives behavior, it documents it.
+
+To override the shipped ladder (e.g. to reorder an existing model family or
+change a cadence), write a same-shaped JSON file to
+`${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json}` (a path outside
+the postinstall-managed, write-protected tree). Precedence is override →
+shipped defaults → a 3-entry emergency inline ladder (haiku→sonnet→opus) used
+only if both files are missing or malformed.
+
+**Scope note:** this externalizes the upgrade *ladder* only. Model
+*recognition* (engine detection — e.g. the `haiku|sonnet|opus` / codex
+`spark` alias matching in `lib_ralph_desk.zsh`) remains code. Adding a
+brand-new model family may still require a code change; the ladder file
+removes the point-release pressure for reordering or extending
+already-recognized families, not for recognizing novel ones.
+
 ## Rules
 - Each row = 2-attempt window (same model for 2 consecutive fails)
 - Ceiling reached → repeat same model until CB

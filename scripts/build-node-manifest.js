@@ -24,7 +24,11 @@ function walk(dir, base) {
     const relPath = path.posix.join(base, entry.name);
     if (entry.isDirectory()) {
       files.push(...walk(sourcePath, relPath));
-    } else if (entry.isFile() && entry.name.endsWith(".mjs")) {
+      // US-001: models.json (the shipped model-upgrade ladder data, read at
+      // runtime by both the zsh and Node loaders) must ship over the
+      // curl-pipe-shell install path too, not just via `npm install`
+      // postinstall's recursive src/node/** copy.
+    } else if (entry.isFile() && (entry.name.endsWith(".mjs") || entry.name.endsWith(".json"))) {
       files.push(relPath);
     }
   }

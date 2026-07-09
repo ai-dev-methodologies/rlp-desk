@@ -1,6 +1,8 @@
 cli/command-builder.mjs
 constants.mjs
 init/campaign-initializer.mjs
+model-ladder.mjs
+models.json
 polling/signal-poller.mjs
 prompts/prompt-assembler.mjs
 reporting/campaign-reporting.mjs
