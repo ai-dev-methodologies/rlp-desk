@@ -42,6 +42,16 @@ extract_fn() {
   if [[ -z "$body" && "$src" == "$RUN" ]]; then
     body="$(_extract_fn_from "$fn_name" "$LIB")"
   fi
+  # US-001: get_next_model resolves its shipped ladder (src/node/models.json)
+  # relative to $LIB_DIR (normally set by run_ralph_desk.zsh before sourcing
+  # the lib). Isolated single-function harnesses never source
+  # run_ralph_desk.zsh, so LIB_DIR would be unset and every extraction would
+  # silently fall back to the 3-entry emergency ladder instead of the real
+  # shipped file.
+  if [[ "$fn_name" == "get_next_model" && -n "$body" ]]; then
+    body="LIB_DIR=\"$REPO_ROOT/src/scripts\"
+$body"
+  fi
   printf '%s\n' "$body"
 }
 
@@ -318,10 +328,14 @@ test_e2e_upgrade() {
     echo 'result_haiku=$(get_next_model "haiku")'
     echo 'result_sonnet=$(get_next_model "sonnet")'
     echo 'result_opus=$(get_next_model "opus")'
-    echo 'if [[ "$result_haiku" == "sonnet" && "$result_sonnet" == "opus" && -z "$result_opus" ]]; then'
+    # A codex case is included so this test cannot pass "by coincidence" via
+    # the 3-entry emergency fallback ladder (which only has claude entries) —
+    # it forces the shipped src/node/models.json resolution path to be real.
+    echo 'result_codex=$(get_next_model "gpt-5.5:low")'
+    echo 'if [[ "$result_haiku" == "sonnet" && "$result_sonnet" == "opus" && -z "$result_opus" && "$result_codex" == "gpt-5.5:medium" ]]; then'
     echo '  exit 0'
     echo 'else'
-    echo '  echo "haiku->$result_haiku sonnet->$result_sonnet opus->$result_opus" >&2'
+    echo '  echo "haiku->$result_haiku sonnet->$result_sonnet opus->$result_opus codex->$result_codex" >&2'
     echo '  exit 1'
     echo 'fi'
   } > "$tmpdir/harness.zsh"
@@ -331,7 +345,7 @@ test_e2e_upgrade() {
   rm -rf "$tmpdir"
 
   if (( rc == 0 )); then
-    pass "E2E-upgrade: get_next_model returns haiku→sonnet, sonnet→opus, opus→empty"
+    pass "E2E-upgrade: get_next_model returns haiku→sonnet, sonnet→opus, opus→empty, gpt-5.5:low→medium"
   else
     fail "E2E-upgrade: get_next_model upgrade path incorrect (rc=$rc)"
   fi
@@ -412,6 +426,261 @@ test_e2e_syntax() {
 test_e2e_upgrade
 test_e2e_restore
 test_e2e_syntax
+
+# ============================================================
+# US-001: Single-source the Worker model-upgrade ladder + user override
+# ============================================================
+echo ""
+echo "--- US-001: Single-source model ladder ---"
+
+MODELS_JSON="$REPO_ROOT/src/node/models.json"
+
+# override-precedence: RLP_DESK_MODELS_FILE wins over shipped defaults
+test_us001_override_precedence() {
+  local fn_body tmpdir
+  fn_body=$(extract_fn "get_next_model")
+  if [[ -z "$fn_body" ]]; then
+    fail "US001-override: get_next_model() not found"
+    return
+  fi
+  tmpdir=$(mktemp -d)
+  echo '{"upgrades": {"haiku": "custom-override-model"}}' > "$tmpdir/override.json"
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "RLP_DESK_MODELS_FILE=\"$tmpdir/override.json\""
+    echo "$fn_body"
+    echo 'r=$(get_next_model "haiku")'
+    echo '[[ "$r" == "custom-override-model" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "US001-override: RLP_DESK_MODELS_FILE override wins over shipped defaults"
+  else
+    fail "US001-override: override not honored ($out)"
+  fi
+}
+
+# absent-override: no override file present -> shipped defaults used
+test_us001_absent_override_uses_defaults() {
+  local fn_body tmpdir
+  fn_body=$(extract_fn "get_next_model")
+  if [[ -z "$fn_body" ]]; then
+    fail "US001-absent: get_next_model() not found"
+    return
+  fi
+  tmpdir=$(mktemp -d)
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "RLP_DESK_MODELS_FILE=\"$tmpdir/does-not-exist.json\""
+    echo "$fn_body"
+    echo 'r=$(get_next_model "haiku")'
+    echo '[[ "$r" == "sonnet" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "US001-absent: no override file -> shipped defaults (haiku->sonnet)"
+  else
+    fail "US001-absent: shipped defaults not used ($out)"
+  fi
+}
+
+# malformed-warn-fallthrough: malformed override JSON falls through to shipped
+# defaults with a warning on stderr, never crashes.
+test_us001_malformed_warns_and_falls_through() {
+  local fn_body tmpdir
+  fn_body=$(extract_fn "get_next_model")
+  if [[ -z "$fn_body" ]]; then
+    fail "US001-malformed: get_next_model() not found"
+    return
+  fi
+  tmpdir=$(mktemp -d)
+  echo 'not valid json {{{' > "$tmpdir/override.json"
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "RLP_DESK_MODELS_FILE=\"$tmpdir/override.json\""
+    # get_next_model's own body calls log_error() on the warning path (a
+    # separate function defined elsewhere in lib_ralph_desk.zsh, not part of
+    # this single-function extraction) — stub it here to capture the call
+    # instead of letting it fail with "command not found".
+    echo "log_error() { echo \"\$*\" >> \"$tmpdir/warn.log\"; }"
+    echo "$fn_body"
+    echo 'r=$(get_next_model "haiku")'
+    echo '[[ "$r" == "sonnet" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+  } > "$tmpdir/harness.zsh"
+  local out rc warned=0
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  [[ -s "$tmpdir/warn.log" ]] && grep -qi 'malformed\|unreadable' "$tmpdir/warn.log" && warned=1
+  rm -rf "$tmpdir"
+  if (( rc == 0 && warned == 1 )); then
+    pass "US001-malformed: malformed override warns + falls through to shipped defaults (never crashes)"
+  else
+    fail "US001-malformed: malformed override handling wrong (rc=$rc warned=$warned out=$out)"
+  fi
+}
+
+# dual-layout: installed flat layout ($LIB_DIR/node/models.json)
+test_us001_dual_layout_installed_flat() {
+  local fn_body tmpdir
+  fn_body=$(_extract_fn_from "get_next_model" "$LIB")
+  [[ -z "$fn_body" ]] && fn_body=$(_extract_fn_from "get_next_model" "$RUN")
+  if [[ -z "$fn_body" ]]; then
+    fail "US001-layout-flat: get_next_model() not found"
+    return
+  fi
+  tmpdir=$(mktemp -d)
+  mkdir -p "$tmpdir/node"
+  # A distinctive fixture value (not "sonnet") proves the function actually
+  # READ this planted file rather than trivially satisfying the assertion
+  # via its own hardcoded/default behavior.
+  echo '{"upgrades": {"haiku": "flat-layout-marker"}}' > "$tmpdir/node/models.json"
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "LIB_DIR=\"$tmpdir\""
+    echo "$fn_body"
+    echo 'r=$(get_next_model "haiku")'
+    echo '[[ "$r" == "flat-layout-marker" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "US001-layout-flat: installed flat layout (\$LIB_DIR/node/models.json) resolves"
+  else
+    fail "US001-layout-flat: installed flat layout resolution failed ($out)"
+  fi
+}
+
+# dual-layout: source checkout layout ($LIB_DIR/../node/models.json)
+test_us001_dual_layout_checkout() {
+  local fn_body tmpdir
+  fn_body=$(_extract_fn_from "get_next_model" "$LIB")
+  [[ -z "$fn_body" ]] && fn_body=$(_extract_fn_from "get_next_model" "$RUN")
+  if [[ -z "$fn_body" ]]; then
+    fail "US001-layout-checkout: get_next_model() not found"
+    return
+  fi
+  tmpdir=$(mktemp -d)
+  mkdir -p "$tmpdir/src/scripts" "$tmpdir/src/node"
+  # Distinctive fixture value — see US001-layout-flat comment above.
+  echo '{"upgrades": {"haiku": "checkout-layout-marker"}}' > "$tmpdir/src/node/models.json"
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "LIB_DIR=\"$tmpdir/src/scripts\""
+    echo "$fn_body"
+    echo 'r=$(get_next_model "haiku")'
+    echo '[[ "$r" == "checkout-layout-marker" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "US001-layout-checkout: source-checkout layout (\$LIB_DIR/../node/models.json) resolves"
+  else
+    fail "US001-layout-checkout: source-checkout layout resolution failed ($out)"
+  fi
+}
+
+# emergency-fallback: both override and shipped unreadable -> 3-entry inline ladder
+test_us001_emergency_fallback() {
+  local fn_body tmpdir
+  fn_body=$(extract_fn "get_next_model")
+  if [[ -z "$fn_body" ]]; then
+    fail "US001-emergency: get_next_model() not found"
+    return
+  fi
+  tmpdir=$(mktemp -d)
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "RLP_DESK_MODELS_FILE=\"$tmpdir/does-not-exist-override.json\""
+    echo "LIB_DIR=\"$tmpdir/nonexistent-lib-dir\""
+    echo "$fn_body"
+    echo 'a=$(get_next_model "haiku")'
+    echo 'b=$(get_next_model "sonnet")'
+    echo 'c=$(get_next_model "opus")'
+    echo 'if [[ "$a" == "sonnet" && "$b" == "opus" && -z "$c" ]]; then exit 0; else echo "a=$a b=$b c=$c" >&2; exit 1; fi'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "US001-emergency: both layers unreadable -> emergency inline ladder (haiku->sonnet->opus->ceiling)"
+  else
+    fail "US001-emergency: emergency fallback wrong ($out)"
+  fi
+}
+
+# equivalence: for every key in the shipped models.json, zsh get_next_model
+# and the Node loadModelLadder() resolve to the same next-model decision
+# (with the ""<->'BLOCKED' ceiling normalization applied).
+test_us001_zsh_node_equivalence() {
+  if ! command -v jq >/dev/null 2>&1; then
+    fail "US001-equivalence: jq not available"
+    return
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    fail "US001-equivalence: node not available"
+    return
+  fi
+  local fn_body tmpdir mismatches=0 key zsh_next node_next
+  fn_body=$(extract_fn "get_next_model")
+  if [[ -z "$fn_body" ]]; then
+    fail "US001-equivalence: get_next_model() not found"
+    return
+  fi
+  tmpdir=$(mktemp -d)
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "$fn_body"
+    echo 'get_next_model "$1"'
+  } > "$tmpdir/get_next_model.zsh"
+
+  local keys
+  keys=$(jq -r '.upgrades | keys[]' "$MODELS_JSON" 2>/dev/null)
+  if [[ -z "$keys" ]]; then
+    fail "US001-equivalence: no keys read from $MODELS_JSON (missing or empty — cannot compare)"
+    return
+  fi
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    zsh_next=$(zsh -f "$tmpdir/get_next_model.zsh" "$key" 2>/dev/null)
+    [[ -z "$zsh_next" ]] && zsh_next="BLOCKED"  # "" <-> BLOCKED ceiling normalization
+    node_next=$(REPO_ROOT="$REPO_ROOT" node -e '
+      import("file://" + process.env.REPO_ROOT + "/src/node/model-ladder.mjs").then(({ loadModelLadder }) => {
+        const ladder = loadModelLadder();
+        process.stdout.write(ladder[process.argv[1]] ?? "BLOCKED");
+      });
+    ' "$key" 2>/dev/null)
+    if [[ "$zsh_next" != "$node_next" ]]; then
+      echo "  mismatch: $key -> zsh=$zsh_next node=$node_next" >&2
+      (( mismatches++ ))
+    fi
+  done <<< "$keys"
+  rm -rf "$tmpdir"
+
+  if (( mismatches == 0 )); then
+    pass "US001-equivalence: zsh get_next_model and Node loadModelLadder agree on every shipped key"
+  else
+    fail "US001-equivalence: $mismatches key(s) disagree between zsh and Node"
+  fi
+}
+
+test_us001_override_precedence
+test_us001_absent_override_uses_defaults
+test_us001_malformed_warns_and_falls_through
+test_us001_dual_layout_installed_flat
+test_us001_dual_layout_checkout
+test_us001_emergency_fallback
+test_us001_zsh_node_equivalence
 
 # ============================================================
 # Summary

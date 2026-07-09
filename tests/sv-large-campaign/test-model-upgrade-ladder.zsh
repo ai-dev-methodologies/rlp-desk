@@ -24,14 +24,23 @@ LIB="${0:A:h:h:h}/src/scripts/lib_ralph_desk.zsh"
 # Stub the leader logging the functions call (file-scope, before sourcing).
 log() { : }
 log_debug() { : }
+log_error() { : }
 ITERATION=1
 typeset -gA US_FAIL_HISTORY
+
+# US-001: get_next_model resolves its shipped ladder (src/node/models.json)
+# relative to $LIB_DIR — normally set by run_ralph_desk.zsh before sourcing
+# the lib. This harness sources the ladder functions standalone, so LIB_DIR
+# must be set explicitly to the real source-checkout script dir, or shipped
+# resolution fails and every call silently falls back to the 3-entry
+# emergency ladder (which lacks the codex entries this test exercises).
+LIB_DIR="${0:A:h:h:h}/src/scripts"
 
 # Extract ONLY the ladder functions (get_model_string..record_us_failure span)
 # and source them at FILE scope (lib's funcstack source-guard requires file scope;
 # extracting the span avoids pulling the whole lib's global/dependency surface).
 _LADDER_SRC=$(mktemp -t ladder-fns.XXXXXX.zsh)
-sed -n '121,236p' "$LIB" > "$_LADDER_SRC"
+sed -n '128,283p' "$LIB" > "$_LADDER_SRC"
 source "$_LADDER_SRC"
 rm -f "$_LADDER_SRC"
 
