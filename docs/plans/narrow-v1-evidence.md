@@ -71,3 +71,5 @@ Post-fix re-verification: `tests/node/models-ladder.test.mjs` (16/16),
 `tests/sv-large-campaign/test-model-upgrade-ladder.zsh` (18/18),
 `npm run test:node` (431/431), `npm run test:zsh` (exit 0),
 `npm run sv-gate:fast` (85/85).
+
+> Note: relocated from docs/rlp-desk/internal/ (gitignored "never publish" boundary — files there must not be committed).
