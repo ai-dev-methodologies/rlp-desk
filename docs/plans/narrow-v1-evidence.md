@@ -256,9 +256,9 @@ dogfood / Tier-2 registry)`.
 
 AC1: rewrote the README's opening tagline and first section (previously
 "Fresh-context iterative loops... brings Ralph Loop philosophy...") to
-lead with three pillars: durable file-based campaign state (crash-safe,
-sentinel-locked status/done-claim/verify-verdict files, resumable and
-`jq`-inspectable), independent verifier governance (Iron Laws, Evidence
+lead with three pillars: durable file-based campaign state (atomic
+status writes, append-only verified ledger, write-locked done-claim/
+verify-verdict handoff sentinels — resumable and `jq`-inspectable), independent verifier governance (Iron Laws, Evidence
 Gate IDENTIFY→RUN→READ→VERIFY→claim, anti-rubber-stamp guidance), and
 cross-family consensus (claude × codex, both-must-pass mode) —
 terminology cross-checked against the existing "Verification Policy"

@@ -4,13 +4,13 @@
 
 RLP Desk runs long-horizon Claude Code campaigns as a Worker/Verifier loop, and stakes its reliability on three things:
 
-- **Durable file-based state** — campaign status is written atomically to disk as resumable, `jq`-inspectable status/ledger files, plus write-locked handoff sentinels (done-claims, verify-verdicts) that a finished pane cannot revise. Kill the session, the terminal, the pane — the campaign resumes from where the files left off.
+- **Durable file-based state** — campaign status is written atomically (write-then-rename), the verified ledger is an append-only JSONL record, and handoff artifacts (done-claims, verify-verdicts) are write-locked sentinels a finished pane cannot revise — all resumable and `jq`-inspectable. Kill the session, the terminal, the pane — the campaign resumes from where the files left off.
 - **Independent verifier governance** — a separate fresh-context agent checks the Worker's claims against real evidence, governed by Iron Laws (no completion claims without fresh evidence) and an Evidence Gate protocol (IDENTIFY → RUN → READ → VERIFY → only then claim), with anti-rubber-stamp guidance against reflexive passes.
 - **Cross-family consensus** — Worker and Verifier can run on different model families (Claude × Codex/GPT); in consensus mode, both must independently PASS before a campaign completes.
 
 This rides on a **fresh-context loop**: each Worker/Verifier iteration starts with no prior conversation, reading only the PRD and the on-disk campaign state. That statelessness is the mechanism — durable state and independent verification are what it buys you, not the headline.
 
-Below: the native-mode dispatch (`--mode native`, via `Agent()`). `--mode tmux` — the production default — runs Worker/Verifier as tmux panes (`claude -p` / `codex`) instead; see [Execution Modes](#execution-modes).
+Below: the native-mode dispatch (`--mode native`, via `Agent()`). `--mode tmux` — the production default — runs Worker/Verifier as interactive Claude/Codex TUI tmux panes instead; see [Execution Modes](#execution-modes).
 
 ```
 [Your Session = LEADER]
