@@ -2,9 +2,11 @@
 
 Dev-meta record of per-US verification evidence for the narrow-v1 PRD
 (`.omc/plans/narrow-v1-prd.md`). One section per US, appended as each lands.
-Not shipped to end users — this is under `docs/rlp-desk/internal/`, which
-`scripts/postinstall.js` only syncs if present, alongside `blueprints/` and
-`plans/`.
+Lives under `docs/plans/` (git-tracked, not in package.json's `files`
+allowlist, so not npm-shipped and not synced by `scripts/postinstall.js`).
+This file originally landed at `docs/rlp-desk/internal/narrow-v1-evidence.md`
+and was force-added there in error — that directory is `.gitignore`d as
+"local only, never publish" — then relocated here.
 
 ## US-001: Single-source the Worker model-upgrade ladder + user override
 
@@ -26,7 +28,7 @@ across all US-001 commits.
 
 ### Gate results (at the commit this evidence file lands in)
 
-- `npm run test:node`: 431/431 pass, 0 fail
+- `npm run test:node`: 437/437 pass, 0 fail
 - `npm run test:zsh`: exit 0 (every `tests/test_*.sh` file passes; the
   script does `... || exit 1` per file, so a 0 exit is authoritative for
   the whole suite)
@@ -63,13 +65,14 @@ across all US-001 commits.
   in `CHANGELOG.md`, documenting the Node native-mode `:low → :medium`
   alignment (deliberate behavior change) and the `models.json`
   externalization.
-- P2-3: this evidence file.
+- P2-3: this evidence file — originally landed at
+  `docs/rlp-desk/internal/narrow-v1-evidence.md` (force-added against that
+  directory's `.gitignore` "never publish" rule), then relocated to
+  `docs/plans/narrow-v1-evidence.md`.
 
 Post-fix re-verification: `tests/node/models-ladder.test.mjs` (16/16),
 `tests/test_us011_worker_model_upgrade.sh` (30/30),
 `tests/test_us004_progressive_upgrade.sh` (23/23),
 `tests/sv-large-campaign/test-model-upgrade-ladder.zsh` (18/18),
-`npm run test:node` (431/431), `npm run test:zsh` (exit 0),
+`npm run test:node` (437/437), `npm run test:zsh` (exit 0),
 `npm run sv-gate:fast` (85/85).
-
-> Note: relocated from docs/rlp-desk/internal/ (gitignored "never publish" boundary — files there must not be committed).
