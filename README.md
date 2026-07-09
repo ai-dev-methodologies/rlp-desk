@@ -59,6 +59,12 @@ You'll be asked to confirm each item:
 
 The leader loop runs autonomously — spawning workers, verifying results, and tracking progress until completion or a circuit breaker triggers.
 
+## Supported Platforms
+
+- **macOS** — primary development platform.
+- **Ubuntu Linux** — CI/server platform.
+- Anything else (other Linux distros, WSL, BSD) is best-effort and unsupported: it may work, but issues specific to those environments are not a support priority.
+
 ## Why?
 
 ### The Context Problem
