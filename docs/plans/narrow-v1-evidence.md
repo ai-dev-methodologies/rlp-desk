@@ -76,3 +76,84 @@ Post-fix re-verification: `tests/node/models-ladder.test.mjs` (16/16),
 `tests/sv-large-campaign/test-model-upgrade-ladder.zsh` (18/18),
 `npm run test:node` (437/437), `npm run test:zsh` (exit 0),
 `npm run sv-gate:fast` (85/85).
+
+## US-002: Prune structural grep-tests from the shell harness
+
+### Classification (AC1)
+
+All 69 `tests/test_*.sh` files were read in full and classified by the
+execution-trace criterion (runs/extracts-and-executes real runtime code vs.
+pins an SV-trigger doc contract vs. pure structural grep with neither).
+Full per-file table and rationale: `docs/plans/narrow-v1-test-inventory.md`
+(deviation from PRD text: lands at `docs/plans/`, not
+`docs/rlp-desk/internal/`, which is `.gitignore`d never-publish — same
+reason as the US-001 evidence-file relocation above).
+
+- BEHAVIORAL: 49
+- STRUCTURAL-CONTRACT (pins `src/commands/rlp-desk.md` and/or
+  `src/governance.md`, kept per Principle 2): 12
+- STRUCTURAL (prune candidates, moved to `tests/structural-archive/`): 8
+  — `test_final_verify_sequential.sh`, `test_monitor_counter.sh`,
+  `test_us001_tmux_sv_report.sh`, `test_us005_completed_stories_loader.sh`,
+  `test_us007_verifier_anti_rubber_stamp.sh`,
+  `test_us012_sv_tmux_skip_traceability.sh`,
+  `test_us025_session_disambiguation.sh`, `test_us026_runner_lockfile.sh`.
+
+### Move + gate updates (AC2, AC3)
+
+`git mv` into `tests/structural-archive/` (new dir, `README.md` explainer
+added). `npm run test:zsh` globs `tests/test_*.sh` only, so the 8 files stop
+running automatically with no harness code change.
+
+Two defects surfaced during the move, both fixed before commit:
+1. 5 of the 8 archived files resolve their own repo root via a
+   `dirname "$0"` chain (`ROOT="$(cd "$(dirname "$0")/.." && pwd)"` or the
+   zsh `${0:A:h}`/`${SCRIPT_DIR:h}` equivalent) that assumed one level of
+   nesting under `tests/`. Moving them one directory deeper broke source-file
+   lookup (confirmed by running each moved file directly — `test_us012_sv_tmux_skip_traceability.sh`
+   dropped from 5/5 to 2 pass/3 fail with the exact symptom: `WITH_SELF_VERIFICATION_REQUESTED`
+   assertions failing because `$RUN` resolved to a nonexistent path one level
+   too shallow). Fixed by adding one more `..`/`:h` hop in each of the 5
+   affected files (`test_us001_tmux_sv_report.sh`,
+   `test_us005_completed_stories_loader.sh`,
+   `test_us012_sv_tmux_skip_traceability.sh`,
+   `test_us025_session_disambiguation.sh`, `test_us026_runner_lockfile.sh`).
+   Re-verified all 8 archived files pass standalone after the fix.
+2. `tests/sv-gate-fast.sh` names 13 `tests/test_*.sh` files individually in
+   its "Critical zsh unit tests" array; one,
+   `test_us012_sv_tmux_skip_traceability.sh`, was in the archived set. Its
+   path in that array was updated to
+   `tests/structural-archive/test_us012_sv_tmux_skip_traceability.sh` (entry
+   kept, not deleted). `tests/sv-gate-full.sh` references no
+   `tests/test_*.sh` file by path (verified via grep) — no update needed
+   there.
+
+### Gate results (AC3, AC4)
+
+- `npm run test:zsh`: exit 0. 61 files executed (`grep -a '^=== tests/'` on
+  the run log), matching BEHAVIORAL(49) + STRUCTURAL-CONTRACT(12) exactly.
+- `npm run test:node`: 437/437 pass, 0 fail (unchanged from US-001 baseline
+  — this US touched no Node source).
+- `npm run sv-gate:fast`: 85/85 pass (was 84/85 before the path-resolution
+  fix — the `test_us012_sv_tmux_skip_traceability.sh` gate entry failed
+  post-move until both fixes above landed).
+- Inventory doc (AC4) states the archive-exclusion rationale and
+  re-inclusion criterion (a structural test becomes contract-load-bearing —
+  e.g. a new SV-trigger doc, or a new section in an existing one that an
+  archived file already happens to check).
+
+### AC7-equivalent SV-trigger check (Principle 4 constraint, all US)
+
+```
+git diff --stat HEAD -- src/commands/rlp-desk.md src/governance.md src/scripts/init_ralph_desk.zsh
+```
+
+Output: empty diff (exit 0). Zero changes to the three SV-trigger files in
+the US-002 commit.
+
+### Commit
+
+`746a57c` — `refactor(tests): US-002 — archive structural grep-tests,
+execution-trace inventory` (12 files changed: inventory doc, CHANGELOG
+entry, `tests/structural-archive/README.md`, 8 `git mv` renames + their
+path fixes, `tests/sv-gate-fast.sh` path update).
