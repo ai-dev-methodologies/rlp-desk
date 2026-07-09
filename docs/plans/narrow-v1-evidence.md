@@ -157,3 +157,57 @@ the US-002 commit.
 execution-trace inventory` (12 files changed: inventory doc, CHANGELOG
 entry, `tests/structural-archive/README.md`, 8 `git mv` renames + their
 path fixes, `tests/sv-gate-fast.sh` path update).
+
+### Codex ITERATE round 1 — 2 P2, both fixed (0 P1)
+
+Codex critic on the US-002 diff: no P1 ("your 8 archived files are
+genuinely non-runtime; good"). Two P2s:
+
+- **P2-a (classification correction)**: the first pass defined
+  "SV-trigger files" as only `src/commands/rlp-desk.md` and
+  `src/governance.md`, omitting `src/scripts/init_ralph_desk.zsh` — even
+  though PRD Principle 4 names all three. Re-examined the 5 files Codex
+  flagged:
+  - `test_us007_verifier_anti_rubber_stamp.sh` (Codex's highest-risk pick):
+    its `extract_verifier_prompt()` pins the `# --- Verifier Prompt ---`
+    template embedded in `init_ralph_desk.zsh` — the literal text sent to
+    the real LLM verifier in production, with no other test enforcing it.
+    **Restored** `tests/structural-archive/` → `tests/` (`git mv`) as
+    STRUCTURAL-CONTRACT. No path-variable fix needed (its `INIT` var is
+    CWD-relative, not `$0`-relative) — verified standalone (`bash
+    tests/test_us007_verifier_anti_rubber_stamp.sh`: 12/12 pass).
+  - `test_final_verify_sequential.sh`, `test_monitor_counter.sh`,
+    `test_us005_completed_stories_loader.sh`,
+    `test_us025_session_disambiguation.sh`: each greps only
+    `run_ralph_desk.zsh`/`lib_ralph_desk.zsh` (verified via full-file
+    grep for `governance.md`/`rlp-desk.md`/`init_ralph_desk` — zero hits
+    in all 4). Not an SV-trigger file → stay archived.
+- **P2-b (precision)**: CHANGELOG and inventory taxonomy said archived
+  files were "string-presence-only, zero runtime execution" — overstated.
+  `test_us005_completed_stories_loader.sh`'s L3 section executes a
+  hand-COPIED reimplementation of the sed/grep/tr pipeline (literal text,
+  not the real `$RUN` source) against a synthetic fixture;
+  `test_us026_runner_lockfile.sh`'s AC5-7 execute real OS primitives
+  (`mkdir`, `kill -0`, `shasum`) simulating lock semantics, never the real
+  `acquire_slug_lock`. Reworded CHANGELOG, the inventory's classifier
+  section, the archive policy paragraph, `tests/structural-archive/README.md`,
+  and both files' table rows to state precisely: no assertion consumes
+  output of the *real* product runtime, and the hand-copy/simulation
+  pattern in those two files is itself the reason they're archived
+  (silent-divergence risk from the real implementation).
+
+Gate results after the fix: `npm run test:zsh` exit 0, 62 files executed
+(`grep -a '^=== tests/'` on the run log) — matches the corrected
+BEHAVIORAL(49) + STRUCTURAL-CONTRACT(13) = 62 exactly (up from 61: +1 for
+the restored `test_us007`). `npm run sv-gate:fast`: 85/85 pass (unaffected
+— `test_us007` was never referenced there). SV-trigger diff check
+(`git diff --stat HEAD -- src/commands/rlp-desk.md src/governance.md
+src/scripts/init_ralph_desk.zsh`): empty, exit 0.
+
+Updated counts: BEHAVIORAL 49 (unchanged) / STRUCTURAL-CONTRACT 12→13 /
+STRUCTURAL 8→7 / retained run-set 61→62.
+
+Commit: `1b24ea3` — `fix(us-002): restore contract-pinning tests + precise
+taxonomy wording (codex round 1)` (4 files changed: CHANGELOG.md,
+`docs/plans/narrow-v1-test-inventory.md`, `tests/structural-archive/README.md`,
+`git mv` of `test_us007_verifier_anti_rubber_stamp.sh` back to `tests/`).
