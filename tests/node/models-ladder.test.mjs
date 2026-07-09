@@ -5,12 +5,24 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadModelLadder, defaultShippedModelsFile, EMERGENCY_LADDER, CEILING_SENTINEL } from '../../src/node/model-ladder.mjs';
-import { nextWorkerModel } from '../../src/node/runner/campaign-main-loop.mjs';
 
 const testFile = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(testFile), '..', '..');
 const realShippedFile = path.join(repoRoot, 'src', 'node', 'models.json');
 const NONEXISTENT = path.join(repoRoot, '.tmp', 'models-ladder-test', 'does-not-exist.json');
+
+// Hermeticity (Codex P2-1): campaign-main-loop.mjs computes its
+// module-level MODEL_UPGRADES constant via loadModelLadder() (no explicit
+// overrideFile) AT IMPORT TIME, using the ambient
+// ${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json} default. If a
+// real override file exists on the machine running this test (or the env
+// var happens to be set), the nextWorkerModel assertions below would
+// silently depend on that ambient state instead of the shipped defaults
+// they're meant to verify. Force the env var to a guaranteed-nonexistent
+// path BEFORE importing the module — a static top-of-file `import` runs
+// before any of this code, so this requires a dynamic import.
+process.env.RLP_DESK_MODELS_FILE = path.join(repoRoot, '.tmp', 'models-ladder-test', 'hermetic-import-guard-no-override.json');
+const { nextWorkerModel } = await import('../../src/node/runner/campaign-main-loop.mjs');
 
 async function createTempDir(t) {
   const tempRoot = path.join(repoRoot, '.tmp', 'models-ladder-test');
@@ -67,6 +79,41 @@ test('malformed-JSON warn+fallthrough: shipped missing "upgrades" object also fa
 
   assert.deepEqual(ladder, { ...EMERGENCY_LADDER });
   assert.equal(warnings.length, 1, `expected exactly one warning, got ${warnings.length}: ${JSON.stringify(warnings)}`);
+});
+
+// P1 (Codex): a syntactically-valid JSON file whose upgrades VALUES aren't
+// all strings must still be treated as a malformed layer — every value type
+// jq/JSON can produce besides string and the omitted-key case.
+for (const [label, badValue] of [
+  ['number', 123],
+  ['boolean', true],
+  ['null', null],
+  ['object', { nested: true }],
+  ['array', ['sonnet']],
+]) {
+  test(`schema validation: a ${label} upgrades value is rejected (falls through, not resolved into junk)`, async (t) => {
+    const dir = await createTempDir(t);
+    const overrideFile = path.join(dir, 'override.json');
+    await fs.writeFile(overrideFile, JSON.stringify({ upgrades: { haiku: badValue } }));
+
+    const warnings = [];
+    const ladder = loadModelLadder({ overrideFile, shippedFile: realShippedFile, warn: (msg) => warnings.push(msg) });
+
+    // Falls through to the REAL shipped defaults, not the non-string value.
+    assert.equal(ladder.haiku, 'sonnet');
+    assert.notEqual(ladder.haiku, badValue);
+    assert.equal(warnings.length, 1, `expected exactly one warning, got ${warnings.length}: ${JSON.stringify(warnings)}`);
+    assert.match(warnings[0], /override file .* unreadable or malformed/);
+  });
+}
+
+test('schema validation: an empty-string upgrades value is still accepted as ceiling', async (t) => {
+  const dir = await createTempDir(t);
+  const overrideFile = path.join(dir, 'override.json');
+  await fs.writeFile(overrideFile, JSON.stringify({ upgrades: { haiku: '' } }));
+
+  const ladder = loadModelLadder({ overrideFile, shippedFile: realShippedFile });
+  assert.equal(ladder.haiku, CEILING_SENTINEL);
 });
 
 test('emergency-inline-ladder: both override and shipped unreadable falls all the way through', () => {

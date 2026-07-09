@@ -48,8 +48,18 @@ extract_fn() {
   # run_ralph_desk.zsh, so LIB_DIR would be unset and every extraction would
   # silently fall back to the 3-entry emergency ladder instead of the real
   # shipped file.
+  #
+  # Hermeticity (Codex P2-1): get_next_model also checks
+  # ${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json}. Without a
+  # guard, a REAL override file on the machine running these tests would
+  # silently win over shipped defaults. The self-referential ${VAR:-default}
+  # only applies if the harness hasn't already set RLP_DESK_MODELS_FILE
+  # itself, so it never clobbers a test that intentionally sets its own
+  # (assignment order: an explicit test-specific line always wins, whether
+  # it runs before this default or after it).
   if [[ "$fn_name" == "get_next_model" && -n "$body" ]]; then
     body="LIB_DIR=\"$REPO_ROOT/src/scripts\"
+RLP_DESK_MODELS_FILE=\"\${RLP_DESK_MODELS_FILE:-/nonexistent-hermetic-test-guard/rlp-desk-models.json}\"
 $body"
   fi
   printf '%s\n' "$body"
@@ -525,6 +535,49 @@ test_us001_malformed_warns_and_falls_through() {
   fi
 }
 
+# schema-validation (Codex P1): a syntactically-valid JSON file whose
+# upgrades VALUE isn't a string (e.g. {"upgrades":{"haiku":123}}) must be
+# treated as a malformed layer -> warn + fall through, not resolved into
+# junk output (e.g. echoing the literal text "123").
+test_us001_schema_validation_rejects_non_string_values() {
+  local fn_body tmpdir label bad_json
+  fn_body=$(extract_fn "get_next_model")
+  if [[ -z "$fn_body" ]]; then
+    fail "US001-schema: get_next_model() not found"
+    return
+  fi
+  for label in number boolean null object array; do
+    case "$label" in
+      number)  bad_json='{"upgrades": {"haiku": 123}}' ;;
+      boolean) bad_json='{"upgrades": {"haiku": true}}' ;;
+      null)    bad_json='{"upgrades": {"haiku": null}}' ;;
+      object)  bad_json='{"upgrades": {"haiku": {"nested": true}}}' ;;
+      array)   bad_json='{"upgrades": {"haiku": ["sonnet"]}}' ;;
+    esac
+    tmpdir=$(mktemp -d)
+    echo "$bad_json" > "$tmpdir/override.json"
+    {
+      echo '#!/usr/bin/env zsh -f'
+      echo "RLP_DESK_MODELS_FILE=\"$tmpdir/override.json\""
+      echo "log_error() { echo \"\$*\" >> \"$tmpdir/warn.log\"; }"
+      echo "$fn_body"
+      echo 'r=$(get_next_model "haiku")'
+      echo '[[ "$r" == "sonnet" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+    } > "$tmpdir/harness.zsh"
+    local out rc warned=0
+    out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+    rc=$?
+    [[ -s "$tmpdir/warn.log" ]] && grep -qi 'malformed\|unreadable' "$tmpdir/warn.log" && warned=1
+    rm -rf "$tmpdir"
+    if (( rc == 0 && warned == 1 )); then
+      pass "US001-schema: $label upgrades value rejected -> falls through to shipped defaults"
+    else
+      fail "US001-schema: $label upgrades value NOT rejected (rc=$rc warned=$warned out=$out)"
+    fi
+  done
+  return 0
+}
+
 # dual-layout: installed flat layout ($LIB_DIR/node/models.json)
 test_us001_dual_layout_installed_flat() {
   local fn_body tmpdir
@@ -543,6 +596,9 @@ test_us001_dual_layout_installed_flat() {
   {
     echo '#!/usr/bin/env zsh -f'
     echo "LIB_DIR=\"$tmpdir\""
+    # Hermeticity (Codex P2-1): guard against a real override on the machine
+    # running this test — see extract_fn's comment for the same guard.
+    echo "RLP_DESK_MODELS_FILE=\"$tmpdir/no-such-override.json\""
     echo "$fn_body"
     echo 'r=$(get_next_model "haiku")'
     echo '[[ "$r" == "flat-layout-marker" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
@@ -574,6 +630,9 @@ test_us001_dual_layout_checkout() {
   {
     echo '#!/usr/bin/env zsh -f'
     echo "LIB_DIR=\"$tmpdir/src/scripts\""
+    # Hermeticity (Codex P2-1): guard against a real override on the machine
+    # running this test — see extract_fn's comment for the same guard.
+    echo "RLP_DESK_MODELS_FILE=\"$tmpdir/no-such-override.json\""
     echo "$fn_body"
     echo 'r=$(get_next_model "haiku")'
     echo '[[ "$r" == "checkout-layout-marker" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
@@ -654,9 +713,12 @@ test_us001_zsh_node_equivalence() {
     [[ -z "$key" ]] && continue
     zsh_next=$(zsh -f "$tmpdir/get_next_model.zsh" "$key" 2>/dev/null)
     [[ -z "$zsh_next" ]] && zsh_next="BLOCKED"  # "" <-> BLOCKED ceiling normalization
+    # Hermeticity (Codex P2-1): explicit overrideFile pointing at a path that
+    # cannot exist, so a real ~/.claude/rlp-desk-models.json on the machine
+    # running this test can never silently win over shipped defaults here.
     node_next=$(REPO_ROOT="$REPO_ROOT" node -e '
       import("file://" + process.env.REPO_ROOT + "/src/node/model-ladder.mjs").then(({ loadModelLadder }) => {
-        const ladder = loadModelLadder();
+        const ladder = loadModelLadder({ overrideFile: "/nonexistent-hermetic-test-guard/rlp-desk-models.json" });
         process.stdout.write(ladder[process.argv[1]] ?? "BLOCKED");
       });
     ' "$key" 2>/dev/null)
@@ -677,6 +739,7 @@ test_us001_zsh_node_equivalence() {
 test_us001_override_precedence
 test_us001_absent_override_uses_defaults
 test_us001_malformed_warns_and_falls_through
+test_us001_schema_validation_rejects_non_string_values
 test_us001_dual_layout_installed_flat
 test_us001_dual_layout_checkout
 test_us001_emergency_fallback

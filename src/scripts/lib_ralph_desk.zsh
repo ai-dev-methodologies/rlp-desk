@@ -172,8 +172,12 @@ get_next_model() {
   local current="$1"
   local override_file="${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json}"
   local ladder_file="" shipped_candidate
+  # Every upgrades value must be a string (empty string = ceiling) — a
+  # syntactically-valid file like {"upgrades":{"haiku":123}} must still be
+  # treated as malformed (fall through), not resolved into junk output.
+  local ladder_filter='(.upgrades | type) == "object" and (.upgrades | to_entries | all(.value | type == "string"))'
 
-  if [[ -f "$override_file" ]] && jq -e '.upgrades | type == "object"' "$override_file" >/dev/null 2>&1; then
+  if [[ -f "$override_file" ]] && jq -e "$ladder_filter" "$override_file" >/dev/null 2>&1; then
     ladder_file="$override_file"
   else
     if [[ -f "$override_file" && "${_MODEL_LADDER_WARNED:-0}" != 1 ]]; then
@@ -181,7 +185,7 @@ get_next_model() {
       log_error "model ladder: override file '$override_file' unreadable or malformed; falling through"
     fi
     for shipped_candidate in "$LIB_DIR/node/models.json" "$LIB_DIR/../node/models.json"; do
-      if [[ -f "$shipped_candidate" ]] && jq -e '.upgrades | type == "object"' "$shipped_candidate" >/dev/null 2>&1; then
+      if [[ -f "$shipped_candidate" ]] && jq -e "$ladder_filter" "$shipped_candidate" >/dev/null 2>&1; then
         ladder_file="$shipped_candidate"
         break
       fi

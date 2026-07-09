@@ -6,6 +6,26 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 
 ## [Unreleased]
 
+### Changed
+- US-001: the Worker model-upgrade ladder is now single-sourced from
+  `src/node/models.json`, read at runtime by both the `--mode tmux` (zsh)
+  and Node native-mode leaders instead of two independently hardcoded
+  tables. An optional user override can be placed at
+  `${RLP_DESK_MODELS_FILE:-~/.claude/rlp-desk-models.json}` (outside the
+  postinstall-managed tree); precedence is override → shipped defaults → a
+  3-entry emergency inline ladder if both are missing or malformed. See
+  `src/model-upgrade-table.md` for the reference view of the shipped table.
+- **Node native-mode behavior change**: `gpt-5.5:low` and
+  `gpt-5.3-codex-spark:low` now upgrade to their `:medium` tier on repeated
+  same-US failure. Previously these two starting tiers were absent from
+  Node's hardcoded `MODEL_UPGRADES` table, so a campaign started at `:low`
+  in native mode was silently treated as already at the ceiling (immediate
+  `BLOCKED`) instead of climbing the ladder. The `--mode tmux` (zsh) leader
+  already had the correct `:low → :medium` step; this aligns Node to match.
+  Claude `haiku`/`sonnet`/`opus` were also previously absent from Node's
+  table entirely (any claude worker in native mode was instantly `BLOCKED`
+  on repeated failure) and now resolve correctly too.
+
 ### Planned (not yet shipped)
 - v0.15.5 candidate: flip `RLP_LIFECYCLE_METRICS=1` default to ON (gated on 3 consecutive nightly real-LLM SV passes per `docs/plans/v0.15.4-release-runbook.md` §7.5.2).
 - Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).

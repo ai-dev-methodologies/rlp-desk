@@ -35,12 +35,17 @@ typeset -gA US_FAIL_HISTORY
 # resolution fails and every call silently falls back to the 3-entry
 # emergency ladder (which lacks the codex entries this test exercises).
 LIB_DIR="${0:A:h:h:h}/src/scripts"
+# Hermeticity (Codex P2-1): get_next_model also checks
+# ${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json} — guard against
+# a real override file on the machine running this test silently winning
+# over the shipped defaults this test asserts on.
+RLP_DESK_MODELS_FILE="/nonexistent-hermetic-test-guard/rlp-desk-models.json"
 
 # Extract ONLY the ladder functions (get_model_string..record_us_failure span)
 # and source them at FILE scope (lib's funcstack source-guard requires file scope;
 # extracting the span avoids pulling the whole lib's global/dependency surface).
 _LADDER_SRC=$(mktemp -t ladder-fns.XXXXXX.zsh)
-sed -n '128,283p' "$LIB" > "$_LADDER_SRC"
+sed -n '128,287p' "$LIB" > "$_LADDER_SRC"
 source "$_LADDER_SRC"
 rm -f "$_LADDER_SRC"
 

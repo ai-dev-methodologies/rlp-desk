@@ -27,8 +27,17 @@ extract_fn() {
   # single-function harnesses never source run_ralph_desk.zsh, so LIB_DIR
   # would be unset and every extraction would silently fall back to the
   # 3-entry emergency ladder instead of the real src/node/models.json.
+  #
+  # Hermeticity (Codex P2-1): get_next_model also checks
+  # ${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json}. Without a
+  # guard, a REAL override file on the machine running these tests would
+  # silently win over shipped defaults and these assertions would depend on
+  # ambient dev-machine state. The self-referential ${VAR:-default} default
+  # only applies if the harness hasn't already set RLP_DESK_MODELS_FILE
+  # itself, so it never clobbers a test that intentionally sets its own.
   if [[ "$fn_name" == "get_next_model" && -n "$body" ]]; then
     body="LIB_DIR=\"$ROOT_DIR/src/scripts\"
+RLP_DESK_MODELS_FILE=\"\${RLP_DESK_MODELS_FILE:-/nonexistent-hermetic-test-guard/rlp-desk-models.json}\"
 $body"
   fi
   echo "$body"

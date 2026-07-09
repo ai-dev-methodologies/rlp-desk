@@ -30,9 +30,17 @@ export const EMERGENCY_LADDER = Object.freeze({
   opus: CEILING_SENTINEL,
 });
 
+// Every upgrades value must be a string (empty string = ceiling). A
+// non-string value (number, boolean, null, object, array) throws so the
+// caller treats the WHOLE file as malformed and falls through to the next
+// layer, rather than silently resolving to junk (e.g. get_next_model
+// returning the string "123" for a JSON number).
 function normalizeUpgrades(upgrades) {
   const normalized = {};
   for (const [key, value] of Object.entries(upgrades)) {
+    if (typeof value !== 'string') {
+      throw new Error(`upgrades['${key}'] must be a string, got ${typeof value}`);
+    }
     normalized[key] = value === '' ? CEILING_SENTINEL : value;
   }
   return normalized;
