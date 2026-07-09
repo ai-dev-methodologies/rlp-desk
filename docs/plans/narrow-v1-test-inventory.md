@@ -18,13 +18,25 @@ classified with an EXECUTION-TRACE test, not by filename or grep count:
   generated. Mixed files (any behavioral assertion alongside structural
   ones) count as BEHAVIORAL and stay whole — never split.
 - **STRUCTURAL-CONTRACT**: no runtime execution, but at least one assertion
-  greps `src/commands/rlp-desk.md` or `src/governance.md` (the two
-  SV-trigger docs) or the A5 trigger-file diff oracle surface. These two
-  docs have no other enforcement mechanism, so their grep tests stay in the
-  run set per PRD Principle 2.
-- **STRUCTURAL**: no runtime execution, string-presence/count greps only
-  against source or docs other than the two SV-trigger docs, no A5-oracle
-  contract. These are the prune candidates.
+  greps `src/commands/rlp-desk.md`, `src/governance.md`, or contract text
+  (e.g. a prompt/template section) embedded in `src/scripts/init_ralph_desk.zsh`
+  — **all three** are the SV-trigger files per PRD Principle 4, not just the
+  two docs (this was a classification gap in the first pass, corrected below
+  after Codex review) — or the A5 trigger-file diff oracle surface. These
+  three files have no other enforcement mechanism for the specific text a
+  test pins, so their grep tests stay in the run set per PRD Principle 2.
+- **STRUCTURAL**: no assertion consumes output of the real product runtime
+  (no subprocess run, no extract-and-execute, no inspection of state such a
+  run generated), and no assertion pins contract text in any of the three
+  SV-trigger files or the A5 oracle surface. These are the prune candidates.
+  Note: "no runtime execution" does not mean "no execution at all" — a few
+  of these files execute a hand-copied or hand-simulated reimplementation of
+  the logic under test (shell pipeline copy-pasted as literal text, OS-level
+  lock probes standing in for the real locking function) rather than the
+  real product code. That is exactly why they are archived rather than kept
+  as-is: a hand-copy can silently diverge from the real implementation it
+  was meant to mirror, so it provides no durable guarantee about the real
+  runtime's behavior. Each such file is flagged individually below.
 
 Bias rule applied throughout: any file with a plausible behavioral or
 contract-pinning read stayed in a run-set bucket; only files with zero
@@ -47,12 +59,12 @@ ambiguity on either axis were marked STRUCTURAL.
 | 11 | test_consensus_metadata_mode.sh | BEHAVIORAL | Repeated `zsh "$RUN" --consensus ...` subprocess runs (L94,101,108,115,122,135,170,178,186,196); inspects generated `metadata.json`/`debug.log` via `jq`/`grep` (L52-85). |
 | 12 | test_d28_heredoc_quoting.sh | BEHAVIORAL | L30 runs `zsh "$INIT" f6mini "$OBJ"` as a subprocess against a temp git repo; L36-59 inspect generated worker/verifier/test-spec prompt files for corruption. |
 | 13 | test_engine_refactor.sh | BEHAVIORAL | `extract_fn`/`run_harness` (L13-25) pull a function body from RUN/LIB then `eval` a script pasting it in and calling it (e.g. L44 `check_dead_pane`), checking `$?`. |
-| 14 | test_final_verify_sequential.sh | STRUCTURAL | L16-84 `awk '/^run_sequential_final_verify\(\)/,/^}/'` pulls the fn body from RUN, then only greps that extracted text for keywords (L28,38,49,60,70) — extraction without execution. |
+| 14 | test_final_verify_sequential.sh | STRUCTURAL | L16-84 `awk '/^run_sequential_final_verify\(\)/,/^}/'` pulls the fn body from RUN, then only greps that extracted text for keywords (L28,38,49,60,70) — extraction without execution, no SV-trigger-file contract. No active equivalent coverage remains for this source-shape assertion; the archived check asserted source text, not behavior — accepted coverage stance under the NARROW plan. |
 | 15 | test_imp01_stat_mtime_gnu.sh | BEHAVIORAL | L40-43: `zsh --no-rcs -c 'source "$LIB" ...; _file_mtime "$testfile"'` sources real `lib_ralph_desk.zsh` and executes `_file_mtime`, checks stdout against `$real_mtime` (L48, repeated L70-73). |
 | 16 | test_imp07_api_sniff_context.sh | BEHAVIORAL | L19-25 `detect()`: `zsh --no-rcs -c 'source "$LIB" ...; detect_api_error "$1"'`, asserts exit code (L26-27, used L30-44). |
 | 17 | test_imp08_slug_guard.sh | BEHAVIORAL | L27 runs `zsh "$RUN"` as a subprocess with a path-traversal `LOOP_NAME`; L29-30 check real exit code and that no traversal dir was created; L33,37 similarly subprocess-run RUN/INIT. |
 | 18 | test_imp09_paste_no_tmpfile.sh | BEHAVIORAL | `_extract_fn` (L20-22) brace-extracts `paste_to_pane` from RUN; L42-46 splices it into a harness script executed via `zsh --no-rcs` (L46); L47-55 inspect resulting tmux-buffer capture and `/tmp` leak state. |
-| 19 | test_monitor_counter.sh | STRUCTURAL | File header (L8-12) states it deliberately avoids dispatching the runner end-to-end; all 7 assertions (L39-62) are plain `grep -q` against `run_ralph_desk.zsh` — no execution anywhere. |
+| 19 | test_monitor_counter.sh | STRUCTURAL | File header (L8-12) states it deliberately avoids dispatching the runner end-to-end; all 7 assertions (L39-62) are plain `grep -q` against `run_ralph_desk.zsh` — no execution anywhere, no SV-trigger-file contract. No active equivalent coverage remains for this source-shape assertion; the archived check asserted source text, not behavior — accepted coverage stance under the NARROW plan. |
 | 20 | test_nightly_streak.sh | BEHAVIORAL | L18 `ev()`: `bash "$NIGHTLY" --eval-only` runs `tests/sv-real-llm/harness/nightly-run.sh` as a real subprocess and consumes its stdout (L23,26,29,31,35,39,44) plus a dry-run subprocess check (L47). Target is a test-harness script rather than one of the 4 named production files, but it is genuine subprocess execution + output consumption, not a grep — kept BEHAVIORAL per the bias rule. |
 | 21 | test_no_progress_and_default_no.sh | BEHAVIORAL | L13 `sed -n` extracts a real chunk of `run_ralph_desk.zsh` into `$TMP_LIB`; L37 sources it; L50,63,76,89,97,109-116,130-133 call the extracted `auto_dismiss_prompts`/`check_no_progress` directly and assert on real return codes/vars. |
 | 22 | test_operational_context.sh | BEHAVIORAL (mixed) | L135,151 run `zsh "$INIT" ...` as a subprocess; L137-185 inspect generated worker/verifier prompt files it produced. |
@@ -76,17 +88,17 @@ ambiguity on either axis were marked STRUCTURAL.
 | 40 | test_us004_cost_log_timing.sh | BEHAVIORAL | L21-38 awk-extracts `write_cost_log()`; every AC builds a harness executed via `zsh -f` (L79) producing real `cost-log.jsonl`, asserted throughout the 546-line file. |
 | 41 | test_us004_progressive_upgrade.sh | BEHAVIORAL | L18-56 `extract_fn()` sed-extracts functions (`check_model_upgrade`, `get_next_model`, etc.); `run_harness()` (L52, `zsh -f`) executes them, asserting on `$WORKER_MODEL`/exit codes (L116-124,234-257,397-408). |
 | 42 | test_us004_self_verification.sh | BEHAVIORAL (mixed) | Mostly grep against INIT/CMD/GOV (L43-253), but L261-364 `_run_init()` runs `zsh "$INIT" ...` in a tmpdir and asserts exit code + generated `debug-v1.log`/PRD content. |
-| 43 | test_us005_completed_stories_loader.sh | STRUCTURAL | AC1/AC2 (L40-65) grep-only against `run_ralph_desk.zsh` (a source file, not an SV-trigger doc). L3 "E2E" section (L99-157) hand-copies the sed/grep/tr pipeline as literal text and runs that copy against a synthetic file — never invokes or extracts from `$RUN` itself. |
+| 43 | test_us005_completed_stories_loader.sh | STRUCTURAL | AC1/AC2 (L40-65) grep-only against `run_ralph_desk.zsh` (a source file, not an SV-trigger file). L3 "E2E" section (L99-157) does execute code, but it is a hand-COPIED reimplementation of the sed/grep/tr pipeline typed as literal text in the test, run against a synthetic fixture — never the real `$RUN` source, never invoked or extracted from it. This does not satisfy BEHAVIORAL (which requires consuming output of the real product runtime) and is precisely the divergence risk that motivates archiving: the copy can silently drift from `run_ralph_desk.zsh`'s actual pipeline. No active equivalent coverage remains for this exact loader behavior; accepted coverage stance under the NARROW plan. |
 | 44 | test_us005_final_consensus.sh | BEHAVIORAL | L27-67 `_run_should_use_consensus()` sed-extracts `_should_use_consensus()`, executes via `zsh "$tmp_script"` (L64); L145-146,211-213,253-254 also run `zsh "$RUN"` directly as a subprocess. |
 | 45 | test_us005_suggested_next_actions.sh | BEHAVIORAL | L22-42 awk-extracts `generate_campaign_report()`; L226-283 `run_gcr_harness()` builds and executes (`zsh -f`, L281) a real harness per status, asserting on generated `campaign-report.md`. |
 | 46 | test_us006_init_presets.sh | BEHAVIORAL | L17-65 awk-extracts `print_run_presets()`; `run_presets_with_codex/without_codex()` execute it via `zsh -f` (L49,62); L243,259 also run `zsh "$INIT" ...` directly. |
 | 47 | test_us007_brainstorm_recommendation.sh | STRUCTURAL-CONTRACT | L21 awk-extracts the brainstorm section from `src/commands/rlp-desk.md`, only greps it (L34-186) — no execution anywhere, pure SV-trigger-doc pin. |
-| 48 | test_us007_verifier_anti_rubber_stamp.sh | STRUCTURAL | L18-24 awk-extracts the verifier-prompt section from `init_ralph_desk.zsh`, only greps it (L36-230) — no execution; INIT is not one of the two SV-trigger docs and no A5-oracle assertion is present. |
+| 48 | test_us007_verifier_anti_rubber_stamp.sh | STRUCTURAL-CONTRACT (corrected — see Codex round 1 below) | `extract_verifier_prompt()` (L18-24) awk-extracts the `# --- Verifier Prompt ---` template section from `src/scripts/init_ralph_desk.zsh`, only greps it (L36-230) — no execution, but `init_ralph_desk.zsh` **is** the third SV-trigger file per PRD Principle 4 (not just the two docs), and this is the literal prompt text sent to the real LLM verifier in production, with no other test enforcing its content. Originally misclassified STRUCTURAL by narrowing "SV-trigger" to only `rlp-desk.md`/`governance.md`; restored to `tests/` on Codex review. |
 | 49 | test_us008_self_verification_e2e.sh | BEHAVIORAL | L86 `zsh -f` harness executes an extracted `atomic_write`+session-config write block from `run_ralph_desk.zsh`, inspects produced JSON; L285 runs `zsh -f "$INIT" ...` as a real subprocess and checks resulting filesystem state. |
 | 50 | test_us009_api_retry_guard.sh | BEHAVIORAL | L88 executes extracted `is_api_error`/`detect_api_error` (pulled from RUN/LIB) via a subprocess, checks exit code; L161 similarly executes extracted `poll_for_signal`. |
 | 51 | test_us010_live_prd_update.sh | BEHAVIORAL (mixed) | L320 runs a harness built from extracted `compute_prd_hash`/`count_prd_us`/`check_prd_update` (from RUN), inspects generated `debug.log`. |
 | 52 | test_us011_worker_model_upgrade.sh | BEHAVIORAL | L353 `zsh -f` harness executes extracted `get_next_model`; L719-724 `import()`s and runs real `src/node/model-ladder.mjs`, compares output to the zsh function's. |
-| 53 | test_us012_sv_tmux_skip_traceability.sh | STRUCTURAL | L52-75 pure `grep -cE` against `run_ralph_desk.zsh`/`lib_ralph_desk.zsh` source text only (`assert_one`/`assert_zero` helpers) — no execution, no `rlp-desk.md`/`governance.md` assertions. Independently re-read and confirmed; note it is one of the 13 files listed by name in `tests/sv-gate-fast.sh`'s "Critical zsh unit tests" array (L199-213), which required a path update on archival — see Gate updates below. |
+| 53 | test_us012_sv_tmux_skip_traceability.sh | STRUCTURAL | L52-75 pure `grep -cE` against `run_ralph_desk.zsh`/`lib_ralph_desk.zsh` source text only (`assert_one`/`assert_zero` helpers) — no execution, no SV-trigger-file assertions. Independently re-read and confirmed; note it is one of the 13 files listed by name in `tests/sv-gate-fast.sh`'s "Critical zsh unit tests" array (L199-213), which required a path update on archival — see Gate updates below. No active equivalent coverage remains for this source-shape assertion; the archived check asserted source text, not behavior — accepted coverage stance under the NARROW plan. |
 | 54 | test_us013_prd_cross_us_lint.sh | BEHAVIORAL | L84-87 awk-extract+execute `_detect_cross_us_refs` from INIT; L296-318 `node --input-type=module -e` imports and runs real `src/node/reporting/campaign-reporting.mjs`; L383-483 source LIB and call real `write_blocked_sentinel`/`generate_campaign_report`. |
 | 55 | test_us014_next_mission_candidate.sh | STRUCTURAL-CONTRACT | L46-49 pin `src/governance.md` §7 contract text (`next_mission_candidate`, `multi-mission-orchestration.md`). AC5 (L65-74) is a standalone hand-written Node reimplementation of the `??` fallback, never extracted from or executed against `campaign-main-loop.mjs` — doesn't independently qualify BEHAVIORAL, so the GOV pin is what keeps the file in the run set. |
 | 56 | test_us015_sentinel_json_taxonomy.sh | BEHAVIORAL | L82-89 source LIB, call real `write_blocked_sentinel`, inspect produced markdown+JSON sidecar; L181-189 `classify()` sources LIB and calls real `_classify_cross_us_or_metric`. |
@@ -99,30 +111,53 @@ ambiguity on either axis were marked STRUCTURAL.
 | 63 | test_us022_cross_mission_us_leak.sh | BEHAVIORAL | L76-80 source LIB, execute `_quarantine_stale_signal(...)`, inspect filesystem state it produced (L83-87); L91-94 execute `_extract_prd_us_list(...)`. |
 | 64 | test_us023_cost_log_nonempty.sh | BEHAVIORAL | L58-64 source LIB, execute `write_cost_log 1`, read generated `cost-log.jsonl` (L65-78). |
 | 65 | test_us024_pane_lifecycle.sh | BEHAVIORAL | L57-61 source LIB, execute `_verify_pane_alive`/`_verify_session_alive`; L73-133 call real `write_blocked_sentinel`, inspect generated sidecar. |
-| 66 | test_us025_session_disambiguation.sh | STRUCTURAL | L29-49 pure `assert_one`/grep against `$RUN` source text only — no source, no subprocess execution, no A5-oracle reference, GOV/CMD never opened. |
-| 67 | test_us026_runner_lockfile.sh | STRUCTURAL | AC1-4 (L31-54) grep only RUN/LIB. AC5-7 (L56-114) never source `lib_ralph_desk.zsh` nor call `acquire_slug_lock`; they hand-simulate lock semantics with raw `mkdir`/`kill -0`/`shasum` — never executing the real function under test. Real `acquire_slug_lock` execution coverage is already provided by `test_zsh4_lock_redesign.sh` (BEHAVIORAL, retained). |
+| 66 | test_us025_session_disambiguation.sh | STRUCTURAL | L29-49 pure `assert_one`/grep against `$RUN` source text only — no source, no subprocess execution, no A5-oracle reference, no SV-trigger file opened. No active equivalent coverage remains for this source-shape assertion; the archived check asserted source text, not behavior — accepted coverage stance under the NARROW plan. |
+| 67 | test_us026_runner_lockfile.sh | STRUCTURAL | AC1-4 (L31-54) grep only RUN/LIB (not SV-trigger files). AC5-7 (L56-114) do execute code — real OS primitives (`mkdir`, `kill -0`, `shasum`) — but never source `lib_ralph_desk.zsh` nor call the real `acquire_slug_lock`; they hand-SIMULATE lock semantics with a standalone reimplementation, so this does not satisfy BEHAVIORAL (which requires consuming output of the real product function) and is exactly the divergence risk archiving addresses: the simulation can silently drift from what `acquire_slug_lock` actually does. Mitigating factor: real `acquire_slug_lock` execution coverage of the same race conditions already exists in `test_zsh4_lock_redesign.sh` (BEHAVIORAL, retained) — archiving this file does not remove coverage of the real function, only of this file's separate hand-simulated model of it. |
 | 68 | test_v052_improvements.sh | BEHAVIORAL (mixed) | `extract_fn()` (L19-27) sed-extracts a function body from LIB/RUN; `test_d4_runtime_tracking` (L84-109) feeds extracted `record_us_failure` into `run_harness()` (L30-39, `zsh -f`) and executes it, asserting on `US_FAIL_HISTORY` counts. |
 | 69 | test_zsh4_lock_redesign.sh | BEHAVIORAL | L16 sources `lib_ralph_desk.zsh` directly; L28,33-34,39-40,44-46,51-52,61-62,69-71 call the real `acquire_slug_lock(...)` and assert on its return code and lock-file/mutex state. |
 
 ## Summary counts
 
 - **BEHAVIORAL: 49** — stay in `tests/`, unchanged.
-- **STRUCTURAL-CONTRACT: 12** — stay in `tests/`, unchanged (all pin
-  `src/commands/rlp-desk.md` and/or `src/governance.md` contract text with
-  no other enforcement): `test_cb_and_analytics.sh`, `test_option_cleanup.sh`,
-  `test_status_detail.sh`, `test_template_generation.sh`,
-  `test_us001_debug_refactor.sh`, `test_us002_consensus_stability.sh`,
-  `test_us002_governance_cb_table.sh`, `test_us003_campaign_report.sh`,
-  `test_us007_brainstorm_recommendation.sh`,
+- **STRUCTURAL-CONTRACT: 13** (was 12 in the first pass; corrected after
+  Codex round 1 — see below) — stay in `tests/`, unchanged (all pin
+  `src/commands/rlp-desk.md`, `src/governance.md`, and/or contract text
+  embedded in `src/scripts/init_ralph_desk.zsh` — the three SV-trigger
+  files — with no other enforcement): `test_cb_and_analytics.sh`,
+  `test_option_cleanup.sh`, `test_status_detail.sh`,
+  `test_template_generation.sh`, `test_us001_debug_refactor.sh`,
+  `test_us002_consensus_stability.sh`, `test_us002_governance_cb_table.sh`,
+  `test_us003_campaign_report.sh`, `test_us007_brainstorm_recommendation.sh`,
+  `test_us007_verifier_anti_rubber_stamp.sh`,
   `test_us014_next_mission_candidate.sh`, `test_us016_lane_enforcement.sh`,
   `test_us019_verify_partial.sh`.
-- **STRUCTURAL: 8** — moved to `tests/structural-archive/`:
-  `test_final_verify_sequential.sh`, `test_monitor_counter.sh`,
-  `test_us001_tmux_sv_report.sh`, `test_us005_completed_stories_loader.sh`,
-  `test_us007_verifier_anti_rubber_stamp.sh`,
+- **STRUCTURAL: 7** (was 8 in the first pass) — moved to
+  `tests/structural-archive/`: `test_final_verify_sequential.sh`,
+  `test_monitor_counter.sh`, `test_us001_tmux_sv_report.sh`,
+  `test_us005_completed_stories_loader.sh`,
   `test_us012_sv_tmux_skip_traceability.sh`,
   `test_us025_session_disambiguation.sh`, `test_us026_runner_lockfile.sh`.
-- **Total: 69** files inventoried. Retained run-set: 61 (49 + 12).
+- **Total: 69** files inventoried. Retained run-set: 62 (49 + 13).
+
+### Codex round 1 correction (P2-a)
+
+The first pass defined "SV-trigger docs" as only `src/commands/rlp-desk.md`
+and `src/governance.md`, omitting `src/scripts/init_ralph_desk.zsh` — even
+though PRD Principle 4 names all three as the SV-trigger set. Re-examining
+the 5 files Codex flagged (`test_us007_verifier_anti_rubber_stamp.sh`,
+`test_final_verify_sequential.sh`, `test_monitor_counter.sh`,
+`test_us005_completed_stories_loader.sh`,
+`test_us025_session_disambiguation.sh`) against the corrected three-file
+definition:
+- `test_us007_verifier_anti_rubber_stamp.sh` greps the Verifier Prompt
+  template embedded in `init_ralph_desk.zsh` itself (the actual text sent to
+  the real LLM verifier) — this **is** an SV-trigger contract with no other
+  enforcement. **Restored to `tests/` as STRUCTURAL-CONTRACT** (`git mv`
+  back; no path-variable fix needed, its `INIT` path is CWD-relative, not
+  `$0`-relative).
+- The other 4 grep only `run_ralph_desk.zsh`/`lib_ralph_desk.zsh` (never an
+  SV-trigger file) and stay archived — see their updated table rows above
+  for the specific honesty language on what coverage is and isn't preserved.
 
 ## Borderline calls worth flagging
 
@@ -163,14 +198,16 @@ that glob does not descend into subdirectories, so files moved into
 `tests/structural-archive/` stop running automatically without any harness
 code change. They remain git-tracked (not deleted) rather than removed,
 because a structural grep test can become contract-load-bearing later —
-concretely, if a new SV-trigger doc is introduced, if `src/governance.md` or
-`src/commands/rlp-desk.md` gains a new section that an archived file already
-happens to check, or if a maintainer decides a source-text contract needs
-enforcement without full execution coverage. The re-inclusion criterion is:
-**a structural test becomes contract-load-bearing** (its greps pin an
-SV-trigger doc contract, or the A5 oracle surface, that has no other
-enforcement) — at that point `git mv` it back into `tests/` and update this
-inventory.
+concretely, if a new SV-trigger file is introduced, if `src/governance.md`,
+`src/commands/rlp-desk.md`, or a prompt/template section of
+`src/scripts/init_ralph_desk.zsh` gains a new contract that an archived file
+already happens to check, or if a maintainer decides a source-text contract
+needs enforcement without full execution coverage. The re-inclusion
+criterion is: **a structural test becomes contract-load-bearing** (its
+greps pin a contract of one of the three SV-trigger files, or the A5 oracle
+surface, that has no other enforcement) — at that point `git mv` it back
+into `tests/` and update this inventory. (`test_us007_verifier_anti_rubber_stamp.sh`
+is the concrete example of this exact scenario — see Codex round 1 above.)
 
 ## Gate updates
 

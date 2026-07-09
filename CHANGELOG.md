@@ -25,14 +25,21 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
   Claude `haiku`/`sonnet`/`opus` were also previously absent from Node's
   table entirely (any claude worker in native mode was instantly `BLOCKED`
   on repeated failure) and now resolve correctly too.
-- US-002: pruned structural (string-presence-only, zero runtime execution,
-  no SV-trigger doc contract) grep tests out of the active shell test
-  harness. Of 69 `tests/test_*.sh` files, 8 were archived to
-  `tests/structural-archive/` (excluded from `npm run test:zsh`'s glob);
-  49 stay as behavioral (execute real runtime code/output) and 12 stay as
-  structural-contract (pin `src/commands/rlp-desk.md` or
-  `src/governance.md`, which have no other enforcement). See
-  `docs/plans/narrow-v1-test-inventory.md` for the full per-file
+- US-002: pruned structural grep tests — no assertion consumes output of
+  the real product runtime, and none pins a contract of an SV-trigger file
+  — out of the active shell test harness. Some archived files do execute
+  hand-copied or hand-simulated shell logic rather than the real product
+  code (e.g. a sed/grep/tr pipeline retyped as literal text, or OS-level
+  lock probes standing in for the real locking function); that is exactly
+  why they are archived rather than kept as-is, since a hand-copy can
+  silently diverge from the real implementation it mirrors. Of 69
+  `tests/test_*.sh` files, 7 were archived to `tests/structural-archive/`
+  (excluded from `npm run test:zsh`'s glob); 49 stay as behavioral (execute
+  real runtime code/output) and 13 stay as structural-contract (pin a
+  contract of `src/commands/rlp-desk.md`, `src/governance.md`, or a
+  prompt/template section of `src/scripts/init_ralph_desk.zsh` — the three
+  SV-trigger files, none of which have other enforcement for that text).
+  See `docs/plans/narrow-v1-test-inventory.md` for the full per-file
   classification and rationale.
 
 ### Planned (not yet shipped)
