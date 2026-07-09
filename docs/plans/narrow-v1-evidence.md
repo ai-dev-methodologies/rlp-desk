@@ -282,5 +282,46 @@ Gate results: `npm run sv-gate:fast` 85/85 pass;
 `bash tests/test_us007_verifier_anti_rubber_stamp.sh` 12/12 pass (both
 unaffected — neither targets README.md or CHANGELOG.md).
 
-Commit: this evidence entry lands together with the US-005 README/
-CHANGELOG commit (see repo log for SHA).
+Commit: `ac6910e` — `docs: US-005 — reposition README around durable state
++ verification moat`.
+
+### Codex round 1 (ITERATE — 3 wording fixes)
+
+Codex critic verdict: ITERATE. US-003/US-004 clean; US-005 flagged 3
+precision issues in the new README opening/tables:
+
+- **P2** — the durable-state bullet claimed `status.json` itself was
+  "sentinel-locked", conflating two different mechanisms. Verified against
+  the actual code: `STATUS_FILE` writes go through `atomic_write` only
+  (`lib_ralph_desk.zsh:787`) — atomic, not chmod-locked. The chmod-0444
+  write-lock (`_lock_sentinel`, `lib_ralph_desk.zsh:429-434`) is applied
+  only to `DONE_CLAIM_FILE`, `VERDICT_FILE`, and `SIGNAL_FILE`
+  (`run_ralph_desk.zsh:987,2631,2999,3103,3883,3888,4197`) — the
+  Worker→Verifier handoff files, not campaign status. Reworded the bullet
+  to separate the two: status is "written atomically... as resumable,
+  jq-inspectable status/ledger files", handoff files (done-claims,
+  verify-verdicts) are "write-locked handoff sentinels... that a finished
+  pane cannot revise". No more "sentinel-locked status".
+- **P3-1** — the `### Run Options` table (under `## Commands`, which
+  documents `/rlp-desk run <slug> [--opts]` slash syntax) listed `--mode`
+  default as `tmux`, but the README's own Execution Modes section
+  (line ~294, pre-existing/unedited) states native is "the slash-command
+  **default**". Confirmed via `src/node/run.mjs:598-605`: the Node CLI's
+  `--mode native` hard-errors and redirects to the slash command — so CLI
+  default (tmux) and slash-command default (native) are genuinely
+  different surfaces, not a typo. Added a 2-line clarifying note above the
+  table stating both defaults explicitly and linking to Execution Modes.
+- **P3-2** — the Leader/Worker/Verifier ASCII diagram sits directly under
+  the new moat pitch with generic `Agent()` labels, which could read as
+  the only/production dispatch path when tmux (zsh leader, separate panes)
+  is actually canonical per ADR-001. Added a one-line qualifier above the
+  diagram: it depicts native-mode `Agent()` dispatch; tmux mode (production
+  default) runs Worker/Verifier as tmux panes instead, with a link to
+  Execution Modes.
+
+Gate results after fix: `npm run sv-gate:fast` 85/85 pass;
+`bash tests/test_us002_governance_cb_table.sh` 10/10 pass;
+`bash tests/test_us007_verifier_anti_rubber_stamp.sh` 12/12 pass (both
+unaffected — only README.md changed).
+
+Commit: `docs(us-005): precise state/mode wording (codex round 1)`.
