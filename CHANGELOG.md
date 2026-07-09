@@ -6,6 +6,17 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 
 ## [Unreleased]
 
+### Planned (not yet shipped)
+- v0.15.5-era candidate: flip `RLP_LIFECYCLE_METRICS=1` default to ON (gated on 3 consecutive nightly real-LLM SV passes per `docs/plans/v0.15.4-release-runbook.md` §7.5.2).
+- Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
+- Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
+
+## [0.19.0] — 2026-07-09 (Tier-1 dogfood release: git tag only, not published to npm)
+
+narrow-v1 campaign: single-sourced model ladder, structural-test pruning,
+two-tier release process, README repositioning. Consensus-planned
+(Architect + codex Critic) and per-US codex-reviewed.
+
 ### Changed
 - US-001: the Worker model-upgrade ladder is now single-sourced from
   `src/node/models.json`, read at runtime by both the `--mode tmux` (zsh)
@@ -53,11 +64,6 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
   file-based state, independent verifier governance, and cross-family
   (claude x codex) consensus moat, with the fresh-context loop described as
   the mechanism rather than the headline.
-
-### Planned (not yet shipped)
-- v0.15.5 candidate: flip `RLP_LIFECYCLE_METRICS=1` default to ON (gated on 3 consecutive nightly real-LLM SV passes per `docs/plans/v0.15.4-release-runbook.md` §7.5.2).
-- Post-v0.15.6: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
-- Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
 ## [0.18.8] — 2026-07-09
 
