@@ -201,7 +201,7 @@ ZSH_TESTS=(
   tests/test_a4_fallback_prompt_guard.sh
   tests/test_prompt_stall_escalation.sh
   tests/test_no_progress_and_default_no.sh
-  tests/test_us012_sv_tmux_skip_traceability.sh
+  tests/structural-archive/test_us012_sv_tmux_skip_traceability.sh
   tests/test_b2fix_sentinel_lock.sh
   tests/test_b3_lifecycle_emit.sh
   tests/test_b3_pane_reap_integration.sh

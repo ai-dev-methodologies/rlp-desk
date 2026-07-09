@@ -25,6 +25,15 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
   Claude `haiku`/`sonnet`/`opus` were also previously absent from Node's
   table entirely (any claude worker in native mode was instantly `BLOCKED`
   on repeated failure) and now resolve correctly too.
+- US-002: pruned structural (string-presence-only, zero runtime execution,
+  no SV-trigger doc contract) grep tests out of the active shell test
+  harness. Of 69 `tests/test_*.sh` files, 8 were archived to
+  `tests/structural-archive/` (excluded from `npm run test:zsh`'s glob);
+  49 stay as behavioral (execute real runtime code/output) and 12 stay as
+  structural-contract (pin `src/commands/rlp-desk.md` or
+  `src/governance.md`, which have no other enforcement). See
+  `docs/plans/narrow-v1-test-inventory.md` for the full per-file
+  classification and rationale.
 
 ### Planned (not yet shipped)
 - v0.15.5 candidate: flip `RLP_LIFECYCLE_METRICS=1` default to ON (gated on 3 consecutive nightly real-LLM SV passes per `docs/plans/v0.15.4-release-runbook.md` §7.5.2).

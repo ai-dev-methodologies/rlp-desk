@@ -6,7 +6,7 @@
 #   - atomic acquire via acquire_slug_lock (set -C noclobber + .recovery.d mutex)
 #   - Behavioural: same root duplicate → reject; different root → allowed; stale pid → cleaned
 
-ROOT_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN="$ROOT_REPO/src/scripts/run_ralph_desk.zsh"
 LIB="$ROOT_REPO/src/scripts/lib_ralph_desk.zsh"
 

@@ -3,7 +3,7 @@
 # IL-4: 3+ tests per AC (happy + negative + boundary)
 # 2 ACs x 3 = 6 tests minimum + 1 L3 E2E = 7 total
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN="$ROOT/src/scripts/run_ralph_desk.zsh"
 
 PASS=0

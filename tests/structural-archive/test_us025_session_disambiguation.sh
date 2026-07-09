@@ -6,7 +6,7 @@
 #   - destroy-unattached off applied
 #   - Limits documented (manual kill / server restart not protected)
 
-ROOT_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN="$ROOT_REPO/src/scripts/run_ralph_desk.zsh"
 
 PASS=0

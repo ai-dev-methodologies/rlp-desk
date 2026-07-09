@@ -3,7 +3,7 @@
 # IL-4: 3+ tests per AC (happy + negative + boundary)
 # 5 ACs x 3 = 15 tests minimum
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN="$ROOT/src/scripts/run_ralph_desk.zsh"
 LIB="$ROOT/src/scripts/lib_ralph_desk.zsh"
 

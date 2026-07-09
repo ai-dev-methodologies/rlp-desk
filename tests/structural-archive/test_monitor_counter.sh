@@ -14,7 +14,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="${0:A:h}"
-ROOT_DIR="${SCRIPT_DIR:h}"
+ROOT_DIR="${SCRIPT_DIR:h:h}"
 RUN_SCRIPT="$ROOT_DIR/src/scripts/run_ralph_desk.zsh"
 
 PASS=0

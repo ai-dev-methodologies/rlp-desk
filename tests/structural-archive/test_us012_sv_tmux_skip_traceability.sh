@@ -19,7 +19,7 @@
 # gate (banner pointing to Node leader, exit 2, etc.) which was intentionally
 # deleted in v0.14.0. Those assertions checked for code that is gone by design.
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN="$ROOT/src/scripts/run_ralph_desk.zsh"
 LIB="$ROOT/src/scripts/lib_ralph_desk.zsh"
 
