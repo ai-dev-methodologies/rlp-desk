@@ -25,3 +25,21 @@ Lessons from failures. Format: Symptom / Root cause / Recovery / Prevention (one
 - Root cause: codex exec reads stdin when it is a pipe/tty; under the tool harness the stream stayed open, so codex waited indefinitely before starting.
 - Recovery: append `< /dev/null` to every non-interactive `codex exec` invocation.
 - Prevention: treat `< /dev/null` as mandatory in scripted codex review loops (poller/critic wrappers).
+
+## 2026-07-11 — codex 0.144 renders its prompt as ❯ (U+276F), not › (U+203A)
+- Symptom: dogfood campaign BLOCKED at iteration 1; console said the codex pane was "not ready after 30s" even though the pane was healthy and idle at its prompt.
+- Root cause: the two launch ready-loops grepped only `›` (the 0.141 glyph). The later stall/paste path already accepted both, which is why only launch broke.
+- Recovery: `grep -qE '[›❯]'` at both launch ready-loops (`tests/test_codex_ready_glyph.sh` pins it).
+- Prevention: never pin a single TUI glyph. When a vendor CLI bumps a minor, re-capture a live pane before trusting a cosmetic grep.
+
+## 2026-07-11 — a provider quota wall looks exactly like a hung verifier
+- Symptom: with the glyph bug fixed, the campaign still BLOCKED. The instruction WAS pasted, the codex pane sat static for the full 600s ITER_TIMEOUT, and the sentinel said only "verifier/infra error before verdict". Hours of "why didn't Enter submit?" followed.
+- Root cause: NOT a code bug. The codex account was out of usage — the pane's last line read `ERROR: You've hit your usage limit ... try again at 3:08 AM.` `detect_api_error()` cannot see this (no numeric code; "usage limit" is not an outage phrase), so the leader polled to timeout.
+- Recovery: `detect_quota_exhausted()` (lib) + an abort check in the codex verifier poll loop; the sentinel now names the cause via `VERIFIER_ABORT_REASON`.
+- Prevention: when a pane looks "stuck with no progress", READ THE LAST PANE LINE before theorising about submission/keying. Anchor the detector on "hit your usage limit" / "usage limit reached" — never a bare "usage limit", because the D-17a transient banner literally contains "(not your usage limit)" and must stay on the recoverable backoff path.
+
+## 2026-07-11 — running a bash test with `zsh tests/foo.sh` fakes a total failure
+- Symptom: `zsh tests/test_us009_api_retry_guard.sh` reported 0/13 PASS; it looked like a fresh regression from an unrelated lib edit.
+- Root cause: the file is `#!/usr/bin/env bash`. Forcing zsh on it reproduces exactly the harness bug fixed in IMP-18 (v0.18.7).
+- Recovery: run `npm run test:zsh` (it shebang-dispatches) or invoke the file's own interpreter.
+- Prevention: never hand-pick the interpreter for a test file. Also: before blaming your own diff for a suite going red, re-run that suite on stashed-clean HEAD.

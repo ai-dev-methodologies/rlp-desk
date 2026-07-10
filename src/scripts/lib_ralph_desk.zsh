@@ -2146,6 +2146,31 @@ detect_api_error() {
   return 1
 }
 
+# --- Provider quota exhaustion over PRE-CAPTURED pane text ---
+# rc 0 = the account is out of usage/credits for now (caller must ABORT);
+# rc 1 = not quota exhaustion.
+#
+# Deliberately distinct from detect_api_error(). A transient outage clears on its
+# own, so that path backs off and retries. Quota exhaustion does not: the CLI
+# prints its error, parks at the prompt, and nothing arrives until the reset
+# time. Retrying is futile, so the leader aborts immediately rather than burning
+# the whole ITER_TIMEOUT waiting for a verdict that cannot come.
+#
+# Anchor on "hit your usage limit" / "usage limit reached", never a bare
+# /usage limit/: the D-17a transient banner contains the substring
+# "(not your usage limit)", and matching that would strand a recoverable
+# rate-limit on the terminal path. A remedy/reset hint is required as a second
+# token so prose that merely discusses usage limits cannot trip the abort.
+detect_quota_exhausted() {
+  local text="$1"
+  [[ -n "$text" ]] || return 1
+  local tail
+  tail=$(print -r -- "$text" | tail -n 20)
+  print -r -- "$tail" | grep -qiE 'hit your usage limit|usage limit reached' || return 1
+  print -r -- "$tail" | grep -qiE 'try again at|will reset at|resets at|purchase more credits|settings/usage' || return 1
+  return 0
+}
+
 # --- US-003 (retained shim): pane-id API error detector.
 # Legacy signature that captures the pane itself, now delegating to the
 # pre-captured detect_api_error so there is a single detection contract.

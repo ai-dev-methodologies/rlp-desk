@@ -42,9 +42,16 @@ n_stale=$(grep -c "grep -q '›'" "$RUN")
   || fail "structural: $n_stale stale single-glyph ready grep(s) remain"
 
 # --- Structural: consensus hard-failure sentinel is accurate (infra, not max-rounds) ---
-grep -q 'write_blocked_sentinel "Consensus verification failed (verifier/infra error before verdict)" "" "infra_failure"' "$RUN" \
+# A verifier that named its own cause (quota exhaustion) overrides the reason,
+# so match the fallback text rather than the whole literal call.
+grep -qE 'write_blocked_sentinel "[^"]*Consensus verification failed \(verifier/infra error before verdict\)[^"]*" "" "infra_failure"' "$RUN" \
   && pass "structural: consensus hard-failure sentinel says infra_failure with accurate reason" \
   || fail "structural: consensus hard-failure sentinel still claims max-rounds/repeat_axis"
+
+# The old wording is gone: no site may still blame max rounds / repeat_axis here.
+grep -q 'Consensus verification failed after max rounds' "$RUN" \
+  && fail "structural: stale max-rounds consensus reason still present" \
+  || pass "structural: no stale max-rounds consensus reason remains"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

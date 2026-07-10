@@ -2983,6 +2983,7 @@ run_single_verifier() {
     local codex_poll_start
     codex_poll_start=$(date +%s)
     local _verdict_detected_at=0
+    VERIFIER_ABORT_REASON=""
     while true; do
       # Wait for verdict file with valid JSON. D-26 (codex review, MEDIUM):
       # codex may write to the legacy path (Fix-D); migrate a FRESH legacy
@@ -3008,6 +3009,19 @@ run_single_verifier() {
         if [[ "$_pane_cmd" = "zsh" || "$_pane_cmd" = "bash" || -z "$_pane_cmd" ]]; then
           log "  Codex verifier$suffix process exited. Proceeding."
           break
+        fi
+      fi
+      # Quota exhaustion is terminal for this run: codex prints its usage-limit
+      # error and parks at the prompt, so no verdict can ever arrive. Abort now
+      # rather than polling out the remaining ITER_TIMEOUT. Only meaningful
+      # before a verdict exists — once one is on disk, finish reading it.
+      if (( _verdict_detected_at == 0 )); then
+        local _vq_pane
+        _vq_pane=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null || true)
+        if detect_quota_exhausted "$_vq_pane"; then
+          VERIFIER_ABORT_REASON="Codex verifier$suffix aborted: provider usage limit reached (quota exhausted — retry after the reset)"
+          log_error "$VERIFIER_ABORT_REASON"
+          return 1
         fi
       fi
       local codex_elapsed=$(( $(date +%s) - codex_poll_start ))
@@ -4242,9 +4256,12 @@ main() {
             # Consensus disagreement — treat as fail, fix loop will handle
             log "  Consensus disagreement, treating as fail."
           elif (( consensus_rc != 0 )); then
-            # Consensus verification failed entirely
-            log_error "Consensus verification failed (verifier/infra error before verdict)"
-            write_blocked_sentinel "Consensus verification failed (verifier/infra error before verdict)" "" "infra_failure"
+            # Consensus verification failed entirely. When a verifier named its
+            # own cause (e.g. provider quota exhausted), surface that instead of
+            # the generic text — the operator needs to know whether to fix
+            # something or simply wait for a reset.
+            log_error "${VERIFIER_ABORT_REASON:-Consensus verification failed (verifier/infra error before verdict)}"
+            write_blocked_sentinel "${VERIFIER_ABORT_REASON:-Consensus verification failed (verifier/infra error before verdict)}" "" "infra_failure"
             update_status "blocked" "consensus_failed"
             return 1
           fi
