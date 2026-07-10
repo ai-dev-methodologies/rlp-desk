@@ -174,6 +174,67 @@ test('B4 AC4.3/4.6: lifecycle_metrics is populated grouped object when flag set'
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// codex round 2 R2-4 — reapProducer (campaign-main-loop.mjs) computes ONE
+// reapMs per reap event and records() it under BOTH pane_eof_to_cleanup_ms
+// and pane_reap_latency_ms: same window, not two independent measurements
+// (see the corrected README.md metrics table and lifecycle-metrics.mjs's
+// own header comment — both previously self-contradicted on where the
+// window ends). Only the zsh leader's test suite locked this
+// (test_b3_lifecycle_emit.sh case 15); this is the Node-side equality lock.
+// waitForProcessExit is overridden with a REAL, measurable delay so the
+// equality assertion can't trivially pass on two coincidental zeros (the
+// fake dependencies elsewhere in this file resolve instantly).
+// ────────────────────────────────────────────────────────────────────────────
+test('R2-4: reapProducer records equal value_ms under pane_eof_to_cleanup_ms and pane_reap_latency_ms for the same reap', async (t) => {
+  const campaign = await setupCampaign(t);
+  const tmux = createTmuxFakes();
+  tmux.deps.waitForProcessExit = () => new Promise((resolve) => setTimeout(resolve, 40));
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  const enabledCollector = new LifecycleMetricsCollector({
+    env: { RLP_LIFECYCLE_METRICS: '1' },
+  });
+
+  await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    lifecycleMetrics: enabledCollector,
+    ...tmux.deps,
+  });
+
+  const jsonlPath = deskPath(campaign.rootDir, 'logs', campaign.slug, 'campaign.jsonl');
+  const records = await readJsonl(jsonlPath);
+  const firstRecord = records[0];
+  const eof = firstRecord.lifecycle_metrics?.pane_eof_to_cleanup_ms;
+  const reapLat = firstRecord.lifecycle_metrics?.pane_reap_latency_ms;
+  assert.ok(Array.isArray(eof) && eof.length >= 1, 'pane_eof_to_cleanup_ms has at least one entry');
+  assert.ok(Array.isArray(reapLat) && reapLat.length >= 1, 'pane_reap_latency_ms has at least one entry');
+  assert.equal(
+    eof.length,
+    reapLat.length,
+    'every reap in this fixture is tagged (worker->iter-signal, verifier->verify-verdict), so both arrays are the same length',
+  );
+  assert.ok(
+    eof.some((e) => e.value_ms > 0),
+    'at least one reap measured a real non-zero delay (proves the 40ms override actually landed in the measured window, not a trivial 0==0 pass)',
+  );
+  for (let i = 0; i < eof.length; i++) {
+    assert.equal(
+      eof[i].value_ms,
+      reapLat[i].value_ms,
+      `entry ${i}: pane_eof_to_cleanup_ms (${eof[i].value_ms}) must equal pane_reap_latency_ms (${reapLat[i].value_ms}) — same reapMs, same window`,
+    );
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // AC4.6 — pane_reap_latency_ms emitted only when sentinelType passed
 // ────────────────────────────────────────────────────────────────────────────
 test('B4 AC4.6: pane_reap_latency_ms includes sentinel_type context', async (t) => {

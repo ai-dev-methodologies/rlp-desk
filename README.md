@@ -559,8 +559,8 @@ Five metrics are emitted per iteration:
 |---|---|
 | `iter_signal_write_to_read_ms` | Worker FS write → leader poll resolve |
 | `verdict_write_to_read_ms` | Verifier FS write → leader poll resolve |
-| `pane_eof_to_cleanup_ms` | Kill-start → `killPaneProcess` return |
-| `pane_reap_latency_ms` | Same window as `pane_eof_to_cleanup_ms` (kill-start → pane shell-idle) — recorded in addition to it only when the reap follows a sentinel observation, tagged with `sentinel_type` |
+| `pane_eof_to_cleanup_ms` | Kill-start → process-exit-confirmed (`killPaneProcess` + `waitForProcessExit` settle) |
+| `pane_reap_latency_ms` | Same window as `pane_eof_to_cleanup_ms` — recorded in addition to it only when the reap follows a sentinel observation, tagged with `sentinel_type` |
 | `sentinel_lock_to_unlock_ms` | per sentinel type, lock vs unlock pair |
 
 **Where they land:**

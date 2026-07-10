@@ -7,17 +7,22 @@
 // with RLP_LIFECYCLE_METRICS=0):
 //   - iter_signal_write_to_read_ms     leader-poll-resolves vs worker-FS-write
 //   - verdict_write_to_read_ms          leader-poll-resolves vs verifier-FS-write
-//   - pane_eof_to_cleanup_ms            pane process exit vs killPaneProcess return
-//   - pane_reap_latency_ms              SAME window as pane_eof_to_cleanup_ms
-//                                       (kill-start vs C-c×2 + waitForExit resolve) — recorded
-//                                       in addition to it only when the reap followed a sentinel
+//   - pane_eof_to_cleanup_ms            kill-start -> process-exit-confirmed (killPaneProcess +
+//                                       waitForProcessExit settle)
+//   - pane_reap_latency_ms              SAME window as pane_eof_to_cleanup_ms — recorded in
+//                                       addition to it only when the reap followed a sentinel
 //                                       observation (iter-signal/verify-verdict), tagged with
 //                                       sentinel_type. NOT a distinct "sentinel-observed to
 //                                       shell-idle" window — reapProducer (below) computes one
 //                                       reapMs and records() it under both names. (v0.15.4 P2
 //                                       sweep F1: corrected from an earlier, inaccurate doc
-//                                       description; the zsh leader already mirrored this exact
-//                                       same-window behavior in _kill_pane_process.)
+//                                       description; round-2 R2-4: this header's own
+//                                       pane_eof_to_cleanup_ms line still undersold the window as
+//                                       ending at killPaneProcess return, when reapProducer's
+//                                       reapMs actually ends after waitForProcessExit settles —
+//                                       both lines now describe the identical window in identical
+//                                       terms. The zsh leader mirrors this exact same-window,
+//                                       same-endpoint behavior in _kill_pane_process.)
 //   - sentinel_lock_to_unlock_ms        per type, _lock vs _unlock (object)
 //
 // Emission discipline:
