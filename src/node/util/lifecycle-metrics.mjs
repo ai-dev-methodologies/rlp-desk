@@ -52,9 +52,24 @@ export class LifecycleMetricsCollector {
   // object of audit fields (iter, us_id, pane_id, sentinel_type, etc).
   record(name, valueMs, ctx = {}) {
     if (!this._enabled) return;
+    // codex-r0 preempt (F7 parity, closure item on the P2 sweep): a negative
+    // or non-finite value_ms (clock skew, NaN) is DROPPED entirely instead
+    // of clamped to 0. A clamp-and-keep let a corrupted measurement silently
+    // satisfy a "<= band" regression check (B3/B4) as a false PASS. Mirrors
+    // the zsh leader's log_lifecycle_metric fix (P2 sweep F7) — this was
+    // originally landed as a deliberate zsh-only divergence from Node's
+    // clamp behavior, but Node's clamp has the exact same defect, so there
+    // is no reason to keep it. A genuine 0 (real sub-ms measurement) is
+    // still kept.
+    if (!Number.isFinite(valueMs) || valueMs < 0) {
+      if (this._debugLog) {
+        this._debugLog('LIFECYCLE', { metric: name, dropped: true, raw_value_ms: valueMs, ...ctx });
+      }
+      return;
+    }
     const entry = {
       metric: name,
-      value_ms: Math.max(0, Math.round(valueMs)),
+      value_ms: Math.round(valueMs),
       ts: new Date().toISOString(),
       ...ctx,
     };

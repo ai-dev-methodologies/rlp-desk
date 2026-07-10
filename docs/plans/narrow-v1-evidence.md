@@ -869,14 +869,38 @@ PASS. Fixed to DROP the record entirely (one DEBUG-gated warning logged)
 instead of clamping, while keeping a genuine `0` (real sub-ms measurement):
 `[[ "$value_ms" == <-> ]]` (zsh's always-available numeric-range glob, no
 `extendedglob` needed) matches a plain non-negative digit sequence, so `"0"`
-passes and `"-50"`/`"abc"`/`""` do not. This is a DELIBERATE divergence from
-Node's `LifecycleMetricsCollector.record()`, which still clamps-and-keeps
-(`Math.max(0, Math.round(valueMs))`) — documented directly in the
-cross-leader parity test (case 10) so a future edit does not "fix" this back
-to Node parity by mistake.
+passes and `"-50"`/`"abc"`/`""` do not. Landed initially as a DELIBERATE
+divergence from Node's `LifecycleMetricsCollector.record()`, which still
+clamped-and-kept (`Math.max(0, Math.round(valueMs))`) at the time —
+documented in the cross-leader parity test (case 10).
 
 RED: `b5b8ae5`. GREEN: `dc7232c` (combined with F2's `log_lifecycle_metric`
 rewrite, same lines).
+
+**Update (same day, team-lead closure item): Node aligned to the SAME
+semantics.** Node's clamp-and-keep has the identical false-B3-pass defect
+the zsh fix addressed — there was no reason to leave it standing as a
+"deliberate" divergence once that was pointed out. `LifecycleMetricsCollector
+.record()` (`src/node/util/lifecycle-metrics.mjs`) now also drops a
+negative/non-finite `value_ms` (`!Number.isFinite(valueMs) || valueMs < 0`)
+via a `debugLog('LIFECYCLE', { dropped: true, raw_value_ms, ... })` call when
+a logger is injected (matching the DEBUG-gated warning positioning on the
+zsh side), instead of `Math.max(0, ...)`. `markUnlock`'s `t - start`
+duration passes through the same gate, so a negative delta from clock skew
+(unlock timestamp resolving before the lock timestamp) also drops silently
+instead of emitting a bogus negative `sentinel_lock_to_unlock_ms`.
+
+RED: `tests/node/test-lifecycle-metrics.test.mjs` — replaced the "clamped to
+non-negative" test with 5 assertions (negative dropped, NaN/Infinity/
+-Infinity dropped, genuine 0 kept, drop logs via debugLog with
+`dropped: true`, markUnlock negative-delta drops silently); 4 of 15
+assertions FAILed against the pre-fix clamp code. GREEN: all 15 pass.
+Case 10 in `tests/test_b3_lifecycle_emit.sh` (the cross-leader parity test)
+relocked from "asserts the divergence is deliberate" to "asserts SAME
+semantics both sides" — no zsh code change, zsh side was already correct;
+`tests/test_b3_lifecycle_emit.sh` stays 72/72 unchanged.
+
+Commit: `fix(b4): F7 parity — Node drops invalid timings like zsh (codex-r0 preempt)`.
 
 ### F3 — lock metrics emitted when no lock/unlock occurred
 

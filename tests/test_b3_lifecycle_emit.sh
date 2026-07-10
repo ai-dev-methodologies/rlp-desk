@@ -187,17 +187,20 @@ row=$(emit_row 1 "pane_eof_to_cleanup_ms 6226" "pane_eof_to_cleanup_ms 3")
 [[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics.pane_eof_to_cleanup_ms[0] | keys')" == '["ts","value_ms"]' ]] \
   && ok "parity: entry keys == Node {value_ms, ts}" || no "parity: entry keys != Node shape"
 
-# F7 (codex P2 sweep): INTENTIONAL divergence from Node on negative value_ms.
-# Node clamps to 0 and keeps the record (Math.max(0, Math.round(valueMs)));
-# zsh instead DROPS the record entirely (case 8 above) because a clamped-and-
-# kept corrupted measurement let B3-S2's `<= band` check false-PASS. Assert
-# the divergence directly here so a future edit cannot silently "fix" this
-# back to Node's clamp behavior believing it restores parity — the array must
-# contain ONLY the one valid record, not a second clamped-to-0 entry for -3.
+# F7 parity (codex-r0 preempt): zsh and Node now use the SAME semantics for
+# an invalid value_ms — both DROP a negative/non-finite value_ms entirely
+# (case 8 above for zsh; tests/node/test-lifecycle-metrics.test.mjs's "F7
+# parity" cases for Node's LifecycleMetricsCollector.record()) instead of
+# clamping to 0 and keeping the record, because a clamped-and-kept corrupted
+# measurement let B3-S2's `<= band` check false-PASS on EITHER leader. This
+# was originally landed as a deliberate zsh-only divergence (Node still
+# clamped); Node was aligned afterward since its clamp had the identical
+# defect. Assert the array contains ONLY the one valid record, not a second
+# clamped-to-0 entry for -3 — true on both leaders now.
 row=$(emit_row 1 "pane_eof_to_cleanup_ms 6226" "pane_eof_to_cleanup_ms -3")
 [[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics.pane_eof_to_cleanup_ms | length')" == "1" ]] \
-  && ok "F7: negative value_ms dropped, not clamped-and-kept (deliberate divergence from Node parity)" \
-  || no "F7: negative value_ms was not dropped ($row)"
+  && ok "F7 parity: negative value_ms dropped, not clamped-and-kept — SAME semantics as Node (no longer a divergence)" \
+  || no "F7 parity: negative value_ms was not dropped ($row)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # v0.15.4 full-wire: the 4 remaining lifecycle metrics on the zsh leader +
