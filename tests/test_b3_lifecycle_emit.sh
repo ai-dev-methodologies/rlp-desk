@@ -1053,6 +1053,136 @@ caller_guard=$(awk '
   && ok "R2-2: caller's worker-path reap is guarded by (( ! _POLL_A4_ALREADY_REAPED ))" \
   || no "R2-2: caller's worker-path reap is not guarded (would still double-reap)"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 2 R2-3 (F6 residue): write_campaign_jsonl now returns failure
+# on an append error and retains LIFECYCLE_RECORDS for retry (F6), but (a)
+# all 3 callers ignored the return code entirely, and (b) the loop-top
+# `LIFECYCLE_RECORDS=()` reset (added to discard row-less "continue"
+# iteration records) unconditionally wiped a FAILED flush's retained
+# records too, before the next iteration ever got a chance to retry them —
+# defeating F6's whole point. COMPLETE-path failures were worst: they
+# `return 0` (campaign success) right after the write, silently losing the
+# terminal row with zero retry.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 40) Behavioral: write_campaign_jsonl sets a global "flush attempted" flag
+# on EVERY call, success or failure — the single source of truth the
+# loop-top reset uses to distinguish "failed, keep for retry" from "never
+# attempted this iteration (continue), discard".
+attempt_flag=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }; log_error(){ :; }
+  D=$(mktemp -d); CAMPAIGN_JSONL="$D/c.jsonl"
+  WORKER_MODEL=h; WORKER_ENGINE=c; VERIFIER_ENGINE=c; CONSENSUS_MODE=off
+  CONSECUTIVE_FAILURES=0; ROOT="$D"; SLUG=t; typeset -gA US_FAIL_HISTORY=()
+  export RLP_LIFECYCLE_METRICS=1
+  _LC_FLUSH_ATTEMPTED=0
+  write_campaign_jsonl 1 US-001 pass
+  print -r -- "$_LC_FLUSH_ATTEMPTED"
+  rm -rf "$D"')
+[[ "$attempt_flag" == "1" ]] \
+  && ok "R2-3: write_campaign_jsonl sets _LC_FLUSH_ATTEMPTED=1 (single source of truth for the loop-top reset)" \
+  || no "R2-3: _LC_FLUSH_ATTEMPTED not set after write_campaign_jsonl call (got $attempt_flag)"
+
+# 41) Behavioral: the loop-top reset PATTERN — records survive a failed
+# flush (flag=1, discard skipped) but are correctly discarded after a
+# "continue" iteration that never attempted a flush (flag stays 0).
+# Mirrors the exact loop-top logic (guard on the flag, then reset the flag
+# for the new iteration) without needing to drive the full campaign loop.
+loop_top_pattern=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_error(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  # Simulate iter N: a flush is attempted and FAILS (append target unwritable).
+  D=$(mktemp -d); CAMPAIGN_JSONL="$D/missing-dir/c.jsonl"
+  WORKER_MODEL=h; WORKER_ENGINE=c; VERIFIER_ENGINE=c; CONSENSUS_MODE=off
+  CONSECUTIVE_FAILURES=0; ROOT="$D"; SLUG=t; typeset -gA US_FAIL_HISTORY=()
+  _LC_FLUSH_ATTEMPTED=0
+  LIFECYCLE_RECORDS=("{\"metric\":\"pane_eof_to_cleanup_ms\",\"value_ms\":1,\"ts\":\"x\"}")
+  write_campaign_jsonl 1 US-001 pass 2>/dev/null
+  # Simulate iter N+1 loop-top: guard-then-reset.
+  if (( ! _LC_FLUSH_ATTEMPTED )); then LIFECYCLE_RECORDS=(); fi
+  _LC_FLUSH_ATTEMPTED=0
+  after_failed_flush=${#LIFECYCLE_RECORDS[@]}
+  # Simulate iter N+1 being a "continue" (never calls write_campaign_jsonl).
+  # Simulate iter N+2 loop-top: guard-then-reset again.
+  if (( ! _LC_FLUSH_ATTEMPTED )); then LIFECYCLE_RECORDS=(); fi
+  _LC_FLUSH_ATTEMPTED=0
+  after_continue_iter=${#LIFECYCLE_RECORDS[@]}
+  print -r -- "$after_failed_flush $after_continue_iter"
+  rm -rf "$D"')
+[[ "$loop_top_pattern" == "1 0" ]] \
+  && ok "R2-3: loop-top pattern keeps records after a failed flush (1) but discards them after a row-less continue iteration (0)" \
+  || no "R2-3: loop-top pattern wrong (got \"$loop_top_pattern\", want \"1 0\")"
+
+# 42) _write_campaign_jsonl_terminal helper exists.
+grep -q "^_write_campaign_jsonl_terminal()" "$REPO/src/scripts/lib_ralph_desk.zsh" \
+  && ok "R2-3: _write_campaign_jsonl_terminal helper exists" \
+  || no "R2-3: _write_campaign_jsonl_terminal helper missing"
+
+# 43) Behavioral: _write_campaign_jsonl_terminal succeeds cleanly (no retry
+# needed) when the first write succeeds.
+term_ok=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }
+  ERRCOUNT=0
+  log_error(){ ERRCOUNT=$((ERRCOUNT+1)); }
+  D=$(mktemp -d); CAMPAIGN_JSONL="$D/c.jsonl"
+  WORKER_MODEL=h; WORKER_ENGINE=c; VERIFIER_ENGINE=c; CONSENSUS_MODE=off
+  CONSECUTIVE_FAILURES=0; ROOT="$D"; SLUG=t; typeset -gA US_FAIL_HISTORY=()
+  export RLP_LIFECYCLE_METRICS=1
+  _write_campaign_jsonl_terminal 1 ALL pass
+  print -r -- "rc=$? errs=$ERRCOUNT rows=$(wc -l < "$CAMPAIGN_JSONL" | tr -d " ")"
+  rm -rf "$D"')
+[[ "$term_ok" == "rc=0 errs=0 rows=1" ]] \
+  && ok "R2-3: _write_campaign_jsonl_terminal succeeds cleanly with no retry/log on first-attempt success" \
+  || no "R2-3: _write_campaign_jsonl_terminal success path regressed ($term_ok)"
+
+# 44) Behavioral: _write_campaign_jsonl_terminal retries ONCE on failure,
+# then logs LOUDLY (>= 1 log_error call) if the retry also fails — but does
+# NOT itself abort the campaign (caller decides; this helper just reports).
+term_retry=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }
+  ERRCOUNT=0
+  log_error(){ ERRCOUNT=$((ERRCOUNT+1)); }
+  D=$(mktemp -d); CAMPAIGN_JSONL="$D/missing-dir/c.jsonl"
+  WORKER_MODEL=h; WORKER_ENGINE=c; VERIFIER_ENGINE=c; CONSENSUS_MODE=off
+  CONSECUTIVE_FAILURES=0; ROOT="$D"; SLUG=t; typeset -gA US_FAIL_HISTORY=()
+  export RLP_LIFECYCLE_METRICS=1
+  _write_campaign_jsonl_terminal 1 ALL pass
+  print -r -- "rc=$? errs=$ERRCOUNT written=$([[ -f "$CAMPAIGN_JSONL" ]] && echo yes || echo no)"
+  rm -rf "$D"')
+[[ "$term_retry" == "rc=1 errs=2 written=no" ]] \
+  && ok "R2-3: _write_campaign_jsonl_terminal retries once then logs loudly on persistent failure (2 log_error calls: retry notice + critical)" \
+  || no "R2-3: _write_campaign_jsonl_terminal retry/loud-log behavior wrong ($term_retry)"
+
+# 45) Structural: the loop-top reset in run_ralph_desk.zsh now guards on
+# _LC_FLUSH_ATTEMPTED before clearing LIFECYCLE_RECORDS.
+guarded_reset=$(awk '
+  /if \(\( ! _LC_FLUSH_ATTEMPTED \)\); then$/ { getline nxt; if (nxt ~ /LIFECYCLE_RECORDS=\(\)$/) n++ }
+  END { print (n+0) }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$guarded_reset" == "1" ]] \
+  && ok "R2-3: loop-top LIFECYCLE_RECORDS reset is guarded by (( ! _LC_FLUSH_ATTEMPTED ))" \
+  || no "R2-3: loop-top reset is not guarded (would still wipe a failed flush's retry-pending records)"
+
+# 46) Structural: both COMPLETE-path call sites use the retry-and-log-loudly
+# terminal helper instead of a bare write_campaign_jsonl call.
+terminal_call_count=$(grep -c '_write_campaign_jsonl_terminal "\$ITERATION"' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$terminal_call_count" == "2" ]] \
+  && ok "R2-3: both COMPLETE-path call sites use _write_campaign_jsonl_terminal" \
+  || no "R2-3: expected 2 _write_campaign_jsonl_terminal call sites, got $terminal_call_count"
+
+# 47) Structural: the regular per-iteration call site checks the return
+# code and logs on failure (not a bare fire-and-forget call).
+periter_guard=$(awk '
+  /if ! write_campaign_jsonl "\$ITERATION"/ { n++ }
+  END { print (n+0) }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$periter_guard" == "1" ]] \
+  && ok "R2-3: the per-iteration write_campaign_jsonl call checks its return code" \
+  || no "R2-3: the per-iteration call is still a bare fire-and-forget (rc ignored)"
+
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))
