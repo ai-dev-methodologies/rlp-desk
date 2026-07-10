@@ -9,7 +9,6 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
-- B3-S2 tolerance bands for the 3 newly-wired write-to-read/reap metrics still hold Node-sample values; refit against zsh nightly samples before any `B3_STAGE2_BLOCKING` widening.
 
 ## [0.22.1] — 2026-07-10
 
