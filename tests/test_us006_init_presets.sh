@@ -78,6 +78,11 @@ test_ac1_l1_1() {
   else
     fail "AC1-L1-1: codex detected → --worker-model gpt-5.6-terra:medium not found in output"
   fi
+  if echo "$out" | grep -qF -- '--worker-model gpt-5.6-sol:high --consensus all'; then
+    pass "AC1-L1-1b: codex detected → critical preset gpt-5.6-sol:high with --consensus all"
+  else
+    fail "AC1-L1-1b: critical preset gpt-5.6-sol:high --consensus all not found in output"
+  fi
 }
 
 # AC1-L1-2: cross-engine preset appears before claude-only preset
@@ -242,10 +247,11 @@ test_l3_e2e_1() {
   chmod +x "$bin_dir/codex"
   local output
   output=$(ROOT="$test_dir" PATH="$bin_dir:$PATH" zsh "$INIT" "testslug-e2e" 2>/dev/null)
-  if echo "$output" | grep -qF 'gpt-5.6-terra:medium'; then
-    pass "L3-E2E-1: full init with codex → gpt-5.6 preset present in output"
+  if echo "$output" | grep -qF 'gpt-5.6-terra:medium' && \
+     echo "$output" | grep -qF -- '--worker-model gpt-5.6-sol:high --consensus all'; then
+    pass "L3-E2E-1: full init with codex → terra (recommended) + sol/all (critical) presets present"
   else
-    fail "L3-E2E-1: gpt-5.6 preset missing in init output (last 8 lines: $(echo "$output" | tail -8 | tr '\n' '|'))"
+    fail "L3-E2E-1: gpt-5.6 presets missing in init output (last 8 lines: $(echo "$output" | tail -8 | tr '\n' '|'))"
   fi
 }
 

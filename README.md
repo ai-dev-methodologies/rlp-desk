@@ -281,8 +281,9 @@ When `--consensus` is enabled, a second cross-engine verifier runs alongside eac
 
 After `brainstorm`, `init` detects your environment and presents run command presets:
 
-- **Codex detected (GPT Pro / spark)** → recommends cross-engine mode (`--worker-model spark:high --consensus final-only`)
-- **Codex detected (large PRD, AC > 15)** → offers a GPT-5.6 preset (`--worker-model gpt-5.6-sol:high --consensus final-only`)
+- **Codex detected (recommended)** → cross-engine + final consensus (`--worker-model gpt-5.6-terra:medium --consensus final-only`)
+- **Codex detected (small tasks: single-file, AC <= 4)** → spark preset (`--worker-model spark:high --consensus final-only`; spark has a 100k context limit)
+- **Codex detected (critical)** → full consensus on every verify (`--worker-model gpt-5.6-sol:high --consensus all`)
 - **Claude-only** → defaults to `--debug` with haiku worker and opus final verifier
 - **Basic** → minimal flags for quick iteration
 

@@ -15,7 +15,9 @@ import {
 } from './runner/campaign-main-loop.mjs';
 import { isClaudeEngine } from './cli/command-builder.mjs';
 
-const RUN_DEFAULTS = {
+// Exported for tests: tests/node/us008-cli-entrypoint.test.mjs pins the
+// consensus defaults so zsh/node default drift is caught.
+export const RUN_DEFAULTS = {
   // ARCH Wave D (ADR-001 §3): the Node-CLI default mode flips from the deprecated
   // 'agent' (Node-leader alpha) to 'tmux' (the canonical production leader) at the
   // same step that makes --mode agent hard-error. A bare `run <slug>` now delegates

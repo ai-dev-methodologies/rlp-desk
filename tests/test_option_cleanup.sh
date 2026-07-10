@@ -80,6 +80,18 @@ else
   fail "D6: FINAL_CONSENSUS_MODEL default should be gpt-5.6-sol:high"
 fi
 
+# D5b/D6b: the CLI empty-value fallbacks match the env defaults (no drift)
+if grep -qF 'CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-terra:medium}"' "$RUN"; then
+  pass "D5b: --consensus-model empty-value CLI fallback matches the default"
+else
+  fail "D5b: --consensus-model CLI fallback drifted from gpt-5.6-terra:medium"
+fi
+if grep -qF 'FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-sol:high}"' "$RUN"; then
+  pass "D6b: --final-consensus-model empty-value CLI fallback matches the default"
+else
+  fail "D6b: --final-consensus-model CLI fallback drifted from gpt-5.6-sol:high"
+fi
+
 # ============================================================
 # 2. New flags parsing
 # ============================================================
