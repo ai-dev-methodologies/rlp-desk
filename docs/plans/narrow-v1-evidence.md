@@ -325,3 +325,43 @@ Gate results after fix: `npm run sv-gate:fast` 85/85 pass;
 unaffected — only README.md changed).
 
 Commit: `docs(us-005): precise state/mode wording (codex round 1)`.
+
+## NARROW decision test T1 — native-harness dogfood (2026-07-10)
+
+Design: ported the governance Iron Laws (IL-1 Evidence Gate, IL-3 independence
+/ anti-rubber-stamp, IL-4 test diversity, IL-5 skip detection) and the
+worker/verifier file protocol (PRD, memory, done-claim.json, verify-verdict.json)
+into a NATIVE agent-dispatch loop (no tmux, no zsh leader): interactive session
+as leader, fresh-context haiku workers, fresh-context sonnet verifiers, all
+state on disk in rlp-desk conventions. Representative toy campaign: t1kv
+(JSON-backed kv CLI, 2 US: core ops + TTL expiry, node:test).
+
+Result: COMPLETED start-to-finish. US-001 11/11 tests, verifier PASS with 10
+independently executed checks (incl. manual cross-process persistence repro);
+US-002 20/20 (9 new TTL tests), final verifier PASS with 16 checks (manual
+expiry-boundary repro via injectable clock, --ttl 0 rejection, US-001
+regression sweep). IL-4 counted per US; IL-5 clear; verifier flagged one
+non-blocking coverage gap unprompted (thin negative-category coverage) —
+evidence of real scrutiny, not rubber-stamping. Cost: 4 campaign dispatches
+(2 haiku workers + 2 sonnet verifiers), minutes-scale (a 5th sonnet dispatch
+reviewed this evidence document itself, outside the campaign).
+
+Interpretation (honest bounds):
+- The native path CAN run a small campaign with verifier rigor intact — the
+  completion criterion of T1 fired. Cost was small in absolute terms
+  (4 dispatches, minutes), but no tmux baseline of the same campaign was run,
+  so no direct cost comparison is claimed.
+- BUT it fired only WITH the durable file-based state ported in: BOTH workers
+  finished without delivering a report (silent-idle; the verifiers did
+  report), and the leader recovered purely by polling done-claim/verdict
+  files. The durable-state moat is what made the native loop viable — it
+  transfers, it is not obsolete.
+- NOT demonstrated: unattended long-horizon operation (leader was a live
+  interactive session; 2-US toy, minutes not hours) and cross-session-death
+  resilience. ADR-001's constraint is narrowed, not void.
+
+Verdict: NARROW stands, sharpened — the tmux leader's remaining niche is
+unattended long-horizon campaigns + session-death recovery; small/interactive
+campaigns are viable natively today by carrying the file-state conventions.
+Next falsifier: an hours-scale multi-US native campaign surviving a leader
+session restart.
