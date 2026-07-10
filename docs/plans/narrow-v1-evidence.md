@@ -1195,3 +1195,89 @@ df88aa1 fix(b4): codex r2 R2-2 — single-reap the A4 fallback worker pane
 05c3956 fix(b4): codex r2 R2-3 (F6 residue) — survive failed flushes across the loop-top reset, loud terminal-row failures
 77850a7 fix(b4): codex r2 R2-4 — F1 text self-contradiction + Node-side equality regression
 ```
+
+## codex round 3 — 4 bounded residuals (2026-07-10)
+
+Codex re-review of round 2's fixes surfaced 4 more findings, all on branch
+`fix/b4-p2-sweep`. Landed as a single RED commit + single GREEN commit
+(smaller residual scope than earlier rounds — no per-finding split needed).
+
+**R3-1 — zstat fallback silently skipped, PLUS a real `zmodload zsh/stat`
+shadowing bug found along the way.** `_lifecycle_capture_write_to_read`'s
+`mt_s` was pre-initialized to `"0"`, which passes the `<->` numeric glob
+check the same way a genuine zstat result would — so when zstat failed to
+populate anything, the fork-based `_file_mtime` fallback was silently
+skipped (never attempted), and the function just dropped the capture via
+the `(( mt_s > 0 ))` guard. Fixed: `mt_s` starts empty; the fallback now
+runs whenever zstat didn't produce a positive numeric mtime.
+
+While writing the RED test (shadowing `zstat` with a function to
+deterministically simulate a "module loaded, call failed" scenario), the
+fallback STILL didn't work — `_file_mtime`'s `stat -c %Y`/`stat -f %m`
+calls started failing too. Root cause: `zmodload zsh/stat` (no `-F`) binds
+the SAME builtin under both `zstat` AND `stat` — `zshmodules(1)` documents
+this explicitly and recommends against it, because it shadows the external
+`/usr/bin/stat` binary for the rest of the process. Once R2-1's capture
+path loaded `zsh/stat` once, EVERY subsequent `_file_mtime` call anywhere
+in the process — including the fallback this very fix depends on — would
+hit zsh's `stat` builtin (a different calling convention) instead of the
+real command. Switched to `zmodload -F zsh/stat b:zstat`, which loads only
+the `zstat` binding; verified `which stat` still resolves to
+`/usr/bin/stat` afterward.
+
+**R3-2 — A4 flag alone can't prove the pane is dead.**
+`_POLL_A4_ALREADY_REAPED` only recorded that a reap was ATTEMPTED inside
+`poll_for_signal`'s A4 branch, but `_kill_pane_process` is fail-open
+(always returns 0) by design — other callers depend on that contract, so
+it wasn't changed. Fixed by adding a cheap liveness recheck (the same
+`#{pane_current_command}` tmux probe already used at ~8 other sites in
+`run_ralph_desk.zsh`) at the caller: when the flag is set, only skip the
+second reap if the recheck shows the pane already idle; reap again
+(keeping the same `"iter-signal"` tag decided in R2-2) if it's still
+showing an active producer.
+
+**R3-3 — retained-after-failed-flush records inherit the wrong row's
+iter.** Checked `write_campaign_jsonl`'s row builder first: it already
+preserves each record's own `.iter` field untouched (the grouping jq
+filter only strips `.metric`), so per-record attribution was never
+actually being overwritten. The real gap: `pane_eof_to_cleanup_ms` never
+carried an `.iter` field at all, unlike every other lifecycle metric
+(`pane_reap_latency_ms`, `sentinel_lock_to_unlock_ms`, the write_to_read
+metrics), which already do via F5's work. Fixed by passing
+`"${ITERATION:-}"` to that one remaining call site.
+
+**Row-shape decision:** kept ONE ROW per `write_campaign_jsonl` call rather
+than splitting into one row per distinct iter on flush. Checked
+`tests/sv-real-llm/lib/b3-lifecycle-assertions.sh` (aggregates
+`lifecycle_metrics` across ALL rows via `jq -s`, never assumes a row's
+top-level `.iter` applies to every nested entry) and the Node analytics
+writer — nothing needs the stricter shape, so multi-row-per-flush would
+have been a bigger, unnecessary change. Making every record self-describing
+via its own `.iter` is the minimal fix that closes the actual gap.
+
+**R3-4 — emitter-local comment still said "killPaneProcess return".**
+Aligned `campaign-main-loop.mjs`'s `reapProducer` comment with the
+corrected README.md / `lifecycle-metrics.mjs` wording from R2-4 — it was
+the 3rd copy of the same stale phrasing in the codebase.
+
+Two test-harness bugs were caught and fixed while writing the RED tests
+(documented in the commit body): a fake `tmux` function that printed for
+every subcommand including `_kill_pane_process`'s internal `send-keys`
+calls, and a miscounted expected record count for the tagged-reap case
+(2 records — eof + reap_latency — not 1).
+
+RED: `18456b3` (4 of 96 assertions failed). GREEN: `25cb46e`.
+
+### Final gate results (round 3, all 4 findings)
+
+```
+zsh -n src/scripts/run_ralph_desk.zsh   → clean
+zsh -n src/scripts/lib_ralph_desk.zsh   → clean
+zsh tests/test_b3_lifecycle_emit.sh     → 96/96 PASS
+npm run test:zsh                        → exit 0, 0 FAIL/✗ across 1814 lines
+npm run test:node                       → 456/456 PASS, 0 fail
+npm run sv-gate:fast                    → 99/99 pass — OK
+```
+
+A5 oracle (v0.22.0 anchor `7038a14`): empty — none of the 3 protected
+trigger files touched.
