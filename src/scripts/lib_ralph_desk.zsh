@@ -1389,7 +1389,16 @@ write_campaign_jsonl() {
     fi
   fi
 
-  jq -nc \
+  # codex P2 sweep F6: build the complete line in a variable FIRST (a single
+  # jq invocation, unchanged), THEN append it in one write with an explicit
+  # rc check — instead of piping jq straight into `>> "$CAMPAIGN_JSONL"`,
+  # where neither jq's own exit code nor the redirect's were ever checked.
+  # This also avoids a partial-line write: capturing first means either the
+  # whole line exists in $_campaign_line or nothing gets appended at all,
+  # rather than jq's output potentially interleaving a truncated line with a
+  # concurrent/subsequent write if it were streamed straight to the file.
+  local _campaign_line
+  _campaign_line=$(jq -nc \
     --argjson iter "$iter" \
     --arg us_id "$us_id" \
     --arg worker_model "$WORKER_MODEL" \
@@ -1407,11 +1416,20 @@ write_campaign_jsonl() {
     --arg slug "$SLUG" \
     --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson lifecycle_metrics "$lifecycle_json" \
-    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus_mode: $consensus_mode, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, us_fail_history: $us_fail_history, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp, lifecycle_metrics: $lifecycle_metrics}' \
-    >> "$CAMPAIGN_JSONL"
-
-  # Reset the accumulator after every flush (snapshot+reset, mirrors Node flush()).
-  LIFECYCLE_RECORDS=()
+    '{iter: $iter, us_id: $us_id, worker_model: $worker_model, worker_engine: $worker_engine, verifier_engine: $verifier_engine, claude_verdict: $claude_verdict, codex_verdict: $codex_verdict, consensus_mode: $consensus_mode, consecutive_failures: $consecutive_failures, model_upgraded: $model_upgraded, us_fail_history: $us_fail_history, duration_worker_s: $duration_worker_s, duration_verifier_s: $duration_verifier_s, project_root: $project_root, slug: $slug, timestamp: $timestamp, lifecycle_metrics: $lifecycle_metrics}')
+  if [[ $? -ne 0 || -z "$_campaign_line" ]]; then
+    log_error "write_campaign_jsonl: jq record build failed for iter=$iter us_id=$us_id — campaign.jsonl NOT written this call, lifecycle accumulator retained for retry"
+    return 1
+  fi
+  if print -r -- "$_campaign_line" >> "$CAMPAIGN_JSONL"; then
+    # Reset the accumulator ONLY after a confirmed successful flush
+    # (snapshot+reset, mirrors Node flush()) — a failed append below leaves
+    # it intact so the next iteration's flush retries these same records.
+    LIFECYCLE_RECORDS=()
+  else
+    log_error "write_campaign_jsonl: append to $CAMPAIGN_JSONL failed for iter=$iter us_id=$us_id — lifecycle accumulator retained for retry"
+    return 1
+  fi
 }
 
 # --- AC4: Generate campaign-report.md on all terminal states ---
