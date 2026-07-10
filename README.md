@@ -544,7 +544,7 @@ mkdir my-calc && cd my-calc
 /rlp-desk run loop-test
 ```
 
-## Lifecycle Observability (v0.15.4+, default ON since v0.15.5)
+## Lifecycle Observability (v0.15.4+, default ON since v0.22.0)
 
 Structured tmux/process lifecycle telemetry is enabled by default on both the Node and zsh (`--mode tmux`) leaders. Set `RLP_LIFECYCLE_METRICS=0` to opt out.
 

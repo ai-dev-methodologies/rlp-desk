@@ -12,8 +12,8 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
   `verdict_write_to_read_ms`, `pane_reap_latency_ms`, `sentinel_lock_to_unlock_ms`)
   are now wired into `src/scripts/run_ralph_desk.zsh` / `lib_ralph_desk.zsh`,
   matching the zsh leader's existing `pane_eof_to_cleanup_ms` emitter. All 5
-  metrics are emitted identically on both the Node (`--mode agent`) and zsh
-  (`--mode tmux`) leaders. `RLP_LIFECYCLE_METRICS` now **defaults to ON**;
+  metrics are emitted identically on both the Node (slash-command
+  `--mode native`) and zsh (`--mode tmux`) leaders. `RLP_LIFECYCLE_METRICS` now **defaults to ON**;
   set `RLP_LIFECYCLE_METRICS=0` to opt out. See README.md "Lifecycle
   Observability" for the metric table.
 
