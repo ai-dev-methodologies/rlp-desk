@@ -72,10 +72,11 @@ test_ac1_l1_1() {
   if [[ -z "$FN_BODY" ]]; then fail "AC1-L1-1: function missing"; return; fi
   local out
   out="$(run_presets_with_codex "testslug")"
-  if echo "$out" | grep -qF -- '--worker-model gpt-5.5'; then
-    pass "AC1-L1-1: codex detected → output contains --worker-model gpt-5.5"
+  # v0.21.0: brainstorm presets moved to the GPT-5.6 generation (terra/sol)
+  if echo "$out" | grep -qF -- '--worker-model gpt-5.6-terra:medium'; then
+    pass "AC1-L1-1: codex detected → output contains --worker-model gpt-5.6-terra:medium"
   else
-    fail "AC1-L1-1: codex detected → --worker-model gpt-5.5 not found in output"
+    fail "AC1-L1-1: codex detected → --worker-model gpt-5.6-terra:medium not found in output"
   fi
 }
 
@@ -85,7 +86,7 @@ test_ac1_l1_2() {
   local out
   out="$(run_presets_with_codex "testslug")"
   local line_gpt line_basic
-  line_gpt=$(echo "$out" | grep -n 'gpt-5.5' | head -1 | cut -d: -f1)
+  line_gpt=$(echo "$out" | grep -n 'gpt-5\.[0-9]' | head -1 | cut -d: -f1)
   # find the first /rlp-desk run line that has NO gpt/codex/spark (pure claude-only line)
   line_basic=$(echo "$out" | grep -n '/rlp-desk run' | grep -v 'gpt\|codex\|spark\|consensus' | head -1 | cut -d: -f1)
   if [[ -n "$line_gpt" && -n "$line_basic" ]] && (( line_gpt < line_basic )); then
@@ -168,11 +169,11 @@ test_ac2_l1_3() {
   local out
   out="$(run_presets_without_codex "testslug")"
   local gpt_count
-  gpt_count=$(echo "$out" | grep -c -- '--worker-model gpt-5.5')
+  gpt_count=$(echo "$out" | grep -cE -- '--worker-model gpt-5\.[0-9]')
   if (( gpt_count == 0 )); then
-    pass "AC2-L1-3: no gpt-5.5 run preset when codex not installed"
+    pass "AC2-L1-3: no codex gpt run preset when codex not installed"
   else
-    fail "AC2-L1-3: unexpected gpt-5.5 preset shown without codex (count=$gpt_count)"
+    fail "AC2-L1-3: unexpected codex gpt preset shown without codex (count=$gpt_count)"
   fi
 }
 
@@ -241,10 +242,10 @@ test_l3_e2e_1() {
   chmod +x "$bin_dir/codex"
   local output
   output=$(ROOT="$test_dir" PATH="$bin_dir:$PATH" zsh "$INIT" "testslug-e2e" 2>/dev/null)
-  if echo "$output" | grep -qF 'gpt-5.5'; then
-    pass "L3-E2E-1: full init with codex → gpt-5.5 preset present in output"
+  if echo "$output" | grep -qF 'gpt-5.6-terra:medium'; then
+    pass "L3-E2E-1: full init with codex → gpt-5.6 preset present in output"
   else
-    fail "L3-E2E-1: gpt-5.5 missing in init output (last 8 lines: $(echo "$output" | tail -8 | tr '\n' '|'))"
+    fail "L3-E2E-1: gpt-5.6 preset missing in init output (last 8 lines: $(echo "$output" | tail -8 | tr '\n' '|'))"
   fi
 }
 
