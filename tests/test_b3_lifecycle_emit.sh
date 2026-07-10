@@ -592,6 +592,116 @@ order_check=$(awk '
   && ok "F2: all 4 write_to_read call sites follow capture(pre-reap) -> reap -> emit(post-reap) ordering" \
   || no "F2: capture/reap/emit ordering violated: $order_check"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# codex P2 sweep F3: _lock_sentinel / _unlock_sentinel currently ALWAYS
+# return 0 regardless of whether chmod actually succeeded, so a caller that
+# marks a lifecycle lock-start before calling _lock_sentinel has no way to
+# tell a genuine chmod failure (permission denied, FS error, ENOENT race)
+# from success — the pending mark gets paired with a later unlock as if the
+# lock had really happened, emitting a metric for a lock that never occurred.
+# Fix: real success/failure (file exists AND chmod succeeded), while keeping
+# fail-open idempotence on a MISSING file (AC-B3 in
+# test_b2fix_sentinel_lock.sh / Scenario B in test-bug7-post-sentinel-race.sh
+# — both must stay green, unchanged).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Stub `chmod` to always fail, isolated via PATH — simulates a real chmod
+# failure on an EXISTING file, portable (no root/chflags/chattr needed).
+_fake_chmod_dir=$(mktemp -d)
+print -r -- '#!/bin/sh
+exit 1' > "$_fake_chmod_dir/chmod"
+chmod +x "$_fake_chmod_dir/chmod"
+
+# 31) _lock_sentinel returns non-zero when chmod genuinely fails on an
+# existing file.
+lock_rc=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  D=$(mktemp -d)
+  T="$D/verdict.json"
+  echo "{}" > "$T"
+  PATH="'"$_fake_chmod_dir"':$PATH"
+  _lock_sentinel "$T"
+  print -r -- "$?"
+  rm -rf "$D"')
+[[ "$lock_rc" != "0" ]] \
+  && ok "F3: _lock_sentinel returns non-zero when chmod genuinely fails on an existing file (rc=$lock_rc)" \
+  || no "F3: _lock_sentinel still returns 0 on a real chmod failure"
+
+# 32) _unlock_sentinel: same real-failure contract.
+unlock_rc=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  D=$(mktemp -d)
+  T="$D/verdict.json"
+  echo "{}" > "$T"
+  PATH="'"$_fake_chmod_dir"':$PATH"
+  _unlock_sentinel "$T"
+  print -r -- "$?"
+  rm -rf "$D"')
+[[ "$unlock_rc" != "0" ]] \
+  && ok "F3: _unlock_sentinel returns non-zero when chmod genuinely fails on an existing file (rc=$unlock_rc)" \
+  || no "F3: _unlock_sentinel still returns 0 on a real chmod failure"
+
+# 33) Missing-file idempotence is UNCHANGED — the other half of the same
+# contract. (test_b2fix_sentinel_lock.sh AC-B3 already pins this from the
+# outside; re-asserted here alongside the new failure-path tests.)
+missing_rc=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  D=$(mktemp -d)
+  _lock_sentinel "$D/never-existed.json"
+  print -r -- "$?"
+  rm -rf "$D"')
+[[ "$missing_rc" == "0" ]] \
+  && ok "F3: _lock_sentinel on a missing file still returns 0 (fail-open idempotence unchanged)" \
+  || no "F3: _lock_sentinel on a missing file regressed to non-zero"
+
+# 34) Behavioral: the guarded caller pattern (mark, attempt lock, clear the
+# mark on failure) leaves NO pending mark when the lock genuinely fails, so a
+# later unlock is a correct no-op — no spurious sentinel_lock_to_unlock_ms.
+guarded_fail=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  D=$(mktemp -d)
+  T="$D/verdict.json"
+  echo "{}" > "$T"
+  PATH="'"$_fake_chmod_dir"':$PATH"
+  _lifecycle_mark_lock_start "verdict.json"
+  if ! _lock_sentinel "$T"; then
+    _lifecycle_clear_lock_mark "verdict.json"
+  fi
+  _lifecycle_mark_unlock "verdict.json" 1
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"
+  rm -rf "$D"')
+[[ "$guarded_fail" == "0" ]] \
+  && ok "F3: a failed lock (guarded pattern) leaves no pending mark — later unlock is a correct no-op, no spurious metric" \
+  || no "F3: a failed lock still let a spurious sentinel_lock_to_unlock_ms metric emit ($guarded_fail records)"
+
+rm -rf "$_fake_chmod_dir"
+
+# 35) Structural: all 4 mark_lock_start-adjacent _lock_sentinel calls in
+# run_ralph_desk.zsh (run_single_verifier, _final_verify_one_us, worker path,
+# inline single-engine verify path) must be guarded — not bare/unchecked.
+guarded_lock_count=$(grep -cE 'if ! _lock_sentinel "\$(VERDICT_FILE|SIGNAL_FILE)"; then' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$guarded_lock_count" == "4" ]] \
+  && ok "F3: all 4 VERDICT_FILE/SIGNAL_FILE _lock_sentinel calls are guarded (clear mark on failure)" \
+  || no "F3: expected 4 guarded lock call sites, got $guarded_lock_count"
+
+# 36) Structural: both loop-top unlock+mark_unlock pairs are guarded (mark
+# only emitted when the unlock actually succeeded).
+guarded_unlock_count=$(grep -cE 'if _unlock_sentinel "\$(SIGNAL_FILE|VERDICT_FILE)"; then' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$guarded_unlock_count" == "2" ]] \
+  && ok "F3: both loop-top _unlock_sentinel calls are guarded (mark only on success)" \
+  || no "F3: expected 2 guarded unlock call sites, got $guarded_unlock_count"
+
+# 37) Structural: the 3 DONE_CLAIM_FILE-only lock sites (no adjacent mark —
+# H2 exclusion, unpaired) don't functionally need the return code under this
+# repo's `set -uo pipefail` (no -e), but are made explicit with `|| true` so
+# a future `set -e` cannot silently change behavior at an unrelated call site.
+done_claim_lock_true_count=$(grep -c '_lock_sentinel "\$DONE_CLAIM_FILE" || true' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$done_claim_lock_true_count" == "3" ]] \
+  && ok "F3: all 3 DONE_CLAIM_FILE-only lock sites are explicit || true (unpaired, H2 exclusion)" \
+  || no "F3: expected 3 explicit || true DONE_CLAIM_FILE lock sites, got $done_claim_lock_true_count"
+
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))
