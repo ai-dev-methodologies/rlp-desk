@@ -282,7 +282,7 @@ When `--consensus` is enabled, a second cross-engine verifier runs alongside eac
 After `brainstorm`, `init` detects your environment and presents run command presets:
 
 - **Codex detected (GPT Pro / spark)** → recommends cross-engine mode (`--worker-model spark:high --consensus final-only`)
-- **Codex detected (large PRD, AC > 15)** → offers gpt-5.5 preset (`--worker-model gpt-5.5:high --consensus final-only`)
+- **Codex detected (large PRD, AC > 15)** → offers a GPT-5.6 preset (`--worker-model gpt-5.6-sol:high --consensus final-only`)
 - **Claude-only** → defaults to `--debug` with haiku worker and opus final verifier
 - **Basic** → minimal flags for quick iteration
 
@@ -389,7 +389,7 @@ npm install -g @openai/codex
 /rlp-desk run calculator --worker-model spark:high
 
 # Customize model and reasoning effort
-/rlp-desk run calculator --worker-model gpt-5.5:high
+/rlp-desk run calculator --worker-model gpt-5.6-sol:high
 
 # Cross-engine: codex worker, claude verifier (recommended)
 /rlp-desk run calculator --worker-model spark:high --consensus final-only --debug
@@ -432,7 +432,7 @@ By default, Worker and Verifier stop and ask for human input when they encounter
 **`--autonomous`** enables fully unattended campaigns:
 
 ```bash
-/rlp-desk run my-feature --mode tmux --worker-model gpt-5.5:medium --autonomous --debug
+/rlp-desk run my-feature --mode tmux --worker-model gpt-5.6-terra:medium --autonomous --debug
 ```
 
 ### How it works

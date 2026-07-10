@@ -266,6 +266,10 @@ _auto_detect_engine() {
       *)
         # Codex model with reasoning
         [[ "$model_part" == "spark" ]] && model_part="gpt-5.3-codex-spark"
+        # GPT-5.6 family aliases (codex 0.144) — mirror of parse_model_flag
+        [[ "$model_part" == "sol" ]]   && model_part="gpt-5.6-sol"
+        [[ "$model_part" == "terra" ]] && model_part="gpt-5.6-terra"
+        [[ "$model_part" == "luna" ]]  && model_part="gpt-5.6-luna"
         eval "$engine_var=codex"
         eval "$model_var=$model_part"
         [[ -n "$codex_model_var" ]] && eval "$codex_model_var=$model_part"
@@ -1826,7 +1830,9 @@ is_codex_idle_ui() {
   print -- "$pane_text" | grep -qE 'Context [0-9]+%[[:space:]]*left' && return 0
   # 3. codex model + branch line (e.g. "gpt-5.5 high · feature/...") —
   #    only printed alongside the idle prompt, never during work.
-  print -- "$pane_text" | grep -qE 'gpt-[0-9]+(\.[0-9]+)? (low|medium|high|xhigh) ·' && return 0
+  #    codex 0.144: slugs may carry suffixes (gpt-5.6-sol|terra|luna,
+  #    gpt-5.3-codex-spark) and efforts now include max|ultra.
+  print -- "$pane_text" | grep -qE 'gpt-[0-9]+(\.[0-9]+)?(-[a-z0-9-]+)? (low|medium|high|xhigh|max|ultra) ·' && return 0
   # 4. codex default-suggestion prompt prefix at line start. v0.14.1 had
   #    only "›" but BOS Bug #4 showed the leading character can be wrapped
   #    by tmux narrowness — also accept the suggestion phrases verbatim.
@@ -2906,7 +2912,7 @@ run_single_verifier() {
       # ":medium", "foo:bar:baz") and fall back to the globals instead of
       # emitting a bad -m or empty reasoning_effort.
       local _m="${model%%:*}" _r="${model##*:}"
-      if [[ -n "$_m" && "$model" != *:*:* && "$_r" == (minimal|low|medium|high|xhigh) ]]; then
+      if [[ -n "$_m" && "$model" != *:*:* && "$_r" == (minimal|low|medium|high|xhigh|max|ultra) ]]; then
         _cx_model="$_m"; _cx_reason="$_r"
       else
         log "  WARNING: malformed consensus codex model '$model' — falling back to $_cx_model:$_cx_reason"

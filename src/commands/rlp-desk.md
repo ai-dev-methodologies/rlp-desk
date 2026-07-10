@@ -80,14 +80,18 @@ Ask about these items one by one (or in small groups):
 
    | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
    |------------|--------|-----------------|----------------|-----------|
-   | LOW | gpt-5.5:medium | sonnet | opus | final-only |
-   | MEDIUM | gpt-5.5:medium | opus | opus | final-only |
-   | HIGH | gpt-5.5:high | opus | opus | all |
-   | CRITICAL | gpt-5.5:high | opus | opus + human | all |
+   | LOW | gpt-5.6-luna:medium | sonnet | opus | final-only |
+   | MEDIUM | gpt-5.6-terra:medium | opus | opus | final-only |
+   | HIGH | gpt-5.6-sol:high | opus | opus | all |
+   | CRITICAL | gpt-5.6-sol:xhigh | opus | opus + human | all |
 
-   **Worker model selection** (cross-engine):
-   - **gpt-5.5:medium** — default recommendation (full context window, progressive upgrade handles harder US)
+   **Worker model selection** (cross-engine, codex 0.144 / GPT-5.6 generation — see model-upgrade-table.md for the full catalog):
+   - **gpt-5.6-terra:medium** — default recommendation (balanced everyday model; progressive upgrade climbs high → xhigh → max → ultra on repeated failure)
+   - **gpt-5.6-luna:medium** — LOW-complexity default (fast/affordable; ladder ceilings at max — no ultra tier)
+   - **gpt-5.6-sol** — HIGH/CRITICAL starts (frontier agentic model; reserve :max/:ultra as upgrade-ladder headroom rather than starting there)
+   - **gpt-5.5 / gpt-5.4 / gpt-5.4-mini** — previous-generation models, still fully supported (low..xhigh ladders) if the account lacks 5.6 access
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
+   - Aliases: `sol`/`terra`/`luna`/`spark` expand to their full slugs; `max`/`ultra` reasoning efforts exist only on the 5.6 family (luna: max only)
 
    **Context window behavior (claude models — v0.14.6+)**:
    - All claude models default to **200K**. `sonnet` and `opus` aliases both run at the standard window.
@@ -104,8 +108,8 @@ Ask about these items one by one (or in small groups):
    **If codex is NOT installed** — say: "Codex is not installed. Defaulting to claude-only Worker. Note: without a second engine, your Verifier shares the same perspective as the Worker — there is a risk of blind spots where both Worker and Verifier miss the same issue. To unlock cross-engine coverage: `npm install -g @openai/codex`"
 
 8. **Batch Capacity Check** — when verify-mode is batch and PRD is large:
-   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to gpt-5.5 or split smaller"
-   - batch + gpt-5.5 + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
+   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to a full-context model (gpt-5.6-terra / gpt-5.5) or split smaller"
+   - batch + full-context codex model (gpt-5.6-*, gpt-5.5, gpt-5.4*) + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
    - per-us → no warning (US-level processing, no limit concern)
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
 10. **Consensus** — Ask: "Use cross-engine consensus? off (single engine), final-only (cross-engine on final verify only), or all (cross-engine on every verify). Requires codex CLI." Default: off. Recommended: final-only when codex is installed.
@@ -177,20 +181,20 @@ Tell the user:
    Available run commands (copy the one you want):
 
    # ★ Recommended: cross-engine + final-consensus (full context + blind-spot coverage):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.5:medium --consensus final-only --debug
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.6-terra:medium --consensus final-only --debug
 
    # Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):
    /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
 
    # Critical (full consensus on every verify):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.5:high --consensus all --debug
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.6-sol:high --consensus all --debug
 
    # Claude-only:
    /rlp-desk run <actual-slug> --debug
 
    # Full options reference:
    #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
-   #   --worker-model MODEL                   haiku|sonnet|opus or gpt-5.5:high|spark:high (default: haiku)
+   #   --worker-model MODEL                   haiku|sonnet|opus or gpt-5.6-sol:high|terra:medium|spark:high (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
    #   --verifier-model MODEL                 per-US verifier (default: sonnet)
    #   --final-verifier-model MODEL           final ALL verifier (default: opus)
@@ -253,7 +257,7 @@ Tell the user:
 
 Options (parse from `$ARGUMENTS`):
 - `--mode native|tmux` (default: `native`) — execution mode. `native` = slash command is the leader, calls `Agent(...)` (claude) and `Bash("codex exec ...")` (codex). `tmux` = slash command spawns the zsh runner via `node run.mjs --mode tmux`. Legacy `--mode agent` typed against the slash command emits a deprecation notice and redirects to `--mode native` (NOT to be confused with `node run.mjs --mode agent`, which is the deprecated Node-leader alpha — see "Direct Node CLI invocation" below).
-- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.5:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
+- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.6-sol:max`, `gpt-5.5:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
 - `--lock-worker-model` — disable automatic model upgrade on failure. Worker stays on the specified model regardless of consecutive failures.
 - `--verifier-model MODEL` (default: `sonnet`) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier.
 - `--final-verifier-model MODEL` (default: `opus`) — final ALL verification model. Independent from per-US verifier. Used only for the final full-AC verify pass.
@@ -799,7 +803,7 @@ Example:
 
 Run options:
   --mode native|tmux                   Execution mode (default: native)
-  --worker-model MODEL                 Worker model: haiku|sonnet|opus or gpt-5.5:high|spark:high (default: haiku)
+  --worker-model MODEL                 Worker model: haiku|sonnet|opus or gpt-5.6-sol:high|terra:medium|spark:high (default: haiku)
   --lock-worker-model                  Disable auto model upgrade on failure
   --verifier-model MODEL               per-US verifier (default: sonnet)
   --final-verifier-model MODEL         Final ALL verifier (default: opus)

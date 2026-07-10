@@ -51,7 +51,7 @@ const ACTIVE_TASK_RE =
 //   3. "gpt-X.Y reasoning · branch" — codex idle status line
 //   4. codex default suggestions    — only printed at the idle prompt
 export const CODEX_IDLE_RE =
-  /Worked for \d+m \d+s|Context \d+%\s*left|gpt-\d+(\.\d+)? (low|medium|high|xhigh) ·|Improve documentation in @|Summarize recent commits|Explain (this )?code/;
+  /Worked for \d+m \d+s|Context \d+%\s*left|gpt-\d+(\.\d+)?(-[a-z0-9-]+)? (low|medium|high|xhigh|max|ultra) ·|Improve documentation in @|Summarize recent commits|Explain (this )?code/;
 export function isCodexIdleUi(paneText) {
   if (typeof paneText !== 'string' || paneText.length === 0) return false;
   return CODEX_IDLE_RE.test(paneText);

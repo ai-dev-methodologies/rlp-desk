@@ -116,6 +116,17 @@ parse_model_flag() {
       spark)
         echo "codex gpt-5.3-codex-spark $level"
         ;;
+      # GPT-5.6 family aliases (codex 0.144): sol=frontier, terra=balanced,
+      # luna=fast/affordable. Same convention as the spark alias above.
+      sol)
+        echo "codex gpt-5.6-sol $level"
+        ;;
+      terra)
+        echo "codex gpt-5.6-terra $level"
+        ;;
+      luna)
+        echo "codex gpt-5.6-luna $level"
+        ;;
       *)
         echo "codex $model $level"
         ;;
@@ -145,7 +156,7 @@ get_model_string() {
 # get_next_model() — return next model in Worker upgrade path, or empty at ceiling
 # Usage: get_next_model <model_str>
 #   claude: "haiku"|"sonnet"|"opus"
-#   codex:  "gpt-5.5:medium"|"gpt-5.5:high"|"gpt-5.5:xhigh"|"gpt-5.3-codex-spark:medium"|...
+#   codex:  "gpt-5.5:medium"|"gpt-5.6-sol:max"|"gpt-5.6-terra:ultra"|"gpt-5.3-codex-spark:medium"|...
 # Output: next model string, or empty string if at ceiling
 #
 # US-001: single-sourced from src/node/models.json (shipped default ladder),
