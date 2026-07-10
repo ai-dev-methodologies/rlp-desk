@@ -424,7 +424,13 @@ _kill_pane_process() {
   # caller passes the clean tag so pane_reap_latency_ms carries sentinel_type
   # context. Mirrors Node's reapProducer(paneId, sentinelFile, sentinelType)
   # (campaign-main-loop.mjs:1455-1482): pane_eof_to_cleanup_ms ALWAYS fires;
-  # pane_reap_latency_ms fires ONLY when sentinel_type is non-empty.
+  # pane_reap_latency_ms fires ONLY when sentinel_type is non-empty. Both
+  # metrics measure the SAME kill-start-to-shell-idle window ($_b4_delta
+  # below) BY DESIGN — Node's reapProducer computes one reapMs and records()
+  # it under both names too (v0.15.4 P2 sweep F1: this is not a bug; an
+  # earlier doc description implying pane_reap_latency_ms measured a
+  # different "sentinel-observed to shell-idle" window was corrected instead,
+  # see README.md's metrics table and lifecycle-metrics.mjs's header comment).
   local sentinel_type="${3:-}"
   [[ -n "$pane_id" ]] || return 0
   if typeset -f log_debug >/dev/null 2>&1; then

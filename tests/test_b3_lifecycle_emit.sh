@@ -151,9 +151,12 @@ default_on=$(zsh -c '
   write_campaign_jsonl 1 US-001 pass
   print -r -- "$(tail -1 "$CAMPAIGN_JSONL" | jq -c .lifecycle_metrics)"
   rm -rf "$D"')
-[[ "$default_on" != "null" && -n "$default_on" ]] \
-  && ok "DEFAULT-ON: RLP_LIFECYCLE_METRICS unset now emits (was OFF pre-full-wire)" \
-  || no "DEFAULT-ON regression: unset flag produced null ($default_on)"
+# F8 (codex P2 sweep): "!= null" is vacuous — an empty {} is also non-null and
+# would let a no-op default-on silently masquerade as "emitting". Require the
+# specific metric key present with >= 1 record instead.
+[[ "$(print -r -- "$default_on" | jq -r '.pane_eof_to_cleanup_ms // [] | length')" -ge 1 ]] \
+  && ok "DEFAULT-ON: RLP_LIFECYCLE_METRICS unset now emits (was OFF pre-full-wire, pane_eof_to_cleanup_ms key present with >=1 record)" \
+  || no "DEFAULT-ON regression: unset flag produced no pane_eof_to_cleanup_ms records ($default_on)"
 
 # 12) explicit opt-out (=0) still silences after the default flip.
 explicit_off=$(zsh -c '
@@ -216,6 +219,17 @@ metrics=$(print -r -- "$reap_pair" | tail -n +2 | jq -r '.metric' 2>/dev/null | 
   && ok "_kill_pane_process + sentinel_type: both metric names present" \
   || no "_kill_pane_process + sentinel_type: wrong metric set ($metrics)"
 
+# F1/F8 (codex P2 sweep): F1 resolved as a DOC fix, not a behavior fix — Node's
+# reapProducer computes ONE reapMs and records() it under both metric names
+# (campaign-main-loop.mjs:1475-1482), so the zsh side is CORRECT to reuse the
+# same $_b4_delta for both. Assert that corrected contract directly: the two
+# records must carry the SAME value_ms (same window), not different ones.
+eof_vm=$(print -r -- "$reap_pair" | tail -n +2 | jq -r 'select(.metric=="pane_eof_to_cleanup_ms") | .value_ms')
+reap_vm=$(print -r -- "$reap_pair" | tail -n +2 | jq -r 'select(.metric=="pane_reap_latency_ms") | .value_ms')
+[[ -n "$eof_vm" && "$eof_vm" == "$reap_vm" ]] \
+  && ok "F1: pane_reap_latency_ms measures the SAME kill-start->shell-idle window as pane_eof_to_cleanup_ms (value_ms=$eof_vm, mirrors Node's single reapMs)" \
+  || no "F1 regression: pane_eof_to_cleanup_ms ($eof_vm) and pane_reap_latency_ms ($reap_vm) diverged"
+
 # 16) _kill_pane_process: WITHOUT a 3rd arg (all 5 existing call sites that
 # don't pass one — e.g. the A4-fallback worker-a4 kill), only
 # pane_eof_to_cleanup_ms fires — no regression on the pre-existing contract.
@@ -248,9 +262,11 @@ truthy=$(zsh -c '
   write_campaign_jsonl 1 US-001 pass
   print -r -- "$(tail -1 "$CAMPAIGN_JSONL" | jq -c .lifecycle_metrics)"
   rm -rf "$D"')
-[[ "$truthy" != "null" && -n "$truthy" ]] \
-  && ok "P2-1: RLP_LIFECYCLE_METRICS=true enables (matches Node's !== '0' contract)" \
-  || no "P2-1: value 'true' incorrectly disabled telemetry ($truthy)"
+# F8 (codex P2 sweep): same vacuous-assertion fix as case 11 — require the
+# metric key present with >= 1 record, not merely "not null".
+[[ "$(print -r -- "$truthy" | jq -r '.pane_eof_to_cleanup_ms // [] | length')" -ge 1 ]] \
+  && ok "P2-1: RLP_LIFECYCLE_METRICS=true enables (matches Node's !== '0' contract, pane_eof_to_cleanup_ms key present with >=1 record)" \
+  || no "P2-1: value 'true' incorrectly disabled telemetry — no pane_eof_to_cleanup_ms records ($truthy)"
 
 # 18) P2-1 (structural): every zsh gate check uses the unified `!= "0"` form,
 # not `== "1"` (which silently diverges from Node on any non-"0"/non-"1"
