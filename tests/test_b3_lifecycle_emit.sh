@@ -912,12 +912,14 @@ n2=$(print -r -- "$flush_result" | sed -n '3p')
 # finalize / sequential-verify pass, and full/ALL verify pass — both end in a
 # literal "pass" 3rd arg, unlike the per-iteration in-loop call which passes
 # a variable) are immediately preceded by _lifecycle_flush_pending_locks.
+# codex round 2 R2-3: both sites now call the _write_campaign_jsonl_terminal
+# wrapper, not write_campaign_jsonl directly — match either name.
 terminal_flush_count=$(awk '
-  /_lifecycle_flush_pending_locks/ { getline nxt; if (nxt ~ /write_campaign_jsonl .*"pass"$/) n++ }
+  /_lifecycle_flush_pending_locks/ { getline nxt; if (nxt ~ /_?write_campaign_jsonl(_terminal)? .*"pass"$/) n++ }
   END { print (n+0) }
 ' "$REPO/src/scripts/run_ralph_desk.zsh")
 [[ "$terminal_flush_count" == "2" ]] \
-  && ok "F5: both COMPLETE-exit write_campaign_jsonl calls are immediately preceded by _lifecycle_flush_pending_locks" \
+  && ok "F5: both COMPLETE-exit write_campaign_jsonl(_terminal) calls are immediately preceded by _lifecycle_flush_pending_locks" \
   || no "F5: expected 2 flush-then-write_campaign_jsonl(pass) sites, got $terminal_flush_count"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1152,8 +1154,12 @@ term_retry=$(zsh -c '
   _write_campaign_jsonl_terminal 1 ALL pass
   print -r -- "rc=$? errs=$ERRCOUNT written=$([[ -f "$CAMPAIGN_JSONL" ]] && echo yes || echo no)"
   rm -rf "$D"')
-[[ "$term_retry" == "rc=1 errs=2 written=no" ]] \
-  && ok "R2-3: _write_campaign_jsonl_terminal retries once then logs loudly on persistent failure (2 log_error calls: retry notice + critical)" \
+# 4 calls total: write_campaign_jsonl's own routine log_error fires on EACH
+# of the 2 attempts (unchanged F6 behavior), plus the wrapper's own
+# "retrying once" notice and "CRITICAL...LOST" message — deliberately
+# louder than a single line, not a bug.
+[[ "$term_retry" == "rc=1 errs=4 written=no" ]] \
+  && ok "R2-3: _write_campaign_jsonl_terminal retries once then logs loudly on persistent failure (4 log_error calls total)" \
   || no "R2-3: _write_campaign_jsonl_terminal retry/loud-log behavior wrong ($term_retry)"
 
 # 45) Structural: the loop-top reset in run_ralph_desk.zsh now guards on

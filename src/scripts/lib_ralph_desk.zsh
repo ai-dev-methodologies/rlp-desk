@@ -1366,8 +1366,17 @@ write_cost_log() {
   echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"worker_start_time":"'"$worker_start_time"'","worker_end_time":"'"$worker_end_time"'","worker_duration_s":'"$worker_duration_s"',"verifier_start_time":"'"$verifier_start_time"'","verifier_end_time":"'"$verifier_end_time"'","verifier_duration_s":'"$verifier_duration_s"''"$consensus_fields"',"note":"'"$cost_note"'","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$COST_LOG"
 }
 
+# codex round 2 R2-3: set on EVERY write_campaign_jsonl call (success or
+# failure) as the single source of truth the loop-top reset (run_ralph_desk.zsh)
+# uses to distinguish "this iteration attempted a flush and it failed — keep
+# LIFECYCLE_RECORDS for retry" from "this iteration never attempted a flush
+# at all (a row-less `continue`) — discard, they belong to no row". Reset to
+# 0 by the loop-top logic at the start of every iteration.
+typeset -g _LC_FLUSH_ATTEMPTED=0
+
 # --- Analytics: write per-iteration structured data to campaign.jsonl (always-on) ---
 write_campaign_jsonl() {
+  _LC_FLUSH_ATTEMPTED=1
   local iter="$1"
   local us_id="${2:-unknown}"
   local verdict="${3:-unknown}"
@@ -1459,6 +1468,26 @@ write_campaign_jsonl() {
     log_error "write_campaign_jsonl: append to $CAMPAIGN_JSONL failed for iter=$iter us_id=$us_id — lifecycle accumulator retained for retry"
     return 1
   fi
+}
+
+# _write_campaign_jsonl_terminal() — codex round 2 R2-3: wraps
+# write_campaign_jsonl for the 2 COMPLETE-path call sites (leader-finalize
+# sequential-verify pass, full/ALL verify pass in run_ralph_desk.zsh). Both
+# `return 0` (campaign SUCCESS) immediately after this call — if the row
+# write silently failed there, the terminal row (arguably the most
+# important one in the whole file) would be lost with zero chance to retry
+# on a "next iteration" that will never come. Retries once, then logs LOUDLY
+# (a distinct, hard-to-miss marker, not just write_campaign_jsonl's own
+# routine log_error) if the retry also fails. Never blocks completion: the
+# campaign must still report COMPLETE even if this terminal metrics row is
+# lost — the caller ignores this function's own return value by design.
+_write_campaign_jsonl_terminal() {
+  local iter="$1" us_id="$2" verdict="$3"
+  write_campaign_jsonl "$iter" "$us_id" "$verdict" && return 0
+  log_error "write_campaign_jsonl (terminal row) failed for iter=$iter us_id=$us_id — retrying once"
+  write_campaign_jsonl "$iter" "$us_id" "$verdict" && return 0
+  log_error "*** CRITICAL: write_campaign_jsonl (terminal row) failed TWICE for iter=$iter us_id=$us_id — the campaign COMPLETE row is LOST from campaign.jsonl. Campaign will still report COMPLETE (metrics loss must not block a successful completion), but this run's terminal analytics row is missing. ***"
+  return 1
 }
 
 # --- AC4: Generate campaign-report.md on all terminal states ---

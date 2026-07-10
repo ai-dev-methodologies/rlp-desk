@@ -3784,10 +3784,20 @@ main() {
     # (campaign-main-loop.mjs:2101/2117/2156) appends a row ONLY on pass/fail/blocked,
     # never on continue. A pane reap on such an iteration therefore leaves records here
     # with no row to flush into; discarding them at the NEXT iteration entry prevents
-    # MIS-ATTRIBUTING them to that next row. On flushed paths write_campaign_jsonl already
-    # drained+reset, so this is a no-op. (Both leaders intentionally do not capture
-    # reap telemetry on row-less continue iterations — a parity-matched design choice.)
-    LIFECYCLE_RECORDS=()
+    # MIS-ATTRIBUTING them to that next row.
+    # codex round 2 R2-3: the unconditional reset below used to ALSO wipe a
+    # FAILED flush's retained records (F6 keeps LIFECYCLE_RECORDS intact on
+    # an append/build failure specifically so the NEXT flush can retry
+    # them) — defeating F6's whole point before that retry ever got a
+    # chance to run. Guard on _LC_FLUSH_ATTEMPTED (set by write_campaign_jsonl
+    # on every call, success or failure): only discard when the PREVIOUS
+    # iteration never attempted a flush at all (the row-less continue case
+    # above); when it attempted and failed, leave the records for this
+    # iteration's flush to retry.
+    if (( ! _LC_FLUSH_ATTEMPTED )); then
+      LIFECYCLE_RECORDS=()
+    fi
+    _LC_FLUSH_ATTEMPTED=0
     # US-024 R12 P0: lifecycle check site #2 — verify session/panes alive at iter entry.
     _r12_check_lifecycle "iter_start"
     log ""
@@ -4186,8 +4196,12 @@ main() {
             # codex P2 sweep F5: this COMPLETE exit skips the loop-top unlock
             # that would normally close out the last iteration's pending
             # lock — flush it now so the sample isn't silently dropped.
+            # codex round 2 R2-3: `return 0` right below means there is no
+            # "next iteration" for a failed campaign.jsonl flush to retry
+            # into, so use the retry-once-then-log-loudly terminal helper
+            # instead of a bare fire-and-forget write_campaign_jsonl call.
             _lifecycle_flush_pending_locks
-            write_campaign_jsonl "$ITERATION" "ALL" "pass"
+            _write_campaign_jsonl_terminal "$ITERATION" "ALL" "pass"
             return 0
           else
             # Sequential verify failed — fall through to fix loop with failed US
@@ -4474,10 +4488,11 @@ main() {
               # Final full verify passed or complete recommended
               write_complete_sentinel "$verdict_summary"
               update_status "complete" "pass"
-              # codex P2 sweep F5: same note as the sequential-final-verify
-              # COMPLETE exit above — flush before the terminal write.
+              # codex P2 sweep F5 + round-2 R2-3: same notes as the
+              # sequential-final-verify COMPLETE exit above — flush before
+              # the terminal write, use the retry-once-then-loud-log helper.
               _lifecycle_flush_pending_locks
-              write_campaign_jsonl "$ITERATION" "${signal_us_id:-ALL}" "pass"
+              _write_campaign_jsonl_terminal "$ITERATION" "${signal_us_id:-ALL}" "pass"
               return 0
             else
               log "  Verifier passed but did not recommend complete. Continuing."
@@ -4648,7 +4663,14 @@ main() {
 
     # --- AC5: Write per-iteration cost estimate ---
     write_cost_log "$ITERATION"
-    write_campaign_jsonl "$ITERATION" "${signal_us_id:-unknown}" "${signal_status:-unknown}"
+    # codex round 2 R2-3: check the return code — write_campaign_jsonl
+    # already log_errors internally on failure and retains LIFECYCLE_RECORDS
+    # for the NEXT iteration's flush to retry (F6 + the guarded loop-top
+    # reset above); this caller-side log_error adds iteration-specific
+    # visibility rather than silently ignoring the failure.
+    if ! write_campaign_jsonl "$ITERATION" "${signal_us_id:-unknown}" "${signal_status:-unknown}"; then
+      log_error "campaign.jsonl row for iter=$ITERATION was not written — lifecycle metrics retained, will retry on the next flush"
+    fi
 
     # --- governance.md s7 step 8: Write result log ---
     write_result_log "$ITERATION" "$signal_status"
