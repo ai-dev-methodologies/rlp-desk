@@ -707,6 +707,61 @@ done_claim_lock_true_count=$(grep -c '_lock_sentinel "\$DONE_CLAIM_FILE" || true
   && ok "F3: all 3 DONE_CLAIM_FILE-only lock sites are explicit || true (unpaired, H2 exclusion)" \
   || no "F3: expected 3 explicit || true DONE_CLAIM_FILE lock sites, got $done_claim_lock_true_count"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# codex P2 sweep F4 (+ F9 behavioral pairing): the 4 rm-site clears
+# (run_single_verifier, _final_verify_one_us x2, the inline single-engine
+# path) currently clear the lock-mark BEFORE confirming the rm actually
+# succeeded. If rm fails (read-only dir, permission error), the mark is
+# dropped anyway even though the stale verdict file the mark was protecting
+# against is STILL on disk — losing the mark's protective value for exactly
+# the failure case it exists to guard. Fix: `rm -f ... && clear` (clear only
+# after a confirmed removal; `rm -f` on an ALREADY-absent file still returns
+# 0, so the common case is unaffected).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 38) Behavioral: a failing rm (read-only directory) keeps the pending
+# lock-mark, exercising the exact rm-then-clear pattern the fixed call sites
+# use.
+_ro_dir=$(mktemp -d)
+touch "$_ro_dir/verdict.json"
+chmod 0555 "$_ro_dir"
+rm_clear_result=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  _lifecycle_mark_lock_start "verdict.json"
+  rm -f "'"$_ro_dir"'/verdict.json" 2>/dev/null && _lifecycle_clear_lock_mark "verdict.json"
+  [[ -n "${LIFECYCLE_LOCK_TIMES[verdict.json]:-}" ]] && print -r -- "MARK_KEPT" || print -r -- "MARK_CLEARED"')
+chmod 0755 "$_ro_dir"; rm -rf "$_ro_dir"
+[[ "$rm_clear_result" == "MARK_KEPT" ]] \
+  && ok "F4/F9: a failing rm (read-only dir) keeps the pending lock-mark (rm && clear ordering)" \
+  || no "F4/F9: mark was cleared despite rm failing ($rm_clear_result)"
+
+# 39) Structural: the OLD bad ordering (a bare _lifecycle_clear_lock_mark
+# "${VERDICT_FILE:t}" line immediately followed by the rm -f "$VERDICT_FILE"
+# line) must be fully gone.
+old_bad_count=$(awk '
+  /_lifecycle_clear_lock_mark "\$\{VERDICT_FILE:t\}"/ { getline nxt; if (nxt ~ /rm -f "\$VERDICT_FILE"/) n++ }
+  END { print (n+0) }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$old_bad_count" == "0" ]] \
+  && ok "F4: no rm site still clears the lock-mark BEFORE the rm (old bad ordering fully removed)" \
+  || no "F4: found $old_bad_count site(s) still clearing before rm"
+
+# 40) Structural: the NEW correct ordering (rm -f "$VERDICT_FILE"
+# "$LEGACY_VERDICT_FILE" ... on one line, `&& _lifecycle_clear_lock_mark
+# "${VERDICT_FILE:t}"` on the next) at all 4 targeted sites. The 5th
+# VERDICT_FILE rm (loop-top cleanup, combined with SIGNAL_FILE/DONE_CLAIM_FILE)
+# is intentionally excluded — it's already safe via its own unlock+
+# mark_unlock pairing just above it, and doesn't match this VERDICT_FILE-first
+# rm signature.
+next_line_clear_count=$(awk '
+  /rm -f "\$VERDICT_FILE" "\$LEGACY_VERDICT_FILE"/ { getline nxt; if (nxt ~ /^[[:space:]]*&&[[:space:]]*_lifecycle_clear_lock_mark "\$\{VERDICT_FILE:t\}"/) n++ }
+  END { print (n+0) }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$next_line_clear_count" == "4" ]] \
+  && ok "F4: all 4 targeted rm sites clear the lock-mark on the following line via && (rm confirmed before clear)" \
+  || no "F4: expected 4 rm-then-clear (&&) sites, got $next_line_clear_count"
+
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))
