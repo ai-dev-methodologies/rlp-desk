@@ -11,12 +11,15 @@ import { LifecycleMetricsCollector } from '../../src/node/util/lifecycle-metrics
 // Plan: docs/plans/v0.15-phase-b-plan-v3.md §B4 (AC4.3, AC4.6, AC4.7).
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §3 Table 2.
 //
-// Asserts the campaign.jsonl per-iter record shape under both flag states:
-//   - Flag UNSET (RLP_LIFECYCLE_METRICS unset or "0"): lifecycle_metrics
-//                field is null. Existing analytics consumers see no breakage.
-//   - Flag SET   (RLP_LIFECYCLE_METRICS=1): lifecycle_metrics is an object
-//                grouped by metric name; each value is an array of per-record
-//                entries with value_ms (number, non-negative integer) + ts.
+// Asserts the campaign.jsonl per-iter record shape under both flag states
+// (v0.15.5 full-wire: RLP_LIFECYCLE_METRICS now defaults ON; "0" is the sole
+// opt-out — see src/node/util/lifecycle-metrics.mjs):
+//   - Flag "0" (explicit opt-out): lifecycle_metrics field is null. Existing
+//                analytics consumers see no breakage.
+//   - Flag ON (unset, or any value other than "0"): lifecycle_metrics is an
+//                object grouped by metric name; each value is an array of
+//                per-record entries with value_ms (number, non-negative
+//                integer) + ts.
 
 const testFile = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(testFile), '..', '..');
@@ -80,16 +83,19 @@ async function readJsonl(filePath) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// AC4.3 / AC4.7 — Flag unset: lifecycle_metrics is null (no breakage)
+// AC4.3 / AC4.7 — Flag explicitly disabled: lifecycle_metrics is null (no breakage)
+// v0.15.5 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so "flag unset" no
+// longer produces the disabled/null shape — an explicit "0" opt-out does.
 // ────────────────────────────────────────────────────────────────────────────
-test('B4 AC4.3/4.7: lifecycle_metrics is null when flag unset', async (t) => {
+test('B4 AC4.3/4.7: lifecycle_metrics is null when explicitly disabled (RLP_LIFECYCLE_METRICS=0)', async (t) => {
   const campaign = await setupCampaign(t);
   const tmux = createTmuxFakes();
   const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
 
-  // Inject a disabled collector to simulate flag-unset deterministically (the
-  // test process does not pollute with RLP_LIFECYCLE_METRICS=1).
-  const disabledCollector = new LifecycleMetricsCollector({ env: {} });
+  // Inject an explicitly-disabled collector deterministically (the test
+  // process's ambient env now defaults to ENABLED, so "env: {}" would no
+  // longer simulate the disabled path).
+  const disabledCollector = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '0' } });
 
   await run(campaign.slug, {
     rootDir: campaign.rootDir,

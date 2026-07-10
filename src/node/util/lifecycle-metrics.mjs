@@ -3,25 +3,28 @@
 // Plan: docs/plans/v0.15-phase-b-plan-v3.md §B4.
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §3 Table 2.
 //
-// Five metrics tracked, all gated on RLP_LIFECYCLE_METRICS=1 env flag:
+// Five metrics tracked, ON BY DEFAULT since the v0.15.5 full-wire (opt out
+// with RLP_LIFECYCLE_METRICS=0):
 //   - iter_signal_write_to_read_ms     leader-poll-resolves vs worker-FS-write
 //   - verdict_write_to_read_ms          leader-poll-resolves vs verifier-FS-write
 //   - pane_eof_to_cleanup_ms            pane process exit vs killPaneProcess return
-//   - pane_reap_latency_ms              done-claim observed vs C-c×2 + waitForExit
+//   - pane_reap_latency_ms              sentinel (iter-signal/verify-verdict) observed vs C-c×2 + waitForExit
 //   - sentinel_lock_to_unlock_ms        per type, _lock vs _unlock (object)
 //
 // Emission discipline:
-//   - debug.log: tagged [LIFECYCLE] per record (when flag set)
+//   - debug.log: tagged [LIFECYCLE] per record (when enabled)
 //   - campaign.jsonl: ONE batched lifecycle_metrics object per iteration
 //                     (the collector accumulates, the iter-end flush emits)
-// When flag is unset:
+// When explicitly disabled (RLP_LIFECYCLE_METRICS=0):
 //   - record() is a no-op (early return) — zero overhead beyond a Map check
 //   - flush() returns null so analytics writer can branch on the field
 
 const ENV_FLAG_NAME = 'RLP_LIFECYCLE_METRICS';
 
+// Default ON: any value other than the literal string '0' enables telemetry,
+// including unset. '0' is the sole explicit opt-out.
 export function lifecycleMetricsEnabled(env = process.env) {
-  return env[ENV_FLAG_NAME] === '1';
+  return env[ENV_FLAG_NAME] !== '0';
 }
 
 export class LifecycleMetricsCollector {

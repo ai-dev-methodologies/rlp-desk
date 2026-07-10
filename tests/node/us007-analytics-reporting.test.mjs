@@ -240,6 +240,11 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
       { verdict: 'pass', recommended_state_transition: 'complete' },
     ]),
     runIntegrationCheck: async () => ({ exitCode: 0 }),
+    // v0.15.5 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so this test's
+    // "null when disabled" assertion below needs an EXPLICIT opt-out — an
+    // unset process.env would otherwise emit lifecycle_metrics here too (see
+    // test-campaign-jsonl-shape.test.mjs for the populated-object coverage).
+    env: { RLP_LIFECYCLE_METRICS: '0' },
     ...tmux.deps,
   });
 
@@ -248,8 +253,8 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
 
   assert.equal(lines.length, 2);
   // v0.15.4 PR-B4: campaign.jsonl schema extended with lifecycle_metrics
-  // (null when RLP_LIFECYCLE_METRICS unset, object when set). Field is
-  // ALWAYS present in the record for shape predictability.
+  // (null when disabled, object when enabled). Field is ALWAYS present in
+  // the record for shape predictability.
   assert.deepEqual(Object.keys(lines[0]).sort(), [
     'duration',
     'iter',
@@ -262,8 +267,7 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   ]);
   assert.equal(lines[0].iter, 1);
   assert.equal(lines[1].iter, 2);
-  // B4: with no collector injected and RLP_LIFECYCLE_METRICS unset, the
-  // field is null (default-disabled production behavior).
+  // B4: with RLP_LIFECYCLE_METRICS explicitly opted out, the field is null.
   assert.equal(lines[0].lifecycle_metrics, null);
 });
 

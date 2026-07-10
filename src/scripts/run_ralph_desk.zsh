@@ -2997,13 +2997,19 @@ run_single_verifier() {
     fi
   fi
 
+  # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
+  # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
+  _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$iter" "${CURRENT_US:-ALL}"
   # Bug #7 Fix-Q/R: reap verifier pane the moment we accept the verdict so
   # codex/claude cannot keep self-reviewing and rewrite verify-verdict.json.
   # Lock applied AFTER cp so the archived snapshot is also frozen at intent.
-  _kill_pane_process "$VERIFIER_PANE" "verifier-${suffix}"
+  # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered (pane_reap_latency_ms).
+  _kill_pane_process "$VERIFIER_PANE" "verifier-${suffix}" "verify-verdict"
 
   # Copy verdict to destination
   cp "$VERDICT_FILE" "$verdict_dest"
+  # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
+  _lifecycle_mark_lock_start "${VERDICT_FILE:t}"
   _lock_sentinel "$VERDICT_FILE"
   # PR-0b-narrow: stamp leader handshake ack on the verdict (audit-only).
   _stamp_ack_field "$VERDICT_FILE"
@@ -3104,10 +3110,16 @@ _final_verify_one_us() {
     fi
   fi
 
+  # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
+  # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
+  _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$iter" "$us"
   # Bug #7 Fix-Q/R: reap verifier pane between per-US final verifications so
   # the previous codex/claude TUI cannot continue running while the next per-
   # US verifier dispatch reuses the same pane.
-  _kill_pane_process "$VERIFIER_PANE" "verifier-final"
+  # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered (pane_reap_latency_ms).
+  _kill_pane_process "$VERIFIER_PANE" "verifier-final" "verify-verdict"
+  # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
+  _lifecycle_mark_lock_start "${VERDICT_FILE:t}"
   _lock_sentinel "$VERDICT_FILE"
   # PR-0b-narrow: stamp leader handshake ack on the verdict (audit-only).
   _stamp_ack_field "$VERDICT_FILE"
@@ -3794,7 +3806,11 @@ main() {
       # Bug #7 Fix-R cleanup: unlock 0o444 sentinels written by the previous
       # iteration's reaper before rm so cleanup does not log permission noise.
       _unlock_sentinel "$SIGNAL_FILE"
+      # v0.15.4 full-wire: sentinel_lock_to_unlock_ms pair close, mirrors
+      # campaign-main-loop.mjs:1632-1635.
+      _lifecycle_mark_unlock "${SIGNAL_FILE:t}" "$ITERATION"
       _unlock_sentinel "$VERDICT_FILE"
+      _lifecycle_mark_unlock "${VERDICT_FILE:t}" "$ITERATION"
       rm -f "$SIGNAL_FILE" "$DONE_CLAIM_FILE" "$VERDICT_FILE" "$LEGACY_VERDICT_FILE" 2>/dev/null   # D-26: + legacy verdict
       rm -f "$WORKER_HEARTBEAT" "$VERIFIER_HEARTBEAT" 2>/dev/null
 
@@ -3885,9 +3901,16 @@ main() {
       if poll_for_signal "$SIGNAL_FILE" "$WORKER_HEARTBEAT" "$WORKER_PANE" "$worker_launch" "Worker"; then
         worker_poll_done=1
         log_debug "[FLOW] iter=$ITERATION poll_signal_received=true"
+        # v0.15.4 full-wire: iter_signal_write_to_read_ms (leader poll-resolve vs
+        # worker FS write), mirrors campaign-main-loop.mjs:2006-2016.
+        _lifecycle_emit_write_to_read "iter_signal_write_to_read_ms" "$SIGNAL_FILE" "$ITERATION" "${CURRENT_US:-ALL}"
         # Bug #7 Fix-Q/R: reap worker pane immediately so claude/codex cannot
         # self-review and rewrite iter-signal.json (1m43s drift observed).
-        _kill_pane_process "$WORKER_PANE" "worker"
+        # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered
+        # (pane_reap_latency_ms), since it follows a fresh iter-signal detection.
+        _kill_pane_process "$WORKER_PANE" "worker" "iter-signal"
+        # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
+        _lifecycle_mark_lock_start "${SIGNAL_FILE:t}"
         _lock_sentinel "$SIGNAL_FILE"
         # v0.15.4 PR-B2-FIX: same worker pass also produced done-claim. Freeze
         # it alongside iter-signal so Bug #8 gates and the iter-NNN-done-claim
@@ -4199,9 +4222,15 @@ main() {
             update_status "blocked" "verifier_dead"
             return 1
           fi
+          # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
+          # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
+          _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$ITERATION" "${signal_us_id:-${CURRENT_US:-ALL}}"
           # Bug #7 Fix-Q/R: reap verifier pane immediately so codex cannot
           # rewrite verify-verdict.json post-detect (mtime drift fix).
-          _kill_pane_process "$VERIFIER_PANE" "verifier"
+          # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered (pane_reap_latency_ms).
+          _kill_pane_process "$VERIFIER_PANE" "verifier" "verify-verdict"
+          # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
+          _lifecycle_mark_lock_start "${VERDICT_FILE:t}"
           _lock_sentinel "$VERDICT_FILE"
           # PR-0b-narrow: stamp leader handshake ack on the verdict (audit-only).
           _stamp_ack_field "$VERDICT_FILE"

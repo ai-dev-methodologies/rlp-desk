@@ -544,22 +544,23 @@ mkdir my-calc && cd my-calc
 /rlp-desk run loop-test
 ```
 
-## Lifecycle Observability (v0.15.4+)
+## Lifecycle Observability (v0.15.4+, default ON since v0.15.5)
 
-Set `RLP_LIFECYCLE_METRICS=1` before invoking the runner to enable structured tmux/process lifecycle telemetry. Default: OFF (zero overhead when unset).
+Structured tmux/process lifecycle telemetry is enabled by default on both the Node and zsh (`--mode tmux`) leaders. Set `RLP_LIFECYCLE_METRICS=0` to opt out.
 
 ```bash
-RLP_LIFECYCLE_METRICS=1 node ~/.claude/ralph-desk/node/run.mjs run my-slug --mode tmux
+node ~/.claude/ralph-desk/node/run.mjs run my-slug --mode tmux            # telemetry on by default
+RLP_LIFECYCLE_METRICS=0 node ~/.claude/ralph-desk/node/run.mjs run my-slug --mode tmux   # opt out
 ```
 
-When enabled, five metrics are emitted per iteration:
+Five metrics are emitted per iteration:
 
 | Metric | Meaning |
 |---|---|
 | `iter_signal_write_to_read_ms` | Worker FS write → leader poll resolve |
 | `verdict_write_to_read_ms` | Verifier FS write → leader poll resolve |
 | `pane_eof_to_cleanup_ms` | Kill-start → `killPaneProcess` return |
-| `pane_reap_latency_ms` | done-claim observe → pane shell-idle |
+| `pane_reap_latency_ms` | Sentinel (iter-signal/verify-verdict) observed → pane shell-idle |
 | `sentinel_lock_to_unlock_ms` | per sentinel type, lock vs unlock pair |
 
 **Where they land:**

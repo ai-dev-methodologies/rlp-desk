@@ -6,8 +6,18 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 
 ## [Unreleased]
 
+### Added
+- **Lifecycle observability: full-wire on the zsh leader + default ON.** The 4
+  lifecycle metrics that were Node-only (`iter_signal_write_to_read_ms`,
+  `verdict_write_to_read_ms`, `pane_reap_latency_ms`, `sentinel_lock_to_unlock_ms`)
+  are now wired into `src/scripts/run_ralph_desk.zsh` / `lib_ralph_desk.zsh`,
+  matching the zsh leader's existing `pane_eof_to_cleanup_ms` emitter. All 5
+  metrics are emitted identically on both the Node (`--mode agent`) and zsh
+  (`--mode tmux`) leaders. `RLP_LIFECYCLE_METRICS` now **defaults to ON**;
+  set `RLP_LIFECYCLE_METRICS=0` to opt out. See README.md "Lifecycle
+  Observability" for the metric table.
+
 ### Planned (not yet shipped)
-- v0.15.5-era candidate: flip `RLP_LIFECYCLE_METRICS=1` default to ON (gated on 3 consecutive nightly real-LLM SV passes per `docs/plans/v0.15.4-release-runbook.md` §7.5.2).
 - Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 

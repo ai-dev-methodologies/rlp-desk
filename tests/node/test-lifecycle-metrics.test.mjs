@@ -12,21 +12,22 @@ import {
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §3 Table 2.
 //
 // Two contracts under test:
-//   AC4.2 (zero-overhead when flag unset): record() / markLockStart() /
+//   AC4.2 (zero-overhead when explicitly disabled): record() / markLockStart() /
 //         markUnlock() / flush() must short-circuit. flush() returns null.
+//         v0.15.5 full-wire: the flag defaults ON — "0" is the sole opt-out.
 //   AC4.1 (per-event emission): record() accumulates; flush() emits a grouped
 //         object; sentinel lock/unlock pair produces sentinel_lock_to_unlock_ms.
 
-test('AC4.2: collector is disabled when env flag is unset', () => {
+test('AC4.2 (v0.15.5 full-wire): collector is ENABLED by default when env flag is unset', () => {
   const c = new LifecycleMetricsCollector({ env: {} });
-  assert.equal(c.enabled, false);
+  assert.equal(c.enabled, true);
   c.record('iter_signal_write_to_read_ms', 1234, { iter: 1 });
-  c.markLockStart('iter-signal');
-  c.markUnlock('iter-signal');
-  assert.equal(c.flush(), null, 'flush returns null when disabled');
+  const flushed = c.flush();
+  assert.ok(flushed, 'flush returns an object when enabled by default');
+  assert.ok(Array.isArray(flushed.iter_signal_write_to_read_ms));
 });
 
-test('AC4.2: collector is disabled when env flag is "0" (explicit off)', () => {
+test('AC4.2: collector is disabled when env flag is "0" (explicit opt-out)', () => {
   const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '0' } });
   assert.equal(c.enabled, false);
   c.record('pane_reap_latency_ms', 4200, {});
@@ -103,18 +104,18 @@ test('AC4.1: debugLog is called per record when injected and enabled', () => {
   assert.equal(seen[0].fields.iter, 3);
 });
 
-test('AC4.2: debugLog is NOT called when flag unset (zero overhead)', () => {
+test('AC4.2: debugLog is NOT called when explicitly disabled (zero overhead)', () => {
   const seen = [];
   const debugLog = (cat, fields) => seen.push({ cat, fields });
-  const c = new LifecycleMetricsCollector({ env: {}, debugLog });
+  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '0' }, debugLog });
   c.record('iter_signal_write_to_read_ms', 500, {});
   assert.equal(seen.length, 0, 'no debugLog calls when disabled');
 });
 
-test('lifecycleMetricsEnabled() exact boolean semantics', () => {
-  assert.equal(lifecycleMetricsEnabled({}), false);
-  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '0' }), false);
-  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '' }), false);
-  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: 'true' }), false);
+test('lifecycleMetricsEnabled() exact boolean semantics (v0.15.5 full-wire: default ON, "0" opts out)', () => {
+  assert.equal(lifecycleMetricsEnabled({}), true, 'unset defaults to enabled');
+  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '0' }), false, 'explicit "0" opts out');
+  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '' }), true);
+  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: 'true' }), true);
   assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '1' }), true);
 });

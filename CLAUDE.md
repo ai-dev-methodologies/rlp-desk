@@ -151,6 +151,6 @@ The full runbook below — use when publishing a version external users will ins
 - Governance sections: §1a-§1f (Iron Laws through Traceability), §7¾ (Architecture Escalation)
 - §1f (Execution & Judgment Traceability) is always-on, not flag-gated
 - `--with-self-verification` enables post-campaign analysis only
-- **Lifecycle observability (v0.15.4+)**: `src/node/util/lifecycle-metrics.mjs` is the B4 emitter. Gated by `RLP_LIFECYCLE_METRICS=1`. Emit sites in `src/node/runner/campaign-main-loop.mjs` (Node leader) and `src/scripts/lib_ralph_desk.zsh` `log_lifecycle_metric` (zsh leader).
+- **Lifecycle observability (v0.15.4+, default ON since v0.15.5 full-wire)**: `src/node/util/lifecycle-metrics.mjs` is the B4 emitter. All 5 metrics are wired on both leaders and enabled by default; opt out with `RLP_LIFECYCLE_METRICS=0`. Emit sites in `src/node/runner/campaign-main-loop.mjs` (Node leader) and `src/scripts/lib_ralph_desk.zsh` `log_lifecycle_metric` / `_lifecycle_emit_write_to_read` / `_lifecycle_mark_lock_start` / `_lifecycle_mark_unlock` (zsh leader).
 - **Failure modes atlas**: `docs/rlp-desk/failure-modes.md` is the canonical FMEA-style reference for known race patterns (done-claim, sentinel, B3 stage 2). New failure modes are added there with `Symptom / Root cause / Detection / Recovery / Reference` schema.
 - **Release runbook (v0.15.4+)**: `docs/plans/v0.15.4-release-runbook.md` is the executable contract for release pipeline (preflight A1-A5, steps 1-7 with 4 user gates, post-verify P1-P5). Supersedes ad-hoc release procedure.

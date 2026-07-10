@@ -404,6 +404,13 @@ acquire_slug_lock() {
 _kill_pane_process() {
   local pane_id="$1"
   local role="${2:-producer}"
+  # v0.15.4 full-wire: optional 3rd arg. When set, this reap was triggered by
+  # observing a producer's sentinel file (iter-signal / verify-verdict) — the
+  # caller passes the clean tag so pane_reap_latency_ms carries sentinel_type
+  # context. Mirrors Node's reapProducer(paneId, sentinelFile, sentinelType)
+  # (campaign-main-loop.mjs:1455-1482): pane_eof_to_cleanup_ms ALWAYS fires;
+  # pane_reap_latency_ms fires ONLY when sentinel_type is non-empty.
+  local sentinel_type="${3:-}"
   [[ -n "$pane_id" ]] || return 0
   if typeset -f log_debug >/dev/null 2>&1; then
     log_debug "[bug7] kill_pane_process pane=$pane_id role=$role"
@@ -414,7 +421,7 @@ _kill_pane_process() {
   # Uses zsh native $EPOCHREALTIME (microsec) — portable to macOS BSD where
   # `date +%N` is not supported.
   local _b4_t0_ms=0
-  if [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]]; then
+  if [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]]; then
     zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
     if [[ -n "${EPOCHREALTIME:-}" ]]; then
       local _b4_t0_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' — comma-decimal LC_NUMERIC renders EPOCHREALTIME with ','
@@ -431,8 +438,13 @@ _kill_pane_process() {
   if (( _b4_t0_ms > 0 )); then
     local _b4_t1_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' (locale-robust, matches t0)
     local _b4_t1_ms=${_b4_t1_str:0:13}
-    log_lifecycle_metric "pane_eof_to_cleanup_ms" $((_b4_t1_ms - _b4_t0_ms)) \
+    local _b4_delta=$(( _b4_t1_ms - _b4_t0_ms ))
+    log_lifecycle_metric "pane_eof_to_cleanup_ms" $_b4_delta \
       "pane=$pane_id role=$role"
+    if [[ -n "$sentinel_type" ]]; then
+      log_lifecycle_metric "pane_reap_latency_ms" $_b4_delta \
+        "pane=$pane_id role=$role sentinel_type=$sentinel_type" "${ITERATION:-}" "" "$sentinel_type"
+    fi
   fi
   return 0
 }
@@ -493,11 +505,26 @@ _unlock_sentinel() {
 # parent-shell functions; a caller inside `$(...)` or `( )&` would not propagate.
 typeset -ga LIFECYCLE_RECORDS=()
 
+# v0.15.4 full-wire: lock->unlock pair bookkeeping for sentinel_lock_to_unlock_ms,
+# keyed by sentinel basename (e.g. "myslug-iter-signal.json") — mirrors Node's
+# _sentinelLockTimes Map (src/node/util/lifecycle-metrics.mjs markLockStart/
+# markUnlock), including the H2 exclusion: done-claim is never unlocked in the
+# happy path (only SIGNAL_FILE/VERDICT_FILE are), so it is never keyed here.
+typeset -gA LIFECYCLE_LOCK_TIMES=()
+
 log_lifecycle_metric() {
-  [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]] || return 0   # off-path: zero work, no fork
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]] || return 0   # off-path: zero work, no fork
   local metric="$1"
   local value_ms="$2"
   local ctx="${3:-}"
+  # v0.15.4 full-wire: optional audit fields, embedded as JSON fields on the
+  # record (not just the debug.log text line) — mirrors the Node ctx object
+  # for the fields cheap enough to carry without generic key=value plumbing.
+  # Omitted args stay empty and are NOT added to the record, so existing 3-arg
+  # callers (e.g. pane_eof_to_cleanup_ms) are byte-for-byte unaffected.
+  local _iter="${4:-}"
+  local _us_id="${5:-}"
+  local _sentinel_type="${6:-}"
   [[ -n "$metric" && -n "$value_ms" ]] || return 0
   # Synchronous parent-shell accumulation (drained + reset by write_campaign_jsonl).
   # jq builds the record so value_ms is a real number and strings are escaped.
@@ -509,13 +536,84 @@ log_lifecycle_metric() {
                            # would silently pass the B3-S2 `<= band` check → false PASS.
   _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   _rec=$(jq -nc --arg m "$metric" --argjson v "$_vm" --arg ts "$_ts" \
-    '{metric:$m, value_ms:$v, ts:$ts}' 2>/dev/null) && [[ -n "$_rec" ]] \
-    && LIFECYCLE_RECORDS+=("$_rec")
+    --arg iter "$_iter" --arg us_id "$_us_id" --arg stype "$_sentinel_type" \
+    '{metric:$m, value_ms:$v, ts:$ts}
+      + (if $iter != "" then {iter: (try ($iter|tonumber) catch $iter)} else {} end)
+      + (if $us_id != "" then {us_id: $us_id} else {} end)
+      + (if $stype != "" then {sentinel_type: $stype} else {} end)' 2>/dev/null) \
+    && [[ -n "$_rec" ]] && LIFECYCLE_RECORDS+=("$_rec")
   # Audit aid (unchanged): backgrounded debug-log line.
   if typeset -f log_debug >/dev/null 2>&1; then
     ( log_debug "[LIFECYCLE] metric=$metric value_ms=$value_ms $ctx" ) &!
   fi
   return 0
+}
+
+# _epoch_ms() — locale-robust EPOCHREALTIME->integer-ms. A separate helper from
+# (not a refactor of) _kill_pane_process's own inline t0/t1 pair, which is
+# pinned by the "EPOCHREALTIME strip" structural test — this is the shared
+# helper for the 4 newly-wired write_to_read/reap/lock emit sites. Caller must
+# zmodload zsh/datetime first (same contract _kill_pane_process follows).
+_epoch_ms() {
+  [[ -n "${EPOCHREALTIME:-}" ]] || { print -r -- 0; return 0; }
+  local _s="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' (locale-robust)
+  print -r -- "${_s:0:13}"
+}
+
+# _lifecycle_emit_write_to_read() — v0.15.4 full-wire: emits
+# iter_signal_write_to_read_ms / verdict_write_to_read_ms. Mirrors
+# campaign-main-loop.mjs:2006-2016 / 2110-2117 (now_ms - sentinel mtime).
+#
+# CAVEAT (documented, not fixed — _file_mtime is out of scope to rewrite):
+# _file_mtime() is WHOLE-SECOND precision (GNU `stat -c %Y` / BSD `stat -f %m`),
+# unlike Node's fsSync.statSync().mtimeMs (sub-ms). The emitted value_ms is
+# therefore accurate to within ~1000ms on the file-write anchor, not true
+# milliseconds — coarser than the Node leader's reading of the same metric
+# name, but still useful for the B3-S2 regression band (3000ms).
+#
+# Args: $1=metric_name  $2=sentinel_file  $3=iter (optional)  $4=us_id (optional)
+_lifecycle_emit_write_to_read() {
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]] || return 0
+  local metric="$1" file="$2" iter="${3:-}" us_id="${4:-}"
+  [[ -n "$file" && -f "$file" ]] || return 0
+  zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
+  local now_ms
+  now_ms=$(_epoch_ms)
+  (( now_ms > 0 )) || return 0
+  local mt_s
+  mt_s=$(_file_mtime "$file")
+  (( mt_s > 0 )) || return 0
+  log_lifecycle_metric "$metric" $(( now_ms - mt_s * 1000 )) \
+    "file=$file iter=$iter us_id=$us_id" "$iter" "$us_id"
+}
+
+# _lifecycle_mark_lock_start() / _lifecycle_mark_unlock() — v0.15.4 full-wire:
+# sentinel_lock_to_unlock_ms pair bookkeeping. Mirrors LifecycleMetricsCollector
+# .markLockStart/.markUnlock (src/node/util/lifecycle-metrics.mjs:70-84),
+# including the H3 ordering contract: callers MUST invoke
+# _lifecycle_mark_lock_start BEFORE _lock_sentinel's chmod, not after, so the
+# metric covers the full lock duration. _lifecycle_mark_unlock silently no-ops
+# when there is no matching lock-start (unmatched unlock) — same as Node.
+_lifecycle_mark_lock_start() {
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]] || return 0
+  local sentinel_key="$1"
+  [[ -n "$sentinel_key" ]] || return 0
+  zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
+  LIFECYCLE_LOCK_TIMES[$sentinel_key]=$(_epoch_ms)
+}
+
+_lifecycle_mark_unlock() {
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]] || return 0
+  local sentinel_key="$1" iter="${2:-}"
+  [[ -n "$sentinel_key" ]] || return 0
+  local start="${LIFECYCLE_LOCK_TIMES[$sentinel_key]:-}"
+  [[ -n "$start" ]] || return 0
+  zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
+  local now_ms
+  now_ms=$(_epoch_ms)
+  log_lifecycle_metric "sentinel_lock_to_unlock_ms" $(( now_ms - start )) \
+    "sentinel=$sentinel_key iter=$iter" "$iter" "" "$sentinel_key"
+  unset "LIFECYCLE_LOCK_TIMES[$sentinel_key]"
 }
 
 # PR-A (Bug #10) — validate operator-written manual recovery artifacts.
@@ -1097,11 +1195,17 @@ write_campaign_jsonl() {
   # flag is off; grouped object when on with records; {} when on but no records.
   # FAIL-OPEN: this is the always-on canonical analytics writer — any jq failure on
   # the (opt-in) lifecycle field degrades to null and the campaign row STILL writes.
+  # v0.15.4 full-wire: `del(.metric)` (was a `{value_ms, ts}` whitelist) so the
+  # optional iter/us_id/sentinel_type context fields log_lifecycle_metric may now
+  # attach survive the grouping — mirrors Node flush()'s `{ metric, ...rest }`
+  # destructure exactly. Records with no extra context still reduce to exactly
+  # {value_ms, ts} (nothing to drop beyond .metric), so this is not a regression
+  # for existing 3-arg callers.
   local lifecycle_json="null"
-  if [[ "${RLP_LIFECYCLE_METRICS:-0}" == "1" ]]; then
+  if [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]]; then
     if (( ${#LIFECYCLE_RECORDS[@]} > 0 )); then
       lifecycle_json=$(printf '%s\n' "${LIFECYCLE_RECORDS[@]}" \
-        | jq -s 'group_by(.metric) | map({key: .[0].metric, value: map({value_ms, ts})}) | from_entries' 2>/dev/null) \
+        | jq -s 'group_by(.metric) | map({key: .[0].metric, value: map(del(.metric))}) | from_entries' 2>/dev/null) \
         || lifecycle_json="null"
       [[ -n "$lifecycle_json" ]] || lifecycle_json="null"
     else

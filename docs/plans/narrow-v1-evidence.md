@@ -365,3 +365,118 @@ unattended long-horizon campaigns + session-death recovery; small/interactive
 campaigns are viable natively today by carrying the file-state conventions.
 Next falsifier: an hours-scale multi-US native campaign surviving a leader
 session restart.
+
+## Lifecycle metrics full wiring (2026-07-10)
+
+Wired the 4 lifecycle metrics that were previously Node-only
+(`iter_signal_write_to_read_ms`, `verdict_write_to_read_ms`,
+`pane_reap_latency_ms`, `sentinel_lock_to_unlock_ms`) into the zsh production
+leader (`src/scripts/run_ralph_desk.zsh` / `lib_ralph_desk.zsh`), so all 5
+lifecycle metrics now emit identically on both the Node (`--mode agent`) and
+zsh (`--mode tmux`) leaders, and flipped `RLP_LIFECYCLE_METRICS` to default ON
+(opt out with `=0`).
+
+**RED** (`tests/test_b3_lifecycle_emit.sh`, commit `57046b6`): 6 assertions
+failed against pre-change code — locale-robustness site count (2 vs expected
+3), default-ON behavior, `log_lifecycle_metric` iter/us_id/sentinel_type
+context embedding (×2), and `_kill_pane_process`'s new `sentinel_type` 3rd arg
+(×2, both the "emits 2 records" and "both metric names present" cases). One
+case ("without sentinel_type: no regression") passed immediately since it
+required no new code.
+
+**Emit-site locations** (zsh leader):
+- `iter_signal_write_to_read_ms`: `run_ralph_desk.zsh` worker-signal-detected
+  branch (`_lifecycle_emit_write_to_read`, called immediately after
+  `poll_for_signal "$SIGNAL_FILE" ...` returns success, before the worker pane
+  reap).
+- `verdict_write_to_read_ms`: 3 call sites — `run_single_verifier` (consensus
+  per-engine verify), `_final_verify_one_us` (sequential final-verify), and
+  the main per-iteration consensus verify loop — each immediately after its
+  `poll_for_signal "$VERDICT_FILE" ...` success, before the verifier pane reap.
+- `pane_reap_latency_ms`: `_kill_pane_process` (`lib_ralph_desk.zsh`) gained an
+  optional 3rd arg `sentinel_type`; the 4 call sites above (worker + 3
+  verifier reaps) now pass `"iter-signal"` / `"verify-verdict"`. Mirrors
+  Node's `reapProducer(paneId, sentinelFile, sentinelType)` — `pane_eof_to_
+  cleanup_ms` always fires, `pane_reap_latency_ms` fires only when the reap
+  followed a sentinel observation. The A4-fallback kill (`worker-a4`) and the
+  transient poll-retry kills deliberately do NOT pass a sentinel_type (they
+  are not a "fresh signal/verdict observed" event) — a documented scoping
+  choice, not a 1:1 mirror of every Node reap call.
+- `sentinel_lock_to_unlock_ms`: new `_lifecycle_mark_lock_start` /
+  `_lifecycle_mark_unlock` pair (keyed by sentinel basename, mirrors Node's
+  `_sentinelLockTimes` Map). `markLockStart` called immediately before each
+  `_lock_sentinel "$SIGNAL_FILE"` / `_lock_sentinel "$VERDICT_FILE"` call (3
+  verdict-lock sites + 1 signal-lock site); `markUnlock` called immediately
+  after the loop-top `_unlock_sentinel "$SIGNAL_FILE"` / `_unlock_sentinel
+  "$VERDICT_FILE"` pair. DONE_CLAIM_FILE is intentionally excluded (never
+  unlocked in the happy path — same H2 exclusion Node already documented).
+
+**GREEN**: `zsh tests/test_b3_lifecycle_emit.sh` → 25/25 PASS.
+`zsh tests/test_b3_pane_reap_integration.sh` → 7/7 PASS (no regression).
+`npm run test:zsh` → exit 0, all `tests/test_*.sh` files pass (zero `FAIL`
+markers across the full log). `npm run test:node` → 450/450 pass, 0 fail
+(after re-pointing 2 additional Node tests discovered mid-GREEN —
+`test-campaign-jsonl-shape.test.mjs` AC4.3/4.7 and `test-lifecycle-metrics.
+test.mjs`'s debugLog-zero-overhead case — both had constructed a
+`LifecycleMetricsCollector({ env: {} })` to simulate "flag unset = disabled",
+which the default-ON flip inverted; re-pointed to explicit
+`RLP_LIFECYCLE_METRICS: '0'`). `npm run sv-gate:fast` → 92/92 pass (85
+existing + 7 new checks for the full-wire helpers/call-sites/default).
+
+**A5 oracle** (`git diff b3d27da..HEAD -- src/commands/rlp-desk.md
+src/governance.md src/scripts/init_ralph_desk.zsh`): empty — the 3 protected
+files were never touched.
+
+**Re-pointed tests** (all honest re-points of "unset means off" assumptions
+invalidated by the default flip, not weakenings):
+- `tests/test_b3_lifecycle_emit.sh` case 1 + the `emit_row` harness: `flag=0`
+  now means explicit `export RLP_LIFECYCLE_METRICS=0` instead of `unset`.
+- `tests/test_b3_lifecycle_emit.sh` case 9 (locale-robustness site count):
+  2 → 3 (the new `_epoch_ms()` helper is a 3rd, deliberately separate,
+  EPOCHREALTIME-strip site — `_kill_pane_process`'s own tested t0/t1 pair was
+  left untouched rather than refactored to share it).
+- `tests/node/test-lifecycle-metrics.test.mjs`: AC4.2 "unset" case rewritten
+  to assert default-ON; the boolean-semantics table rewritten for the new
+  truth table (only `'0'` disables); the debugLog-zero-overhead case switched
+  from `env: {}` to `env: { RLP_LIFECYCLE_METRICS: '0' }`.
+- `tests/node/test-campaign-jsonl-shape.test.mjs`: the "flag unset → null"
+  test and its `disabledCollector` construction switched to explicit `'0'`;
+  file-header comment updated for the new truth table.
+- `tests/node/us007-analytics-reporting.test.mjs`: added an explicit
+  `env: { RLP_LIFECYCLE_METRICS: '0' }` to the `run()` call whose assertion
+  depends on `lifecycle_metrics` being `null`.
+- `tests/sv-gate-fast.sh`: the "zsh helper gated on RLP_LIFECYCLE_METRICS"
+  check re-pointed from `RLP_LIFECYCLE_METRICS:-0` to `:-1`; 7 new checks
+  added for the full-wire helpers, call-site tagging, and the Node default.
+- `tests/sv-real-llm/lib/b3-lifecycle-assertions.sh`: the comment claiming
+  3 metrics are "NOT emitted by the zsh leader (Node-only)" updated — they
+  now are, reusing the existing Node-derived synthetic bands as a first-pass
+  approximation pending a zsh-sample refit (same pattern already used for
+  `pane_eof_to_cleanup_ms` before its 2026-06-30 refit).
+
+**Semantics that could NOT be mirrored exactly** (stated plainly, not glossed
+over):
+- `_file_mtime()` (used by `_lifecycle_emit_write_to_read` for
+  `iter_signal_write_to_read_ms` / `verdict_write_to_read_ms`) is WHOLE-SECOND
+  precision (GNU `stat -c %Y` / BSD `stat -f %m`), unlike Node's
+  `fsSync.statSync().mtimeMs` (sub-millisecond). The zsh-emitted value_ms for
+  these two metrics is accurate to within ~1000ms on the file-write anchor,
+  not true milliseconds. `_file_mtime` was explicitly out of scope to rewrite
+  (per the task brief) — documented as a caveat in the helper's docstring
+  rather than worked around.
+- The zsh `LIFECYCLE_RECORDS` JSON records now carry `iter` / `us_id` /
+  `sentinel_type` context fields when the caller passes them (extended
+  `log_lifecycle_metric` with 3 new optional positional args), matching
+  Node's ctx object for the fields cheap enough to carry without generic
+  key=value plumbing. `pane_id` remains debug.log-text-only on the zsh side
+  (Node embeds it in JSON too) — a deliberately capped scope, not a full
+  generic-context port.
+- B3-S2 tolerance bands for the 3 newly-wired-on-zsh metrics
+  (`B3_BAND_ITER_SIGNAL_MS`, `B3_BAND_VERDICT_MS`,
+  `B3_BAND_PANE_REAP_LATENCY_MS`) still hold their original Node-sample
+  values; they have not been refit against a real zsh-leader sample the way
+  `pane_eof_to_cleanup_ms` was. B3-S2 is non-blocking by default
+  (`B3_STAGE2_BLOCKING` unset), so this is a soft gap, not a false-pass risk.
+
+Commits: `57046b6` (RED), plus the implementation commit that follows this
+evidence entry.

@@ -125,19 +125,35 @@ check "B2-FIX zsh site 3: post iter-signal reaper locks DONE_CLAIM_FILE" \
   grep -qE 'PR-B2-FIX.*Freeze' src/scripts/run_ralph_desk.zsh
 check "B2-FIX Node site: lockSentinel(paths.doneClaimFile) after worker reap" \
   grep -q 'lockSentinel(paths.doneClaimFile' src/node/runner/campaign-main-loop.mjs
-# v0.15.4 PR-B4 — Lifecycle observability (flag-gated on RLP_LIFECYCLE_METRICS=1)
+# v0.15.4 PR-B4 — Lifecycle observability (default ON since v0.15.5 full-wire;
+# RLP_LIFECYCLE_METRICS=0 opts out)
 check "B4 LIFECYCLE category whitelisted in debug-log VALID_CATEGORIES" \
   grep -qE "VALID_CATEGORIES = new Set.*'LIFECYCLE'" src/node/util/debug-log.mjs
 check "B4 LifecycleMetricsCollector module exists" \
   test -f src/node/util/lifecycle-metrics.mjs
 check "B4 zsh log_lifecycle_metric helper exists" \
   grep -q "^log_lifecycle_metric()" src/scripts/lib_ralph_desk.zsh
-check "B4 zsh helper gated on RLP_LIFECYCLE_METRICS" \
-  grep -q 'RLP_LIFECYCLE_METRICS:-0' src/scripts/lib_ralph_desk.zsh
+check "B4 zsh helper defaults RLP_LIFECYCLE_METRICS ON (:-1, opt-out via =0)" \
+  grep -q 'RLP_LIFECYCLE_METRICS:-1' src/scripts/lib_ralph_desk.zsh
 check "B4 Node leader instantiates LifecycleMetricsCollector" \
   grep -q "new LifecycleMetricsCollector" src/node/runner/campaign-main-loop.mjs
 check "B4 lifecycle_metrics flushed into appendIterationAnalytics" \
   grep -q "lifecycle_metrics: lifecycleSnapshot" src/node/runner/campaign-main-loop.mjs
+check "B4 Node lifecycleMetricsEnabled defaults ON (opt-out via '0', not '=== 1')" \
+  grep -q "env\[ENV_FLAG_NAME\] !== '0'" src/node/util/lifecycle-metrics.mjs
+# v0.15.5 full-wire — the 4 remaining metrics wired into the zsh leader.
+check "full-wire: zsh _lifecycle_emit_write_to_read helper exists" \
+  grep -q "^_lifecycle_emit_write_to_read()" src/scripts/lib_ralph_desk.zsh
+check "full-wire: zsh sentinel lock/unlock pair helpers exist" \
+  bash -c 'grep -q "^_lifecycle_mark_lock_start()" src/scripts/lib_ralph_desk.zsh && grep -q "^_lifecycle_mark_unlock()" src/scripts/lib_ralph_desk.zsh'
+check "full-wire: _kill_pane_process accepts optional sentinel_type 3rd arg" \
+  grep -q 'local sentinel_type="${3:-}"' src/scripts/lib_ralph_desk.zsh
+check "full-wire: worker reap site tags sentinel_type=iter-signal" \
+  grep -q '_kill_pane_process "\$WORKER_PANE" "worker" "iter-signal"' src/scripts/run_ralph_desk.zsh
+check "full-wire: verifier reap sites tag sentinel_type=verify-verdict (3 call sites)" \
+  bash -c '[ "$(grep -c "verify-verdict\"$" src/scripts/run_ralph_desk.zsh)" -ge 3 ]'
+check "full-wire: iteration-top unlock sites call _lifecycle_mark_unlock" \
+  bash -c '[ "$(grep -c "_lifecycle_mark_unlock" src/scripts/run_ralph_desk.zsh)" -ge 2 ]'
 # v0.15.4 PR-B3 — Real-LLM SV scenarios with two-stage lifecycle assertions.
 check "B3 shared lifecycle assertion helper exists" \
   test -f tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
