@@ -1085,3 +1085,113 @@ c178352 test: RED — F4 rm-then-clear ordering + F9 failing-rm-keeps-mark
 1194d1b fix(b4): F6 — campaign.jsonl append failure is no longer masked
 9d70231 test: F9 — harden mutation-test harnesses (set -e) + positional hook-placement check
 ```
+
+## codex round 2 — 4 findings on the sol-max sweep's own fixes (2026-07-10)
+
+Codex re-review of the sol-max P2 sweep (and the F7-parity closure item)
+surfaced 4 more findings — 3 P2 + 1 P3 — all on branch `fix/b4-p2-sweep`.
+
+**R2-1 (P2, F2 residue) — pre-reap capture still forked.** F2's
+`_lifecycle_capture_write_to_read` still paid 3 nested command-substitution
+forks per call (outer call-site assignment, `now_ms=$(_epoch_ms)`,
+`mt_s=$(_file_mtime "$file")`, the last of which itself forks the external
+`stat` binary) — all before the pane reap. Fixed: `now_ms` computed inline
+from `$EPOCHREALTIME` (no function-call fork); mtime read via the
+`zsh/stat` module's `zstat -H arr +mtime` builtin (no external `stat`
+fork); result written to a global `$_LC_CAPTURED_DELTA` instead of printed
+to stdout, so all 4 call sites assign it with a plain (non-forking)
+`local x="$_LC_CAPTURED_DELTA"`. Deliberately NOT deferred to post-reap —
+the mtime's whole purpose is catching the race where the reap arrives late
+and the producer rewrites the file; a post-reap stat would silently read
+the SECOND (race) write's mtime, hiding exactly the failure it exists to
+catch. One iteration fix during GREEN: the structural test's `awk` pattern
+used `\s` (PCRE shorthand) — macOS's default BWK awk doesn't support it;
+switched to `[[:space:]]`. RED `130ba8c`, GREEN `488fd32`. Verification:
+`tests/test_b3_lifecycle_emit.sh` 77/77 PASS (was RED 7/70); `sv-gate:fast`
+99/99 PASS.
+
+**R2-2 (P2, double reap) — A4 fallback reaped the worker pane twice.** The
+A4 fallback path (`poll_for_signal`, done-claim exists but no iter-signal)
+reaped the worker pane itself (untagged) when synthesizing the signal
+file, then the caller's normal success branch reaped the SAME pane again
+(tagged `"iter-signal"`) — double-counting `pane_eof_to_cleanup_ms` and
+wasting a full C-c×2 + wait round-trip on an already-dead pane. Fixed:
+added a `_POLL_A4_ALREADY_REAPED` flag (reset at the top of every
+`poll_for_signal()` call); the A4 branch's own reap is now tagged
+`"iter-signal-a4"` (a distinct tag from the caller's `"iter-signal"` so it
+doesn't collide with the write_to_read capture->reap->emit ordering check)
+and sets the flag; the caller's reap is guarded to skip when the flag is
+set. RED `3dc49aa`, GREEN `df88aa1`. Verification:
+`tests/test_b3_lifecycle_emit.sh` 82/82 PASS (was RED 4/82); `sv-gate:fast`
+99/99 PASS (including the pre-existing A4-path structural pins in
+`test_b2fix_sentinel_lock.sh`, unaffected — substring matches).
+
+**R2-3 (P2, F6 residue) — failed flushes didn't survive the loop-top
+reset; COMPLETE-path failures were silent.** F6 made `write_campaign_jsonl`
+retain `LIFECYCLE_RECORDS` on failure so the next flush could retry — but
+all 3 callers ignored the return code, and the loop-top
+`LIFECYCLE_RECORDS=()` reset (added to discard row-less `continue`
+iteration records) unconditionally wiped a FAILED flush's retained records
+too before any retry could happen. The 2 COMPLETE-path call sites were
+worst: they `return 0` (campaign success) right after the write, silently
+losing the terminal row with zero retry. Fixed: `write_campaign_jsonl` now
+sets a global `_LC_FLUSH_ATTEMPTED=1` on every call (success or failure) —
+the single source of truth the loop-top reset uses to distinguish
+"attempted and failed, keep for retry" from "never attempted (a row-less
+continue), discard." Added `_write_campaign_jsonl_terminal`: retries once
+on failure, logs loudly (a distinct CRITICAL marker) if the retry also
+fails, never blocks completion. Both COMPLETE-path sites use it; the
+regular per-iteration site checks its rc and logs iteration-specific
+context. RED `930a214`, GREEN `05c3956`. Verification:
+`tests/test_b3_lifecycle_emit.sh` 90/90 PASS (was RED 8/90); `sv-gate:fast`
+99/99 PASS.
+
+**R2-4 (P3, F1 text) — README/lifecycle-metrics.mjs still
+self-contradicted on the reap window, no Node-side equality lock.**
+README.md's metrics table and `lifecycle-metrics.mjs`'s own header comment
+each described `pane_eof_to_cleanup_ms`'s window differently in the SAME
+document — one said "killPaneProcess return", the other "pane shell-idle" /
+"waitForExit resolve". Neither was fully precise: `reapProducer`'s actual
+`reapMs` (campaign-main-loop.mjs:1460-1475) ends after `waitForProcessExit`
+settles, not at `killPaneProcess`'s own return. Rewrote both surfaces to
+one precise, consistent line: "Kill-start → process-exit-confirmed
+(`killPaneProcess` + `waitForProcessExit` settle)". Added the Node-side
+equality regression the finding asked for
+(`tests/node/test-campaign-jsonl-shape.test.mjs`): drives a real campaign
+with a genuinely delayed (40ms) `waitForProcessExit` fake, then asserts
+`pane_eof_to_cleanup_ms[i].value_ms === pane_reap_latency_ms[i].value_ms`
+for every reap — non-trivial since the delay proves it isn't two
+coincidental zeros. `reapProducer` itself was already correct, so this is a
+protective lock, not a bug fix — no RED phase was possible. Commit
+`77850a7`. Verification: `node --test
+tests/node/test-campaign-jsonl-shape.test.mjs` 5/5 PASS; `npm run
+test:node` 456/456 PASS (was 455); `zsh tests/test_b3_lifecycle_emit.sh`
+90/90 PASS unchanged; `sv-gate:fast` 99/99 pass.
+
+### Final gate results (round 2, all 4 findings)
+
+```
+zsh -n src/scripts/run_ralph_desk.zsh   → clean
+zsh -n src/scripts/lib_ralph_desk.zsh   → clean
+zsh tests/test_b3_lifecycle_emit.sh     → 90/90 PASS
+npm run test:zsh                        → exit 0, 0 FAIL/✗ across 1808 lines
+npm run test:node                       → 456/456 PASS, 0 fail
+npm run sv-gate:fast                    → 99/99 pass — OK
+```
+
+A5 oracle (v0.22.0 anchor `7038a14`, `git diff 7038a14..HEAD` on
+`src/commands/rlp-desk.md`, `src/governance.md`,
+`src/scripts/init_ralph_desk.zsh`): empty — none of the 3 protected trigger
+files touched.
+
+### Commit list (round 2, oldest first)
+
+```
+130ba8c test: RED — R2-1 genuinely fork-free pre-reap capture (zstat + inline EPOCHREALTIME)
+488fd32 fix(b4): codex r2 R2-1 — genuinely fork-free pre-reap capture (zstat + inline EPOCHREALTIME)
+3dc49aa test: RED — R2-2 single-reap the A4 fallback worker pane
+df88aa1 fix(b4): codex r2 R2-2 — single-reap the A4 fallback worker pane
+930a214 test: RED — R2-3 (F6 residue) survive failed flushes across the loop-top reset, loud terminal-row failures
+05c3956 fix(b4): codex r2 R2-3 (F6 residue) — survive failed flushes across the loop-top reset, loud terminal-row failures
+77850a7 fix(b4): codex r2 R2-4 — F1 text self-contradiction + Node-side equality regression
+```
