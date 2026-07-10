@@ -102,13 +102,64 @@ out=$(b3_assert_lifecycle_metric_within_band "$D/nonempty.jsonl" "iter_signal_wr
 [[ "$out" == *SKIP* ]] && ok "B3-S2: unmeasured metric → SKIP (not FAIL)" || no "B3-S2 unmeasured not SKIP ($out)"
 rm -rf "$D"
 
-# 8) NEGATIVE CLAMP: a negative value_ms (e.g. EPOCHREALTIME mis-scale near a second
-# rollover, or a comma-decimal LC_NUMERIC corrupting the ms math) must clamp to 0, NOT
-# land a negative in campaign.jsonl (a negative silently passes the `<= band` check →
-# false PASS). Mirrors the Node collector which clamps non-negative.
+# 8) F7 (codex P2 sweep): a negative value_ms (e.g. EPOCHREALTIME mis-scale near
+# a second rollover, or a comma-decimal LC_NUMERIC corrupting the ms math) is
+# DROPPED entirely, NOT clamped to 0. A clamp-to-0-and-keep let a corrupted
+# measurement silently satisfy the B3-S2 `<= band` check as a false PASS —
+# case 7 above already proves an UNMEASURED metric SKIPs (not fails) B3-S2,
+# so dropping the record is safe: no data beats wrong data.
 row=$(emit_row 1 "pane_eof_to_cleanup_ms -50")
+[[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics | has("pane_eof_to_cleanup_ms")')" == "false" ]] \
+  && ok "F7: negative value_ms dropped entirely (no false-PASS clamp-to-0)" || no "F7: negative value_ms NOT dropped ($row)"
+
+# 8b) F7: malformed (non-numeric) value_ms is dropped the same way as negative.
+row=$(emit_row 1 "pane_eof_to_cleanup_ms notanumber")
+[[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics | has("pane_eof_to_cleanup_ms")')" == "false" ]] \
+  && ok "F7: malformed (non-numeric) value_ms dropped entirely" || no "F7: malformed value_ms NOT dropped ($row)"
+
+# 8c) F7: a GENUINE value_ms of 0 (real sub-ms measurement) is kept, not
+# confused with a dropped negative/malformed value — the drop path must
+# distinguish "invalid" from "validly zero".
+row=$(emit_row 1 "pane_eof_to_cleanup_ms 0")
 [[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics.pane_eof_to_cleanup_ms[0].value_ms')" == "0" ]] \
-  && ok "negative value_ms clamped to 0 (no negative in campaign.jsonl)" || no "negative value_ms NOT clamped ($row)"
+  && ok "F7: genuine value_ms=0 is kept (true zero != dropped negative/malformed)" \
+  || no "F7: true zero was dropped or mangled ($row)"
+
+# 8d) F7: dropping a negative/malformed record logs ONE warning, DEBUG-gated
+# (consistent with this subsystem's "audit aid, not source of truth" debug.log
+# positioning — production DEBUG defaults to 0, so this is silent by default).
+warn_seen=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }
+  WARNLOG=""
+  log_debug(){ WARNLOG="${WARNLOG}$*\n"; }
+  export RLP_LIFECYCLE_METRICS=1
+  DEBUG=1
+  LIFECYCLE_RECORDS=()
+  log_lifecycle_metric pane_eof_to_cleanup_ms -50 "c=z"
+  print -r -- "$WARNLOG"')
+[[ "$warn_seen" == *"LIFECYCLE-WARN"* ]] \
+  && ok "F7: dropping a negative/malformed value logs a warning (DEBUG-gated)" \
+  || no "F7: no warning logged on drop ($warn_seen)"
+
+# 8e) F2 (codex P2 sweep): log_lifecycle_metric's record assembly must be
+# fork-free — no `date` or `jq` subprocess per call. Both were measurable
+# forks on the post-sentinel reap hot path (metric emission happens between
+# sentinel-detect and pane-reap on some call sites — see the capture/emit
+# split tests below). Structural: the function body must not shell out to
+# either.
+_llm_body=$(awk '/^log_lifecycle_metric\(\)/,/^}/' "$REPO/src/scripts/lib_ralph_desk.zsh")
+print -r -- "$_llm_body" | grep -qE '\bdate[[:space:]]+-u|\bjq[[:space:]]+-' \
+  && no "F2: log_lifecycle_metric still forks date/jq (fork-free rewrite expected)" \
+  || ok "F2: log_lifecycle_metric record assembly is fork-free (no date/jq calls)"
+
+# 8f) F2: the debug.log background subshell fork must be gated on (( DEBUG ))
+# itself, not spawned unconditionally and left to log_debug's OWN internal
+# DEBUG check — forking `( log_debug ... ) &!` even when DEBUG=0 is pure
+# waste on the hot path this metric infra instruments.
+print -r -- "$_llm_body" | grep -qE '\(\(\s*DEBUG\s*\)\).*&&.*typeset -f log_debug' \
+  && ok "F2: debug-log subshell fork is gated on (( DEBUG )) (not spawned when DEBUG=0)" \
+  || no "F2: debug-log subshell fork is not gated on DEBUG"
 
 # 9) LOCALE ROBUSTNESS (source-structural): the EPOCHREALTIME->ms parse in _kill_pane_process
 # (t0/t1) AND the shared _epoch_ms() helper (v0.15.4 full-wire, used by the 4 newly-wired
@@ -123,15 +174,25 @@ both=$(grep -cE 'EPOCHREALTIME//\.\/}//,/' "$REPO/src/scripts/lib_ralph_desk.zsh
 
 # 10) CROSS-LEADER PARITY: the zsh lifecycle_metrics field must match the Node flush() shape
 # (src/node/util/lifecycle-metrics.mjs:88-99): a grouped OBJECT {metric: [{value_ms, ts}, ...]},
-# entries keyed exactly {ts, value_ms}, value_ms a non-negative number (Node Math.max(0,…)).
-# So both the --mode tmux (zsh) and --mode agent (Node) leaders write IDENTICAL-shaped rows.
-row=$(emit_row 1 "pane_eof_to_cleanup_ms 6226" "pane_eof_to_cleanup_ms -3")
+# entries keyed exactly {ts, value_ms}. So both the --mode tmux (zsh) and --mode agent (Node)
+# leaders write IDENTICAL-shaped rows for valid records.
+row=$(emit_row 1 "pane_eof_to_cleanup_ms 6226" "pane_eof_to_cleanup_ms 3")
 [[ "$(print -r -- "$row" | jq -r '.lifecycle_metrics | type')" == "object" ]] \
   && ok "parity: lifecycle_metrics is a grouped object (Node flush() shape)" || no "parity: not a grouped object"
 [[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics.pane_eof_to_cleanup_ms[0] | keys')" == '["ts","value_ms"]' ]] \
   && ok "parity: entry keys == Node {value_ms, ts}" || no "parity: entry keys != Node shape"
-[[ "$(print -r -- "$row" | jq -c '[.lifecycle_metrics.pane_eof_to_cleanup_ms[].value_ms] | min')" == "0" ]] \
-  && ok "parity: negative value_ms clamped to 0 (Node Math.max(0,…) parity)" || no "parity: negative not clamped"
+
+# F7 (codex P2 sweep): INTENTIONAL divergence from Node on negative value_ms.
+# Node clamps to 0 and keeps the record (Math.max(0, Math.round(valueMs)));
+# zsh instead DROPS the record entirely (case 8 above) because a clamped-and-
+# kept corrupted measurement let B3-S2's `<= band` check false-PASS. Assert
+# the divergence directly here so a future edit cannot silently "fix" this
+# back to Node's clamp behavior believing it restores parity — the array must
+# contain ONLY the one valid record, not a second clamped-to-0 entry for -3.
+row=$(emit_row 1 "pane_eof_to_cleanup_ms 6226" "pane_eof_to_cleanup_ms -3")
+[[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics.pane_eof_to_cleanup_ms | length')" == "1" ]] \
+  && ok "F7: negative value_ms dropped, not clamped-and-kept (deliberate divergence from Node parity)" \
+  || no "F7: negative value_ms was not dropped ($row)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # v0.15.4 full-wire: the 4 remaining lifecycle metrics on the zsh leader +
