@@ -316,6 +316,21 @@ atomic_write() {
     rm -f "$tmp" 2>/dev/null
     return 1
   fi
+  # codex round 3 (closes the P2-2 class structurally): every SUCCESSFUL
+  # atomic_write replaces $target's inode via mv, which does not preserve the
+  # replaced file's chmod bits — so if a sentinel_lock_to_unlock_ms lock-start
+  # mark is pending for this basename, it belongs to the instance that was
+  # JUST replaced, not whatever comes next. Clear it here, once, for every
+  # caller — rather than requiring each of the (now-proven-numerous) call
+  # sites that replace SIGNAL_FILE/VERDICT_FILE to remember on their own.
+  # Placed AFTER the successful mv (not before the write): on FAILURE above,
+  # the target is untouched and any pending mark is still valid for it — only
+  # a real replacement invalidates the mark. _lifecycle_clear_lock_mark is a
+  # no-op when no mark is pending (the common case for the many non-monitored
+  # files atomic_write also writes — fix_contract, SESSION_CONFIG, prompts,
+  # triggers) and gated the same way as every other lifecycle helper, so the
+  # off-path cost is one already-gated function call.
+  _lifecycle_clear_lock_mark "${target:t}"
   return 0
 }
 
@@ -809,6 +824,18 @@ _archive_recovered_sidecar() {
 #   3. atomic rename via tmp file
 #   4. chmod 0444 (re-lock)
 # Tolerant of jq absence (graceful degrade — no stamp, no error).
+#
+# codex round 3 P2-2 audit (checked, does NOT go through atomic_write, NOT
+# converted, NO fix needed): this has its own inline tmp+mv (a different tmp
+# naming convention than atomic_write's), so it does not get the
+# _lifecycle_clear_lock_mark hook. It doesn't need it: every call site
+# (grep "_stamp_ack_field \"\$" in run_ralph_desk.zsh) invokes this
+# IMMEDIATELY after that SAME code path's own _lifecycle_mark_lock_start +
+# _lock_sentinel on the SAME file — it annotates the instance that was just
+# locked, it never replaces a DIFFERENT (older) locked instance. The mark set
+# moments earlier survives this call untouched (it doesn't read or write
+# LIFECYCLE_LOCK_TIMES), so the eventual unlock still pairs with the correct,
+# freshly-set mark. Not the same shape as the atomic_write replacement bug.
 _stamp_ack_field() {
   local file="$1"
   [[ -n "$file" && -f "$file" ]] || return 0

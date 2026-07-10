@@ -643,3 +643,115 @@ added a "3 atomic_write sites exist" pin). A5 oracle (`git diff
 b3d27da..HEAD` on the 3 protected files) empty.
 
 Commit: `fix(b4): clear lock marks on atomic verdict replacement (codex round 2)`.
+
+### Codex round 3 — closes the class structurally (hook in atomic_write)
+
+Codex found a THIRD batch of the same P2-2 class: `SIGNAL_FILE` replaced at
+the `_final_verify_one_us` scoping write (round 2's evidence doc reached
+this line but only reasoned about `VERDICT_FILE`) while a pending mark from
+the worker-success lock could still be outstanding; the round-1/2
+enumeration missed the `$signal_file`-alias writes and `_stamp_ack_field`
+entirely; and the round-2 D-16 rationale ("safe because nothing was
+pending") was factually wrong — it is safe, but for a different, more
+fragile reason (see below). Three rounds of "found another site" is a
+signal that per-site enumeration doesn't converge — it's fixing symptoms of
+a design gap, not the gap itself.
+
+**Design change**: moved the clear into the write primitive.
+`atomic_write()` (lib_ralph_desk.zsh) now calls
+`_lifecycle_clear_lock_mark "${target:t}"` after every SUCCESSFUL replace
+(placed after the `mv`, not before the write — see rationale below). This
+makes "does this write leave a stale mark behind" true **by construction**
+for every current and future caller, instead of depending on someone
+remembering to audit each new call site against the metrics map.
+
+**Placement rationale (deviates from the literal "top of atomic_write"
+suggestion, with justification)**: the clear fires only on the SUCCESS path,
+after the `mv` — not unconditionally at the top of the function. On the F-26
+failure paths (`cat > tmp` fails, or `mv` fails), the target file is left
+untouched per `atomic_write`'s existing contract, so any pending lock-mark
+for that basename is STILL VALID (nothing was actually replaced) — clearing
+it there would incorrectly discard a still-accurate mark. Clearing
+if-and-only-if the target was actually replaced is the strictly correct
+invariant.
+
+**Classification by MECHANISM** (the round-1/2 enumeration was a hand-audited
+site list; codex's finding is that hand-audited lists don't scale — this
+replaces it with a mechanism-level classification that is exhaustive by
+construction):
+
+| Mechanism | Sites | Safety |
+|---|---|---|
+| `atomic_write()`-mediated replacement | All `atomic_write "$VERDICT_FILE"` (3), `atomic_write "$SIGNAL_FILE"`/`"$signal_file"` (3: `_final_verify_one_us` scoping write, D-16 finalize, A4 fallback in `poll_for_signal`), plus `handle_worker_exit_codex`'s synthesis (newly converted, see below) | Safe via the hook, unconditionally, for every current and future caller |
+| `rm -f` deletion | 4 sites (`run_single_verifier` top, `_final_verify_one_us` top + D-4 retry, main consensus loop pre-dispatch) | Safe via explicit `_lifecycle_clear_lock_mark` calls (round 1) — `rm` does not go through `atomic_write`, so it still needs its own clear |
+| Loop-top `rm -f` (SIGNAL_FILE + DONE_CLAIM_FILE + VERDICT_FILE) | 1 site | Safe via the normal `_unlock_sentinel` + `_lifecycle_mark_unlock` pairing that immediately precedes it in the same block |
+| `mv -f` outside `atomic_write` | `_migrate_legacy_verdict` (lib:1852) | Safe — checked: only ever fires strictly between a poll cycle's clear-before-dispatch and that SAME cycle's eventual accept+lock; no pending mark can exist at that point |
+| In-place `jq`+`mv` outside `atomic_write` | `_stamp_ack_field` (lib:827, all 4 call sites: 2× `run_single_verifier`/`_final_verify_one_us`/main-loop VERDICT_FILE, 1× worker-success SIGNAL_FILE) | Safe — checked: every call site fires IMMEDIATELY after that same code path's own fresh `_lifecycle_mark_lock_start` + `_lock_sentinel` on the SAME file; it annotates the just-locked instance, never replaces a different one, and never touches `LIFECYCLE_LOCK_TIMES` itself |
+| Raw `>` redirect outside `atomic_write` | `handle_worker_exit_codex`'s signal synthesis (was line 987) | **Was the one real gap** — converted to `atomic_write` (below) rather than given a parallel explicit-clear special case, so it gets both hook coverage and the existing F-26 truncated-write protection atomic_write already provides everything else |
+| `cp` (archival) | `run_single_verifier` → `verdict_dest`, `_final_verify_one_us` → `final-verdict-*.json` | Not a write TO VERDICT_FILE — reads it, writes a *different* per-engine archive path. No mark interaction. |
+| Worker-pane writes (iter-signal.json, done-claim.json written BY the worker process, not the leader) | N/A | Leader-side lock marks track the LEADER's own lock/unlock bookkeeping; worker-written content is read via `poll_for_signal`, not written by leader code that could hold a stale mark |
+
+**The corrected D-16 rationale**: round 2's evidence doc claimed the D-16
+finalize `atomic_write "$SIGNAL_FILE"` write (main loop, before the
+worker-dispatch branch) was safe because "nothing was pending." That was
+wrong. Full trace: the D-16 finalize block runs at loop-top and sets
+`SKIP_NEXT_WORKER=1` BEFORE the `if (( ! SKIP_NEXT_WORKER ))` unlock block
+below it — so that unlock block (which would normally clear the PREVIOUS
+iteration's SIGNAL_FILE mark) is SKIPPED this pass. The previous iteration's
+mark is therefore still pending when the D-16 write fires. It was safe only
+because the very next event for that basename is the worker-success branch
+a few lines later, which unconditionally re-locks (Map.set overwrite) before
+any unlock could pair with the stale mark — a coincidence of code ordering,
+not an absence of risk. The hook now makes this true regardless of that
+ordering. Comment corrected in place at the D-16 site.
+
+**`handle_worker_exit_codex` conversion** (run_ralph_desk.zsh, was line 987):
+this was the ONE monitored-file write in the entire codebase using a raw `>`
+redirect instead of `atomic_write` — found by grepping every
+`> "$SIGNAL_FILE"` / `> "$VERDICT_FILE"` / `> "$signal_file"` /
+`> "$verdict_file"` pattern (excluding `>>` append and the `atomic_write`
+pipe form) across `run_ralph_desk.zsh`. Converted to
+`| atomic_write "$signal_file"`: gets the clear-mark hook automatically, and
+as a side benefit gets the same F-26 truncated-write protection every other
+sentinel write already had (a raw `>` redirect can leave a half-written file
+on a crash mid-write; `atomic_write`'s tmp+mv cannot). The function's return
+contract is unchanged (it never checked the write's exit code before, and
+still doesn't — this is a pure write-mechanism swap, not a behavior change).
+
+**Simplification**: the 3 round-2 per-site `_lifecycle_clear_lock_mark`
+calls immediately before `atomic_write "$VERDICT_FILE"` (pass-merge,
+fail-merge, sequential-final-verify-failure synthesis) are now REMOVED —
+redundant with the hook. The 4 round-1 rm-site calls STAY, since `rm` does
+not go through `atomic_write`.
+
+TDD: wrote the round-3 test cases FIRST, then verified genuine RED by
+running them against the round-2 committed source (`git show
+df0e674:src/scripts/{lib,run}_ralph_desk.zsh` copied into a throwaway
+scratch tree) before touching the working tree — 4 failures: "atomic_write()
+is missing the clear-mark hook" (structural), "expected 4
+_lifecycle_clear_lock_mark call sites, got 7" (structural — the old code
+still had all 7 per-site calls), "found 1 raw > redirect(s) onto monitored
+files" (structural — line 987 not yet converted), and, most directly, "P3:
+lock→atomic_write-replace→unlock (no relock) emits NOTHING" — this one
+actually got 1 record against the round-2 code, proving the exact bug: a
+lock left dangling across a plain atomic_write replace with no manual clear
+DOES leak through and get falsely paired. Two of the new cases (the
+write-then-lock invariant, and the lock→replace→re-lock→unlock cycle)
+already passed against the round-2 code too — expected, since neither one
+depends on the hook specifically (the first has nothing pending to clear;
+the second is protected by the pre-existing overwrite-on-relock safety net)
+— kept as regression guards distinguishing "hook required" from "hook
+redundant but harmless" cases.
+
+GREEN: `zsh tests/test_b3_lifecycle_emit.sh` → 39/39 PASS (35 pre-round-3 +
+2 updated structural checks + 3 new behavioral/structural checks, net +4 new
+cases replacing 2 obsolete ones). `npm run test:zsh` → exit 0, zero FAIL
+markers. `npm run test:node` → 450/450 (Node side untouched — the class was
+zsh-only, since Node's `LifecycleMetricsCollector.markLockStart` is a bare
+`Map.set()` with no equivalent replace-without-relock code path in
+`campaign-main-loop.mjs`). `npm run sv-gate:fast` → 98/98 (96 + 2 net:
+replaced 2 round-1/2 checks with 4 round-3 checks, minus the 2 obsolete
+ones removed). A5 oracle (`git diff b3d27da..HEAD` on the 3 protected files)
+empty.
+
+Commit: `fix(b4): clear lifecycle lock marks in atomic_write — closes the stale-mark class (codex round 3)`.

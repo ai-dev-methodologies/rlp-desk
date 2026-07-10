@@ -984,7 +984,12 @@ handle_worker_exit_codex() {
   local dc_us_id
   dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
   log "  Codex worker completed with done-claim (us_id=$dc_us_id) and clean tree. Auto-generating signal."
-  echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exit (clean tree)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$signal_file"
+  # codex round 3: was a plain `>` redirect — the ONE monitored-file write in
+  # the codebase that did not funnel through atomic_write, so it got no
+  # lifecycle lock-mark clearing and no F-26 truncated-write protection.
+  # Switched to atomic_write for both: tmp+mv is safe against a mid-write
+  # crash, and it now clears any pending SIGNAL_FILE lock-mark automatically.
+  echo '{"iteration":'"$iter"',"status":"verify","us_id":"'"$dc_us_id"'","summary":"auto-generated after codex exit (clean tree)","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' | atomic_write "$signal_file"
   # v0.15.4 PR-B2-FIX: codex worker pane already exited — reaper would no-op,
   # but lock done-claim as defense-in-depth so any orphaned subprocess cannot
   # rewrite the file before lib_ralph_desk.zsh:602 archives it.
@@ -3054,7 +3059,11 @@ _all_us_verified() {
 _final_verify_one_us() {
   local us="$1" iter="$2"
 
-  # Temporarily override signal file to scope verifier to this US
+  # Temporarily override signal file to scope verifier to this US.
+  # codex round 3: this replaces SIGNAL_FILE while the worker-success branch's
+  # lock-mark for it may still be pending (this function runs per-US, inside
+  # the same iteration as that lock, before the loop-top unlock) — safe via
+  # atomic_write()'s built-in clear, no per-site handling needed.
   local orig_signal
   orig_signal=$(cat "$SIGNAL_FILE" 2>/dev/null)
   echo "{\"status\":\"verify\",\"us_id\":\"$us\",\"summary\":\"sequential final verify\"}" | atomic_write "$SIGNAL_FILE"
@@ -3343,14 +3352,11 @@ run_consensus_verification() {
 
     # Both pass → success
     if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then
-      # Create merged verdict with per-engine details
-      # codex round 2 P2-2: this atomic_write REPLACES the canonical VERDICT_FILE
-      # that the codex sub-call's run_single_verifier just locked (chmod 0444 +
-      # _lifecycle_mark_lock_start). atomic_write's tmp+mv doesn't care about the
-      # target's chmod bits, so it succeeds silently and the codex lock-mark is
-      # left dangling — no _lock_sentinel follows on this merged file (the caller
-      # only reads verdict/us_id from it), so clear (not refresh) is correct.
-      _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
+      # Create merged verdict with per-engine details. This atomic_write
+      # REPLACES the canonical VERDICT_FILE that the codex sub-call's
+      # run_single_verifier just locked — codex round 3: no per-site clear
+      # needed here anymore, atomic_write() itself drops any pending
+      # lock-start mark for the replaced basename (lib_ralph_desk.zsh).
       {
         echo '{'
         echo '  "verdict": "pass",'
@@ -3410,10 +3416,9 @@ run_consensus_verification() {
     claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
     codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
     merged_issues=$(echo "$claude_issues $codex_issues" | jq -s 'add // []')
-    # codex round 2 P2-2: same rationale as the pass-merge site above — this
-    # atomic_write replaces the codex sub-call's locked VERDICT_FILE with the
-    # merged fail verdict; no _lock_sentinel follows, so clear is correct.
-    _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
+    # codex round 3: no per-site clear needed — atomic_write() drops the
+    # pending mark for VERDICT_FILE's basename automatically (same as the
+    # pass-merge site above).
     {
       echo '{'
       echo '  "verdict": "fail",'
@@ -3825,6 +3830,17 @@ main() {
       _FINALIZE_PENDING=0
       log "  Leader finalize (D-16): all US verified ($VERIFIED_US) — synthesizing ALL verify signal, skipping worker round-trip."
       log_debug "[FLOW] iter=$ITERATION d16_finalize=true verified_us=$VERIFIED_US"
+      # codex round 3: this atomic_write fires BEFORE the loop-top `if (( !
+      # SKIP_NEXT_WORKER ))` unlock block below — and this branch itself just
+      # set SKIP_NEXT_WORKER=1, so that unlock block is SKIPPED this pass. The
+      # previous iteration's SIGNAL_FILE lock-mark (from its worker-success
+      # lock) is therefore still pending when this write replaces the file.
+      # Safe by construction now: atomic_write() clears the pending mark for
+      # SIGNAL_FILE's basename itself. (A round-2 comment here previously
+      # claimed this site was safe because "nothing was pending" — wrong; it
+      # was safe only because the worker-success branch a few lines below
+      # re-locks and overwrites the stale mark before any unlock could pair
+      # with it. The hook makes that coincidence-of-ordering unnecessary.)
       printf '{"iteration": %d, "status": "verify", "us_id": "ALL", "summary": "leader finalize (D-16: all per-US verified)", "timestamp": "%s"}\n' \
         "$ITERATION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$SIGNAL_FILE"
       update_status "verify" "running"
@@ -4110,15 +4126,11 @@ main() {
             # Sequential verify failed — fall through to fix loop with failed US
             log "  Sequential final verify failed at ${FAILED_US:-unknown}. Entering fix loop."
             signal_us_id="${FAILED_US:-ALL}"
-            # Synthesize a fail verdict for the fix loop.
-            # codex round 2 P2-2: run_sequential_final_verify's per-US calls
-            # (_final_verify_one_us) lock VERDICT_FILE on each per-US PASS; if a
-            # LATER US then fails, the last-passing US's lock-mark is still
-            # pending when this atomic_write replaces the file with the
-            # synthesized fail verdict. No _lock_sentinel follows this specific
-            # write (the code below re-dispatches a fresh verify attempt, which
-            # will overwrite/lock again on its own success) — clear is correct.
-            _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
+            # Synthesize a fail verdict for the fix loop. run_sequential_final_
+            # verify's per-US calls lock VERDICT_FILE on each per-US pass; if a
+            # LATER US then fails, the last-passing US's lock-mark could still
+            # be pending here — codex round 3: no per-site clear needed,
+            # atomic_write() drops it automatically.
             echo "{\"verdict\":\"fail\",\"summary\":\"Sequential final verify failed at ${FAILED_US:-unknown}\",\"issues\":[{\"severity\":\"critical\",\"criterion\":\"${FAILED_US:-ALL}\",\"description\":\"Failed during sequential final verification\"}]}" | atomic_write "$VERDICT_FILE"
           fi
         fi

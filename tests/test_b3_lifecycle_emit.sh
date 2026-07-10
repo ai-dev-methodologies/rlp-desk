@@ -328,49 +328,90 @@ no_relock=$(zsh -c '
 [[ "$no_relock" == "0" ]] && ok "P2-2: lock→delete(clear)→unlock (no relock) is a silent no-op" \
   || no "P2-2: cleared-then-unlocked mark should emit nothing, got $no_relock records"
 
-# 22) P2-2 (structural): every non-loop-top rm OR atomic_write-replace of
-# $VERDICT_FILE calls _lifecycle_clear_lock_mark first — pins the full set of
-# 7 fix sites: 4 rm sites (run_single_verifier top, _final_verify_one_us top +
-# retry, main consensus loop pre-dispatch — codex round 1) + 3 atomic_write
-# replace sites (run_consensus_verification pass-merge, fail-merge, and the
-# sequential-final-verify-failure synthesis in the main loop — codex round 2).
-# The loop-top cleanup rm is EXCLUDED (an 8th VERDICT_FILE write/delete site)
-# since it is already preceded by a proper _unlock_sentinel +
-# _lifecycle_mark_unlock pair in the same block, which already clears the
-# mark via normal pairing. _migrate_legacy_verdict's `mv -f legacy canonical`
-# (lib:1852) is ALSO excluded — checked in the round-2 commit body: it only
-# ever fires from within poll_for_signal's own no-progress-watcher tick,
-# strictly BETWEEN a clear-before-dispatch and that SAME cycle's eventual
-# accept+lock, so no stale mark can exist at that point to leak.
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 3: CLOSES THE CLASS structurally. Three rounds of "found another
+# atomic-replace-with-a-pending-mark site" means per-site clearing doesn't
+# scale — moved the clear INTO atomic_write() itself (lib_ralph_desk.zsh),
+# so EVERY successful atomic_write call drops any pending lock-mark for the
+# basename it just replaced, by construction, with no per-call-site opt-in.
+# The 3 round-2 per-site clear calls before atomic_write "$VERDICT_FILE" are
+# now REMOVED as redundant (cases 22/23 below updated accordingly); the 4
+# round-1 rm-site clear calls STAY (rm doesn't go through atomic_write, so
+# it still needs its own explicit clear).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 22) P2-2 (structural): atomic_write() itself calls _lifecycle_clear_lock_mark
+# — the hook that closes the class.
+grep -qE '^atomic_write\(\)' "$REPO/src/scripts/lib_ralph_desk.zsh" \
+  && atomic_write_body=$(awk '/^atomic_write\(\)/,/^}/' "$REPO/src/scripts/lib_ralph_desk.zsh") \
+  || atomic_write_body=""
+print -r -- "$atomic_write_body" | grep -q '_lifecycle_clear_lock_mark "\${target:t}"' \
+  && ok "P2-2 round 3: atomic_write() contains the clear-mark hook" \
+  || no "P2-2 round 3: atomic_write() is missing the clear-mark hook"
+
+# 23) P2-2 (structural): exactly 4 explicit _lifecycle_clear_lock_mark
+# "${VERDICT_FILE:t}" call sites remain in run_ralph_desk.zsh — the 4 round-1
+# rm sites (run_single_verifier top, _final_verify_one_us top + retry, main
+# consensus loop pre-dispatch). The 3 round-2 atomic_write-adjacent calls were
+# removed (now redundant with the hook). The loop-top cleanup rm stays
+# uninstrumented (already safe via its own unlock+mark_unlock pairing).
 clear_call_count=$(grep -c '_lifecycle_clear_lock_mark "\${VERDICT_FILE:t}"' "$REPO/src/scripts/run_ralph_desk.zsh")
-[[ "$clear_call_count" == "7" ]] \
-  && ok "P2-2: all 7 non-loop-top VERDICT_FILE rm/replace sites call _lifecycle_clear_lock_mark first" \
-  || no "P2-2: expected 7 _lifecycle_clear_lock_mark call sites in run_ralph_desk.zsh, got $clear_call_count"
+[[ "$clear_call_count" == "4" ]] \
+  && ok "P2-2 round 3: exactly 4 rm-site clear calls remain (3 atomic_write ones removed as redundant)" \
+  || no "P2-2 round 3: expected 4 _lifecycle_clear_lock_mark call sites, got $clear_call_count"
 
-# 23) P2-2 round 2: each of the 3 atomic_write "$VERDICT_FILE" replacement
-# sites is IMMEDIATELY preceded by _lifecycle_clear_lock_mark (not just
-# present somewhere earlier in the function, not just anywhere in the file) —
-# greps the 15 lines above each atomic_write call site for the clear-mark
-# call. 15 lines covers the widest gap (the pass-merge site's clear call sits
-# ABOVE the multi-line `{ echo ... } | atomic_write` JSON-building block, 14
-# lines above the atomic_write line itself) without reaching into an
-# unrelated PRECEDING function (the 3 sites are 59+ lines apart from each
-# other, so no cross-site false-positive risk at this window size).
-atomic_sites_with_clear=0
-for ln in $(grep -n 'atomic_write "\$VERDICT_FILE"' "$REPO/src/scripts/run_ralph_desk.zsh" | cut -d: -f1); do
-  ctx=$(sed -n "$((ln-15)),$((ln-1))p" "$REPO/src/scripts/run_ralph_desk.zsh")
-  print -r -- "$ctx" | grep -q '_lifecycle_clear_lock_mark "\${VERDICT_FILE:t}"' && atomic_sites_with_clear=$((atomic_sites_with_clear+1))
-done
-[[ "$atomic_sites_with_clear" == "3" ]] \
-  && ok "P2-2: all 3 atomic_write VERDICT_FILE sites immediately preceded by clear-mark" \
-  || no "P2-2: expected 3 atomic_write sites immediately preceded by clear-mark, got $atomic_sites_with_clear"
+# 24) P2-2 (structural): no raw `>` redirect writes SIGNAL_FILE/signal_file/
+# VERDICT_FILE/verdict_file outside atomic_write anymore (handle_worker_exit_
+# codex's synthesis was the one exception found in the round-3 audit —
+# converted to atomic_write so it gets both F-26 truncated-write protection
+# and the clear-mark hook).
+raw_redirects=$(grep -cE '> ?"\$(SIGNAL_FILE|VERDICT_FILE|signal_file|verdict_file)"' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$raw_redirects" == "0" ]] \
+  && ok "P2-2 round 3: no raw > redirects onto monitored files remain (all funnel through atomic_write)" \
+  || no "P2-2 round 3: found $raw_redirects raw > redirect(s) onto monitored files (bypasses the hook)"
 
-# 24) P3 round 2: atomic-replace cycle through the REAL atomic_write()
-# function (not just the isolated lock-mark helpers) — lock (simulating a
-# consensus sub-verifier's _lock_sentinel) → clear (simulating the fix at the
-# merge/synthesis site) → atomic_write a fresh verdict body → re-lock
-# (simulating a subsequent fresh verify attempt) → unlock. Must emit EXACTLY
-# ONE pair, measuring the fresh lock only.
+# 25) P3 round 3 (behavioral, exactly as specified): mark pending →
+# atomic_write REPLACES the file → unlock (no re-lock in between) ⇒ NO
+# emission. Proves the hook — NOT a manual per-call clear — is what silences
+# the stale mark. This is the direct regression test for the class of bug
+# codex found 3 times: a lock left dangling across a replace.
+hook_silences=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  D=$(mktemp -d)
+  _lifecycle_mark_lock_start "verdict.json"
+  echo "{\"verdict\":\"pass\"}" | atomic_write "$D/verdict.json"
+  _lifecycle_mark_unlock "verdict.json" 1
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"
+  rm -rf "$D"')
+[[ "$hook_silences" == "0" ]] \
+  && ok "P3: lock→atomic_write-replace→unlock (no relock) emits NOTHING — hook cleared it" \
+  || no "P3: expected 0 records after atomic_write-replace with no relock, got $hook_silences"
+
+# 26) P3 round 3 (invariant, exactly as specified): a mark set AFTER an
+# atomic_write in the SAME cycle still pairs normally — write→lock→mark→
+# unlock ⇒ one sane pair. Proves the hook only clears what's ALREADY pending
+# at write-time; it does not poison a mark established afterward.
+write_then_lock=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  D=$(mktemp -d)
+  echo "{\"verdict\":\"pass\"}" | atomic_write "$D/verdict.json"
+  _lifecycle_mark_lock_start "verdict.json"
+  sleep 0.05
+  _lifecycle_mark_unlock "verdict.json" 1
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"
+  for r in "${LIFECYCLE_RECORDS[@]}"; do print -r -- "$r"; done
+  rm -rf "$D"')
+n=$(print -r -- "$write_then_lock" | head -1)
+[[ "$n" == "1" ]] && ok "P3: write→lock→mark→unlock (write BEFORE lock, same cycle) still pairs normally" \
+  || no "P3: write-then-lock cycle expected 1 record, got $n"
+
+# 27) P3 round 3: lock→atomic_write-replace→re-lock→unlock (the full round-2
+# scenario, re-verified against the hook alone, no manual clear call) still
+# emits exactly ONE pair measuring the fresh lock — not the abandoned one.
 atomic_cycle=$(zsh -c '
   source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
   export RLP_LIFECYCLE_METRICS=1
@@ -378,7 +419,6 @@ atomic_cycle=$(zsh -c '
   D=$(mktemp -d)
   _lifecycle_mark_lock_start "verdict.json"
   sleep 0.3
-  _lifecycle_clear_lock_mark "verdict.json"
   echo "{\"verdict\":\"pass\"}" | atomic_write "$D/verdict.json"
   _lifecycle_mark_lock_start "verdict.json"
   sleep 0.05
@@ -387,7 +427,7 @@ atomic_cycle=$(zsh -c '
   for r in "${LIFECYCLE_RECORDS[@]}"; do print -r -- "$r"; done
   rm -rf "$D"')
 n=$(print -r -- "$atomic_cycle" | head -1)
-[[ "$n" == "1" ]] && ok "P3: lock→clear→atomic_write-replace→re-lock→unlock emits exactly ONE pair" \
+[[ "$n" == "1" ]] && ok "P3: lock→atomic_write-replace(hook)→re-lock→unlock emits exactly ONE pair" \
   || no "P3: atomic-replace cycle expected 1 record, got $n"
 vms=$(print -r -- "$atomic_cycle" | tail -n +2 | jq -r '.value_ms' 2>/dev/null)
 [[ -n "$vms" ]] && (( vms < 250 )) \
