@@ -1455,8 +1455,13 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   const reapProducer = async (paneId, sentinelFile, sentinelType = null) => {
     if (!paneId) return;
     // v0.15.4 PR-B4: pane_eof_to_cleanup_ms = wallclock from kill-start to
-    // killPaneProcess return. pane_reap_latency_ms tracks the same window
-    // when the trigger was a sentinel observation (i.e. sentinelType set).
+    // process-exit-confirmed (killPaneProcess + waitForProcessExit settle,
+    // below — reapMs is computed AFTER both, not right after killPaneProcess
+    // returns). pane_reap_latency_ms tracks the SAME window when the
+    // trigger was a sentinel observation (i.e. sentinelType set) — not a
+    // distinct window. codex round 3 R3-4: aligned with the corrected
+    // README.md / lifecycle-metrics.mjs header wording (both previously
+    // said "killPaneProcess return", which undersold this window too).
     const reapStart = Date.now();
     await killPaneProcess(paneId, {
       sendRawKey,

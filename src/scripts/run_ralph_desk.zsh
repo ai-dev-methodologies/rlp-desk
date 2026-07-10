@@ -4021,7 +4021,19 @@ main() {
         # synthesizing the signal file — reaping again would double-count
         # pane_eof_to_cleanup_ms and waste a full C-c×2 + wait round-trip on
         # an already-dead pane.
-        if (( ! _POLL_A4_ALREADY_REAPED )); then
+        # codex round 3 R3-2: _kill_pane_process is fail-open (always
+        # returns 0 — other callers depend on that contract, so it is not
+        # changed here) — the A4 flag alone only proves a reap was
+        # ATTEMPTED, not that the producer actually died. A cheap liveness
+        # recheck (same #{pane_current_command} probe used elsewhere in this
+        # file) decides whether a second reap is genuinely still needed.
+        local _worker_reap_needed=1
+        if (( _POLL_A4_ALREADY_REAPED )); then
+          local _a4_recheck_cmd
+          _a4_recheck_cmd=$(tmux display-message -p -t "$WORKER_PANE" '#{pane_current_command}' 2>/dev/null)
+          [[ "$_a4_recheck_cmd" == "claude" || "$_a4_recheck_cmd" == "codex" || "$_a4_recheck_cmd" == "node" ]] || _worker_reap_needed=0
+        fi
+        if (( _worker_reap_needed )); then
           _kill_pane_process "$WORKER_PANE" "worker" "iter-signal"
         fi
         _lifecycle_emit_write_to_read "iter_signal_write_to_read_ms" "$SIGNAL_FILE" "$_lc_wtr3" "$ITERATION" "${CURRENT_US:-ALL}"

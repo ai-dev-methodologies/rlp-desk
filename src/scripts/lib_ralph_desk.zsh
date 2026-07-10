@@ -463,8 +463,13 @@ _kill_pane_process() {
     local _b4_t1_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' (locale-robust, matches t0)
     local _b4_t1_ms=${_b4_t1_str:0:13}
     local _b4_delta=$(( _b4_t1_ms - _b4_t0_ms ))
+    # codex round 3 R3-3: pass iter (was omitted — unlike every other
+    # lifecycle metric, which already carries its own .iter via F5's work)
+    # so this record is self-describing about its TRUE iteration even if
+    # it's retained across a failed campaign.jsonl flush and later gets
+    # rebuilt into a later, different iteration's row.
     log_lifecycle_metric "pane_eof_to_cleanup_ms" $_b4_delta \
-      "pane=$pane_id role=$role"
+      "pane=$pane_id role=$role" "${ITERATION:-}"
     if [[ -n "$sentinel_type" ]]; then
       log_lifecycle_metric "pane_reap_latency_ms" $_b4_delta \
         "pane=$pane_id role=$role sentinel_type=$sentinel_type" "${ITERATION:-}" "" "$sentinel_type"
@@ -695,14 +700,32 @@ _lifecycle_capture_write_to_read() {
   local _now_s="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' (locale-robust, matches _epoch_ms)
   local now_ms="${_now_s:0:13}"
   [[ "$now_ms" == <-> ]] || return 0
-  local mt_s=0
-  if zmodload -e zsh/stat 2>/dev/null || zmodload zsh/stat 2>/dev/null; then
+  # codex round 3 R3-1: mt_s starts EMPTY (not "0") so the fallback check
+  # below can actually tell "zstat never populated anything" apart from "a
+  # genuine mtime". A pre-init of "0" would itself pass the `<->` numeric
+  # glob, permanently skipping the fork-based fallback whenever zstat
+  # failed — the fallback comment claimed a contract the code never honored.
+  local mt_s=""
+  # codex round 3 R3-1 (found while writing the fallback test): `zmodload
+  # zsh/stat` (no -F) binds the SAME builtin under BOTH `zstat` and `stat` —
+  # zshmodules(1) documents this explicitly and recommends against it,
+  # because it shadows the external `stat` binary for the REST OF THE
+  # PROCESS. That silently broke this function's own fork-based fallback
+  # (_file_mtime calls `stat -c %Y`/`stat -f %m`, which would hit zsh's
+  # `stat` builtin instead — a different calling convention — once this
+  # module had been loaded once). `zmodload -F zsh/stat b:zstat` loads ONLY
+  # the `zstat` binding, leaving the external `stat` command untouched.
+  if zmodload -e zsh/stat 2>/dev/null || zmodload -F zsh/stat b:zstat 2>/dev/null; then
     local -A _lc_statarr
     zstat -H _lc_statarr +mtime -- "$file" 2>/dev/null
-    mt_s="${_lc_statarr[mtime]:-0}"
+    mt_s="${_lc_statarr[mtime]:-}"
   fi
-  [[ "$mt_s" == <-> ]] || mt_s=$(_file_mtime "$file")   # fallback: fork-based, only if zstat unavailable/failed
-  (( mt_s > 0 )) || return 0
+  # Fall back when zstat didn't run, returned nothing, returned something
+  # non-numeric, or returned a non-positive mtime (0/negative — either a
+  # capture failure or a pathological epoch-0 file; either way, worth a
+  # second opinion from the fork-based path before giving up).
+  [[ -n "$mt_s" && "$mt_s" == <-> ]] && (( mt_s > 0 )) || mt_s=$(_file_mtime "$file")
+  (( mt_s > 0 )) || return 0   # zstat AND the fallback both failed/invalid — drop (F7-consistent: no capture beats a wrong one)
   _LC_CAPTURED_DELTA=$(( now_ms - mt_s * 1000 ))
 }
 
