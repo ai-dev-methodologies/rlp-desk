@@ -497,7 +497,7 @@ launch_worker_codex() {
   paste_to_pane "$pane_id" "$worker_launch"
   tmux send-keys -t "$pane_id" C-m
 
-  # Wait for codex TUI prompt (›) instead of shell prompt
+  # Wait for codex TUI prompt (› pre-0.144, ❯ from 0.144) instead of shell prompt
   local _codex_ready=0
   local _codex_wait=0
   while (( _codex_wait < 30 )); do
@@ -531,7 +531,7 @@ launch_worker_codex() {
       tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
       (( _codex_wait++ )); continue
     fi
-    if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
+    if echo "$_pane_text" | grep -qE '[›❯]' 2>/dev/null; then
       _codex_ready=1
       log_debug "Worker codex TUI ready after ${_codex_wait}s"
       break
@@ -678,7 +678,7 @@ launch_verifier_codex() {
   paste_to_pane "$pane_id" "$verifier_launch"
   tmux send-keys -t "$pane_id" C-m
 
-  # Wait for codex TUI prompt (›) instead of shell prompt
+  # Wait for codex TUI prompt (› pre-0.144, ❯ from 0.144) instead of shell prompt
   local _codex_ready=0
   local _codex_wait=0
   while (( _codex_wait < 30 )); do
@@ -704,7 +704,7 @@ launch_verifier_codex() {
       tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
       (( _codex_wait++ )); continue
     fi
-    if echo "$_pane_text" | grep -q '›' 2>/dev/null; then
+    if echo "$_pane_text" | grep -qE '[›❯]' 2>/dev/null; then
       _codex_ready=1
       log_debug "Verifier codex TUI ready after ${_codex_wait}s"
       break
@@ -4243,8 +4243,8 @@ main() {
             log "  Consensus disagreement, treating as fail."
           elif (( consensus_rc != 0 )); then
             # Consensus verification failed entirely
-            log_error "Consensus verification failed"
-            write_blocked_sentinel "Consensus verification failed after max rounds" "" "repeat_axis"
+            log_error "Consensus verification failed (verifier/infra error before verdict)"
+            write_blocked_sentinel "Consensus verification failed (verifier/infra error before verdict)" "" "infra_failure"
             update_status "blocked" "consensus_failed"
             return 1
           fi
