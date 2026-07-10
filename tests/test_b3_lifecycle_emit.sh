@@ -560,6 +560,11 @@ grep -q "^_lifecycle_capture_write_to_read()" "$REPO/src/scripts/lib_ralph_desk.
 # CAPTURE-time window, not time elapsed during the simulated reap gap after it
 # — proving the two-phase split doesn't just move the same live computation
 # later, but actually freezes the value at capture time.
+#
+# codex round 2 (R2-1): _lifecycle_capture_write_to_read no longer PRINTS the
+# delta (a stdout-capture fork) — it sets the global $_LC_CAPTURED_DELTA
+# directly, so the caller reads it with a plain assignment (no fork). This
+# harness exercises that exact contract.
 wtr=$(zsh -c '
   source "'"$LIB"'" 2>/dev/null
   log(){ :; }; log_debug(){ :; }
@@ -568,7 +573,8 @@ wtr=$(zsh -c '
   D=$(mktemp -d)
   F="$D/sig.json"
   echo "{}" > "$F"
-  delta=$(_lifecycle_capture_write_to_read "$F")
+  _lifecycle_capture_write_to_read "$F"
+  delta="$_LC_CAPTURED_DELTA"
   sleep 1.5   # simulated reap gap — must NOT be re-measured into the emitted value
   _lifecycle_emit_write_to_read "iter_signal_write_to_read_ms" "$F" "$delta" 3 US-002
   print -r -- "$delta"
@@ -615,6 +621,71 @@ order_check=$(awk '
 [[ "$order_check" == "OK" ]] \
   && ok "F2: all 4 write_to_read call sites follow capture(pre-reap) -> reap -> emit(post-reap) ordering" \
   || no "F2: capture/reap/emit ordering violated: $order_check"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 2 R2-1: the "cheap" pre-reap capture still paid 3 nested forks
+# per call — the outer `_lc_wtrN=$(_lifecycle_capture_write_to_read ...)`
+# call-site assignment, the inner `now_ms=$(_epoch_ms)` (a fork just to
+# invoke an already-fork-free function), and `mt_s=$(_file_mtime "$file")`
+# (a fork to invoke a function that itself forks the external `stat`
+# binary) — delaying the reap that actually stops the claude/codex TUI from
+# self-reviewing. Made genuinely fork-free: now_ms computed inline from
+# $EPOCHREALTIME (no function-call fork); mtime read via the zsh/stat
+# module's `zstat` builtin (no external `stat` fork); the capture function
+# writes its result into the global $_LC_CAPTURED_DELTA instead of printing
+# to stdout, so callers assign it directly (no command-substitution fork).
+# NOT deferred to post-reap (the other option R2-1 offered): the mtime
+# stat's whole purpose is to catch the race where the reap arrives late and
+# the producer rewrites the file — deferring the stat to after the reap
+# would silently read the SECOND (race) write's mtime, making the metric
+# look artificially LOW exactly when it should be catching a real race.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 31) Structural: _lifecycle_capture_write_to_read's body no longer forks to
+# invoke _epoch_ms() or _file_mtime() — both were function calls wrapped in
+# $(...), which forks a subshell regardless of whether the called function
+# itself forks.
+_lcwtr_body=$(awk '/^_lifecycle_capture_write_to_read\(\)/,/^}/' "$REPO/src/scripts/lib_ralph_desk.zsh")
+print -r -- "$_lcwtr_body" | grep -qE '\$\(_epoch_ms\)' \
+  && no "R2-1: _lifecycle_capture_write_to_read still forks via \$(_epoch_ms)" \
+  || ok "R2-1: _lifecycle_capture_write_to_read computes now_ms inline (no \$(_epoch_ms) fork)"
+print -r -- "$_lcwtr_body" | grep -qE '\bzstat\b' \
+  && ok "R2-1: _lifecycle_capture_write_to_read reads mtime via the fork-free zstat builtin" \
+  || no "R2-1: _lifecycle_capture_write_to_read does not use zstat for mtime"
+
+# 32) Structural: the 4 call sites in run_ralph_desk.zsh no longer wrap
+# _lifecycle_capture_write_to_read in a $(...) command substitution.
+capture_fork_count=$(grep -cE '=\$\(_lifecycle_capture_write_to_read' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$capture_fork_count" == "0" ]] \
+  && ok "R2-1: no call site still wraps _lifecycle_capture_write_to_read in \$(...)" \
+  || no "R2-1: $capture_fork_count call site(s) still fork via \$(_lifecycle_capture_write_to_read ...)"
+
+# 33) Structural: all 4 call sites use the new no-fork 2-line pattern —
+# _lifecycle_capture_write_to_read "$FILE" as a bare statement, immediately
+# followed by a plain (non-forking) assignment reading $_LC_CAPTURED_DELTA.
+capture_noforkassign_count=$(awk '
+  /^\s*_lifecycle_capture_write_to_read "\$(VERDICT_FILE|SIGNAL_FILE)"$/ { getline nxt; if (nxt ~ /="\$_LC_CAPTURED_DELTA"$/) n++ }
+  END { print (n+0) }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$capture_noforkassign_count" == "4" ]] \
+  && ok "R2-1: all 4 call sites read \$_LC_CAPTURED_DELTA via a plain (fork-free) assignment" \
+  || no "R2-1: expected 4 fork-free capture-read sites, got $capture_noforkassign_count"
+
+# 34) Behavioral (regression): the fork-free capture still reads a real
+# mtime correctly via zstat — sanity-checks the zstat wiring end-to-end
+# against an actual file, not just the string-substitution math.
+zstat_sanity=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  export RLP_LIFECYCLE_METRICS=1
+  D=$(mktemp -d)
+  F="$D/f.json"
+  echo "{}" > "$F"
+  _lifecycle_capture_write_to_read "$F"
+  print -r -- "$_LC_CAPTURED_DELTA"
+  rm -rf "$D"')
+[[ -n "$zstat_sanity" ]] && (( zstat_sanity >= 0 && zstat_sanity < 5000 )) \
+  && ok "R2-1: fork-free zstat-based capture returns a sane delta (value_ms=$zstat_sanity)" \
+  || no "R2-1: fork-free capture returned an unsane/empty delta ($zstat_sanity)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # codex P2 sweep F3: _lock_sentinel / _unlock_sentinel currently ALWAYS
