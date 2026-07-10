@@ -14,11 +14,11 @@ import {
 // Two contracts under test:
 //   AC4.2 (zero-overhead when explicitly disabled): record() / markLockStart() /
 //         markUnlock() / flush() must short-circuit. flush() returns null.
-//         v0.15.5 full-wire: the flag defaults ON — "0" is the sole opt-out.
+//         v0.22.0 full-wire: the flag defaults ON — "0" is the sole opt-out.
 //   AC4.1 (per-event emission): record() accumulates; flush() emits a grouped
 //         object; sentinel lock/unlock pair produces sentinel_lock_to_unlock_ms.
 
-test('AC4.2 (v0.15.5 full-wire): collector is ENABLED by default when env flag is unset', () => {
+test('AC4.2 (v0.22.0 full-wire): collector is ENABLED by default when env flag is unset', () => {
   const c = new LifecycleMetricsCollector({ env: {} });
   assert.equal(c.enabled, true);
   c.record('iter_signal_write_to_read_ms', 1234, { iter: 1 });
@@ -112,7 +112,7 @@ test('AC4.2: debugLog is NOT called when explicitly disabled (zero overhead)', (
   assert.equal(seen.length, 0, 'no debugLog calls when disabled');
 });
 
-test('lifecycleMetricsEnabled() exact boolean semantics (v0.15.5 full-wire: default ON, "0" opts out)', () => {
+test('lifecycleMetricsEnabled() exact boolean semantics (v0.22.0 full-wire: default ON, "0" opts out)', () => {
   assert.equal(lifecycleMetricsEnabled({}), true, 'unset defaults to enabled');
   assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '0' }), false, 'explicit "0" opts out');
   assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '' }), true);

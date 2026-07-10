@@ -118,7 +118,7 @@ b3_assert_lifecycle_metric_within_band() {
 # Tolerance bands.
 #
 # iter_signal / verdict / pane_reap_latency: Node-leader synthetic bands (2026-05-07,
-# b3-band-revalidation.mjs, 5-iter Node sample). v0.15.5 full-wire: these three metrics
+# b3-band-revalidation.mjs, 5-iter Node sample). v0.22.0 full-wire: these three metrics
 # are now ALSO emitted by the zsh leader (--mode tmux), reusing the Node-derived bands
 # below as a first-pass approximation — they have not yet been refit against a zsh
 # sample the way pane_eof_to_cleanup_ms was (see the REFIT note directly below). Until

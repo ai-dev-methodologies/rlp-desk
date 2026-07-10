@@ -3,7 +3,7 @@
 // Plan: docs/plans/v0.15-phase-b-plan-v3.md §B4.
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §3 Table 2.
 //
-// Five metrics tracked, ON BY DEFAULT since the v0.15.5 full-wire (opt out
+// Five metrics tracked, ON BY DEFAULT since the v0.22.0 full-wire (opt out
 // with RLP_LIFECYCLE_METRICS=0):
 //   - iter_signal_write_to_read_ms     leader-poll-resolves vs worker-FS-write
 //   - verdict_write_to_read_ms          leader-poll-resolves vs verifier-FS-write

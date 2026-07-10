@@ -372,7 +372,7 @@ Wired the 4 lifecycle metrics that were previously Node-only
 (`iter_signal_write_to_read_ms`, `verdict_write_to_read_ms`,
 `pane_reap_latency_ms`, `sentinel_lock_to_unlock_ms`) into the zsh production
 leader (`src/scripts/run_ralph_desk.zsh` / `lib_ralph_desk.zsh`), so all 5
-lifecycle metrics now emit identically on both the Node (`--mode agent`) and
+lifecycle metrics now emit identically on both the Node (slash-command `--mode native`) and
 zsh (`--mode tmux`) leaders, and flipped `RLP_LIFECYCLE_METRICS` to default ON
 (opt out with `=0`).
 
@@ -491,7 +491,7 @@ against the pre-fix code, then implemented).
 check on `"${RLP_LIFECYCLE_METRICS:-1}" == "1"` while Node's
 `lifecycleMetricsEnabled` is `env[FLAG] !== '0'`. Consequence:
 `RLP_LIFECYCLE_METRICS=true` would DISABLE telemetry on the zsh (`--mode
-tmux`) leader while ENABLING it on the Node (`--mode agent`) leader — a real
+tmux`) leader while ENABLING it on the Node (slash-command `--mode native`) leader — a real
 cross-leader divergence, not just a docs nit. Fix: all 7 zsh gate checks (the
 6 pre-existing ones from the first full-wire commit plus the new
 `_lifecycle_clear_lock_mark` added below) now use

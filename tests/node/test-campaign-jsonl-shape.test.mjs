@@ -12,7 +12,7 @@ import { LifecycleMetricsCollector } from '../../src/node/util/lifecycle-metrics
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §3 Table 2.
 //
 // Asserts the campaign.jsonl per-iter record shape under both flag states
-// (v0.15.5 full-wire: RLP_LIFECYCLE_METRICS now defaults ON; "0" is the sole
+// (v0.22.0 full-wire: RLP_LIFECYCLE_METRICS now defaults ON; "0" is the sole
 // opt-out — see src/node/util/lifecycle-metrics.mjs):
 //   - Flag "0" (explicit opt-out): lifecycle_metrics field is null. Existing
 //                analytics consumers see no breakage.
@@ -84,7 +84,7 @@ async function readJsonl(filePath) {
 
 // ────────────────────────────────────────────────────────────────────────────
 // AC4.3 / AC4.7 — Flag explicitly disabled: lifecycle_metrics is null (no breakage)
-// v0.15.5 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so "flag unset" no
+// v0.22.0 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so "flag unset" no
 // longer produces the disabled/null shape — an explicit "0" opt-out does.
 // ────────────────────────────────────────────────────────────────────────────
 test('B4 AC4.3/4.7: lifecycle_metrics is null when explicitly disabled (RLP_LIFECYCLE_METRICS=0)', async (t) => {

@@ -240,7 +240,7 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
       { verdict: 'pass', recommended_state_transition: 'complete' },
     ]),
     runIntegrationCheck: async () => ({ exitCode: 0 }),
-    // v0.15.5 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so this test's
+    // v0.22.0 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so this test's
     // "null when disabled" assertion below needs an EXPLICIT opt-out — an
     // unset process.env would otherwise emit lifecycle_metrics here too (see
     // test-campaign-jsonl-shape.test.mjs for the populated-object coverage).
