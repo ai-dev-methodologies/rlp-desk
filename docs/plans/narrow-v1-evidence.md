@@ -755,3 +755,309 @@ ones removed). A5 oracle (`git diff b3d27da..HEAD` on the 3 protected files)
 empty.
 
 Commit: `fix(b4): clear lifecycle lock marks in atomic_write — closes the stale-mark class (codex round 3)`.
+
+## sol-max P2 sweep — 9 findings on the v0.22.0 lifecycle-metrics work (2026-07-10)
+
+A gpt-5.6-sol max-effort adversarial review (executable probes, not
+inference-only) of the v0.22.0 full-wire lifecycle-metrics work (the 4
+commits landing between `f0d3b3b` and `6cf3baa` above) surfaced 9 P2
+findings, all fixed on branch `fix/b4-p2-sweep`. TDD throughout: a RED
+commit (new/updated assertions failing against the pre-fix code) followed by
+a GREEN commit (the fix, all assertions passing), with related findings
+grouped into one commit pair where they touched the same lines.
+
+### F1 — `pane_reap_latency_ms` "wrong window" (resolved as a DOC fix)
+
+The finding: `_kill_pane_process` (lib_ralph_desk.zsh) records the same
+`$_b4_delta` for both `pane_eof_to_cleanup_ms` and `pane_reap_latency_ms`,
+where the advertised contract implied `pane_reap_latency_ms` measures a
+distinct "sentinel-observed to shell-idle" window.
+
+Node evidence checked before deciding direction: `reapProducer` in
+`src/node/runner/campaign-main-loop.mjs:1455-1482` computes ONE `reapMs =
+Date.now() - reapStart` (kill-start to `killPaneProcess` resolve) and calls
+`lifecycleMetrics.record()` with that SAME value under BOTH metric names —
+`pane_reap_latency_ms` only additionally carries `sentinel_type` context
+when the reap followed a sentinel observation. Node's own implementation
+never measured a "sentinel-observed to shell-idle" window either. The zsh
+side was therefore already CORRECT and already mirrored Node exactly — the
+bug was in the ADVERTISED contract text, not the code.
+
+Fix direction: doc-only. Corrected README.md's metrics table and
+lifecycle-metrics.mjs's header comment (both previously described
+`pane_reap_latency_ms` as a distinct window); added an in-code note at the
+zsh `_kill_pane_process` site; added a regression-lock assertion (case 15 in
+`tests/test_b3_lifecycle_emit.sh`) that fails if the two metrics' `value_ms`
+ever diverge, protecting the "same window by design" contract going forward.
+
+Commit: `0bd9e1a` (docs+test, combined with F8's two vacuous-test fixes
+below since all three touch the same test cases).
+
+### F8 — vacuous lifecycle-emit assertions (test-only, no production bug)
+
+Cases 11 and 17 in `tests/test_b3_lifecycle_emit.sh` asserted `!= null` as
+proof that telemetry was emitted — an empty `{}` (flag on, zero records,
+e.g. a silently broken accumulator) also satisfies `!= null`, so a real
+regression in record accumulation would not have been caught. Tightened
+both to require the `pane_eof_to_cleanup_ms` key present with `>= 1` record.
+The third F8 target (the "fake-pane" test, case 15) is the same case F1's
+regression lock landed in above — assertion form was "if F1 resolves to
+doc-fix, assert the corrected contract," which is what case 15 now does.
+
+Commit: `0bd9e1a` (same as F1).
+
+### F2 — default-on instrumentation widened the post-sentinel race
+
+Two sub-findings, fixed together since they touch `log_lifecycle_metric`'s
+body and its 4 call sites:
+
+**(a) Fork elimination in `log_lifecycle_metric`.** Record assembly forked
+`date -u` (timestamp) and `jq -nc` (JSON build) per call, plus spawned a
+background debug-log subshell unconditionally (even when `DEBUG=0`, the
+production default). Replaced `date -u` with the zsh/datetime `strftime`
+builtin — this build's `strftime` has no `-u` flag (confirmed empirically:
+`zsh:strftime:1: bad option: -u` on zsh 5.9/arm64-darwin), so `TZ=UTC
+strftime -s _ts ...` is used instead: a builtin env-prefix does not fork,
+and `-s` writes directly into a variable, avoiding a `$(...)` capture fork
+too. Replaced `jq -nc` with hand-built JSON, gated by field-charset checks
+(`=~`, not `##` zsh-glob repetition — see the correctness note below) since
+`value_ms` is already digit-validated, `metric` is a hardcoded call-site
+literal, and `iter`/`us_id`/`sentinel_type` are leader-generated identifiers
+(an integer, `"US-###"`, or a fixed sentinel-tag/file-basename vocabulary
+like `"iter-signal"` or `"verdict.json"`) — never raw user/LLM text. The
+debug-log subshell fork is now gated on `(( DEBUG ))` itself, not left to
+`log_debug`'s own internal check.
+
+Correctness note found during development: the first implementation used
+`[[ "$metric" == [a-zA-Z0-9_]## ]]` (zsh's `##` "one or more" glob
+repetition), which silently requires `setopt extendedglob` — NOT enabled
+in this file. Every such check matched literal characters `##` instead of
+repeating, so `[[ "$metric" == [a-zA-Z0-9_]## ]]` on `"pane_eof_to_cleanup_ms"`
+returned false, and every record was silently dropped. Caught by running the
+full test suite after the first implementation pass (22 of 45 assertions
+FAILed with 0-record counts across previously-passing cases). Switched to
+`=~` POSIX-ERE matching (`^[a-zA-Z0-9_]+$`), which is available in zsh's
+`[[ ]]` without any `setopt`, and re-verified.
+
+**(b) Capture-before-reap / emit-after-reap split at the 4 call sites.**
+`_lifecycle_emit_write_to_read` (worker iter-signal path,
+`run_single_verifier`, `_final_verify_one_us`, the inline single-engine
+verify path) ran its full stat+timestamp+fork chain BEFORE
+`_kill_pane_process`, delaying the moment the leader actually stops the
+claude/codex TUI from self-reviewing — widening exactly the post-sentinel
+race window B4 exists to close. Split into
+`_lifecycle_capture_write_to_read` (cheap: one unavoidable `stat` fork via
+`_file_mtime` + a fork-free `$EPOCHREALTIME` diff via `_epoch_ms`) called
+BEFORE the reap, and `_lifecycle_emit_write_to_read` (the fork-bearing
+`log_lifecycle_metric` call, now itself fork-free per (a)) called AFTER it,
+at all 4 sites.
+
+RED: `36c0131` (capture/reap/emit ordering + delta-freezing tests),
+`b5b8ae5` (fork-free + DEBUG-gated structural tests, combined with F7's RED
+below since both touch `log_lifecycle_metric`). GREEN: `dc7232c` (F2 fork
+elimination + F7, combined — see F7) landed the `log_lifecycle_metric`
+rewrite; the capture/emit split and 4 call-site rewiring landed in the same
+commit.
+
+### F7 — negative/malformed `value_ms` clamped to 0 → false B3 pass
+
+`log_lifecycle_metric` clamped a negative or non-numeric `value_ms` to `0`
+and kept the record — this let a corrupted measurement (EPOCHREALTIME
+mis-scale near a second rollover, comma-decimal `LC_NUMERIC` corruption,
+clock skew) silently satisfy B3-S2's `<= band` regression check as a FALSE
+PASS. Fixed to DROP the record entirely (one DEBUG-gated warning logged)
+instead of clamping, while keeping a genuine `0` (real sub-ms measurement):
+`[[ "$value_ms" == <-> ]]` (zsh's always-available numeric-range glob, no
+`extendedglob` needed) matches a plain non-negative digit sequence, so `"0"`
+passes and `"-50"`/`"abc"`/`""` do not. This is a DELIBERATE divergence from
+Node's `LifecycleMetricsCollector.record()`, which still clamps-and-keeps
+(`Math.max(0, Math.round(valueMs))`) — documented directly in the
+cross-leader parity test (case 10) so a future edit does not "fix" this back
+to Node parity by mistake.
+
+RED: `b5b8ae5`. GREEN: `dc7232c` (combined with F2's `log_lifecycle_metric`
+rewrite, same lines).
+
+### F3 — lock metrics emitted when no lock/unlock occurred
+
+`_lock_sentinel`/`_unlock_sentinel` always returned 0 regardless of whether
+`chmod` actually succeeded, via an explicit `chmod ... || true; return 0`.
+A caller marking a `sentinel_lock_to_unlock_ms` lock-start before calling
+`_lock_sentinel` had no way to detect a genuine `chmod` failure (permission
+denied, FS error, ENOENT race) — the pending mark still got paired with a
+later unlock as if the lock had really happened.
+
+Checked existing callers before changing the return contract (per the
+finding's explicit instruction): two existing tests —
+`test_b2fix_sentinel_lock.sh` AC-B3 and `test-bug7-post-sentinel-race.sh`
+Scenario B — pin "`_lock_sentinel` on a MISSING file returns 0 (fail-open,
+idempotent)" as a named, intentional acceptance criterion. Preserved that
+half exactly (missing file still returns 0); only a `chmod` that genuinely
+FAILS on an EXISTING file now propagates as non-zero — a case those two
+tests never exercised either way (both only cover the missing-file and
+success/FS-ignores-chmod cases). No production caller relied on the
+old always-0 contract for control flow (grepped every call site — all bare
+statements, and this repo runs `set -uo pipefail`, explicitly NOT `-e`, so
+no accidental early-exit risk either). Guarded the 4 VERDICT_FILE/SIGNAL_FILE
+lock call sites (clear the just-set mark on lock failure) and both loop-top
+unlock sites (mark_unlock only fires when the unlock succeeded); the 3
+DONE_CLAIM_FILE-only lock sites (no adjacent mark — H2 exclusion) got an
+explicit `|| true` per the finding's guidance.
+
+Two pre-existing structural tests needed updating for the new line offsets
+introduced by the guard blocks: `test_b2fix_sentinel_lock.sh`'s "Site 3"
+window (10→20 lines, since the SIGNAL_FILE lock guard added lines between
+the reap marker and the DONE_CLAIM_FILE lock) and the VERDICT_FILE
+clear-mark-count pin in both `sv-gate-fast.sh` and
+`test_b3_lifecycle_emit.sh` (4→7, since the 3 new F3 lock-failure guards
+add 3 more `_lifecycle_clear_lock_mark "${VERDICT_FILE:t}"` sites alongside
+the 4 existing F4 rm-site clears).
+
+RED: `2805347`. GREEN: `a8772be`.
+
+### F4 — rm sites clear marks before confirming deletion
+
+The 4 rm-site lock-mark clears (`run_single_verifier`,
+`_final_verify_one_us` top + retry, the inline single-engine verify path)
+cleared the pending mark BEFORE confirming `rm -f "$VERDICT_FILE"` actually
+succeeded — if `rm` failed (read-only directory, permission error), the
+mark was dropped anyway even though the stale verdict file it was
+protecting against was still on disk. Reordered all 4 to `rm -f ... &&
+_lifecycle_clear_lock_mark ...`; `rm -f` on an already-absent file still
+returns 0, so the common case is unaffected. The 5th VERDICT_FILE `rm`
+(loop-top cleanup, combined with SIGNAL_FILE/DONE_CLAIM_FILE) is
+untouched — already safe via its own unlock+mark_unlock pairing just above
+it.
+
+RED simulated a real `rm` failure via a `chmod 0555` read-only directory
+(portable, no root needed) — confirmed `rm -f` genuinely fails (rc=1) in
+that setup before writing the test.
+
+RED: `c178352` (combined with F9's "failing rm keeps the mark" behavioral
+case, per the finding's explicit pairing instruction). GREEN: `95ba8f4`.
+
+### F5 — lock samples attributed to iter N+1, terminal samples lost
+
+Two sub-findings:
+
+**(a) Iter misattribution.** `_lifecycle_mark_lock_start` did not record
+which iteration a lock started in; `_lifecycle_mark_unlock` tagged the
+emitted record with whatever AMBIENT `$ITERATION` the caller happened to
+pass at unlock time. Since the main loop is `for (( ITERATION = 1; ITERATION
+<= MAX_ITER; ITERATION++ ))` (a zsh C-style `for`, which increments at the
+END of each body — confirmed empirically, not assumed), a lock started
+during iteration N's worker-success branch and unlocked at iteration N+1's
+loop-top cleanup (normal flow) got its record wrongly tagged `iter=N+1`.
+Fixed by adding a parallel `LIFECYCLE_LOCK_ITERS` map: `_lifecycle_mark_lock_start`
+now stores the current iter at mark-time, and `_lifecycle_mark_unlock`
+prefers that STORED iter, falling back to the ambient one only when nothing
+was stamped (preserves the existing 1-arg test harness calls in cases
+19-27, which pass the iter directly to `_lifecycle_mark_unlock` and expect
+it verbatim).
+
+**(b) Terminal samples lost.** A COMPLETE exit (leader-finalize
+sequential-verify pass, full/ALL verify pass) `return`s straight out of the
+campaign loop, skipping the loop-top unlock block that normally closes out
+the last iteration's lock — there is no "next iteration" for it to run in —
+silently dropping that sample from campaign.jsonl. Added
+`_lifecycle_flush_pending_locks`: emits every still-pending lock/unlock pair
+(each with its own stored iter) and is a no-op when nothing is pending.
+Wired immediately before both COMPLETE-exit `write_campaign_jsonl` calls.
+Scoped narrowly to the two COMPLETE (success) exits per the finding's
+explicit wording ("Terminal paths ... and any COMPLETE exit") — not
+generalized to every `return` in the campaign loop, which would have been a
+broader behavior change than requested.
+
+Debugging note: the first `_lifecycle_flush_pending_locks` implementation
+used `for k in "${(k)LIFECYCLE_LOCK_TIMES}"` (no `[@]`), which zsh collapses
+into ONE space-joined scalar when quoted for an associative array — the
+loop ran once over `"b.json a.json"` as a single non-existent key instead of
+twice. Fixed to `"${(k)LIFECYCLE_LOCK_TIMES[@]}"`; confirmed via a minimal
+repro before touching the real fix.
+
+RED: `6ed529a`. GREEN: `16083f7`.
+
+### F6 — campaign.jsonl append failure masked
+
+`write_campaign_jsonl` piped `jq -nc ...` straight into `>> "$CAMPAIGN_JSONL"`
+with no error check on either the jq build or the append, and
+unconditionally reset `LIFECYCLE_RECORDS` afterward regardless of outcome —
+an append failure (disk full, permission error, missing parent directory)
+silently dropped both the campaign.jsonl row and the pending lifecycle
+metrics for that iteration, with no diagnostic and no retry. Fixed: the
+complete line is now built into a variable first (jq's exit code AND
+non-empty output are both checked), then appended in a single `print -r --`
+write with its own rc check. On EITHER failure: `log_error` + `return 1`
+WITHOUT resetting the accumulator, so pending records survive to be retried
+on the next flush. Building the complete line before the single write also
+avoids a partial-line write (jq streaming its own output directly into the
+file could interleave a truncated line with a concurrent/subsequent write).
+Success path is unchanged.
+
+RED: `9f330fd`. GREEN: `1194d1b`.
+
+### F9 — vacuous/failure-blind mutation tests
+
+Two sub-findings:
+
+**(a) Hook-placement check verified presence, not position.** Case 22 (the
+structural check that `atomic_write()` contains the
+`_lifecycle_clear_lock_mark` hook, from codex round 3 above) only checked
+that the call appears SOMEWHERE inside `atomic_write()`'s body — a future
+edit moving the clear call BEFORE the `mv` would reintroduce the exact
+"cleared before confirming" bug class F4 fixed at the rm sites, but inside
+`atomic_write()` itself, and this check would not catch it. Added a
+line-position check (the clear call's line number inside the extracted
+function body must exceed the `mv` line's).
+
+**(b) Mutation-test harnesses (cases 25-27) were failure-blind.** The
+reviewer proved that on a hardened/read-only host, a silent `mktemp`/
+`atomic_write` setup failure inside these `zsh -c` scratch scripts would
+leave `LIFECYCLE_RECORDS` at its expected count "by accident" (nothing got
+marked/recorded on either success or failure path for these specific
+assertions) — the test would print PASS without ever having exercised the
+atomic_write-replace path it claims to prove. Added `set -e` to all 3
+harnesses so a genuine setup failure aborts the script instead of letting
+the assertion misread missing/empty output as a coincidental pass.
+
+**(c) The required behavioral case** ("a failing rm (read-only dir) keeps
+the mark, pairs with F4") was added as part of the F4 commit (case 38 in
+`test_b3_lifecycle_emit.sh`) since it's the same finding pairing the task
+explicitly called out — no duplicate added here.
+
+Commit: `9d70231` (test-only — no production code change for F9; (c) landed
+in F4's `c178352`/`95ba8f4` pair).
+
+### Final gate results (full sweep, all 9 findings)
+
+```
+zsh -n src/scripts/run_ralph_desk.zsh   → clean
+zsh -n src/scripts/lib_ralph_desk.zsh   → clean
+zsh tests/test_b3_lifecycle_emit.sh     → 72/72 PASS (was 45/45 pre-sweep)
+npm run test:zsh                        → exit 0, 0 FAIL/✗ across 1788 lines
+npm run test:node                       → 450/450 PASS, 0 fail
+npm run sv-gate:fast                    → 99/99 pass — OK
+```
+
+A5 oracle (v0.22.0 anchor `7038a14`, `git diff 7038a14..HEAD` on
+`src/commands/rlp-desk.md`, `src/governance.md`,
+`src/scripts/init_ralph_desk.zsh`): empty — none of the 3 protected trigger
+files were touched by this sweep.
+
+### Commit list (branch `fix/b4-p2-sweep`, oldest first)
+
+```
+0bd9e1a docs+test: correct pane_reap_latency_ms contract (F1) + tighten vacuous lifecycle assertions (F8)
+b5b8ae5 test: RED — F7 drop negative/malformed value_ms, F2 fork-free log_lifecycle_metric
+36c0131 test: RED — F2 capture-before-reap / emit-after-reap split at the 4 write_to_read call sites
+dc7232c fix(b4): F7 drop negative/malformed value_ms + F2 fork-free metrics and capture-before-reap/emit-after-reap split
+2805347 test: RED — F3 honest _lock_sentinel/_unlock_sentinel return codes + guarded lifecycle marks
+a8772be fix(b4): F3 — _lock_sentinel/_unlock_sentinel return real success/failure, guard lifecycle marks on failure
+c178352 test: RED — F4 rm-then-clear ordering + F9 failing-rm-keeps-mark
+95ba8f4 fix(b4): F4 — clear lifecycle lock-mark only after a confirmed rm
+6ed529a test: RED — F5 stamp lock-time iter + flush pending locks on COMPLETE exit
+16083f7 fix(b4): F5 — stamp lock-time iter, flush pending locks before a COMPLETE exit
+9f330fd test: RED — F6 campaign.jsonl append failure must not be masked
+1194d1b fix(b4): F6 — campaign.jsonl append failure is no longer masked
+9d70231 test: F9 — harden mutation-test harnesses (set -e) + positional hook-placement check
+```
