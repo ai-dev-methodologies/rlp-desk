@@ -557,3 +557,89 @@ side untouched this round, no regression). `npm run sv-gate:fast` → 95/95
 sites). A5 oracle (`git diff b3d27da..HEAD` on the 3 protected files) empty.
 
 Commit: `fix(b4): unify flag semantics + verdict lock-pair hygiene (codex round 1)`.
+
+### Codex round 2 — atomic verdict replacement sites (same P2-2 class)
+
+Codex confirmed round 1's 4 rm-site fixes and the loop-top analysis were
+correct, and found ONE remaining P2 of the same class: `atomic_write
+"$VERDICT_FILE"` replaces the file via tmp+`mv` without clearing/refreshing
+the pending lock mark, at 3 sites round 1 missed (rm and atomic_write are
+different call shapes, so the round-1 grep for `rm -f.*VERDICT_FILE` didn't
+catch these).
+
+**Full enumeration of every VERDICT_FILE/SIGNAL_FILE write-or-delete site**,
+so round 3 doesn't find a third batch:
+
+| # | Site | Kind | Mark handling |
+|---|---|---|---|
+| 1 | `run_single_verifier` top (~2907) | `rm -f VERDICT_FILE` | clear (round 1) |
+| 2 | `_final_verify_one_us` top (~3077) | `rm -f VERDICT_FILE` | clear (round 1) |
+| 3 | `_final_verify_one_us` D-4 retry (~3113) | `rm -f VERDICT_FILE` | clear (round 1) |
+| 4 | main consensus loop pre-dispatch (~4189) | `rm -f VERDICT_FILE` | clear (round 1) |
+| 5 | loop-top cleanup (~3828) | `rm -f SIGNAL_FILE DONE_CLAIM_FILE VERDICT_FILE` | already safe — immediately preceded by `_unlock_sentinel` + `_lifecycle_mark_unlock` in the same block (normal pairing clears it) |
+| 6 | `run_consensus_verification` pass-merge (~3367) | `atomic_write VERDICT_FILE` | **clear (round 2, new)** |
+| 7 | `run_consensus_verification` fail-merge (~3426) | `atomic_write VERDICT_FILE` | **clear (round 2, new)** |
+| 8 | main loop sequential-final-verify-failure synthesis (~4122) | `atomic_write VERDICT_FILE` | **clear (round 2, new)** |
+| 9 | `_migrate_legacy_verdict` (lib:1852) | `mv -f LEGACY_VERDICT_FILE VERDICT_FILE` | **checked, no fix needed** — see below |
+| 10 | `run_single_verifier` (~3015), `_final_verify_one_us` (~3205) | `cp VERDICT_FILE → verdict_dest` | not a write TO VERDICT_FILE (reads it, writes a *different* per-engine archive path) — no mark interaction |
+| 11 | `_final_verify_one_us` (~3051) | `atomic_write SIGNAL_FILE` | checked — SIGNAL_FILE's only lock/unlock pair is the worker-success site + loop-top; this scoped-signal write happens during the VERIFY phase, after SIGNAL_FILE was already unlocked+re-locked-N/A for this iteration's worker pass, and before the next loop-top unlock — same "no lock is currently pending across a legitimate content change" shape as `_migrate_legacy_verdict`, confirmed no dangling-mark path |
+| 12 | leader D-16 finalize signal (~3809) | `atomic_write SIGNAL_FILE` | writes BEFORE the normal worker-poll-success lock cycle even starts (SKIP_NEXT_WORKER path) — the subsequent `poll_for_signal` + lock at the worker-success branch is the FIRST lock this iteration, nothing pending to clear |
+
+Row 9 (`_migrate_legacy_verdict`) reasoning in full: its `mv -f` only ever
+fires from `_verifier_pane_has_verdict()` (called by `check_no_progress`,
+itself called from *inside* `poll_for_signal`'s own polling loop for
+`$VERDICT_FILE`) or from `run_single_verifier`'s codex branch guarded by
+`[[ -f "$VERDICT_FILE" ]] || _migrate_legacy_verdict` (only fires when
+canonical is ALREADY absent). Both call sites are strictly *between* that
+poll cycle's clear-before-dispatch (round 1 fix, already run before the
+verifier was even launched) and that SAME cycle's eventual accept+lock — so
+no pending mark can exist at the moment this mv fires. Documented inline at
+the function definition (run_ralph_desk.zsh:1845-1851) and pinned by the
+"got 7" (not 10) structural test — deliberately NOT wired with a clear call,
+since there is nothing to clear.
+
+**Chosen semantics for the 3 new atomic_write sites: clear, not refresh** —
+checked against what happens immediately after each write:
+- Sites 6/7 (`run_consensus_verification`): after either merge write, the
+  function just `return`s; the caller (main loop, ~4106) falls through to a
+  SHARED verdict-reading block (`jq -r '.verdict' "$VERDICT_FILE"`, ~4271)
+  that does NOT call `_lock_sentinel` again. `atomic_write`'s tmp+`mv` also
+  does not preserve the replaced file's chmod bits (confirmed by reading
+  `atomic_write`'s implementation, lib:302-320 — `cat > tmp; mv tmp target`),
+  so the merged file is factually UNLOCKED on disk after this write. A clear
+  (not refresh) correctly reflects that: the eventual loop-top
+  `_lifecycle_mark_unlock` finds no mark and silently no-ops (matches Node's
+  markUnlock-without-markLockStart no-op) — no false metric, which is honest
+  since this merged verdict was never locked via `_lock_sentinel` in the
+  first place.
+- Site 8 (sequential-final-verify-failure synthesis): the write is
+  immediately followed by falling through to the SAME consensus/single-engine
+  dispatch every other verify path goes through (~4132 `_should_use_consensus`
+  check) — which either re-enters `run_consensus_verification` (sites 6/7,
+  its own clear+write) or the single-engine inline path (round-1-fixed
+  rm+clear+relock at ~4189). Either branch naturally re-establishes its own
+  fresh mark on success, so clearing here (rather than refreshing) is correct
+  and consistent with sites 6/7 — it never depends on which branch runs next.
+
+TDD: RED confirmed against pre-fix code — 2 new structural cases failed (7
+non-loop-top clear-mark sites, expected got 4; 3 atomic_write sites
+immediately preceded by clear-mark, expected got 0). The behavioral case
+(lock→clear→real `atomic_write()`→re-lock→unlock, exercising the actual
+`atomic_write` helper from lib_ralph_desk.zsh, not just the isolated
+lock-mark helpers) already passed pre-fix since it doesn't depend on the
+production call-site wiring — kept as a regression guard. One structural
+test needed a follow-up fix mid-round: the initial "immediately preceded"
+check used a 3-line lookback window, which missed 2 of the 3 sites because
+the clear call sits above a multi-line `{ echo ...} | atomic_write` JSON
+block (14 lines for the pass-merge site); widened to 15 lines (still
+site-local — the 3 sites are 59+ lines apart, so no cross-site
+false-positive risk).
+
+GREEN: `zsh tests/test_b3_lifecycle_emit.sh` → 36/36 PASS. `npm run
+test:zsh` → exit 0, zero FAIL markers. `npm run test:node` → 450/450 (Node
+side untouched this round). `npm run sv-gate:fast` → 96/96 (95 + 1 new net
+check — replaced the round-1 "4 sites" check with a "7 sites" check and
+added a "3 atomic_write sites exist" pin). A5 oracle (`git diff
+b3d27da..HEAD` on the 3 protected files) empty.
+
+Commit: `fix(b4): clear lock marks on atomic verdict replacement (codex round 2)`.

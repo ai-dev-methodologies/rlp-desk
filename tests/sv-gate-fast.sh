@@ -159,8 +159,14 @@ check "codex-r1 P2-1: all zsh lifecycle gates use the unified != \"0\" form (no 
   bash -c '[ "$(grep -cE "RLP_LIFECYCLE_METRICS:-1\}\" != \"0\"" src/scripts/lib_ralph_desk.zsh)" -ge 6 ] && ! grep -qE "RLP_LIFECYCLE_METRICS:-1\}\" == \"1\"" src/scripts/lib_ralph_desk.zsh'
 check "codex-r1 P2-2: _lifecycle_clear_lock_mark helper exists" \
   grep -q "^_lifecycle_clear_lock_mark()" src/scripts/lib_ralph_desk.zsh
-check "codex-r1 P2-2: 4 non-loop-top VERDICT_FILE rm sites call _lifecycle_clear_lock_mark first" \
-  bash -c '[ "$(grep -c "_lifecycle_clear_lock_mark \"\${VERDICT_FILE:t}\"" src/scripts/run_ralph_desk.zsh)" -eq 4 ]'
+# codex round 2 — atomic_write "$VERDICT_FILE" replacement sites are the SAME
+# class of bug as round 1's rm sites (see docs/plans/narrow-v1-evidence.md
+# "Codex round 2"): 4 rm sites (round 1) + 3 atomic_write replace sites
+# (round 2) = 7 total non-loop-top VERDICT_FILE write/delete sites.
+check "codex-r2 P2-2: 7 non-loop-top VERDICT_FILE rm/replace sites call _lifecycle_clear_lock_mark first" \
+  bash -c '[ "$(grep -c "_lifecycle_clear_lock_mark \"\${VERDICT_FILE:t}\"" src/scripts/run_ralph_desk.zsh)" -eq 7 ]'
+check "codex-r2 P2-2: all 3 atomic_write \"\$VERDICT_FILE\" sites exist (pins the enumerated set)" \
+  bash -c '[ "$(grep -c "atomic_write \"\$VERDICT_FILE\"" src/scripts/run_ralph_desk.zsh)" -eq 3 ]'
 # v0.15.4 PR-B3 — Real-LLM SV scenarios with two-stage lifecycle assertions.
 check "B3 shared lifecycle assertion helper exists" \
   test -f tests/sv-real-llm/lib/b3-lifecycle-assertions.sh

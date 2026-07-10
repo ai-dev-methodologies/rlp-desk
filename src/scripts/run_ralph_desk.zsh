@@ -1849,6 +1849,15 @@ is_codex_idle_ui() {
 # place so the rest of the pipeline (harvest + analytics + sentinels)
 # sees a single canonical path. Best-effort: any failure leaves the file
 # untouched and the campaign keeps polling.
+#
+# codex round 2 P2-2 audit (checked, NOT a stale-lock-mark site — no fix
+# applied here): this mv -f also replaces VERDICT_FILE, but every caller
+# (_verifier_pane_has_verdict via check_no_progress, and run_single_verifier's
+# codex branch) invokes it ONLY from inside poll_for_signal's own polling
+# loop for VERDICT_FILE — i.e. strictly AFTER that cycle's clear-before-
+# dispatch (which now runs _lifecycle_clear_lock_mark, round 1) and BEFORE
+# that same cycle's eventual accept+lock. No pending mark can exist in that
+# window, so this mv cannot leak a stale cross-instance pairing.
 _migrate_legacy_verdict() {
   [[ -n "${LEGACY_VERDICT_FILE:-}" && -f "$LEGACY_VERDICT_FILE" ]] || return 1
   jq -e . "$LEGACY_VERDICT_FILE" >/dev/null 2>&1 || return 1
@@ -3335,6 +3344,13 @@ run_consensus_verification() {
     # Both pass → success
     if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then
       # Create merged verdict with per-engine details
+      # codex round 2 P2-2: this atomic_write REPLACES the canonical VERDICT_FILE
+      # that the codex sub-call's run_single_verifier just locked (chmod 0444 +
+      # _lifecycle_mark_lock_start). atomic_write's tmp+mv doesn't care about the
+      # target's chmod bits, so it succeeds silently and the codex lock-mark is
+      # left dangling — no _lock_sentinel follows on this merged file (the caller
+      # only reads verdict/us_id from it), so clear (not refresh) is correct.
+      _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
       {
         echo '{'
         echo '  "verdict": "pass",'
@@ -3394,6 +3410,10 @@ run_consensus_verification() {
     claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
     codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
     merged_issues=$(echo "$claude_issues $codex_issues" | jq -s 'add // []')
+    # codex round 2 P2-2: same rationale as the pass-merge site above — this
+    # atomic_write replaces the codex sub-call's locked VERDICT_FILE with the
+    # merged fail verdict; no _lock_sentinel follows, so clear is correct.
+    _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
     {
       echo '{'
       echo '  "verdict": "fail",'
@@ -4090,7 +4110,15 @@ main() {
             # Sequential verify failed — fall through to fix loop with failed US
             log "  Sequential final verify failed at ${FAILED_US:-unknown}. Entering fix loop."
             signal_us_id="${FAILED_US:-ALL}"
-            # Synthesize a fail verdict for the fix loop
+            # Synthesize a fail verdict for the fix loop.
+            # codex round 2 P2-2: run_sequential_final_verify's per-US calls
+            # (_final_verify_one_us) lock VERDICT_FILE on each per-US PASS; if a
+            # LATER US then fails, the last-passing US's lock-mark is still
+            # pending when this atomic_write replaces the file with the
+            # synthesized fail verdict. No _lock_sentinel follows this specific
+            # write (the code below re-dispatches a fresh verify attempt, which
+            # will overwrite/lock again on its own success) — clear is correct.
+            _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
             echo "{\"verdict\":\"fail\",\"summary\":\"Sequential final verify failed at ${FAILED_US:-unknown}\",\"issues\":[{\"severity\":\"critical\",\"criterion\":\"${FAILED_US:-ALL}\",\"description\":\"Failed during sequential final verification\"}]}" | atomic_write "$VERDICT_FILE"
           fi
         fi
