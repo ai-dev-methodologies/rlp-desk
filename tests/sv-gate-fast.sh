@@ -173,6 +173,10 @@ check "codex-r3 P2-2: all 3 atomic_write \"\$VERDICT_FILE\" sites still exist (p
   bash -c '[ "$(grep -c "atomic_write \"\$VERDICT_FILE\"" src/scripts/run_ralph_desk.zsh)" -eq 3 ]'
 check "codex-r3 P2-2: no raw > redirects onto monitored files (all funnel through atomic_write)" \
   bash -c '! grep -qE "> ?\"\\\$(SIGNAL_FILE|VERDICT_FILE|signal_file|verdict_file)\"" src/scripts/run_ralph_desk.zsh'
+# codex round 4 — the last non-atomic_write monitored-file mutation:
+# _quarantine_stale_signal's mv now clears the mark after a successful move.
+check "codex-r4 P2: quarantine mv clears the lifecycle mark (class invariant complete)" \
+  bash -c 'awk "/^_quarantine_stale_signal\\(\\)/,/^}/" src/scripts/lib_ralph_desk.zsh | grep -q "_lifecycle_clear_lock_mark \"\${signal_file:t}\""'
 # v0.15.4 PR-B3 — Real-LLM SV scenarios with two-stage lifecycle assertions.
 check "B3 shared lifecycle assertion helper exists" \
   test -f tests/sv-real-llm/lib/b3-lifecycle-assertions.sh

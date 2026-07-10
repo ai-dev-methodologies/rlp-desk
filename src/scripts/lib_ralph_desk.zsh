@@ -1060,8 +1060,14 @@ _quarantine_stale_signal() {
   local qdir="$desk/.sisyphus/quarantine"
   mkdir -p "$qdir" 2>/dev/null
   local qfile="$qdir/iter-signal.$(date +%s).json"
-  mv "$signal_file" "$qfile" 2>/dev/null && \
+  if mv "$signal_file" "$qfile" 2>/dev/null; then
+    # Lifecycle stale-mark class closure (codex round 4): this mv is the one
+    # monitored-file mutation outside the atomic_write hook and the rm sites.
+    # Its current caller is init-only (empty mark map), but clear after a
+    # successful mv anyway so the class invariant holds for future callers.
+    _lifecycle_clear_lock_mark "${signal_file:t}"
     echo "[lane] cross-mission stale us_id ($stale_us) — quarantined to $qfile" >&2
+  fi
   return 0
 }
 
