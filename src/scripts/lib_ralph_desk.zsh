@@ -218,6 +218,21 @@ get_next_model() {
   jq -r --arg m "$current" '.upgrades[$m] // ""' "$ladder_file" 2>/dev/null
 }
 
+# _a4_pane_still_needs_reap() — fail-SAFE liveness recheck for the A4
+# already-reaped guard (codex round 4). The already-reaped flag only proves a
+# reap was ATTEMPTED (_kill_pane_process is fail-open), so the second reap may
+# be skipped ONLY on a successful probe that positively shows a bare idle
+# shell. Probe failure or an unknown/producer foreground command => reap.
+# Returns 0 = still needs reap, 1 = safe to skip.
+_a4_pane_still_needs_reap() {
+  local pane="$1" cmd
+  cmd=$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null) || return 0
+  case "$cmd" in
+    zsh|bash|sh|-zsh|-bash) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # check_model_upgrade() — evaluate and apply Worker model upgrade on repeated same-US failure
 # Called in the fail verdict path. Upgrades Worker model when same US fails >= 2 consecutive times.
 # Respects LOCK_WORKER_MODEL flag. Never modifies VERIFIER_MODEL.

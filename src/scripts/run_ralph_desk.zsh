@@ -4028,10 +4028,10 @@ main() {
         # recheck (same #{pane_current_command} probe used elsewhere in this
         # file) decides whether a second reap is genuinely still needed.
         local _worker_reap_needed=1
-        if (( _POLL_A4_ALREADY_REAPED )); then
-          local _a4_recheck_cmd
-          _a4_recheck_cmd=$(tmux display-message -p -t "$WORKER_PANE" '#{pane_current_command}' 2>/dev/null)
-          [[ "$_a4_recheck_cmd" == "claude" || "$_a4_recheck_cmd" == "codex" || "$_a4_recheck_cmd" == "node" ]] || _worker_reap_needed=0
+        # codex round 4: fail-SAFE recheck — skip only on a successful probe
+        # showing a bare idle shell; probe failure/unknown command => reap.
+        if (( _POLL_A4_ALREADY_REAPED )) && ! _a4_pane_still_needs_reap "$WORKER_PANE"; then
+          _worker_reap_needed=0
         fi
         if (( _worker_reap_needed )); then
           _kill_pane_process "$WORKER_PANE" "worker" "iter-signal"

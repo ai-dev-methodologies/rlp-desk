@@ -1303,10 +1303,9 @@ a4_recheck_dead=$(zsh -c '
 r32_block=$(awk '/# Bug #7 Fix-Q\/R: reap worker pane immediately/,/_kill_pane_process "\$WORKER_PANE" "worker" "iter-signal"/' "$REPO/src/scripts/run_ralph_desk.zsh")
 [[ -n "$r32_block" ]] \
   && print -r -- "$r32_block" | grep -q "_POLL_A4_ALREADY_REAPED" \
-  && print -r -- "$r32_block" | grep -q "pane_current_command" \
-  && print -r -- "$r32_block" | grep -qE '"claude" \|\| .*"codex" \|\| .*"node"' \
+  && print -r -- "$r32_block" | grep -q '_a4_pane_still_needs_reap "\$WORKER_PANE"' \
   && print -r -- "$r32_block" | grep -q "_worker_reap_needed=0" \
-  && ok "R3-2: caller site does a pane_current_command liveness recheck (claude/codex/node) before skipping the reap" \
+  && ok "R3-2: caller site consults the fail-safe liveness helper before skipping the reap (codex r4 form)" \
   || no "R3-2: caller site is missing the liveness recheck (still an unconditional skip on the A4 flag alone)"
 
 # ═══════════════════════════════════════════════════════════════════════════
