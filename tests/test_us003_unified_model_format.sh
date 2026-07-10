@@ -99,6 +99,38 @@ if _func_or_fail "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.3-codex-spa
     "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.3-codex-spark"
 fi
 
+# codex 0.144 / GPT-5.6 family: passthrough of suffixed names + new efforts,
+# and sol|terra|luna aliases (same convention as the existing spark alias).
+_run_parse "gpt-5.6-sol:max" "worker"
+if _func_or_fail "AC1-L1-5a: gpt-5.6-sol:max → engine=codex"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "codex" \
+    "AC1-L1-5a: gpt-5.6-sol:max → engine=codex"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-sol" \
+    "AC1-L1-5b: gpt-5.6-sol:max → model=gpt-5.6-sol"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "max" \
+    "AC1-L1-5c: gpt-5.6-sol:max → reasoning=max"
+fi
+
+_run_parse "sol:max" "worker"
+if _func_or_fail "AC1-L1-5d: sol:max alias → model=gpt-5.6-sol"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-sol" \
+    "AC1-L1-5d: sol:max alias → model=gpt-5.6-sol"
+fi
+
+_run_parse "terra:ultra" "worker"
+if _func_or_fail "AC1-L1-5e: terra:ultra alias → model=gpt-5.6-terra reasoning=ultra"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-terra" \
+    "AC1-L1-5e: terra:ultra alias → model=gpt-5.6-terra"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "ultra" \
+    "AC1-L1-5f: terra:ultra alias → reasoning=ultra"
+fi
+
+_run_parse "luna:high" "worker"
+if _func_or_fail "AC1-L1-5g: luna:high alias → model=gpt-5.6-luna"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-luna" \
+    "AC1-L1-5g: luna:high alias → model=gpt-5.6-luna"
+fi
+
 _run_parse "gpt-5.3-codex-spark:high" "worker"
 if _func_or_fail "AC1-L1-6: gpt-5.3-codex-spark:high → reasoning=high"; then
   assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "high" \

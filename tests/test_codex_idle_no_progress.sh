@@ -79,6 +79,24 @@ assert_eq "v0.14.2: 'Context X%left' (no space) — wrapped pane variant" 0 $?
 is_codex_idle_ui 'gpt-5.5 high · feature/foo · Context 99% left'
 assert_eq "v0.14.2: model+branch line — alone" 0 $?
 
+# codex 0.144 / GPT-5.6 (models: gpt-5.6-sol|terra|luna; new efforts max|ultra).
+# The status line carries SUFFIXED model names ("gpt-5.6-sol max · main"),
+# which the pre-5.6 pattern (bare gpt-X.Y + low..xhigh) never matched.
+is_codex_idle_ui 'gpt-5.6-sol max · main'
+assert_eq "gpt-5.6: suffixed model + max effort — model+branch line alone" 0 $?
+
+is_codex_idle_ui 'gpt-5.6-terra ultra · feature/foo'
+assert_eq "gpt-5.6: terra + ultra effort" 0 $?
+
+is_codex_idle_ui 'gpt-5.6-luna low · main'
+assert_eq "gpt-5.6: luna + pre-existing effort name" 0 $?
+
+is_codex_idle_ui 'gpt-5.3-codex-spark high · main'
+assert_eq "spark: suffixed model name on model+branch line alone" 0 $?
+
+is_codex_idle_ui 'gpt-5.6-sol finished reviewing the maximum retry logic'
+assert_eq "false: model name in prose without effort-dot-branch shape" 1 $?
+
 is_codex_idle_ui '› Improve documentation in @bos/db'
 assert_eq "v0.14.2: codex default suggestion 'Improve documentation in @'" 0 $?
 

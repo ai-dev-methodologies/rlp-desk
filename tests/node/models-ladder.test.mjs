@@ -161,3 +161,24 @@ test('cross-consumer equivalence: every shipped ladder key normalizes the same w
     assert.equal(ladder[model], expected, `ladder[${model}] should normalize to ${expected}`);
   }
 });
+
+// codex 0.144 / GPT-5.6 family ladders (max|ultra efforts; luna has no ultra).
+test('shipped ladder: gpt-5.6-sol climbs xhigh -> max -> ultra -> ceiling', async () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
+  assert.equal(ladder['gpt-5.6-sol:xhigh'], 'gpt-5.6-sol:max');
+  assert.equal(ladder['gpt-5.6-sol:max'], 'gpt-5.6-sol:ultra');
+  assert.equal(ladder['gpt-5.6-sol:ultra'], CEILING_SENTINEL);
+});
+
+test('shipped ladder: gpt-5.6-luna ceilings at max (no ultra tier)', async () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
+  assert.equal(ladder['gpt-5.6-luna:xhigh'], 'gpt-5.6-luna:max');
+  assert.equal(ladder['gpt-5.6-luna:max'], CEILING_SENTINEL);
+});
+
+test('shipped ladder: gpt-5.4 and gpt-5.4-mini climb low..xhigh', async () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
+  assert.equal(ladder['gpt-5.4:low'], 'gpt-5.4:medium');
+  assert.equal(ladder['gpt-5.4:xhigh'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.4-mini:high'], 'gpt-5.4-mini:xhigh');
+});

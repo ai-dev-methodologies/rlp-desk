@@ -95,3 +95,23 @@ test('isCodexIdleUi v0.14.2: matches codex default suggestion "Explain this code
 test('isCodexIdleUi v0.14.2: still rejects "worked through" prose (no false positive)', () => {
   assert.equal(isCodexIdleUi('I worked through the spec and ran tests'), false);
 });
+
+// codex 0.144 / GPT-5.6: suffixed model slugs (gpt-5.6-sol|terra|luna) and the
+// new max|ultra reasoning efforts appear on the idle status line. The pre-5.6
+// pattern (bare gpt-X.Y + low..xhigh) matched neither — mirror of the zsh
+// is_codex_idle_ui cases in tests/test_codex_idle_no_progress.sh.
+test('isCodexIdleUi: gpt-5.6-sol max · main (suffixed slug + max effort)', () => {
+  assert.equal(isCodexIdleUi('gpt-5.6-sol max · main'), true);
+});
+
+test('isCodexIdleUi: gpt-5.6-terra ultra · feature/foo', () => {
+  assert.equal(isCodexIdleUi('gpt-5.6-terra ultra · feature/foo'), true);
+});
+
+test('isCodexIdleUi: gpt-5.3-codex-spark high · main (suffixed slug, old effort)', () => {
+  assert.equal(isCodexIdleUi('gpt-5.3-codex-spark high · main'), true);
+});
+
+test('isCodexIdleUi: model name in prose without effort·branch shape stays false', () => {
+  assert.equal(isCodexIdleUi('gpt-5.6-sol finished reviewing the maximum retry logic'), false);
+});
