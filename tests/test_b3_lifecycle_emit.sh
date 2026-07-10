@@ -1046,14 +1046,18 @@ while_line=$(print -r -- "$poll_body" | grep -n 'while true; do' | head -1 | cut
   || no "R2-2: flag reset missing or not before the polling loop (reset_line=$reset_line while_line=$while_line)"
 
 # 39) Structural: the caller's second reap (worker success branch) is now
-# guarded — skipped when the A4 branch already reaped this pane.
+# guarded — skipped when the A4 branch already reaped this pane AND (codex
+# round 3 R3-2) a liveness recheck confirms the pane is genuinely idle.
+# The literal gate variable is `_worker_reap_needed` (R3-2 refined this from
+# R2-2's original bare `(( ! _POLL_A4_ALREADY_REAPED ))` gate — see case 52
+# below for the liveness-recheck specifics this evolved into).
 caller_guard=$(awk '
-  /if \(\( ! _POLL_A4_ALREADY_REAPED \)\); then$/ { getline nxt; if (nxt ~ /_kill_pane_process "\$WORKER_PANE" "worker" "iter-signal"$/) n++ }
+  /if \(\( _worker_reap_needed \)\); then$/ { getline nxt; if (nxt ~ /_kill_pane_process "\$WORKER_PANE" "worker" "iter-signal"$/) n++ }
   END { print (n+0) }
 ' "$REPO/src/scripts/run_ralph_desk.zsh")
 [[ "$caller_guard" == "1" ]] \
-  && ok "R2-2: caller's worker-path reap is guarded by (( ! _POLL_A4_ALREADY_REAPED ))" \
-  || no "R2-2: caller's worker-path reap is not guarded (would still double-reap)"
+  && ok "R2-2/R3-2: caller's worker-path reap is guarded by (( _worker_reap_needed ))" \
+  || no "R2-2/R3-2: caller's worker-path reap is not guarded (would still double-reap)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # codex round 2 R2-3 (F6 residue): write_campaign_jsonl now returns failure
@@ -1188,6 +1192,153 @@ periter_guard=$(awk '
 [[ "$periter_guard" == "1" ]] \
   && ok "R2-3: the per-iteration write_campaign_jsonl call checks its return code" \
   || no "R2-3: the per-iteration call is still a bare fire-and-forget (rc ignored)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 3 R3-1: _lifecycle_capture_write_to_read's mt_s is
+# pre-initialized to "0", which passes the `<-> ` numeric glob check just
+# like a genuine zstat result would — so when zstat fails to populate
+# anything (module load succeeded but the call itself failed, or a race),
+# the fork-based _file_mtime fallback is silently SKIPPED (never attempted)
+# instead of being tried. zstat is shadowed with a function to deterministically
+# simulate "module loaded, call failed" without needing a broken zsh build.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 48) Behavioral: when zstat fails, the fork-based fallback actually RUNS
+# (and succeeds, since only zstat — not `stat` — is broken here).
+zstat_fallback=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  export RLP_LIFECYCLE_METRICS=1
+  D=$(mktemp -d)
+  F="$D/f.json"
+  echo "{}" > "$F"
+  sleep 1
+  zstat() { return 1; }
+  _lifecycle_capture_write_to_read "$F"
+  print -r -- "$_LC_CAPTURED_DELTA"
+  rm -rf "$D"')
+[[ -n "$zstat_fallback" ]] && (( zstat_fallback >= 0 )) \
+  && ok "R3-1: fork-based _file_mtime fallback actually runs when zstat fails (delta=$zstat_fallback, capture not silently dropped)" \
+  || no "R3-1: fallback did not run / capture wrongly empty when zstat fails (got \"$zstat_fallback\")"
+
+# 49) Behavioral: when BOTH zstat AND the fork-based fallback fail (`stat`
+# also shadowed, since _file_mtime shells out to it), the capture drops
+# cleanly (empty $_LC_CAPTURED_DELTA) — NOT a garbage delta computed against
+# epoch 0 (which would be an astronomically large now_ms-only value).
+both_fail=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  export RLP_LIFECYCLE_METRICS=1
+  D=$(mktemp -d)
+  F="$D/f.json"
+  echo "{}" > "$F"
+  zstat() { return 1; }
+  stat() { return 1; }
+  _lifecycle_capture_write_to_read "$F"
+  print -r -- "[$_LC_CAPTURED_DELTA]"
+  rm -rf "$D"')
+[[ "$both_fail" == "[]" ]] \
+  && ok "R3-1: capture drops cleanly (empty) when BOTH zstat and the fallback fail — no epoch-0 garbage delta" \
+  || no "R3-1: expected empty capture when both fail, got $both_fail"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 3 R3-2: _POLL_A4_ALREADY_REAPED only records that a reap was
+# ATTEMPTED inside poll_for_signal's A4 branch — but _kill_pane_process is
+# fail-open (always returns 0) by design (other callers depend on that
+# contract), so the caller cannot trust the flag alone to mean "definitely
+# dead". Fix (WITHOUT touching _kill_pane_process's contract): a cheap
+# liveness re-check (same tmux `#{pane_current_command}` probe used
+# elsewhere in run_ralph_desk.zsh) before deciding whether to skip. Since
+# poll_for_signal/its caller live in run_ralph_desk.zsh (not sourced by this
+# lib-only harness), this is a decoupled proof of the exact guard pattern
+# (same convention as R2-2's case 35), driven by a faked `tmux` command.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 50) Behavioral: A4 flag set + liveness recheck shows the pane STILL ALIVE
+# (claude/codex/node in the foreground) ⇒ the guard reaps again.
+a4_recheck_alive=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  _POLL_A4_ALREADY_REAPED=1
+  tmux() { [[ "$1" == "display-message" ]] && print -r -- "claude"; return 0; }
+  _worker_reap_needed=1
+  if (( _POLL_A4_ALREADY_REAPED )); then
+    _a4_recheck_cmd=$(tmux display-message -p -t "%fake" "#{pane_current_command}" 2>/dev/null)
+    [[ "$_a4_recheck_cmd" == "claude" || "$_a4_recheck_cmd" == "codex" || "$_a4_recheck_cmd" == "node" ]] || _worker_reap_needed=0
+  fi
+  if (( _worker_reap_needed )); then
+    _kill_pane_process "%fake-pane" worker iter-signal
+  fi
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"')
+# 2 records: _kill_pane_process is called WITH the "iter-signal" tag, so it
+# emits both pane_eof_to_cleanup_ms AND pane_reap_latency_ms.
+[[ "$a4_recheck_alive" == "2" ]] \
+  && ok "R3-2: A4-flag-set + pane still alive (liveness recheck) → reap fires again (2 records: eof + reap_latency)" \
+  || no "R3-2: A4-flag-set + pane still alive did not reap ($a4_recheck_alive)"
+
+# 51) Behavioral: A4 flag set + liveness recheck shows the pane already
+# IDLE (bare zsh/bash) ⇒ the guard correctly skips (no double reap).
+a4_recheck_dead=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  _POLL_A4_ALREADY_REAPED=1
+  tmux() { [[ "$1" == "display-message" ]] && print -r -- "zsh"; return 0; }
+  _worker_reap_needed=1
+  if (( _POLL_A4_ALREADY_REAPED )); then
+    _a4_recheck_cmd=$(tmux display-message -p -t "%fake" "#{pane_current_command}" 2>/dev/null)
+    [[ "$_a4_recheck_cmd" == "claude" || "$_a4_recheck_cmd" == "codex" || "$_a4_recheck_cmd" == "node" ]] || _worker_reap_needed=0
+  fi
+  if (( _worker_reap_needed )); then
+    _kill_pane_process "%fake-pane" worker iter-signal
+  fi
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"')
+[[ "$a4_recheck_dead" == "0" ]] \
+  && ok "R3-2: A4-flag-set + pane already idle (liveness recheck) → reap correctly skipped (0 records)" \
+  || no "R3-2: A4-flag-set + pane idle still reaped ($a4_recheck_dead)"
+
+# 52) Structural: the real caller site in run_ralph_desk.zsh performs the
+# liveness recheck (queries pane_current_command, checks claude/codex/node)
+# gated on _POLL_A4_ALREADY_REAPED, immediately before deciding
+# _worker_reap_needed — not an unconditional skip.
+r32_block=$(awk '/# Bug #7 Fix-Q\/R: reap worker pane immediately/,/_kill_pane_process "\$WORKER_PANE" "worker" "iter-signal"/' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ -n "$r32_block" ]] \
+  && print -r -- "$r32_block" | grep -q "_POLL_A4_ALREADY_REAPED" \
+  && print -r -- "$r32_block" | grep -q "pane_current_command" \
+  && print -r -- "$r32_block" | grep -qE '"claude" \|\| .*"codex" \|\| .*"node"' \
+  && print -r -- "$r32_block" | grep -q "_worker_reap_needed=0" \
+  && ok "R3-2: caller site does a pane_current_command liveness recheck (claude/codex/node) before skipping the reap" \
+  || no "R3-2: caller site is missing the liveness recheck (still an unconditional skip on the A4 flag alone)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 3 R3-3: retained-after-failed-flush records get rebuilt into
+# the NEXT successful flush's row. write_campaign_jsonl's row-level `.iter`
+# reflects the flush ATTEMPT's iteration, not necessarily every nested
+# record's true iteration — but per-record `.iter` (when present) is
+# already preserved untouched by the row builder (only `.metric` is
+# stripped). The actual gap: pane_eof_to_cleanup_ms never carried its OWN
+# iter at all (unlike pane_reap_latency_ms, sentinel_lock_to_unlock_ms, and
+# the write_to_read metrics, which already do). Row-shape decision: KEEP
+# ONE ROW per write_campaign_jsonl call (checked b3-lifecycle-assertions.sh
+# — it aggregates lifecycle_metrics across ALL rows via `jq -s`, never
+# assumes a row's top-level .iter applies to every nested entry; no Node
+# reader parses campaign.jsonl with a stricter assumption either) — just
+# make EVERY record self-describing via its own .iter field, closing the
+# one metric that was missing it, rather than restructuring into
+# multiple-rows-per-flush (a bigger, unnecessary shape change).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 53) Behavioral: pane_eof_to_cleanup_ms records now carry their own .iter
+# field (matching pane_reap_latency_ms, which already did).
+eof_iter=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  ITERATION=7
+  _kill_pane_process "%fake-pane" worker
+  print -r -- "${LIFECYCLE_RECORDS[1]}"' 2>/dev/null)
+[[ "$(print -r -- "$eof_iter" | jq -r '.iter // "MISSING"')" == "7" ]] \
+  && ok "R3-3: pane_eof_to_cleanup_ms now carries its own .iter field (matches pane_reap_latency_ms)" \
+  || no "R3-3: pane_eof_to_cleanup_ms still missing .iter ($eof_iter)"
 
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
