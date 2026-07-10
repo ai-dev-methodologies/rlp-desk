@@ -762,6 +762,72 @@ next_line_clear_count=$(awk '
   && ok "F4: all 4 targeted rm sites clear the lock-mark on the following line via && (rm confirmed before clear)" \
   || no "F4: expected 4 rm-then-clear (&&) sites, got $next_line_clear_count"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# codex P2 sweep F5: (a) lock samples are attributed to the AMBIENT iter at
+# UNLOCK time, not the iter the lock actually started in — a lock that starts
+# in iter N and is unlocked at iter N+1's loop-top (normal flow; $ITERATION
+# has already incremented by then) gets its record wrongly tagged iter=N+1.
+# (b) a COMPLETE exit skips the loop-top unlock entirely (no "next iteration"
+# for it to run in), silently dropping the LAST iteration's pending lock
+# sample from campaign.jsonl.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 41) Behavioral: _lifecycle_mark_lock_start stores the CURRENT iter at
+# mark-time; _lifecycle_mark_unlock uses the STORED iter, not whatever
+# ambient iter the caller happens to pass at unlock time.
+iter_attr=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  _lifecycle_mark_lock_start "verdict.json" 5
+  _lifecycle_mark_unlock "verdict.json" 6
+  print -r -- "${LIFECYCLE_RECORDS[1]}"')
+[[ "$(print -r -- "$iter_attr" | jq -r '.iter')" == "5" ]] \
+  && ok "F5: lock sample is attributed to the STORED lock-time iter (5), not the ambient unlock-time iter (6)" \
+  || no "F5: iter misattribution NOT fixed ($iter_attr)"
+
+# 42) _lifecycle_flush_pending_locks helper exists.
+grep -q "^_lifecycle_flush_pending_locks()" "$REPO/src/scripts/lib_ralph_desk.zsh" \
+  && ok "F5: _lifecycle_flush_pending_locks helper exists" \
+  || no "F5: _lifecycle_flush_pending_locks helper missing"
+
+# 43) Behavioral: a pending lock with no matching unlock is flushed (emitted)
+# using its own stored iter, and a second flush with nothing pending is a
+# silent no-op.
+flush_result=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  _lifecycle_mark_lock_start "verdict.json" 7
+  sleep 0.05
+  _lifecycle_flush_pending_locks
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"
+  for r in "${LIFECYCLE_RECORDS[@]}"; do print -r -- "$r"; done
+  LIFECYCLE_RECORDS=()
+  _lifecycle_flush_pending_locks
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"')
+n1=$(print -r -- "$flush_result" | sed -n '1p')
+[[ "$n1" == "1" ]] && ok "F5: a pending lock with no unlock is flushed (emitted) by _lifecycle_flush_pending_locks" \
+  || no "F5: flush produced $n1 records, expected 1"
+flushed_iter=$(print -r -- "$flush_result" | sed -n '2p' | jq -r '.iter')
+[[ "$flushed_iter" == "7" ]] && ok "F5: flushed record carries its OWN stored iter (7), not an ambient one" \
+  || no "F5: flushed record iter wrong (got $flushed_iter)"
+n2=$(print -r -- "$flush_result" | sed -n '3p')
+[[ "$n2" == "0" ]] && ok "F5: a second flush with nothing pending is a silent no-op" \
+  || no "F5: second flush unexpectedly produced $n2 records"
+
+# 44) Structural: both COMPLETE-exit write_campaign_jsonl calls (leader
+# finalize / sequential-verify pass, and full/ALL verify pass — both end in a
+# literal "pass" 3rd arg, unlike the per-iteration in-loop call which passes
+# a variable) are immediately preceded by _lifecycle_flush_pending_locks.
+terminal_flush_count=$(awk '
+  /_lifecycle_flush_pending_locks/ { getline nxt; if (nxt ~ /write_campaign_jsonl .*"pass"$/) n++ }
+  END { print (n+0) }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$terminal_flush_count" == "2" ]] \
+  && ok "F5: both COMPLETE-exit write_campaign_jsonl calls are immediately preceded by _lifecycle_flush_pending_locks" \
+  || no "F5: expected 2 flush-then-write_campaign_jsonl(pass) sites, got $terminal_flush_count"
+
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))
