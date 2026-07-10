@@ -19,3 +19,9 @@ Lessons from failures. Format: Symptom / Root cause / Recovery / Prevention (one
 - Root cause: `zsh -f` inherits the caller's exported `$TMUX`; the RC-1 guard (d288dce) then short-circuits.
 - Recovery: `unset TMUX` at the top of generated harness scripts.
 - Prevention: any test exercising an Agent-mode-only code path must explicitly clear tmux-context env vars; do not assume the CI/dev session is tmux-free.
+
+## 2026-07-10 — codex exec hangs waiting on stdin in non-interactive review calls
+- Symptom: `codex exec "<review prompt>"` intermittently hit the 10-minute Bash timeout with only "Reading additional input from stdin..." in the log.
+- Root cause: codex exec reads stdin when it is a pipe/tty; under the tool harness the stream stayed open, so codex waited indefinitely before starting.
+- Recovery: append `< /dev/null` to every non-interactive `codex exec` invocation.
+- Prevention: treat `< /dev/null` as mandatory in scripted codex review loops (poller/critic wrappers).

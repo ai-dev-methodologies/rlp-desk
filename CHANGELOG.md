@@ -11,6 +11,43 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.20.0] — 2026-07-10 (Tier-1 dogfood release: git tag only, not published to npm)
+
+GPT-5.6 model-generation support (codex-cli 0.144 catalog).
+
+### Added
+- GPT-5.6 family in the shipped model ladder (`src/node/models.json`):
+  `gpt-5.6-sol` (frontier) and `gpt-5.6-terra` (balanced) climb
+  low → medium → high → xhigh → **max → ultra**; `gpt-5.6-luna`
+  (fast/affordable) ceilings at **max** (the catalog gives luna no ultra
+  tier). `gpt-5.4` and `gpt-5.4-mini` ladders (low..xhigh) added as
+  previous-generation options. Existing gpt-5.5 / spark / claude ladders
+  unchanged.
+- `sol` / `terra` / `luna` aliases expand to their full slugs in all three
+  parse sites (zsh `parse_model_flag`, zsh env-path parser, Node CLI
+  `parseModelFlag`) — same convention as the existing `spark` alias.
+- `max` and `ultra` accepted by the consensus model validation (D-1c).
+- `src/model-upgrade-table.md` now carries the full codex catalog (models,
+  positions, supported efforts, catalog defaults) and 5.6 ladder tables.
+
+### Fixed
+- Codex idle/ready status-line detection (`is_codex_idle_ui` in the zsh
+  leader, `CODEX_IDLE_RE` in the Node prompt-dismisser) now recognizes
+  SUFFIXED model slugs (`gpt-5.6-sol`, `gpt-5.3-codex-spark`) and the
+  max/ultra efforts. The old pattern (`gpt-X.Y` + low..xhigh only) matched
+  neither — spark idle detection had silently depended on the other idle
+  markers, and 5.6 campaigns would have too. The pattern is now anchored to
+  line start so a status-line shape quoted mid-prose is not misread as idle.
+
+### Changed
+- The brainstorm model recommendation table (`/rlp-desk` command) now
+  recommends by complexity: `gpt-5.6-luna:medium` (LOW),
+  `gpt-5.6-terra:medium` (MEDIUM, default), `gpt-5.6-sol:high` (HIGH),
+  `gpt-5.6-sol:xhigh` (CRITICAL) — `:max`/`:ultra` stay reserved as
+  upgrade-ladder headroom. gpt-5.5/5.4 remain fully supported.
+  Runtime defaults (worker `haiku`, consensus `gpt-5.5:medium/high`) are
+  unchanged in this release.
+
 ## [0.19.0] — 2026-07-09 (Tier-1 dogfood release: git tag only, not published to npm)
 
 narrow-v1 campaign: single-sourced model ladder, structural-test pruning,
