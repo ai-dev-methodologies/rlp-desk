@@ -644,37 +644,66 @@ _epoch_ms() {
 # campaign-main-loop.mjs:2006-2016 / 2110-2117 (now_ms - sentinel mtime).
 #
 # F2: the 4 call sites (worker + 3 verdict paths) call CAPTURE immediately on
-# poll-resolve, BEFORE the pane reap (_kill_pane_process) — this is the
-# cheapest possible measurement (one `stat` fork via _file_mtime, which is
-# unavoidable; the "now" side is the fork-free $EPOCHREALTIME-backed
-# _epoch_ms), so it does not meaningfully delay the reap that actually stops
-# the claude/codex TUI from self-reviewing. EMIT — the fork-bearing part
-# (log_lifecycle_metric's record build; forks were already eliminated there
-# per F2, but a future edit could reintroduce one) — is called AFTER the
-# reap, once the race window it's protecting is already closed.
+# poll-resolve, BEFORE the pane reap (_kill_pane_process), so it does not
+# meaningfully delay the reap that actually stops the claude/codex TUI from
+# self-reviewing. EMIT — the fork-bearing part (log_lifecycle_metric's
+# record build) — is called AFTER the reap, once the race window it's
+# protecting is already closed.
 #
-# CAVEAT (documented, not fixed — _file_mtime is out of scope to rewrite):
-# _file_mtime() is WHOLE-SECOND precision (GNU `stat -c %Y` / BSD `stat -f %m`),
-# unlike Node's fsSync.statSync().mtimeMs (sub-ms). The emitted value_ms is
-# therefore accurate to within ~1000ms on the file-write anchor, not true
+# codex round 2 (R2-1): CAPTURE is now genuinely fork-free, not just
+# "cheap". The original F2 cut was 3 nested forks per call: the outer
+# call-site `x=$(_lifecycle_capture_write_to_read ...)`, an inner
+# `now_ms=$(_epoch_ms)` (a fork just to invoke an already-fork-free
+# function), and `mt_s=$(_file_mtime "$file")` (a fork to invoke a function
+# that itself forks the external `stat` binary). now_ms is now computed
+# INLINE from $EPOCHREALTIME (no function-call fork); mtime is read via the
+# zsh/stat module's `zstat` builtin (no external `stat` fork), falling back
+# to the fork-based _file_mtime() only if `zmodload zsh/stat` genuinely
+# fails (should not happen on any zsh build this project supports — kept
+# fail-open to match the rest of this file). The result is written to the
+# global $_LC_CAPTURED_DELTA instead of printed to stdout, so callers assign
+# it with a plain (non-forking) `x="$_LC_CAPTURED_DELTA"` instead of
+# `x=$(...)`.
+#
+# Deliberately NOT deferred to post-reap (the other option R2-1 offered):
+# the mtime stat's whole purpose is to catch the race where the reap arrives
+# late and the producer keeps running long enough to REWRITE the file — if
+# the stat ran after the reap, it would read whatever the SECOND write left
+# behind, making iter_signal_write_to_read_ms/verdict_write_to_read_ms look
+# artificially LOW exactly in the case it exists to catch. All 4 call sites
+# have identical risk here (worker rewriting iter-signal.json, verifier
+# rewriting verify-verdict.json), so none of them defer.
+#
+# CAVEAT (documented, not fixed): mtime is WHOLE-SECOND precision (both the
+# zstat path and the _file_mtime fallback), unlike Node's
+# fsSync.statSync().mtimeMs (sub-ms). The emitted value_ms is therefore
+# accurate to within ~1000ms on the file-write anchor, not true
 # milliseconds — coarser than the Node leader's reading of the same metric
 # name, but still useful for the B3-S2 regression band (3000ms).
 #
-# _lifecycle_capture_write_to_read: Args: $1=sentinel_file. Prints the raw
-# delta_ms on stdout (empty when disabled/unmeasurable — fail-open, matches
-# the prior single-call contract).
+# _lifecycle_capture_write_to_read: Args: $1=sentinel_file. Sets
+# $_LC_CAPTURED_DELTA (empty when disabled/unmeasurable — fail-open,
+# matches the prior contract).
+typeset -g _LC_CAPTURED_DELTA=""
 _lifecycle_capture_write_to_read() {
+  _LC_CAPTURED_DELTA=""
   [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local file="$1"
   [[ -n "$file" && -f "$file" ]] || return 0
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
-  local now_ms
-  now_ms=$(_epoch_ms)
-  (( now_ms > 0 )) || return 0
-  local mt_s
-  mt_s=$(_file_mtime "$file")
+  [[ -n "${EPOCHREALTIME:-}" ]] || return 0
+  local _now_s="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' (locale-robust, matches _epoch_ms)
+  local now_ms="${_now_s:0:13}"
+  [[ "$now_ms" == <-> ]] || return 0
+  local mt_s=0
+  if zmodload -e zsh/stat 2>/dev/null || zmodload zsh/stat 2>/dev/null; then
+    local -A _lc_statarr
+    zstat -H _lc_statarr +mtime -- "$file" 2>/dev/null
+    mt_s="${_lc_statarr[mtime]:-0}"
+  fi
+  [[ "$mt_s" == <-> ]] || mt_s=$(_file_mtime "$file")   # fallback: fork-based, only if zstat unavailable/failed
   (( mt_s > 0 )) || return 0
-  print -r -- $(( now_ms - mt_s * 1000 ))
+  _LC_CAPTURED_DELTA=$(( now_ms - mt_s * 1000 ))
 }
 
 # _lifecycle_emit_write_to_read: Args: $1=metric_name  $2=sentinel_file

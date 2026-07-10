@@ -167,15 +167,17 @@ print -r -- "$_llm_body" | grep -qE '\(\(\s*DEBUG\s*\)\).*&&.*typeset -f log_deb
   || no "F2: debug-log subshell fork is not gated on DEBUG"
 
 # 9) LOCALE ROBUSTNESS (source-structural): the EPOCHREALTIME->ms parse in _kill_pane_process
-# (t0/t1) AND the shared _epoch_ms() helper (v0.15.4 full-wire, used by the 4 newly-wired
-# write_to_read/reap emit sites) strip the decimal separator before slicing to 13 digits.
-# Under a comma-decimal LC_NUMERIC zsh renders EPOCHREALTIME with ',', so a '.'-only strip
-# is a no-op and the slice corrupts the ms value (runtime behavior is locale+pane dependent,
-# hence a source-structural check). Assert all 3 EPOCHREALTIME-strip sites remove ',' too.
+# (t0/t1), the shared _epoch_ms() helper, AND (codex round 2 R2-1)
+# _lifecycle_capture_write_to_read()'s inline now_ms computation strip the
+# decimal separator before slicing to 13 digits. Under a comma-decimal
+# LC_NUMERIC zsh renders EPOCHREALTIME with ',', so a '.'-only strip is a
+# no-op and the slice corrupts the ms value (runtime behavior is
+# locale+pane dependent, hence a source-structural check). Assert all 4
+# EPOCHREALTIME-strip sites remove ',' too.
 both=$(grep -cE 'EPOCHREALTIME//\.\/}//,/' "$REPO/src/scripts/lib_ralph_desk.zsh")
-[[ "$both" == "3" ]] \
-  && ok "EPOCHREALTIME ms-parse strips both '.' and ',' at all 3 sites (t0/t1 + _epoch_ms, locale-robust)" \
-  || no "EPOCHREALTIME strip not locale-robust (both-separator sites found: $both, want 3)"
+[[ "$both" == "4" ]] \
+  && ok "EPOCHREALTIME ms-parse strips both '.' and ',' at all 4 sites (t0/t1 + _epoch_ms + capture, locale-robust)" \
+  || no "EPOCHREALTIME strip not locale-robust (both-separator sites found: $both, want 4)"
 
 # 10) CROSS-LEADER PARITY: the zsh lifecycle_metrics field must match the Node flush() shape
 # (src/node/util/lifecycle-metrics.mjs:88-99): a grouped OBJECT {metric: [{value_ms, ts}, ...]},
@@ -664,7 +666,7 @@ capture_fork_count=$(grep -cE '=\$\(_lifecycle_capture_write_to_read' "$REPO/src
 # _lifecycle_capture_write_to_read "$FILE" as a bare statement, immediately
 # followed by a plain (non-forking) assignment reading $_LC_CAPTURED_DELTA.
 capture_noforkassign_count=$(awk '
-  /^\s*_lifecycle_capture_write_to_read "\$(VERDICT_FILE|SIGNAL_FILE)"$/ { getline nxt; if (nxt ~ /="\$_LC_CAPTURED_DELTA"$/) n++ }
+  /^[[:space:]]*_lifecycle_capture_write_to_read "\$(VERDICT_FILE|SIGNAL_FILE)"$/ { getline nxt; if (nxt ~ /="\$_LC_CAPTURED_DELTA"$/) n++ }
   END { print (n+0) }
 ' "$REPO/src/scripts/run_ralph_desk.zsh")
 [[ "$capture_noforkassign_count" == "4" ]] \

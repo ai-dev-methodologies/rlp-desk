@@ -3024,11 +3024,11 @@ run_single_verifier() {
 
   # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
   # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
-  # codex P2 sweep F2: capture the cheap delta NOW, but defer the actual
-  # (fork-bearing) emit until AFTER the reap below — the pre-reap window is
-  # exactly the race this reap exists to close.
-  local _lc_wtr1
-  _lc_wtr1=$(_lifecycle_capture_write_to_read "$VERDICT_FILE")
+  # codex P2 sweep F2 + round-2 R2-1: capture the fork-free delta NOW, but
+  # defer the actual (fork-bearing) emit until AFTER the reap below — the
+  # pre-reap window is exactly the race this reap exists to close.
+  _lifecycle_capture_write_to_read "$VERDICT_FILE"
+  local _lc_wtr1="$_LC_CAPTURED_DELTA"
   # Bug #7 Fix-Q/R: reap verifier pane the moment we accept the verdict so
   # codex/claude cannot keep self-reviewing and rewrite verify-verdict.json.
   # Lock applied AFTER cp so the archived snapshot is also frozen at intent.
@@ -3162,9 +3162,9 @@ _final_verify_one_us() {
 
   # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
   # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
-  # codex P2 sweep F2: capture cheaply now, emit (fork-bearing) after the reap.
-  local _lc_wtr2
-  _lc_wtr2=$(_lifecycle_capture_write_to_read "$VERDICT_FILE")
+  # codex P2 sweep F2 + round-2 R2-1: capture fork-free now, emit (fork-bearing) after the reap.
+  _lifecycle_capture_write_to_read "$VERDICT_FILE"
+  local _lc_wtr2="$_LC_CAPTURED_DELTA"
   # Bug #7 Fix-Q/R: reap verifier pane between per-US final verifications so
   # the previous codex/claude TUI cannot continue running while the next per-
   # US verifier dispatch reuses the same pane.
@@ -3982,9 +3982,9 @@ main() {
         log_debug "[FLOW] iter=$ITERATION poll_signal_received=true"
         # v0.15.4 full-wire: iter_signal_write_to_read_ms (leader poll-resolve vs
         # worker FS write), mirrors campaign-main-loop.mjs:2006-2016.
-        # codex P2 sweep F2: capture cheaply now, emit (fork-bearing) after the reap.
-        local _lc_wtr3
-        _lc_wtr3=$(_lifecycle_capture_write_to_read "$SIGNAL_FILE")
+        # codex P2 sweep F2 + round-2 R2-1: capture fork-free now, emit (fork-bearing) after the reap.
+        _lifecycle_capture_write_to_read "$SIGNAL_FILE"
+        local _lc_wtr3="$_LC_CAPTURED_DELTA"
         # Bug #7 Fix-Q/R: reap worker pane immediately so claude/codex cannot
         # self-review and rewrite iter-signal.json (1m43s drift observed).
         # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered
@@ -4325,9 +4325,9 @@ main() {
           fi
           # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
           # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
-          # codex P2 sweep F2: capture cheaply now, emit (fork-bearing) after the reap.
-          local _lc_wtr4
-          _lc_wtr4=$(_lifecycle_capture_write_to_read "$VERDICT_FILE")
+          # codex P2 sweep F2 + round-2 R2-1: capture fork-free now, emit (fork-bearing) after the reap.
+          _lifecycle_capture_write_to_read "$VERDICT_FILE"
+          local _lc_wtr4="$_LC_CAPTURED_DELTA"
           # Bug #7 Fix-Q/R: reap verifier pane immediately so codex cannot
           # rewrite verify-verdict.json post-detect (mtime drift fix).
           # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered (pane_reap_latency_ms).
