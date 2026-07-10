@@ -2899,6 +2899,11 @@ run_single_verifier() {
   # verdict into canonical via `mv` (_migrate_legacy_verdict), so a leftover
   # legacy file from a prior iteration would be promoted into THIS verifier's
   # verdict and read by poll_for_signal. R3-1 cleared only canonical.
+  # codex round 1 P2-2: drop any pending lock-start mark for this instance
+  # BEFORE the rm — this rm may be clearing a PRIOR attempt's verdict that
+  # never reached its own _lock_sentinel (e.g. a poll hard-fail), so without
+  # this a later, unrelated unlock could pair with that stale mark.
+  _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
   rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE" 2>/dev/null
 
   # Launch verifier — dispatch to engine-specific function
@@ -3066,6 +3071,9 @@ _final_verify_one_us() {
   # BEFORE launch — never AFTER. Clearing after launch risks deleting a fast
   # verifier's FRESH verdict, and leaves a window where the no-progress watcher
   # could promote a prior-iteration legacy verdict into this run.
+  # codex round 1 P2-2: drop any pending lock-start mark before the rm — see
+  # the identical note at run_single_verifier's clear-before-launch site.
+  _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
   rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE"
   local verifier_launch
   if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
@@ -3096,6 +3104,12 @@ _final_verify_one_us() {
     log "  Verifier-final transient poll fail for $us — replacing pane + retrying once (D-4)"
     replace_worker_pane "$VERIFIER_PANE" "verifier"
     VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
+    # codex round 1 P2-2: this retry's rm is clearing the SAME poll-rc==1
+    # attempt that never locked (transient timeout, no verdict accepted) — no
+    # stale mark from THIS attempt exists yet, but clear defensively in case a
+    # PRIOR US's lock-mark is still pending (sequential final-verify calls
+    # this function once per US without an intervening loop-top unlock).
+    _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
     rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE"   # D-26: clear BEFORE relaunch (canonical + legacy)
     if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
       launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
@@ -4169,6 +4183,9 @@ main() {
           # read from the previous iteration's verdict. Clear it here unconditionally.
           # D-26: also clear legacy — the no-progress watcher migrates a stale
           # legacy verdict into canonical, re-opening the same hole otherwise.
+          # codex round 1 P2-2: drop any pending lock-start mark before the rm
+          # — see the identical note at run_single_verifier's clear site.
+          _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
           rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE" 2>/dev/null
 
           if [[ "$_v_eng" = "codex" ]]; then

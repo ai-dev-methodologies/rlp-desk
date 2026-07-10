@@ -228,6 +228,117 @@ noreap=$(zsh -c '
 [[ "$noreap" == "1" ]] && ok "_kill_pane_process without sentinel_type: only pane_eof_to_cleanup_ms fires (no regression)" \
   || no "_kill_pane_process without sentinel_type: expected 1 record, got $noreap"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 1 (P2-1, P2-2, P3): flag-semantics parity + verdict lock-pair
+# hygiene.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 17) P2-1: RLP_LIFECYCLE_METRICS="true" must ENABLE telemetry, matching
+# Node's `env[FLAG] !== '0'` contract exactly (any value other than the
+# literal "0" is ON). Before this fix zsh gated on `== "1"`, so "true" was
+# silently disabled — a real divergence: RLP_LIFECYCLE_METRICS=true would
+# disable tmux-mode telemetry while enabling agent-mode telemetry.
+truthy=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  D=$(mktemp -d); CAMPAIGN_JSONL="$D/c.jsonl"
+  WORKER_MODEL=h; WORKER_ENGINE=c; VERIFIER_ENGINE=c; CONSENSUS_MODE=off
+  CONSECUTIVE_FAILURES=0; ROOT="$D"; SLUG=t; typeset -gA US_FAIL_HISTORY=()
+  export RLP_LIFECYCLE_METRICS=true
+  log_lifecycle_metric pane_eof_to_cleanup_ms 77 "c=z"
+  write_campaign_jsonl 1 US-001 pass
+  print -r -- "$(tail -1 "$CAMPAIGN_JSONL" | jq -c .lifecycle_metrics)"
+  rm -rf "$D"')
+[[ "$truthy" != "null" && -n "$truthy" ]] \
+  && ok "P2-1: RLP_LIFECYCLE_METRICS=true enables (matches Node's !== '0' contract)" \
+  || no "P2-1: value 'true' incorrectly disabled telemetry ($truthy)"
+
+# 18) P2-1 (structural): every zsh gate check uses the unified `!= "0"` form,
+# not `== "1"` (which silently diverges from Node on any non-"0"/non-"1"
+# value). Pins the fix so a future edit cannot silently reintroduce the
+# divergence at one of the (currently 6) gate sites.
+gate_count=$(grep -cE '"\$\{RLP_LIFECYCLE_METRICS:-1\}" != "0"' "$REPO/src/scripts/lib_ralph_desk.zsh")
+stale_gate_count=$(grep -cE '"\$\{RLP_LIFECYCLE_METRICS:-1\}" == "1"' "$REPO/src/scripts/lib_ralph_desk.zsh")
+[[ "$gate_count" -ge 6 && "$stale_gate_count" == "0" ]] \
+  && ok "P2-1: all gate sites use the unified != \"0\" form ($gate_count sites, 0 stale == \"1\" sites)" \
+  || no "P2-1: gate unification incomplete (!= \"0\" sites=$gate_count, stale == \"1\" sites=$stale_gate_count)"
+
+# 19) P3: sentinel_lock_to_unlock_ms normal reuse — lock→unlock→re-lock→unlock
+# emits TWO sane pairs (not merged, not cross-paired), each carrying its own
+# iter context.
+reuse=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  _lifecycle_mark_lock_start "verdict.json"
+  sleep 0.05
+  _lifecycle_mark_unlock "verdict.json" 1
+  _lifecycle_mark_lock_start "verdict.json"
+  sleep 0.05
+  _lifecycle_mark_unlock "verdict.json" 2
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"
+  for r in "${LIFECYCLE_RECORDS[@]}"; do print -r -- "$r"; done')
+n=$(print -r -- "$reuse" | head -1)
+[[ "$n" == "2" ]] && ok "P3: lock→unlock→re-lock→unlock emits 2 sane pairs" \
+  || no "P3: reuse cycle expected 2 records, got $n"
+iters=$(print -r -- "$reuse" | tail -n +2 | jq -r '.iter' 2>/dev/null | tr '\n' ',')
+[[ "$iters" == "1,2," ]] && ok "P3: reuse pairs carry distinct iter context (1 then 2, no cross-pairing)" \
+  || no "P3: reuse pair iter context wrong ($iters)"
+
+# 20) P2-2 fix: lock→DELETE(no unlock)→re-lock→unlock emits EXACTLY ONE pair,
+# measured from the SECOND (fresh) lock — not a false pairing between the
+# abandoned first lock and the eventual unlock. Reproduces the exact bug
+# Codex flagged: a verdict-clear-before-relaunch rm (run_single_verifier /
+# _final_verify_one_us / the main consensus loop) that happens after a lock
+# was marked but BEFORE that attempt ever reached its own _lock_sentinel call
+# (e.g. a poll hard-fail) must not leave a stale mark for a later, unrelated
+# unlock to pair with.
+delete_cycle=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  _lifecycle_mark_lock_start "verdict.json"
+  sleep 0.3
+  # simulate: verdict file removed before relaunch, this attempt never relocks.
+  _lifecycle_clear_lock_mark "verdict.json"
+  _lifecycle_mark_lock_start "verdict.json"
+  sleep 0.05
+  _lifecycle_mark_unlock "verdict.json" 9
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"
+  for r in "${LIFECYCLE_RECORDS[@]}"; do print -r -- "$r"; done')
+n=$(print -r -- "$delete_cycle" | head -1)
+[[ "$n" == "1" ]] && ok "P2-2: lock→delete→re-lock→unlock emits exactly ONE pair (no cross-instance pairing)" \
+  || no "P2-2: delete cycle expected 1 record, got $n"
+vms=$(print -r -- "$delete_cycle" | tail -n +2 | jq -r '.value_ms' 2>/dev/null)
+[[ -n "$vms" ]] && (( vms < 250 )) \
+  && ok "P2-2: emitted pair measures the fresh ~50ms lock, not the stale abandoned ~300ms one (value_ms=$vms)" \
+  || no "P2-2: emitted value_ms suspiciously large — stale mark may have leaked (got ${vms:-<none>})"
+
+# 21) P2-2: lock→delete(clear)→unlock with NO relock in between is a silent
+# no-op — no record, no crash (mirrors Node's markUnlock-without-
+# markLockStart no-op, LifecycleMetricsCollector.markUnlock: `if (start ===
+# undefined) return;`).
+no_relock=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  _lifecycle_mark_lock_start "verdict.json"
+  _lifecycle_clear_lock_mark "verdict.json"
+  _lifecycle_mark_unlock "verdict.json" 1
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"')
+[[ "$no_relock" == "0" ]] && ok "P2-2: lock→delete(clear)→unlock (no relock) is a silent no-op" \
+  || no "P2-2: cleared-then-unlocked mark should emit nothing, got $no_relock records"
+
+# 22) P2-2 (structural): every non-loop-top rm of $VERDICT_FILE calls
+# _lifecycle_clear_lock_mark first — pins the 4 fix sites (run_single_verifier
+# top, _final_verify_one_us top + retry, main consensus loop pre-dispatch).
+# The loop-top cleanup rm is EXCLUDED (5th VERDICT_FILE rm site) since it is
+# already preceded by a proper _unlock_sentinel + _lifecycle_mark_unlock pair
+# in the same block, which already clears the mark via normal pairing.
+clear_call_count=$(grep -c '_lifecycle_clear_lock_mark "\${VERDICT_FILE:t}"' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$clear_call_count" == "4" ]] \
+  && ok "P2-2: all 4 non-loop-top VERDICT_FILE rm sites call _lifecycle_clear_lock_mark first" \
+  || no "P2-2: expected 4 _lifecycle_clear_lock_mark call sites in run_ralph_desk.zsh, got $clear_call_count"
+
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))

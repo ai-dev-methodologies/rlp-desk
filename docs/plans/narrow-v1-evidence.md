@@ -480,3 +480,80 @@ over):
 
 Commits: `57046b6` (RED), plus the implementation commit that follows this
 evidence entry.
+
+### Codex round 1 (P2-1, P2-2, P3) — flag-semantics unification + verdict lock-pair hygiene
+
+Codex critic found 2 P2s + 1 P3 on the full-wire branch. Fixed all three
+TDD-first (new/failing cases in `tests/test_b3_lifecycle_emit.sh` confirmed
+against the pre-fix code, then implemented).
+
+**P2-1 — flag semantics diverged between leaders.** zsh gated every lifecycle
+check on `"${RLP_LIFECYCLE_METRICS:-1}" == "1"` while Node's
+`lifecycleMetricsEnabled` is `env[FLAG] !== '0'`. Consequence:
+`RLP_LIFECYCLE_METRICS=true` would DISABLE telemetry on the zsh (`--mode
+tmux`) leader while ENABLING it on the Node (`--mode agent`) leader — a real
+cross-leader divergence, not just a docs nit. Fix: all 7 zsh gate checks (the
+6 pre-existing ones from the first full-wire commit plus the new
+`_lifecycle_clear_lock_mark` added below) now use
+`"${RLP_LIFECYCLE_METRICS:-1}" != "0"`, matching Node's contract exactly —
+unset or any non-`"0"` value enables, `"0"` is the sole opt-out. Verified
+Node's empty-string/whitespace handling already matches zsh's `:-` fallback
+behavior (both collapse unset/empty to the enabled default), so no Node-side
+change was needed.
+
+**P2-2 — stale verdict lock-pair could false-pair across instances.**
+`_lock_sentinel "$VERDICT_FILE"` is called from 3 different code paths
+(`run_single_verifier`, `_final_verify_one_us`, the main consensus verify
+loop), each preceded by `_lifecycle_mark_lock_start "${VERDICT_FILE:t}"`
+(basename-keyed, since VERDICT_FILE's path is constant across the whole
+campaign). 4 of the 5 `rm -f "$VERDICT_FILE" ...` sites in the codebase
+delete/replace the file to prepare a fresh dispatch or retry WITHOUT going
+through the normal `_unlock_sentinel` + `_lifecycle_mark_unlock` pairing (rm
+does not require the target file's own chmod bits, so it succeeds on a
+0o444-locked file without an explicit unlock). If such an attempt then fails
+before reaching its OWN `_lock_sentinel` call (e.g. a poll hard-fail, an
+early `return`), the PRIOR successful lock's mark is left dangling in
+`LIFECYCLE_LOCK_TIMES`. A later, unrelated `_lifecycle_mark_unlock` call
+(e.g. the next loop-top iteration's defensive unlock) would then pair with
+that stale mark, emitting a bogus `sentinel_lock_to_unlock_ms` duration
+spanning an unrelated delete+recreate cycle.
+
+**Chosen semantics** (checked against Node's actual behavior first, per the
+task brief): Node's `markLockStart` is a bare `Map.set()`, so a fresh lock
+BEFORE the next unlock already overwrites cleanly — re-locking without
+unlocking is safe on both leaders and required no fix (confirmed by test
+case 19: lock→unlock→re-lock→unlock emits two independent, correctly-scoped
+pairs). The unsafe gap Node doesn't have an equivalent for is specifically
+delete-without-relock. Fix: new `_lifecycle_clear_lock_mark(sentinel_key)`
+helper (`lib_ralph_desk.zsh`) that drops the pending mark WITHOUT emitting —
+called immediately before all 4 non-loop-top `rm -f "$VERDICT_FILE" ...`
+sites (`run_single_verifier` top, `_final_verify_one_us` top + D-4 retry, the
+main consensus loop's pre-dispatch clear). The 5th `rm` site (loop-top
+cleanup) was left untouched — it already fires immediately after a proper
+`_unlock_sentinel` + `_lifecycle_mark_unlock` pair in the same block, so the
+mark is already cleared via normal pairing before that rm runs.
+
+**P3 — test gap closed.** Added behavioral cases (not just structural greps)
+to `tests/test_b3_lifecycle_emit.sh`: `_lifecycle_mark_lock_start` /
+`_lifecycle_mark_unlock` exercised directly across a reuse cycle (2 sane
+pairs, distinct iter context, no cross-pairing) and across a
+lock→delete→re-lock→unlock cycle (exactly 1 pair, measuring the fresh lock's
+~50ms rather than the abandoned lock's ~300ms — proving the stale mark did
+NOT leak through) and a lock→delete(clear)→unlock-with-no-relock cycle
+(silent no-op, matching Node's markUnlock-without-markLockStart no-op).
+
+RED (against pre-fix code): 4 failures — `RLP_LIFECYCLE_METRICS=true`
+incorrectly disabled telemetry; 0 of 6 gates used the unified form (`grep`
+structural check); the no-relock case emitted 1 bogus record instead of 0;
+0 of 4 expected `_lifecycle_clear_lock_mark` call sites existed. (2 of the 6
+new cases — the basic reuse-pair case and the delete→re-lock→unlock case —
+already passed pre-fix, since Node's overwrite-on-relock safety net already
+covered those; kept as regression guards.)
+
+GREEN: `zsh tests/test_b3_lifecycle_emit.sh` → 33/33 PASS. `npm run
+test:zsh` → exit 0, zero FAIL markers. `npm run test:node` → 450/450 (Node
+side untouched this round, no regression). `npm run sv-gate:fast` → 95/95
+(92 + 3 new checks for the unified gate form and the 4 clear-mark call
+sites). A5 oracle (`git diff b3d27da..HEAD` on the 3 protected files) empty.
+
+Commit: `fix(b4): unify flag semantics + verdict lock-pair hygiene (codex round 1)`.

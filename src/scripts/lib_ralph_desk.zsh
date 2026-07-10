@@ -421,7 +421,7 @@ _kill_pane_process() {
   # Uses zsh native $EPOCHREALTIME (microsec) — portable to macOS BSD where
   # `date +%N` is not supported.
   local _b4_t0_ms=0
-  if [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]]; then
+  if [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]]; then
     zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
     if [[ -n "${EPOCHREALTIME:-}" ]]; then
       local _b4_t0_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' — comma-decimal LC_NUMERIC renders EPOCHREALTIME with ','
@@ -467,10 +467,12 @@ _unlock_sentinel() {
 # v0.15.4 PR-B4: Lifecycle observability — log_lifecycle_metric
 # =============================================================================
 # Plan: docs/plans/v0.15-phase-b-plan-v3.md §B4 (P2.1 critic-round-2 fix).
-# Helper is GATED on $RLP_LIFECYCLE_METRICS=1 (no-op when unset). Emits to
-# debug.log via log_debug, in a backgrounded subshell so the caller does not
-# block on the FS write. The Node-side mirror is src/node/util/lifecycle-
-# metrics.mjs LifecycleMetricsCollector.
+# Helper defaults ON; gated OFF only by explicit $RLP_LIFECYCLE_METRICS=0
+# (codex round 1 P2-1: unified on Node's `!== '0'` contract so a value like
+# "true" enables on both leaders instead of silently disabling zsh-only).
+# Emits to debug.log via log_debug, in a backgrounded subshell so the caller
+# does not block on the FS write. The Node-side mirror is src/node/util/
+# lifecycle-metrics.mjs LifecycleMetricsCollector.
 #
 # v0.15.4 audit M2: concurrent-appender semantics — `( ... ) &!` spawns a
 # disowned subshell per metric. Multiple metrics can fire in rapid succession
@@ -513,7 +515,7 @@ typeset -ga LIFECYCLE_RECORDS=()
 typeset -gA LIFECYCLE_LOCK_TIMES=()
 
 log_lifecycle_metric() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]] || return 0   # off-path: zero work, no fork
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0   # off-path: zero work, no fork
   local metric="$1"
   local value_ms="$2"
   local ctx="${3:-}"
@@ -573,7 +575,7 @@ _epoch_ms() {
 #
 # Args: $1=metric_name  $2=sentinel_file  $3=iter (optional)  $4=us_id (optional)
 _lifecycle_emit_write_to_read() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]] || return 0
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local metric="$1" file="$2" iter="${3:-}" us_id="${4:-}"
   [[ -n "$file" && -f "$file" ]] || return 0
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
@@ -595,7 +597,7 @@ _lifecycle_emit_write_to_read() {
 # metric covers the full lock duration. _lifecycle_mark_unlock silently no-ops
 # when there is no matching lock-start (unmatched unlock) — same as Node.
 _lifecycle_mark_lock_start() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]] || return 0
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local sentinel_key="$1"
   [[ -n "$sentinel_key" ]] || return 0
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
@@ -603,7 +605,7 @@ _lifecycle_mark_lock_start() {
 }
 
 _lifecycle_mark_unlock() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]] || return 0
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local sentinel_key="$1" iter="${2:-}"
   [[ -n "$sentinel_key" ]] || return 0
   local start="${LIFECYCLE_LOCK_TIMES[$sentinel_key]:-}"
@@ -613,6 +615,30 @@ _lifecycle_mark_unlock() {
   now_ms=$(_epoch_ms)
   log_lifecycle_metric "sentinel_lock_to_unlock_ms" $(( now_ms - start )) \
     "sentinel=$sentinel_key iter=$iter" "$iter" "" "$sentinel_key"
+  unset "LIFECYCLE_LOCK_TIMES[$sentinel_key]"
+}
+
+# _lifecycle_clear_lock_mark() — codex round 1 (P2-2): drops a pending
+# sentinel_lock_to_unlock_ms lock-start mark WITHOUT emitting a metric.
+#
+# Why this exists: a lock-mark set by _lifecycle_mark_lock_start is only
+# retired by a matching _lifecycle_mark_unlock call OR overwritten by a fresh
+# _lifecycle_mark_lock_start on the SAME key (both safe — Node's collector
+# behaves identically, a bare Map.set()). The unsafe gap is a sentinel file
+# that gets rm'd/replaced (e.g. "clear stale verdict before relaunch") by a
+# code path that never reaches its OWN _lock_sentinel call for THIS attempt
+# (a poll hard-fail, an early return) — the mark from the PRIOR successful
+# lock is left dangling in LIFECYCLE_LOCK_TIMES, keyed by basename. If a
+# LATER, unrelated _lifecycle_mark_unlock call for that same basename fires
+# (e.g. the next loop-top iteration's defensive unlock), it would pair with
+# the stale mark and emit a bogus duration spanning an unrelated delete+
+# recreate cycle. Call this immediately alongside any such rm/replace so the
+# next real lock (if any) starts clean, and an unlock with no intervening
+# relock is a correct no-op instead of a false pairing.
+_lifecycle_clear_lock_mark() {
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
+  local sentinel_key="$1"
+  [[ -n "$sentinel_key" ]] || return 0
   unset "LIFECYCLE_LOCK_TIMES[$sentinel_key]"
 }
 
@@ -1202,7 +1228,7 @@ write_campaign_jsonl() {
   # {value_ms, ts} (nothing to drop beyond .metric), so this is not a regression
   # for existing 3-arg callers.
   local lifecycle_json="null"
-  if [[ "${RLP_LIFECYCLE_METRICS:-1}" == "1" ]]; then
+  if [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]]; then
     if (( ${#LIFECYCLE_RECORDS[@]} > 0 )); then
       lifecycle_json=$(printf '%s\n' "${LIFECYCLE_RECORDS[@]}" \
         | jq -s 'group_by(.metric) | map({key: .[0].metric, value: map(del(.metric))}) | from_entries' 2>/dev/null) \

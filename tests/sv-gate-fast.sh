@@ -154,6 +154,13 @@ check "full-wire: verifier reap sites tag sentinel_type=verify-verdict (3 call s
   bash -c '[ "$(grep -c "verify-verdict\"$" src/scripts/run_ralph_desk.zsh)" -ge 3 ]'
 check "full-wire: iteration-top unlock sites call _lifecycle_mark_unlock" \
   bash -c '[ "$(grep -c "_lifecycle_mark_unlock" src/scripts/run_ralph_desk.zsh)" -ge 2 ]'
+# codex round 1 (P2-1, P2-2) — flag semantics unification + verdict lock-pair hygiene.
+check "codex-r1 P2-1: all zsh lifecycle gates use the unified != \"0\" form (no stale == \"1\")" \
+  bash -c '[ "$(grep -cE "RLP_LIFECYCLE_METRICS:-1\}\" != \"0\"" src/scripts/lib_ralph_desk.zsh)" -ge 6 ] && ! grep -qE "RLP_LIFECYCLE_METRICS:-1\}\" == \"1\"" src/scripts/lib_ralph_desk.zsh'
+check "codex-r1 P2-2: _lifecycle_clear_lock_mark helper exists" \
+  grep -q "^_lifecycle_clear_lock_mark()" src/scripts/lib_ralph_desk.zsh
+check "codex-r1 P2-2: 4 non-loop-top VERDICT_FILE rm sites call _lifecycle_clear_lock_mark first" \
+  bash -c '[ "$(grep -c "_lifecycle_clear_lock_mark \"\${VERDICT_FILE:t}\"" src/scripts/run_ralph_desk.zsh)" -eq 4 ]'
 # v0.15.4 PR-B3 — Real-LLM SV scenarios with two-stage lifecycle assertions.
 check "B3 shared lifecycle assertion helper exists" \
   test -f tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
