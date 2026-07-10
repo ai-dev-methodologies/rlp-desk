@@ -3039,7 +3039,8 @@ run_single_verifier() {
   # Copy verdict to destination
   cp "$VERDICT_FILE" "$verdict_dest"
   # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
-  _lifecycle_mark_lock_start "${VERDICT_FILE:t}"
+  # codex P2 sweep F5: pass the CURRENT iter so the mark is attributed to it.
+  _lifecycle_mark_lock_start "${VERDICT_FILE:t}" "$iter"
   if ! _lock_sentinel "$VERDICT_FILE"; then
     # codex P2 sweep F3: chmod genuinely failed on an existing file — this
     # attempt never actually locked, so drop the pending mark rather than let
@@ -3171,7 +3172,8 @@ _final_verify_one_us() {
   _kill_pane_process "$VERIFIER_PANE" "verifier-final" "verify-verdict"
   _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$_lc_wtr2" "$iter" "$us"
   # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
-  _lifecycle_mark_lock_start "${VERDICT_FILE:t}"
+  # codex P2 sweep F5: pass the CURRENT iter so the mark is attributed to it.
+  _lifecycle_mark_lock_start "${VERDICT_FILE:t}" "$iter"
   if ! _lock_sentinel "$VERDICT_FILE"; then
     # codex P2 sweep F3: same note as run_single_verifier above.
     _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
@@ -3990,7 +3992,8 @@ main() {
         _kill_pane_process "$WORKER_PANE" "worker" "iter-signal"
         _lifecycle_emit_write_to_read "iter_signal_write_to_read_ms" "$SIGNAL_FILE" "$_lc_wtr3" "$ITERATION" "${CURRENT_US:-ALL}"
         # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
-        _lifecycle_mark_lock_start "${SIGNAL_FILE:t}"
+        # codex P2 sweep F5: pass the CURRENT iter so the mark is attributed to it.
+        _lifecycle_mark_lock_start "${SIGNAL_FILE:t}" "$ITERATION"
         if ! _lock_sentinel "$SIGNAL_FILE"; then
           # codex P2 sweep F3: same note as run_single_verifier (VERDICT_FILE).
           _lifecycle_clear_lock_mark "${SIGNAL_FILE:t}"
@@ -4156,6 +4159,10 @@ main() {
           if (( seq_rc == 0 )); then
             write_complete_sentinel "Sequential final verify passed (all US verified individually)"
             update_status "complete" "pass"
+            # codex P2 sweep F5: this COMPLETE exit skips the loop-top unlock
+            # that would normally close out the last iteration's pending
+            # lock — flush it now so the sample isn't silently dropped.
+            _lifecycle_flush_pending_locks
             write_campaign_jsonl "$ITERATION" "ALL" "pass"
             return 0
           else
@@ -4327,7 +4334,8 @@ main() {
           _kill_pane_process "$VERIFIER_PANE" "verifier" "verify-verdict"
           _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$_lc_wtr4" "$ITERATION" "${signal_us_id:-${CURRENT_US:-ALL}}"
           # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
-          _lifecycle_mark_lock_start "${VERDICT_FILE:t}"
+          # codex P2 sweep F5: pass the CURRENT iter so the mark is attributed to it.
+          _lifecycle_mark_lock_start "${VERDICT_FILE:t}" "$ITERATION"
           if ! _lock_sentinel "$VERDICT_FILE"; then
             # codex P2 sweep F3: same note as run_single_verifier above.
             _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
@@ -4442,6 +4450,9 @@ main() {
               # Final full verify passed or complete recommended
               write_complete_sentinel "$verdict_summary"
               update_status "complete" "pass"
+              # codex P2 sweep F5: same note as the sequential-final-verify
+              # COMPLETE exit above — flush before the terminal write.
+              _lifecycle_flush_pending_locks
               write_campaign_jsonl "$ITERATION" "${signal_us_id:-ALL}" "pass"
               return 0
             else

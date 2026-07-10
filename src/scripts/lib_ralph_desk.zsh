@@ -550,6 +550,14 @@ typeset -ga LIFECYCLE_RECORDS=()
 # happy path (only SIGNAL_FILE/VERDICT_FILE are), so it is never keyed here.
 typeset -gA LIFECYCLE_LOCK_TIMES=()
 
+# codex P2 sweep F5: parallel map storing the CURRENT iter at mark-time,
+# keyed the same as LIFECYCLE_LOCK_TIMES. Without this, a lock that starts in
+# iteration N and is unlocked at iteration N+1's loop-top (normal flow —
+# $ITERATION has already incremented by then) gets its emitted record
+# attributed to N+1 instead of N. _lifecycle_mark_unlock reads the STORED
+# iter here in preference to whatever ambient iter the caller passes.
+typeset -gA LIFECYCLE_LOCK_ITERS=()
+
 log_lifecycle_metric() {
   [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0   # off-path: zero work, no fork
   local metric="$1"
@@ -687,26 +695,58 @@ _lifecycle_emit_write_to_read() {
 # _lifecycle_mark_lock_start BEFORE _lock_sentinel's chmod, not after, so the
 # metric covers the full lock duration. _lifecycle_mark_unlock silently no-ops
 # when there is no matching lock-start (unmatched unlock) — same as Node.
+#
+# Args: $1=sentinel_key  $2=iter (optional — codex P2 sweep F5, see below).
 _lifecycle_mark_lock_start() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
-  local sentinel_key="$1"
-  [[ -n "$sentinel_key" ]] || return 0
-  zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
-  LIFECYCLE_LOCK_TIMES[$sentinel_key]=$(_epoch_ms)
-}
-
-_lifecycle_mark_unlock() {
   [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local sentinel_key="$1" iter="${2:-}"
   [[ -n "$sentinel_key" ]] || return 0
+  zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
+  LIFECYCLE_LOCK_TIMES[$sentinel_key]=$(_epoch_ms)
+  # codex P2 sweep F5: stamp the CURRENT iter at mark-time so a lock that
+  # spans an iteration boundary (starts in N, unlocked at N+1's loop-top,
+  # where $ITERATION has already incremented) is attributed to N — not the
+  # ambient iter at unlock time, which _lifecycle_mark_unlock below would
+  # otherwise fall back to.
+  LIFECYCLE_LOCK_ITERS[$sentinel_key]="$iter"
+}
+
+# Args: $1=sentinel_key  $2=iter (fallback only — used when no iter was
+# stamped at mark-time, e.g. an older/direct caller that didn't pass one).
+_lifecycle_mark_unlock() {
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
+  local sentinel_key="$1" fallback_iter="${2:-}"
+  [[ -n "$sentinel_key" ]] || return 0
   local start="${LIFECYCLE_LOCK_TIMES[$sentinel_key]:-}"
   [[ -n "$start" ]] || return 0
+  # codex P2 sweep F5: prefer the iter STORED at mark-time over the ambient
+  # one the caller passes — see _lifecycle_mark_lock_start above.
+  local marked_iter="${LIFECYCLE_LOCK_ITERS[$sentinel_key]:-}"
+  local iter="${marked_iter:-$fallback_iter}"
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
   local now_ms
   now_ms=$(_epoch_ms)
   log_lifecycle_metric "sentinel_lock_to_unlock_ms" $(( now_ms - start )) \
     "sentinel=$sentinel_key iter=$iter" "$iter" "" "$sentinel_key"
   unset "LIFECYCLE_LOCK_TIMES[$sentinel_key]"
+  unset "LIFECYCLE_LOCK_ITERS[$sentinel_key]"
+}
+
+# _lifecycle_flush_pending_locks() — codex P2 sweep F5: a COMPLETE exit
+# (leader-finalize sequential-verify pass, full/ALL verify pass) `return`s
+# straight out of the campaign loop and skips the loop-top unlock block that
+# normally closes out the LAST iteration's lock (there is no "next
+# iteration" for it to run in) — silently dropping that sample from
+# campaign.jsonl. Call once, immediately before the terminal
+# write_campaign_jsonl, to emit every still-pending lock/unlock pair (using
+# each one's OWN stored iter, per the fix above) before the process exits.
+# A no-op when nothing is pending (the common, non-terminal-exit case).
+_lifecycle_flush_pending_locks() {
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
+  local sentinel_key
+  for sentinel_key in "${(k)LIFECYCLE_LOCK_TIMES[@]}"; do
+    _lifecycle_mark_unlock "$sentinel_key"
+  done
 }
 
 # _lifecycle_clear_lock_mark() — codex round 1 (P2-2): drops a pending
@@ -731,6 +771,7 @@ _lifecycle_clear_lock_mark() {
   local sentinel_key="$1"
   [[ -n "$sentinel_key" ]] || return 0
   unset "LIFECYCLE_LOCK_TIMES[$sentinel_key]"
+  unset "LIFECYCLE_LOCK_ITERS[$sentinel_key]"   # codex P2 sweep F5: keep the two maps in sync
 }
 
 # PR-A (Bug #10) — validate operator-written manual recovery artifacts.
