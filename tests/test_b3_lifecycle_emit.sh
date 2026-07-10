@@ -423,13 +423,22 @@ no_relock=$(zsh -c '
 # ═══════════════════════════════════════════════════════════════════════════
 
 # 22) P2-2 (structural): atomic_write() itself calls _lifecycle_clear_lock_mark
-# — the hook that closes the class.
+# — the hook that closes the class. codex P2 sweep F9: verify POST-MV
+# POSITION, not mere presence — a mere-presence check would still pass if a
+# future edit moved the clear call BEFORE the mv (reintroducing the exact
+# "cleared before confirming" bug class F4 fixed at the rm sites, but inside
+# atomic_write itself this time).
 grep -qE '^atomic_write\(\)' "$REPO/src/scripts/lib_ralph_desk.zsh" \
   && atomic_write_body=$(awk '/^atomic_write\(\)/,/^}/' "$REPO/src/scripts/lib_ralph_desk.zsh") \
   || atomic_write_body=""
 print -r -- "$atomic_write_body" | grep -q '_lifecycle_clear_lock_mark "\${target:t}"' \
   && ok "P2-2 round 3: atomic_write() contains the clear-mark hook" \
   || no "P2-2 round 3: atomic_write() is missing the clear-mark hook"
+mv_idx=$(print -r -- "$atomic_write_body" | grep -n 'mv "\$tmp" "\$target"' | head -1 | cut -d: -f1)
+clear_idx=$(print -r -- "$atomic_write_body" | grep -n '_lifecycle_clear_lock_mark "\${target:t}"' | head -1 | cut -d: -f1)
+[[ -n "$mv_idx" && -n "$clear_idx" ]] && (( clear_idx > mv_idx )) \
+  && ok "F9: atomic_write()'s clear-mark hook is positioned AFTER the successful mv (line $clear_idx > $mv_idx), not merely present" \
+  || no "F9: atomic_write()'s clear-mark hook is NOT after the mv (mv=$mv_idx clear=$clear_idx)"
 
 # 23) P2-2 (structural): exactly 4 explicit _lifecycle_clear_lock_mark
 # "${VERDICT_FILE:t}" call sites remain in run_ralph_desk.zsh — the 4 round-1
@@ -464,6 +473,11 @@ raw_redirects=$(grep -cE '> ?"\$(SIGNAL_FILE|VERDICT_FILE|signal_file|verdict_fi
 # codex found 3 times: a lock left dangling across a replace.
 hook_silences=$(zsh -c '
   source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  # codex P2 sweep F9: set -e so a silent setup failure (mktemp/atomic_write
+  # on a hardened/read-only host) aborts this scratch script instead of
+  # letting the assertion below misread empty/absent output as a genuine
+  # zero-record PASS.
+  set -e
   export RLP_LIFECYCLE_METRICS=1
   LIFECYCLE_RECORDS=()
   D=$(mktemp -d)
@@ -482,6 +496,7 @@ hook_silences=$(zsh -c '
 # at write-time; it does not poison a mark established afterward.
 write_then_lock=$(zsh -c '
   source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  set -e   # codex P2 sweep F9: same rationale as case 25 above.
   export RLP_LIFECYCLE_METRICS=1
   LIFECYCLE_RECORDS=()
   D=$(mktemp -d)
@@ -501,6 +516,7 @@ n=$(print -r -- "$write_then_lock" | head -1)
 # emits exactly ONE pair measuring the fresh lock — not the abandoned one.
 atomic_cycle=$(zsh -c '
   source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  set -e   # codex P2 sweep F9: same rationale as case 25 above.
   export RLP_LIFECYCLE_METRICS=1
   LIFECYCLE_RECORDS=()
   D=$(mktemp -d)
