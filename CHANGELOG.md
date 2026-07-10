@@ -6,6 +6,13 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 
 ## [Unreleased]
 
+### Planned (not yet shipped)
+- Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
+- Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
+- B3-S2 tolerance bands for the 3 newly-wired write-to-read/reap metrics still hold Node-sample values; refit against zsh nightly samples before any `B3_STAGE2_BLOCKING` widening.
+
+## [0.22.0] — 2026-07-10
+
 ### Added
 - **Lifecycle observability: full-wire on the zsh leader + default ON.** The 4
   lifecycle metrics that were Node-only (`iter_signal_write_to_read_ms`,
@@ -17,9 +24,17 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
   set `RLP_LIFECYCLE_METRICS=0` to opt out. See README.md "Lifecycle
   Observability" for the metric table.
 
-### Planned (not yet shipped)
-- Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
-- Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
+### Fixed
+- `RLP_LIFECYCLE_METRICS` semantics unified across leaders: any value except
+  `0` enables (previously the zsh leader required exactly `1`, so e.g.
+  `=true` disabled tmux telemetry while enabling native).
+- Lifecycle sentinel lock/unlock pair hygiene: stale lock marks are now
+  cleared on every monitored-file mutation — structurally via a clear hook
+  inside `atomic_write()` (after a successful replace), explicit clears at
+  the 4 `rm` sites, and the quarantine `mv`. Prevents false
+  `sentinel_lock_to_unlock_ms` values from cross-instance pairing. One raw
+  `>` redirect (codex worker-exit signal synthesis) was converted to
+  `atomic_write`, additionally gaining truncated-write protection.
 
 ## [0.21.0] — 2026-07-10
 
