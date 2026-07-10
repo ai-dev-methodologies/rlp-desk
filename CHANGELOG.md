@@ -11,6 +11,22 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.21.0] — 2026-07-10
+
+### Changed
+- **Consensus defaults moved to the GPT-5.6 generation**:
+  `--consensus-model` default is now `gpt-5.6-terra:medium` (was
+  `gpt-5.5:medium`) and `--final-consensus-model` default is
+  `gpt-5.6-sol:high` (was `gpt-5.5:high`), in both the zsh and Node leaders.
+  Explicit flags and env overrides are unchanged; gpt-5.5 remains a fully
+  supported model. Accounts without GPT-5.6 access should pass
+  `--consensus-model gpt-5.5:medium --final-consensus-model gpt-5.5:high`
+  (or set the env vars) when enabling consensus.
+- Init brainstorm presets recommend the 5.6 generation
+  (`gpt-5.6-terra:medium` recommended, `gpt-5.6-sol:high --consensus all`
+  for critical work); README preset descriptions now mirror the actual init
+  output.
+
 ## [0.20.0] — 2026-07-10 (Tier-1 dogfood release: git tag only, not published to npm)
 
 GPT-5.6 model-generation support (codex-cli 0.144 catalog).
