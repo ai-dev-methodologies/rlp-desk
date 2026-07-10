@@ -415,7 +415,10 @@ acquire_slug_lock() {
 # iter-N+1 worker for 2min. _kill_pane_process closes the race; _lock_sentinel
 # is defense-in-depth that freezes the file mtime. Mirror of run_ralph_desk.zsh
 # verifier-cleanup pattern at L2384-2397 (Ctrl+C + /exit + wait_for_pane_ready).
-# Both helpers are fail-open: pane may already be dead, FS may ignore chmod.
+# Both helpers are fail-open on a MISSING sentinel (pane may already be dead,
+# file may not exist yet) and tolerate a FS that silently ignores chmod (chmod
+# still exits 0 in that case). codex P2 sweep F3: a chmod that genuinely
+# FAILS on an existing file now returns non-zero — see _lock_sentinel below.
 _kill_pane_process() {
   local pane_id="$1"
   local role="${2:-producer}"
@@ -470,18 +473,30 @@ _kill_pane_process() {
   return 0
 }
 
+# codex P2 sweep F3: return the REAL outcome (file exists AND chmod
+# succeeded) instead of always 0. A missing file is still a fail-open no-op
+# (return 0, unchanged — test_b2fix_sentinel_lock.sh AC-B3 and
+# test-bug7-post-sentinel-race.sh Scenario B pin this idempotence
+# explicitly); a chmod that genuinely fails on an EXISTING file (permission
+# denied, FS error, ENOENT race between the -f check and the chmod call) now
+# propagates as a real failure. This matters for callers that pair a
+# lifecycle lock-start mark with the lock attempt (run_ralph_desk.zsh) — see
+# the guarded call sites there — so a lock that never actually happened
+# cannot get paired with a later unlock into a bogus
+# sentinel_lock_to_unlock_ms duration. Checked: no production caller relies
+# on the old always-0 contract for control flow (grep of every call site;
+# the file does not set -e, and callers that genuinely don't care about the
+# outcome — the 3 DONE_CLAIM_FILE-only lock sites — are explicit `|| true`).
 _lock_sentinel() {
   local file="$1"
   [[ -n "$file" && -f "$file" ]] || return 0
-  chmod 0444 "$file" 2>/dev/null || true
-  return 0
+  chmod 0444 "$file" 2>/dev/null
 }
 
 _unlock_sentinel() {
   local file="$1"
   [[ -n "$file" && -f "$file" ]] || return 0
-  chmod 0644 "$file" 2>/dev/null || true
-  return 0
+  chmod 0644 "$file" 2>/dev/null
 }
 
 # =============================================================================

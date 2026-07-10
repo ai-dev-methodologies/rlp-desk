@@ -167,8 +167,10 @@ check "codex-r1 P2-2: _lifecycle_clear_lock_mark helper exists" \
 # adjacent clear calls were removed as redundant with the hook.
 check "codex-r3 P2-2: atomic_write() contains the clear-mark hook (closes the class)" \
   bash -c 'awk "/^atomic_write\\(\\)/,/^}/" src/scripts/lib_ralph_desk.zsh | grep -q "_lifecycle_clear_lock_mark \"\${target:t}\""'
-check "codex-r3 P2-2: exactly 4 rm-site clear calls remain (atomic_write sites now hook-covered)" \
-  bash -c '[ "$(grep -c "_lifecycle_clear_lock_mark \"\${VERDICT_FILE:t}\"" src/scripts/run_ralph_desk.zsh)" -eq 4 ]'
+# v0.22 codex P2 sweep F3 added 3 MORE VERDICT_FILE clear-mark call sites (the
+# lock-failure guards) on top of the 4 round-1 rm-site clears — 4 + 3 = 7.
+check "codex-r3 P2-2 + P2-sweep F3: 7 VERDICT_FILE clear-mark call sites (4 rm-site + 3 lock-failure guards)" \
+  bash -c '[ "$(grep -c "_lifecycle_clear_lock_mark \"\${VERDICT_FILE:t}\"" src/scripts/run_ralph_desk.zsh)" -eq 7 ]'
 check "codex-r3 P2-2: all 3 atomic_write \"\$VERDICT_FILE\" sites still exist (pins the enumerated set)" \
   bash -c '[ "$(grep -c "atomic_write \"\$VERDICT_FILE\"" src/scripts/run_ralph_desk.zsh)" -eq 3 ]'
 check "codex-r3 P2-2: no raw > redirects onto monitored files (all funnel through atomic_write)" \

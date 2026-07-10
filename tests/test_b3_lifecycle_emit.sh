@@ -437,10 +437,15 @@ print -r -- "$atomic_write_body" | grep -q '_lifecycle_clear_lock_mark "\${targe
 # consensus loop pre-dispatch). The 3 round-2 atomic_write-adjacent calls were
 # removed (now redundant with the hook). The loop-top cleanup rm stays
 # uninstrumented (already safe via its own unlock+mark_unlock pairing).
+# codex P2 sweep F3 added 3 MORE _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
+# call sites — the lock-failure guards (run_single_verifier,
+# _final_verify_one_us, the inline single-engine verify path) that clear a
+# just-set mark when _lock_sentinel genuinely fails, a DIFFERENT reason than
+# the 4 round-1 rm-site clears below. 4 (rm-site) + 3 (F3 lock-guard) = 7.
 clear_call_count=$(grep -c '_lifecycle_clear_lock_mark "\${VERDICT_FILE:t}"' "$REPO/src/scripts/run_ralph_desk.zsh")
-[[ "$clear_call_count" == "4" ]] \
-  && ok "P2-2 round 3: exactly 4 rm-site clear calls remain (3 atomic_write ones removed as redundant)" \
-  || no "P2-2 round 3: expected 4 _lifecycle_clear_lock_mark call sites, got $clear_call_count"
+[[ "$clear_call_count" == "7" ]] \
+  && ok "P2-2 round 3 + F3: 7 clear-mark call sites (4 rm-site + 3 F3 lock-failure guards)" \
+  || no "P2-2 round 3 + F3: expected 7 _lifecycle_clear_lock_mark call sites, got $clear_call_count"
 
 # 24) P2-2 (structural): no raw `>` redirect writes SIGNAL_FILE/signal_file/
 # VERDICT_FILE/verdict_file outside atomic_write anymore (handle_worker_exit_

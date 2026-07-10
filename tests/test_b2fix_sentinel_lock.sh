@@ -77,10 +77,13 @@ fi
 
 # Site 3 — existing iter-signal reaper site: additional lock for DONE_CLAIM_FILE
 # alongside the existing SIGNAL_FILE lock. The block is identified by the
-# `_kill_pane_process "$WORKER_PANE" "worker"` marker.
+# `_kill_pane_process "$WORKER_PANE" "worker"` marker. Window widened
+# 10->20 lines (codex P2 sweep F3): the SIGNAL_FILE lock immediately after
+# the marker now has a guarded `if ! _lock_sentinel ...; then clear; fi`
+# block, pushing the DONE_CLAIM_FILE lock further down.
 if awk '
   /_kill_pane_process "\$WORKER_PANE" "worker"/{found=1; n=0}
-  found && n<10 {print; n++}
+  found && n<20 {print; n++}
 ' "$RUN" | grep -qE '_lock_sentinel "\$DONE_CLAIM_FILE"' ; then
   pass "Site 3: post iter-signal reaper locks DONE_CLAIM_FILE"
 else
