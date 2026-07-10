@@ -105,6 +105,30 @@ test('US-002 AC2.3 negative: parseModelFlag rejects an empty model before the co
   assert.throws(() => parseModelFlag(':max', 'worker'), /model is required/i);
 });
 
+// codex 0.144 / GPT-5.6 aliases — mirror of the zsh parse sites (spark precedent).
+test('parseModelFlag maps sol:max to gpt-5.6-sol with max reasoning', async () => {
+  const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
+  assert.deepEqual(parseModelFlag('sol:max'), {
+    engine: 'codex',
+    model: 'gpt-5.6-sol',
+    reasoning: 'max',
+  });
+});
+
+test('parseModelFlag maps terra:ultra and luna:high to their full slugs', async () => {
+  const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
+  assert.deepEqual(parseModelFlag('terra:ultra'), {
+    engine: 'codex',
+    model: 'gpt-5.6-terra',
+    reasoning: 'ultra',
+  });
+  assert.deepEqual(parseModelFlag('luna:high'), {
+    engine: 'codex',
+    model: 'gpt-5.6-luna',
+    reasoning: 'high',
+  });
+});
+
 test('US-002 AC2.4 happy: parseModelFlag maps spark:medium to codex spark defaults', async () => {
   const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
 

@@ -131,6 +131,16 @@ export function parseModelFlag(value, role = 'worker') {
     };
   }
 
+  // GPT-5.6 family aliases (codex 0.144) — mirror of the zsh parse sites.
+  const GPT56_ALIASES = { sol: 'gpt-5.6-sol', terra: 'gpt-5.6-terra', luna: 'gpt-5.6-luna' };
+  if (GPT56_ALIASES[model]) {
+    return {
+      engine: 'codex',
+      model: GPT56_ALIASES[model],
+      reasoning: level,
+    };
+  }
+
   return {
     engine: 'codex',
     model,

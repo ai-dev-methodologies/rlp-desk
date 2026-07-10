@@ -97,6 +97,12 @@ assert_eq "spark: suffixed model name on model+branch line alone" 0 $?
 is_codex_idle_ui 'gpt-5.6-sol finished reviewing the maximum retry logic'
 assert_eq "false: model name in prose without effort-dot-branch shape" 1 $?
 
+is_codex_idle_ui 'the worker printed gpt-5.6-sol max · main earlier'
+assert_eq "false: status-line shape quoted mid-prose (anchored match)" 1 $?
+
+is_codex_idle_ui '   gpt-5.6-sol max · main'
+assert_eq "leading whitespace before status line still matches" 0 $?
+
 is_codex_idle_ui '› Improve documentation in @bos/db'
 assert_eq "v0.14.2: codex default suggestion 'Improve documentation in @'" 0 $?
 

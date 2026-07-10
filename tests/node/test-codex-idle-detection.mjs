@@ -115,3 +115,12 @@ test('isCodexIdleUi: gpt-5.3-codex-spark high · main (suffixed slug, old effort
 test('isCodexIdleUi: model name in prose without effort·branch shape stays false', () => {
   assert.equal(isCodexIdleUi('gpt-5.6-sol finished reviewing the maximum retry logic'), false);
 });
+
+
+test('isCodexIdleUi: status-line shape quoted mid-prose stays false (anchored match)', () => {
+  assert.equal(isCodexIdleUi('the worker printed gpt-5.6-sol max · main earlier'), false);
+});
+
+test('isCodexIdleUi: leading whitespace before the status line still matches', () => {
+  assert.equal(isCodexIdleUi('   gpt-5.6-sol max · main'), true);
+});

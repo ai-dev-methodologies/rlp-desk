@@ -1832,7 +1832,9 @@ is_codex_idle_ui() {
   #    only printed alongside the idle prompt, never during work.
   #    codex 0.144: slugs may carry suffixes (gpt-5.6-sol|terra|luna,
   #    gpt-5.3-codex-spark) and efforts now include max|ultra.
-  print -- "$pane_text" | grep -qE 'gpt-[0-9]+(\.[0-9]+)?(-[a-z0-9-]+)? (low|medium|high|xhigh|max|ultra) ·' && return 0
+  #    Anchored to line start (leading tmux-wrap whitespace tolerated) so the
+  #    same shape quoted mid-prose in worker output is not misread as idle.
+  print -- "$pane_text" | grep -qE '^[[:space:]]*gpt-[0-9]+(\.[0-9]+)?(-[a-z0-9-]+)? (low|medium|high|xhigh|max|ultra) ·' && return 0
   # 4. codex default-suggestion prompt prefix at line start. v0.14.1 had
   #    only "›" but BOS Bug #4 showed the leading character can be wrapped
   #    by tmux narrowness — also accept the suggestion phrases verbatim.
