@@ -985,6 +985,74 @@ append_ok=$(zsh -c '
   && ok "F6: the normal success path still writes one row and resets the accumulator (rc=0)" \
   || no "F6: success path regressed ($append_ok)"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 2 R2-2: the A4 fallback path (poll_for_signal, done-claim
+# exists but no iter-signal) reaps the worker pane ITSELF (untagged) when it
+# synthesizes the signal file, then the caller's normal success branch reaps
+# the SAME pane again (tagged "iter-signal") — double-counting
+# pane_eof_to_cleanup_ms and wasting a full C-c×2 + wait round-trip on an
+# already-dead pane. poll_for_signal and its caller both live in
+# run_ralph_desk.zsh (not sourced by this lib-only harness), so this is
+# verified structurally at the real call sites (same convention as the
+# other hard-to-unit-test race/ordering fixes in this file — cases 9, 22,
+# 30) plus a decoupled behavioral proof that the guard MECHANISM itself
+# (skip _kill_pane_process when the already-reaped flag is set) is correct.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 35) Behavioral (decoupled pattern proof): when the already-reaped flag is
+# set, the guard must skip _kill_pane_process entirely — no metric records
+# at all, proving no double-count.
+double_reap=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  _POLL_A4_ALREADY_REAPED=1
+  if (( ! _POLL_A4_ALREADY_REAPED )); then
+    _kill_pane_process "%fake-pane" worker iter-signal
+  fi
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"')
+[[ "$double_reap" == "0" ]] \
+  && ok "R2-2: guard pattern skips the second reap when the already-reaped flag is set (0 records, not double-counted)" \
+  || no "R2-2: guard pattern still reaped when flag was set ($double_reap records)"
+
+# 36) Structural: the A4 fallback's own reap is now TAGGED
+# "iter-signal-a4" (was untagged "worker-a4" only) — a distinct tag from
+# the caller's "iter-signal" so it does not collide with case 30's
+# write_to_read capture->reap->emit ordering state machine (which matches
+# lines ending exactly in "iter-signal"/"verify-verdict").
+grep -q '_kill_pane_process "\$pane_id" "worker-a4" "iter-signal-a4"' "$REPO/src/scripts/run_ralph_desk.zsh" \
+  && ok "R2-2: A4 fallback reap is tagged iter-signal-a4 (pane_reap_latency_ms now fires for it)" \
+  || no "R2-2: A4 fallback reap is not tagged iter-signal-a4"
+
+# 37) Structural: the A4 branch sets the already-reaped flag immediately
+# after its own reap.
+a4_flag_set=$(awk '
+  /_kill_pane_process "\$pane_id" "worker-a4" "iter-signal-a4"$/ { getline nxt; if (nxt ~ /_POLL_A4_ALREADY_REAPED=1$/) n++ }
+  END { print (n+0) }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$a4_flag_set" == "1" ]] \
+  && ok "R2-2: A4 branch sets _POLL_A4_ALREADY_REAPED=1 immediately after its reap" \
+  || no "R2-2: A4 branch does not set the already-reaped flag right after reaping"
+
+# 38) Structural: poll_for_signal() resets the flag near its start, before
+# its own internal polling loop begins — each fresh invocation starts clean.
+poll_body=$(awk '/^poll_for_signal\(\)/,/^}/' "$REPO/src/scripts/run_ralph_desk.zsh")
+reset_line=$(print -r -- "$poll_body" | grep -n '_POLL_A4_ALREADY_REAPED=0' | head -1 | cut -d: -f1)
+while_line=$(print -r -- "$poll_body" | grep -n 'while true; do' | head -1 | cut -d: -f1)
+[[ -n "$reset_line" && -n "$while_line" ]] && (( reset_line < while_line )) \
+  && ok "R2-2: poll_for_signal() resets the already-reaped flag before its polling loop starts" \
+  || no "R2-2: flag reset missing or not before the polling loop (reset_line=$reset_line while_line=$while_line)"
+
+# 39) Structural: the caller's second reap (worker success branch) is now
+# guarded — skipped when the A4 branch already reaped this pane.
+caller_guard=$(awk '
+  /if \(\( ! _POLL_A4_ALREADY_REAPED \)\); then$/ { getline nxt; if (nxt ~ /_kill_pane_process "\$WORKER_PANE" "worker" "iter-signal"$/) n++ }
+  END { print (n+0) }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$caller_guard" == "1" ]] \
+  && ok "R2-2: caller's worker-path reap is guarded by (( ! _POLL_A4_ALREADY_REAPED ))" \
+  || no "R2-2: caller's worker-path reap is not guarded (would still double-reap)"
+
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))
