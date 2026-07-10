@@ -828,6 +828,71 @@ terminal_flush_count=$(awk '
   && ok "F5: both COMPLETE-exit write_campaign_jsonl calls are immediately preceded by _lifecycle_flush_pending_locks" \
   || no "F5: expected 2 flush-then-write_campaign_jsonl(pass) sites, got $terminal_flush_count"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# codex P2 sweep F6: write_campaign_jsonl currently pipes jq's record build
+# straight into `>> "$CAMPAIGN_JSONL"` with no error check on either the jq
+# build or the append itself, and unconditionally resets LIFECYCLE_RECORDS
+# afterward regardless of outcome — so an append failure (disk full,
+# permission error, missing parent dir) silently drops both the row AND the
+# pending lifecycle metrics for that iteration, with no diagnostic and no way
+# to retry on the next flush.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 47) Behavioral: an append failure (target directory does not exist) does
+# NOT reset the lifecycle accumulator, writes no row, logs an error, and the
+# function itself returns non-zero.
+append_fail=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }
+  ERRLOG=""
+  log_error(){ ERRLOG="${ERRLOG}$* "; }
+  D=$(mktemp -d)
+  CAMPAIGN_JSONL="$D/nonexistent-subdir/c.jsonl"
+  WORKER_MODEL=h; WORKER_ENGINE=c; VERIFIER_ENGINE=c; CONSENSUS_MODE=off
+  CONSECUTIVE_FAILURES=0; ROOT="$D"; SLUG=t; typeset -gA US_FAIL_HISTORY=()
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=("{\"metric\":\"pane_eof_to_cleanup_ms\",\"value_ms\":1,\"ts\":\"x\"}")
+  write_campaign_jsonl 1 US-001 pass
+  rc=$?
+  written=no
+  [[ -f "$CAMPAIGN_JSONL" ]] && written=yes
+  print -r -- "rc=$rc records=${#LIFECYCLE_RECORDS[@]} written=$written err=[${ERRLOG}]"
+  rm -rf "$D"')
+rc_val=$(print -r -- "$append_fail" | grep -oE 'rc=-?[0-9]+' | cut -d= -f2)
+[[ -n "$rc_val" && "$rc_val" != "0" ]] \
+  && ok "F6: write_campaign_jsonl returns non-zero when the append fails (rc=$rc_val)" \
+  || no "F6: write_campaign_jsonl returned rc=$rc_val despite the append failing (expected non-zero)"
+records_val=$(print -r -- "$append_fail" | grep -oE 'records=[0-9]+' | cut -d= -f2)
+[[ "$records_val" == "1" ]] \
+  && ok "F6: a failed campaign.jsonl append does NOT reset the lifecycle accumulator (retained for retry)" \
+  || no "F6: accumulator was reset despite the append failing (records=$records_val)"
+written_val=$(print -r -- "$append_fail" | grep -oE 'written=(yes|no)' | cut -d= -f2)
+[[ "$written_val" == "no" ]] \
+  && ok "F6: no partial/garbage row was written when the append target is unwritable" \
+  || no "F6: a row was unexpectedly written despite the append failing (written=$written_val)"
+err_val=$(print -r -- "$append_fail" | sed -n 's/.*err=\[\(.*\)\]$/\1/p')
+[[ -n "$err_val" ]] \
+  && ok "F6: a failed append logs an error" \
+  || no "F6: no error logged on append failure"
+
+# 48) Regression: the normal success path still writes a correct row and
+# resets the accumulator (unchanged behavior — proves the failure-path fix
+# didn't break the common case).
+append_ok=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }; log_error(){ :; }
+  D=$(mktemp -d); CAMPAIGN_JSONL="$D/c.jsonl"
+  WORKER_MODEL=h; WORKER_ENGINE=c; VERIFIER_ENGINE=c; CONSENSUS_MODE=off
+  CONSECUTIVE_FAILURES=0; ROOT="$D"; SLUG=t; typeset -gA US_FAIL_HISTORY=()
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=("{\"metric\":\"pane_eof_to_cleanup_ms\",\"value_ms\":1,\"ts\":\"x\"}")
+  write_campaign_jsonl 1 US-001 pass
+  print -r -- "rc=$? records=${#LIFECYCLE_RECORDS[@]} rows=$(wc -l < "$CAMPAIGN_JSONL" | tr -d " ")"
+  rm -rf "$D"')
+[[ "$append_ok" == "rc=0 records=0 rows=1" ]] \
+  && ok "F6: the normal success path still writes one row and resets the accumulator (rc=0)" \
+  || no "F6: success path regressed ($append_ok)"
+
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))
