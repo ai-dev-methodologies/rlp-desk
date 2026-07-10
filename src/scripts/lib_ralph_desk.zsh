@@ -549,24 +549,57 @@ log_lifecycle_metric() {
   local _us_id="${5:-}"
   local _sentinel_type="${6:-}"
   [[ -n "$metric" && -n "$value_ms" ]] || return 0
-  # Synchronous parent-shell accumulation (drained + reset by write_campaign_jsonl).
-  # jq builds the record so value_ms is a real number and strings are escaped.
-  # Fail-open: a malformed record is skipped, never aborts the caller.
-  local _vm _ts _rec
-  _vm=$(printf '%d' "$value_ms" 2>/dev/null) || _vm=0
-  (( _vm < 0 )) && _vm=0   # clamp non-negative (mirror Node collector): a negative ms
-                           # (EPOCHREALTIME mis-scale / locale corruption / clock skew)
-                           # would silently pass the B3-S2 `<= band` check → false PASS.
-  _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  _rec=$(jq -nc --arg m "$metric" --argjson v "$_vm" --arg ts "$_ts" \
-    --arg iter "$_iter" --arg us_id "$_us_id" --arg stype "$_sentinel_type" \
-    '{metric:$m, value_ms:$v, ts:$ts}
-      + (if $iter != "" then {iter: (try ($iter|tonumber) catch $iter)} else {} end)
-      + (if $us_id != "" then {us_id: $us_id} else {} end)
-      + (if $stype != "" then {sentinel_type: $stype} else {} end)' 2>/dev/null) \
-    && [[ -n "$_rec" ]] && LIFECYCLE_RECORDS+=("$_rec")
-  # Audit aid (unchanged): backgrounded debug-log line.
-  if typeset -f log_debug >/dev/null 2>&1; then
+  # codex P2 sweep F7: a negative or non-numeric value_ms (EPOCHREALTIME
+  # mis-scale near a second rollover, comma-decimal LC_NUMERIC corruption,
+  # clock skew) is DROPPED entirely instead of clamped to 0. A clamp-and-keep
+  # let a corrupted measurement silently satisfy the B3-S2 `<= band` check as
+  # a false PASS — an unmeasured metric already SKIPs (not fails) B3-S2, so
+  # dropping is safe: no record beats a wrong one. `<->` matches a plain
+  # non-negative digit sequence, so a genuine "0" (real sub-ms measurement)
+  # is kept and "-50"/"abc"/"" are not.
+  if [[ "$value_ms" != <-> ]]; then
+    if (( DEBUG )) && typeset -f log_debug >/dev/null 2>&1; then
+      ( log_debug "[LIFECYCLE-WARN] dropped record: metric=$metric non-numeric/negative value_ms='$value_ms'" ) &!
+    fi
+    return 0
+  fi
+  # codex P2 sweep F2: fork-free record assembly (previously shelled out to
+  # the date and jq binaries, 2 forks/call minimum) on the post-sentinel reap hot path — see the
+  # capture/emit split in _lifecycle_emit_write_to_read). Safe by construction:
+  # value_ms is already digit-only-validated above; metric is a hardcoded
+  # call-site literal; iter/us_id/sentinel_type are leader-generated
+  # identifiers (an integer, "US-###", or a fixed sentinel-tag vocabulary like
+  # "iter-signal"/"verify-verdict") — never raw user/LLM text. Gate each
+  # optional field to its safe charset before hand-building JSON; anything
+  # outside it drops the record (same fail-open contract as the prior
+  # jq-based path) rather than emit malformed JSON. sentinel_type carries
+  # both bare tags ("iter-signal") AND sentinel file basenames
+  # ("verdict.json") depending on caller (_kill_pane_process vs
+  # _lifecycle_mark_unlock), so its charset includes '.'.
+  # (`=~` POSIX-ERE match — works without `setopt extendedglob`, which this
+  # file does not enable and should not enable file-wide just for this gate.)
+  [[ "$metric" =~ ^[a-zA-Z0-9_]+$ ]] || return 0
+  [[ -z "$_iter" || "$_iter" == <-> ]] || return 0
+  [[ -z "$_us_id" || "$_us_id" =~ ^[a-zA-Z0-9_-]+$ ]] || return 0
+  [[ -z "$_sentinel_type" || "$_sentinel_type" =~ ^[a-zA-Z0-9_.-]+$ ]] || return 0
+  local -i _vm=$(( 10#$value_ms ))   # force base-10 (avoids leading-zero-as-octal); builtin, no fork
+  zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
+  local _ts _rec
+  # zsh/datetime builtin, -s writes directly into $_ts (no $(...) fork either).
+  # This build's strftime has no -u flag; TZ=UTC as a one-command prefix forces
+  # UTC without forking (builtins get a scoped env override, not an exec) and
+  # without touching $TZ for the rest of the script (verified: does not leak).
+  TZ=UTC strftime -s _ts '%Y-%m-%dT%H:%M:%SZ' $EPOCHSECONDS   # replaces the old date-binary call, no fork
+  _rec="{\"metric\":\"$metric\",\"value_ms\":$_vm,\"ts\":\"$_ts\""
+  [[ -n "$_iter" ]] && _rec+=",\"iter\":$_iter"
+  [[ -n "$_us_id" ]] && _rec+=",\"us_id\":\"$_us_id\""
+  [[ -n "$_sentinel_type" ]] && _rec+=",\"sentinel_type\":\"$_sentinel_type\""
+  _rec+="}"
+  LIFECYCLE_RECORDS+=("$_rec")
+  # Audit aid: backgrounded debug-log line, now gated on (( DEBUG )) itself
+  # (not just log_debug's own internal check) — forking a subshell per metric
+  # even when DEBUG=0 was pure waste on the hot path this infra instruments.
+  if (( DEBUG )) && typeset -f log_debug >/dev/null 2>&1; then
     ( log_debug "[LIFECYCLE] metric=$metric value_ms=$value_ms $ctx" ) &!
   fi
   return 0
@@ -583,9 +616,19 @@ _epoch_ms() {
   print -r -- "${_s:0:13}"
 }
 
-# _lifecycle_emit_write_to_read() — v0.15.4 full-wire: emits
-# iter_signal_write_to_read_ms / verdict_write_to_read_ms. Mirrors
+# _lifecycle_capture_write_to_read() / _lifecycle_emit_write_to_read() —
+# v0.15.4 full-wire, split in two by codex P2 sweep F2. Mirrors
 # campaign-main-loop.mjs:2006-2016 / 2110-2117 (now_ms - sentinel mtime).
+#
+# F2: the 4 call sites (worker + 3 verdict paths) call CAPTURE immediately on
+# poll-resolve, BEFORE the pane reap (_kill_pane_process) — this is the
+# cheapest possible measurement (one `stat` fork via _file_mtime, which is
+# unavoidable; the "now" side is the fork-free $EPOCHREALTIME-backed
+# _epoch_ms), so it does not meaningfully delay the reap that actually stops
+# the claude/codex TUI from self-reviewing. EMIT — the fork-bearing part
+# (log_lifecycle_metric's record build; forks were already eliminated there
+# per F2, but a future edit could reintroduce one) — is called AFTER the
+# reap, once the race window it's protecting is already closed.
 #
 # CAVEAT (documented, not fixed — _file_mtime is out of scope to rewrite):
 # _file_mtime() is WHOLE-SECOND precision (GNU `stat -c %Y` / BSD `stat -f %m`),
@@ -594,10 +637,12 @@ _epoch_ms() {
 # milliseconds — coarser than the Node leader's reading of the same metric
 # name, but still useful for the B3-S2 regression band (3000ms).
 #
-# Args: $1=metric_name  $2=sentinel_file  $3=iter (optional)  $4=us_id (optional)
-_lifecycle_emit_write_to_read() {
+# _lifecycle_capture_write_to_read: Args: $1=sentinel_file. Prints the raw
+# delta_ms on stdout (empty when disabled/unmeasurable — fail-open, matches
+# the prior single-call contract).
+_lifecycle_capture_write_to_read() {
   [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
-  local metric="$1" file="$2" iter="${3:-}" us_id="${4:-}"
+  local file="$1"
   [[ -n "$file" && -f "$file" ]] || return 0
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
   local now_ms
@@ -606,7 +651,17 @@ _lifecycle_emit_write_to_read() {
   local mt_s
   mt_s=$(_file_mtime "$file")
   (( mt_s > 0 )) || return 0
-  log_lifecycle_metric "$metric" $(( now_ms - mt_s * 1000 )) \
+  print -r -- $(( now_ms - mt_s * 1000 ))
+}
+
+# _lifecycle_emit_write_to_read: Args: $1=metric_name  $2=sentinel_file
+# $3=delta_ms (from _lifecycle_capture_write_to_read)  $4=iter (optional)
+# $5=us_id (optional). No-ops when $3 is empty (nothing was captured).
+_lifecycle_emit_write_to_read() {
+  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
+  local metric="$1" file="$2" delta="${3:-}" iter="${4:-}" us_id="${5:-}"
+  [[ -n "$delta" ]] || return 0
+  log_lifecycle_metric "$metric" "$delta" \
     "file=$file iter=$iter us_id=$us_id" "$iter" "$us_id"
 }
 

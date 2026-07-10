@@ -544,21 +544,26 @@ wtr=$(zsh -c '
   D=$(mktemp -d)
   F="$D/sig.json"
   echo "{}" > "$F"
-  sleep 1
   delta=$(_lifecycle_capture_write_to_read "$F")
-  sleep 0.3   # simulated reap gap — must NOT inflate the emitted delta
+  sleep 1.5   # simulated reap gap — must NOT be re-measured into the emitted value
   _lifecycle_emit_write_to_read "iter_signal_write_to_read_ms" "$F" "$delta" 3 US-002
+  print -r -- "$delta"
   print -r -- "${#LIFECYCLE_RECORDS[@]}"
   for r in "${LIFECYCLE_RECORDS[@]}"; do print -r -- "$r"; done
   rm -rf "$D"')
-n=$(print -r -- "$wtr" | head -1)
+captured=$(print -r -- "$wtr" | sed -n '1p')
+n=$(print -r -- "$wtr" | sed -n '2p')
 [[ "$n" == "1" ]] && ok "F2: capture/emit split still produces exactly one iter_signal_write_to_read_ms record" \
   || no "F2: capture/emit split produced $n records, expected 1"
-vm=$(print -r -- "$wtr" | tail -n +2 | jq -r '.value_ms')
-[[ -n "$vm" ]] && (( vm >= 850 && vm < 1150 )) \
-  && ok "F2: captured delta reflects capture-time timing, unaffected by the post-capture reap gap (value_ms=$vm)" \
-  || no "F2: captured delta drifted with the simulated reap gap (value_ms=${vm:-<none>}, expected ~1000)"
-iter_vm=$(print -r -- "$wtr" | tail -n +2 | jq -r '.iter')
+emitted_vm=$(print -r -- "$wtr" | sed -n '3p' | jq -r '.value_ms')
+# Exact equality (not a timing-tolerance band): emit must pass the pre-reap
+# captured delta straight through, with NO further time-based computation —
+# if the 1.5s simulated reap gap leaked in (the old bug: emit recomputed
+# now_ms - mtime at EMIT time), emitted_vm would be ~1500ms larger than captured.
+[[ -n "$captured" && "$emitted_vm" == "$captured" ]] \
+  && ok "F2: emitted value_ms exactly equals the pre-reap captured delta — the 1.5s simulated reap gap did not leak in (value_ms=$captured)" \
+  || no "F2: emitted value_ms ($emitted_vm) != captured delta ($captured) — the reap gap leaked into the measurement"
+iter_vm=$(print -r -- "$wtr" | sed -n '3p' | jq -r '.iter')
 [[ "$iter_vm" == "3" ]] && ok "F2: emit still carries iter/us_id context through the capture/emit split" \
   || no "F2: iter context lost in capture/emit split (got $iter_vm)"
 

@@ -3018,12 +3018,17 @@ run_single_verifier() {
 
   # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
   # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
-  _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$iter" "${CURRENT_US:-ALL}"
+  # codex P2 sweep F2: capture the cheap delta NOW, but defer the actual
+  # (fork-bearing) emit until AFTER the reap below — the pre-reap window is
+  # exactly the race this reap exists to close.
+  local _lc_wtr1
+  _lc_wtr1=$(_lifecycle_capture_write_to_read "$VERDICT_FILE")
   # Bug #7 Fix-Q/R: reap verifier pane the moment we accept the verdict so
   # codex/claude cannot keep self-reviewing and rewrite verify-verdict.json.
   # Lock applied AFTER cp so the archived snapshot is also frozen at intent.
   # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered (pane_reap_latency_ms).
   _kill_pane_process "$VERIFIER_PANE" "verifier-${suffix}" "verify-verdict"
+  _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$_lc_wtr1" "$iter" "${CURRENT_US:-ALL}"
 
   # Copy verdict to destination
   cp "$VERDICT_FILE" "$verdict_dest"
@@ -3144,12 +3149,15 @@ _final_verify_one_us() {
 
   # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
   # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
-  _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$iter" "$us"
+  # codex P2 sweep F2: capture cheaply now, emit (fork-bearing) after the reap.
+  local _lc_wtr2
+  _lc_wtr2=$(_lifecycle_capture_write_to_read "$VERDICT_FILE")
   # Bug #7 Fix-Q/R: reap verifier pane between per-US final verifications so
   # the previous codex/claude TUI cannot continue running while the next per-
   # US verifier dispatch reuses the same pane.
   # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered (pane_reap_latency_ms).
   _kill_pane_process "$VERIFIER_PANE" "verifier-final" "verify-verdict"
+  _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$_lc_wtr2" "$iter" "$us"
   # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
   _lifecycle_mark_lock_start "${VERDICT_FILE:t}"
   _lock_sentinel "$VERDICT_FILE"
@@ -3953,12 +3961,15 @@ main() {
         log_debug "[FLOW] iter=$ITERATION poll_signal_received=true"
         # v0.15.4 full-wire: iter_signal_write_to_read_ms (leader poll-resolve vs
         # worker FS write), mirrors campaign-main-loop.mjs:2006-2016.
-        _lifecycle_emit_write_to_read "iter_signal_write_to_read_ms" "$SIGNAL_FILE" "$ITERATION" "${CURRENT_US:-ALL}"
+        # codex P2 sweep F2: capture cheaply now, emit (fork-bearing) after the reap.
+        local _lc_wtr3
+        _lc_wtr3=$(_lifecycle_capture_write_to_read "$SIGNAL_FILE")
         # Bug #7 Fix-Q/R: reap worker pane immediately so claude/codex cannot
         # self-review and rewrite iter-signal.json (1m43s drift observed).
         # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered
         # (pane_reap_latency_ms), since it follows a fresh iter-signal detection.
         _kill_pane_process "$WORKER_PANE" "worker" "iter-signal"
+        _lifecycle_emit_write_to_read "iter_signal_write_to_read_ms" "$SIGNAL_FILE" "$_lc_wtr3" "$ITERATION" "${CURRENT_US:-ALL}"
         # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
         _lifecycle_mark_lock_start "${SIGNAL_FILE:t}"
         _lock_sentinel "$SIGNAL_FILE"
@@ -4281,11 +4292,14 @@ main() {
           fi
           # v0.15.4 full-wire: verdict_write_to_read_ms (leader poll-resolve vs
           # verifier FS write), mirrors campaign-main-loop.mjs:2110-2117.
-          _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$ITERATION" "${signal_us_id:-${CURRENT_US:-ALL}}"
+          # codex P2 sweep F2: capture cheaply now, emit (fork-bearing) after the reap.
+          local _lc_wtr4
+          _lc_wtr4=$(_lifecycle_capture_write_to_read "$VERDICT_FILE")
           # Bug #7 Fix-Q/R: reap verifier pane immediately so codex cannot
           # rewrite verify-verdict.json post-detect (mtime drift fix).
           # v0.15.4 full-wire: 3rd arg tags this reap as sentinel-triggered (pane_reap_latency_ms).
           _kill_pane_process "$VERIFIER_PANE" "verifier" "verify-verdict"
+          _lifecycle_emit_write_to_read "verdict_write_to_read_ms" "$VERDICT_FILE" "$_lc_wtr4" "$ITERATION" "${signal_us_id:-${CURRENT_US:-ALL}}"
           # v0.15.4 full-wire: markLockStart BEFORE the chmod (H3 ordering contract).
           _lifecycle_mark_lock_start "${VERDICT_FILE:t}"
           _lock_sentinel "$VERDICT_FILE"
