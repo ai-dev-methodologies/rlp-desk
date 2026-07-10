@@ -132,11 +132,17 @@ export function parseModelFlag(value, role = 'worker') {
   }
 
   // GPT-5.6 family aliases (codex 0.144) — mirror of the zsh parse sites.
-  const GPT56_ALIASES = { sol: 'gpt-5.6-sol', terra: 'gpt-5.6-terra', luna: 'gpt-5.6-luna' };
-  if (GPT56_ALIASES[model]) {
+  // Map (not a plain object) so inherited keys like 'constructor' are never
+  // mistaken for aliases.
+  const GPT56_ALIASES = new Map([
+    ['sol', 'gpt-5.6-sol'],
+    ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-5.6-luna'],
+  ]);
+  if (GPT56_ALIASES.has(model)) {
     return {
       engine: 'codex',
-      model: GPT56_ALIASES[model],
+      model: GPT56_ALIASES.get(model),
       reasoning: level,
     };
   }

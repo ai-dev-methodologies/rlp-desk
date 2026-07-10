@@ -105,6 +105,17 @@ test('US-002 AC2.3 negative: parseModelFlag rejects an empty model before the co
   assert.throws(() => parseModelFlag(':max', 'worker'), /model is required/i);
 });
 
+test('parseModelFlag: inherited object keys are not treated as aliases (constructor:max)', async () => {
+  const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
+  // A plain-object alias table would resolve GPT56_ALIASES['constructor'] to
+  // Object.prototype.constructor (truthy) and emit a function as the model.
+  assert.deepEqual(parseModelFlag('constructor:max'), {
+    engine: 'codex',
+    model: 'constructor',
+    reasoning: 'max',
+  });
+});
+
 // codex 0.144 / GPT-5.6 aliases — mirror of the zsh parse sites (spark precedent).
 test('parseModelFlag maps sol:max to gpt-5.6-sol with max reasoning', async () => {
   const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
