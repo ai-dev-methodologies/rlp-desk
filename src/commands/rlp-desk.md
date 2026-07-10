@@ -199,8 +199,8 @@ Tell the user:
    #   --verifier-model MODEL                 per-US verifier (default: sonnet)
    #   --final-verifier-model MODEL           final ALL verifier (default: opus)
    #   --consensus off|all|final-only         cross-engine consensus (default: off)
-   #   --consensus-model MODEL                per-US cross-verifier (default: gpt-5.5:medium)
-   #   --final-consensus-model MODEL          final cross-verifier (default: gpt-5.5:high)
+   #   --consensus-model MODEL                per-US cross-verifier (default: gpt-5.6-terra:medium)
+   #   --final-consensus-model MODEL          final cross-verifier (default: gpt-5.6-sol:high)
    #   --verify-mode per-us|batch             (default: per-us)
    #   --cb-threshold N                       (default: 6)
    #   --max-iter N                           (default: 100)
@@ -265,8 +265,8 @@ Options (parse from `$ARGUMENTS`):
   - `off`: single-engine verification only
   - `all`: cross-engine consensus on every verify (per-US and final)
   - `final-only`: cross-engine consensus only on the final ALL verify
-- `--consensus-model MODEL` (default: `gpt-5.5:medium`) — per-US cross-verifier model. Lighter weight for cost efficiency.
-- `--final-consensus-model MODEL` (default: `gpt-5.5:high`) — final cross-verifier model. Stricter. Note: spark is not allowed here (100k output limit).
+- `--consensus-model MODEL` (default: `gpt-5.6-terra:medium`) — per-US cross-verifier model. Lighter weight for cost efficiency.
+- `--final-consensus-model MODEL` (default: `gpt-5.6-sol:high`) — final cross-verifier model. Stricter. Note: spark is not allowed here (100k output limit).
 - `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
   - `per-us`: verify after each US, then final full verify of all AC
   - `batch`: verify only after all US done (legacy behavior)
@@ -544,8 +544,8 @@ Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <ful
 **⑦b Consensus Verification** (when `--consensus` is `all`, or `final-only` and scope is ALL):
 After the primary verifier runs, run a cross-engine second verifier:
 - Determine cross-verifier model based on scope:
-  - per-US verify → use `--consensus-model` (default: gpt-5.5:medium)
-  - final ALL verify → use `--final-consensus-model` (default: gpt-5.5:high)
+  - per-US verify → use `--consensus-model` (default: gpt-5.6-terra:medium)
+  - final ALL verify → use `--final-consensus-model` (default: gpt-5.6-sol:high)
 - If primary engine is claude → cross-verifier uses codex (the consensus model)
 - If primary engine is codex → cross-verifier uses claude `opus` (fixed)
 - Both produce `verify-verdict.json` (Leader renames to `verify-verdict-claude.json` and `verify-verdict-codex.json`)
@@ -808,8 +808,8 @@ Run options:
   --verifier-model MODEL               per-US verifier (default: sonnet)
   --final-verifier-model MODEL         Final ALL verifier (default: opus)
   --consensus off|all|final-only       Cross-engine consensus (default: off)
-  --consensus-model MODEL              per-US cross-verifier (default: gpt-5.5:medium)
-  --final-consensus-model MODEL        Final cross-verifier (default: gpt-5.5:high)
+  --consensus-model MODEL              per-US cross-verifier (default: gpt-5.6-terra:medium)
+  --final-consensus-model MODEL        Final cross-verifier (default: gpt-5.6-sol:high)
   --verify-mode per-us|batch           Verification strategy (default: per-us)
   --cb-threshold N                     Consecutive failures before BLOCKED (default: 6)
   --max-iter N                         Max iterations (default: 100)

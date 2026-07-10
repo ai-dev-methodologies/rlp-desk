@@ -696,9 +696,9 @@ Worker completes US → signal verify
 
 | Scenario | Primary verifier | Cross verifier |
 |----------|-----------------|----------------|
-| per-US, primary=claude | `--verifier-model` (sonnet) | `--consensus-model` (gpt-5.5:medium) |
+| per-US, primary=claude | `--verifier-model` (sonnet) | `--consensus-model` (gpt-5.6-terra:medium) |
 | per-US, primary=codex | `--verifier-model` | claude opus (fixed) |
-| final, primary=claude | `--final-verifier-model` (opus) | `--final-consensus-model` (gpt-5.5:high) |
+| final, primary=claude | `--final-verifier-model` (opus) | `--final-consensus-model` (gpt-5.6-sol:high) |
 | final, primary=codex | `--final-verifier-model` | claude opus (fixed) |
 
 - Both must pass. No engine priority.

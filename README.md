@@ -259,8 +259,8 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 | `--verifier-model MODEL` | sonnet | per-US verification model (lighter) |
 | `--final-verifier-model MODEL` | opus | final ALL verification model (stricter) |
 | `--consensus off\|all\|final-only` | off | Cross-engine consensus scope |
-| `--consensus-model MODEL` | gpt-5.5:medium | per-US cross-verifier (lighter) |
-| `--final-consensus-model MODEL` | gpt-5.5:high | final cross-verifier (stricter) |
+| `--consensus-model MODEL` | gpt-5.6-terra:medium | per-US cross-verifier (lighter) |
+| `--final-consensus-model MODEL` | gpt-5.6-sol:high | final cross-verifier (stricter) |
 | `--verify-mode per-us\|batch` | per-us | per-us: verify each US → final ALL |
 | `--cb-threshold N` | 6 | Consecutive failures → BLOCKED |
 | `--max-iter N` | 100 | Max iterations → TIMEOUT |
