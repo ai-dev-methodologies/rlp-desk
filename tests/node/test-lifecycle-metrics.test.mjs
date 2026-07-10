@@ -80,13 +80,60 @@ test('AC4.1: markUnlock without prior markLockStart is a no-op', () => {
   assert.equal(flushed.sentinel_lock_to_unlock_ms, undefined);
 });
 
-test('AC4.1: value_ms is rounded and clamped to non-negative', () => {
+// codex-r0 preempt (F7 parity): a negative or non-finite value_ms is now
+// DROPPED (not clamped to 0) — clamp-and-keep let a corrupted measurement
+// (clock skew, NaN) silently satisfy a "<= band" regression check as a
+// false PASS. Mirrors the zsh leader's log_lifecycle_metric fix (P2 sweep
+// F7) — SAME semantics both sides now, not the deliberate divergence F7
+// originally landed.
+test('AC4.1: value_ms is rounded when valid; a genuine positive value rounds correctly', () => {
   const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
-  c.record('pane_eof_to_cleanup_ms', -42, {});  // clock skew → clamp to 0
   c.record('iter_signal_write_to_read_ms', 1234.6, {});  // round to 1235
   const flushed = c.flush();
-  assert.equal(flushed.pane_eof_to_cleanup_ms[0].value_ms, 0);
   assert.equal(flushed.iter_signal_write_to_read_ms[0].value_ms, 1235);
+});
+
+test('F7 parity: a negative value_ms is dropped entirely, not clamped to 0', () => {
+  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
+  c.record('pane_eof_to_cleanup_ms', -42, {});  // clock skew — must be dropped
+  const flushed = c.flush();
+  assert.equal(flushed.pane_eof_to_cleanup_ms, undefined, 'no entry for the dropped metric at all');
+});
+
+test('F7 parity: NaN and Infinity value_ms are dropped', () => {
+  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
+  c.record('pane_eof_to_cleanup_ms', NaN, {});
+  c.record('verdict_write_to_read_ms', Infinity, {});
+  c.record('iter_signal_write_to_read_ms', -Infinity, {});
+  const flushed = c.flush();
+  assert.deepEqual(flushed, {}, 'no records survive for any non-finite value_ms');
+});
+
+test('F7 parity: a genuine value_ms of 0 (real sub-ms measurement) is kept, not confused with a dropped negative/invalid value', () => {
+  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
+  c.record('pane_eof_to_cleanup_ms', 0, {});
+  const flushed = c.flush();
+  assert.equal(flushed.pane_eof_to_cleanup_ms[0].value_ms, 0);
+});
+
+test('F7 parity: dropping a record logs via the injected debugLog channel (audit aid, mirrors zsh DEBUG-gated warning)', () => {
+  const seen = [];
+  const debugLog = (cat, fields) => seen.push({ cat, fields });
+  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' }, debugLog });
+  c.record('pane_eof_to_cleanup_ms', -5, {});
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].cat, 'LIFECYCLE');
+  assert.equal(seen[0].fields.metric, 'pane_eof_to_cleanup_ms');
+  assert.equal(seen[0].fields.dropped, true);
+});
+
+test('F7 parity: markUnlock with a negative delta (clock skew: unlock timestamp before lock timestamp) drops silently instead of emitting a negative duration', () => {
+  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
+  const t0 = 1_000_000;
+  c.markLockStart('verdict', t0);
+  c.markUnlock('verdict', { iter: 1 }, t0 - 200);  // "unlock" resolves BEFORE lock start — clock skew
+  const flushed = c.flush();
+  assert.equal(flushed.sentinel_lock_to_unlock_ms, undefined, 'no spurious negative-duration entry');
 });
 
 test('AC4.1: debugLog is called per record when injected and enabled', () => {
