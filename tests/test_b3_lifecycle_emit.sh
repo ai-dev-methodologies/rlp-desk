@@ -131,13 +131,18 @@ row=$(emit_row 1 "pane_eof_to_cleanup_ms 0")
 warn_seen=$(zsh -c '
   source "'"$LIB"'" 2>/dev/null
   log(){ :; }
-  WARNLOG=""
-  log_debug(){ WARNLOG="${WARNLOG}$*\n"; }
+  WARNFILE=$(mktemp)
+  # log_debug fires from inside a backgrounded `( ) &!` subshell — a plain
+  # variable mutation would land in the subshell copy, invisible to this
+  # parent shell. Use a shared file instead so the write is observable.
+  log_debug(){ print -r -- "$*" >> "$WARNFILE"; }
   export RLP_LIFECYCLE_METRICS=1
   DEBUG=1
   LIFECYCLE_RECORDS=()
   log_lifecycle_metric pane_eof_to_cleanup_ms -50 "c=z"
-  print -r -- "$WARNLOG"')
+  sleep 0.2
+  cat "$WARNFILE"
+  rm -f "$WARNFILE"')
 [[ "$warn_seen" == *"LIFECYCLE-WARN"* ]] \
   && ok "F7: dropping a negative/malformed value logs a warning (DEBUG-gated)" \
   || no "F7: no warning logged on drop ($warn_seen)"
@@ -510,6 +515,77 @@ vms=$(print -r -- "$atomic_cycle" | tail -n +2 | jq -r '.value_ms' 2>/dev/null)
 [[ -n "$vms" ]] && (( vms < 250 )) \
   && ok "P3: emitted pair measures the fresh ~50ms lock, not the abandoned ~300ms one (value_ms=$vms)" \
   || no "P3: atomic-replace cycle value_ms suspiciously large (got ${vms:-<none>})"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# codex P2 sweep F2: default-on instrumentation widened the post-sentinel
+# race — _lifecycle_emit_write_to_read's stat/date/jq/background-fork work ran
+# BEFORE the pane reap on all 4 write_to_read call sites (worker + 3 verdict
+# paths), delaying the moment the leader actually stops the claude/codex TUI
+# from self-reviewing. Split into a cheap pre-reap CAPTURE (stat + a
+# fork-free $EPOCHREALTIME diff — no jq/date/log-fork) and a post-reap EMIT
+# (the actual log_lifecycle_metric call, now proven fork-free per F2 above).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 28) _lifecycle_capture_write_to_read helper exists.
+grep -q "^_lifecycle_capture_write_to_read()" "$REPO/src/scripts/lib_ralph_desk.zsh" \
+  && ok "F2: _lifecycle_capture_write_to_read helper exists" \
+  || no "F2: _lifecycle_capture_write_to_read helper missing"
+
+# 29) Behavioral: capture (before a simulated reap) + emit (after) still
+# produces exactly one correct record, and the measured delta reflects the
+# CAPTURE-time window, not time elapsed during the simulated reap gap after it
+# — proving the two-phase split doesn't just move the same live computation
+# later, but actually freezes the value at capture time.
+wtr=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }; log_debug(){ :; }
+  export RLP_LIFECYCLE_METRICS=1
+  LIFECYCLE_RECORDS=()
+  D=$(mktemp -d)
+  F="$D/sig.json"
+  echo "{}" > "$F"
+  sleep 1
+  delta=$(_lifecycle_capture_write_to_read "$F")
+  sleep 0.3   # simulated reap gap — must NOT inflate the emitted delta
+  _lifecycle_emit_write_to_read "iter_signal_write_to_read_ms" "$F" "$delta" 3 US-002
+  print -r -- "${#LIFECYCLE_RECORDS[@]}"
+  for r in "${LIFECYCLE_RECORDS[@]}"; do print -r -- "$r"; done
+  rm -rf "$D"')
+n=$(print -r -- "$wtr" | head -1)
+[[ "$n" == "1" ]] && ok "F2: capture/emit split still produces exactly one iter_signal_write_to_read_ms record" \
+  || no "F2: capture/emit split produced $n records, expected 1"
+vm=$(print -r -- "$wtr" | tail -n +2 | jq -r '.value_ms')
+[[ -n "$vm" ]] && (( vm >= 850 && vm < 1150 )) \
+  && ok "F2: captured delta reflects capture-time timing, unaffected by the post-capture reap gap (value_ms=$vm)" \
+  || no "F2: captured delta drifted with the simulated reap gap (value_ms=${vm:-<none>}, expected ~1000)"
+iter_vm=$(print -r -- "$wtr" | tail -n +2 | jq -r '.iter')
+[[ "$iter_vm" == "3" ]] && ok "F2: emit still carries iter/us_id context through the capture/emit split" \
+  || no "F2: iter context lost in capture/emit split (got $iter_vm)"
+
+# 30) Structural (source): at all 4 write_to_read call sites in
+# run_ralph_desk.zsh (worker + run_single_verifier + _final_verify_one_us +
+# the inline single-engine verify path), _lifecycle_capture_write_to_read
+# must precede the sentinel-tagged _kill_pane_process reap, and
+# _lifecycle_emit_write_to_read must follow it — a strict repeating
+# capture->reap->emit state machine over the whole file, order-checked.
+order_check=$(awk '
+  /_lifecycle_capture_write_to_read/ { if (state=="reaped") { print "ORDER-FAIL: capture at " NR " before prior emit"; bad=1 } state="captured"; next }
+  /_kill_pane_process .*"(iter-signal|verify-verdict)"$/ {
+    if (state != "captured") { print "ORDER-FAIL: reap at line " NR " without a preceding capture (state=" state ")"; bad=1 }
+    state="reaped"; next
+  }
+  /_lifecycle_emit_write_to_read/ {
+    if (state != "reaped") { print "ORDER-FAIL: emit at line " NR " without a preceding reap (state=" state ")"; bad=1 }
+    state="emitted"; triples++; next
+  }
+  END {
+    if (triples != 4) { print "expected 4 capture->reap->emit triples, got " triples; bad=1 }
+    if (!bad) print "OK"
+  }
+' "$REPO/src/scripts/run_ralph_desk.zsh")
+[[ "$order_check" == "OK" ]] \
+  && ok "F2: all 4 write_to_read call sites follow capture(pre-reap) -> reap -> emit(post-reap) ordering" \
+  || no "F2: capture/reap/emit ordering violated: $order_check"
 
 print ""
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
