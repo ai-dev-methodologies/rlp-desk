@@ -1341,5 +1341,45 @@ eof_iter=$(zsh -c '
   || no "R3-3: pane_eof_to_cleanup_ms still missing .iter ($eof_iter)"
 
 print ""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# codex round 4: the A4 liveness recheck must be fail-SAFE — skip the second
+# reap ONLY on a successful probe that positively shows a bare idle shell.
+# Probe failure or an unknown foreground command must still reap (the flag
+# alone proves an ATTEMPT, and _kill_pane_process is fail-open).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 40) Behavioral: probe FAILURE (tmux exits nonzero) => still needs reap.
+a4_probe_fail=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  tmux(){ return 1 }
+  _a4_pane_still_needs_reap "%p" && print -r -- needs || print -r -- skip')
+[[ "$a4_probe_fail" == "needs" ]] \
+  && ok "codex-r4: failed liveness probe => reap still needed (fail-safe)" \
+  || no "codex-r4: failed liveness probe wrongly skipped the reap ($a4_probe_fail)"
+
+# 41) Behavioral: unknown foreground command => still needs reap.
+a4_unknown=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  tmux(){ print -r -- python3; return 0 }
+  _a4_pane_still_needs_reap "%p" && print -r -- needs || print -r -- skip')
+[[ "$a4_unknown" == "needs" ]] \
+  && ok "codex-r4: unknown pane command => reap still needed" \
+  || no "codex-r4: unknown pane command wrongly skipped the reap ($a4_unknown)"
+
+# 42) Behavioral: positively idle shell => skip is allowed.
+a4_idle=$(zsh -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  tmux(){ print -r -- zsh; return 0 }
+  _a4_pane_still_needs_reap "%p" && print -r -- needs || print -r -- skip')
+[[ "$a4_idle" == "skip" ]] \
+  && ok "codex-r4: idle-shell probe result permits skipping the second reap" \
+  || no "codex-r4: idle-shell probe result did not permit skip ($a4_idle)"
+
+# 43) Structural: the caller consults the helper (not a raw inline probe).
+grep -q '_a4_pane_still_needs_reap "\$WORKER_PANE"' "$REPO/src/scripts/run_ralph_desk.zsh" \
+  && ok "codex-r4: A4 skip guard consults _a4_pane_still_needs_reap at the call site" \
+  || no "codex-r4: caller does not consult the fail-safe helper"
+
 if (( FAIL == 0 )); then print "b3-lifecycle-emit: $PASS/$((PASS+FAIL)) PASS"; else print "b3-lifecycle-emit: $PASS pass, $FAIL FAIL"; fi
 exit $(( FAIL > 0 ))
