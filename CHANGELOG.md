@@ -11,6 +11,37 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 - B3-S2 tolerance bands for the 3 newly-wired write-to-read/reap metrics still hold Node-sample values; refit against zsh nightly samples before any `B3_STAGE2_BLOCKING` widening.
 
+## [0.22.1] — 2026-07-10
+
+Hardening sweep on the v0.22.0 lifecycle-observability work: 9 P2 findings
+from a gpt-5.6-sol max-effort adversarial review, plus 9 follow-ups from
+4 codex re-review rounds. All fixes TDD'd (emitter suite 72→100 cases).
+
+### Fixed
+- `pane_reap_latency_ms` contract text corrected: it records the same
+  kill-start → process-exit-confirmed window as `pane_eof_to_cleanup_ms` on
+  both leaders (the docs previously advertised a wider window the code never
+  measured); equality is now regression-locked on both runtimes.
+- Post-sentinel race window narrowed: metric capture before a pane reap is
+  now fork-free (zsh `EPOCHREALTIME`/`zstat` builtins), all fork-bearing
+  emission happens after the reap, and the codex A4-fallback path no longer
+  reaps the same pane twice (fail-safe liveness recheck skips only when a
+  successful probe shows a bare idle shell).
+- Lifecycle lock/unlock metrics are only emitted when the lock/unlock chmod
+  actually succeeded; lock marks are cleared only after a successful `rm`;
+  pending lock pairs are flushed (with their own iteration attribution) on
+  campaign completion instead of being lost.
+- Invalid (negative/non-finite) timing values are dropped with a warning on
+  BOTH leaders instead of being clamped to 0 (a clamp could false-pass the
+  B3 tolerance-band gate).
+- `campaign.jsonl` append failures are no longer silent: the writer verifies
+  the append, retains unflushed records for retry, and completion-path
+  failures retry once then log loudly (never blocking completion).
+- `zmodload zsh/stat` is loaded with `-F ... b:zstat` so the external `stat`
+  binary is not shadowed process-wide (a full load rebinds `stat` itself and
+  breaks every later `stat -f/-c` call in the leader).
+- Every `pane_eof_to_cleanup_ms` record now carries its iteration field.
+
 ## [0.22.0] — 2026-07-10
 
 ### Added
