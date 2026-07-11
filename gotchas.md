@@ -43,3 +43,9 @@ Lessons from failures. Format: Symptom / Root cause / Recovery / Prevention (one
 - Root cause: the file is `#!/usr/bin/env bash`. Forcing zsh on it reproduces exactly the harness bug fixed in IMP-18 (v0.18.7).
 - Recovery: run `npm run test:zsh` (it shebang-dispatches) or invoke the file's own interpreter.
 - Prevention: never hand-pick the interpreter for a test file. Also: before blaming your own diff for a suite going red, re-run that suite on stashed-clean HEAD.
+
+## 2026-07-11 — resume/confirmation iterations deadlock the codex Worker Process Audit (2x reproduced)
+- Symptom: restarting a campaign over an already-complete deliverable ends BLOCKED `context_limit` ("Context unchanged for 3 consecutive iterations") after codex fails the Worker Process Audit every round; claude passes the same rounds.
+- Root cause: leader startup cleanup discards the original done-claim (which held the real TDD execution_steps), and a worker re-verifying finished code cannot honestly produce fresh write_test/verify_red-exit-1 evidence — so the audit can never pass and the context goes stale.
+- Recovery: full fresh build in VERIFY_MODE=batch — the build iteration's done-claim carries the complete plan→write_test→verify_red→implement→verify_green sequence in one shot (slugify went COMPLETE at iter 1 with sol:xhigh consensus).
+- Prevention: don't resume a finished campaign expecting a consensus-only replay; if resume becomes a real workflow, fix governance (audit accepts a confirmation-mode done-claim, or leader preserves the verified done-claim across restarts) via ralplan+codex. Also: `init --mode fresh` OVERWRITES existing PRD/test-spec with blank templates — re-author plans afterwards.
