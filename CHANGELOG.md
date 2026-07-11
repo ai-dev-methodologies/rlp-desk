@@ -10,6 +10,32 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.2] — 2026-07-11
+
+Codex 0.144 compatibility + fast-fail on provider quota exhaustion. Both
+fixes were validated end-to-end in live dogfood campaigns (codex consensus
+adjudicated multiple iterations; a fresh batch campaign reached COMPLETE
+with gpt-5.6-sol:xhigh cross-verification).
+
+### Fixed
+- codex 0.144 renders its TUI input prompt as `❯` (U+276F); the worker and
+  verifier launch ready-loops only accepted the 0.141 glyph `›` (U+203A), so
+  a healthy codex pane was declared "not ready", the instruction was never
+  sent, and the campaign blocked on a verdict timeout. Both launch
+  ready-loops now accept either glyph (`tests/test_codex_ready_glyph.sh`).
+- Provider quota exhaustion ("You've hit your usage limit") now fails fast:
+  a dedicated `detect_quota_exhausted()` detector aborts the codex verifier
+  poll loop immediately instead of burning the full `ITER_TIMEOUT`, and the
+  BLOCKED sentinel names the cause ("provider usage limit reached — retry
+  after the reset", `recoverable: true`) via `VERIFIER_ABORT_REASON`. The
+  detector anchors on "hit your usage limit"/"usage limit reached" so the
+  transient D-17a banner — which literally contains "(not your usage
+  limit)" — stays on the recoverable backoff path
+  (`tests/test_codex_quota_fastfail.sh`).
+- The consensus hard-failure sentinel no longer claims "failed after max
+  rounds" / `repeat_axis` when a verifier died before any verdict: it now
+  reports the accurate reason and `infra_failure` category.
+
 ## [0.22.1] — 2026-07-10
 
 Hardening sweep on the v0.22.0 lifecycle-observability work: 9 P2 findings
