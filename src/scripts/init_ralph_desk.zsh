@@ -727,10 +727,10 @@ When writing done-claim JSON, ALWAYS include execution_steps — what you did, i
   "claims": ["AC1: ...", "AC2: ..."],
   "execution_steps": [
     {"step": "write_test", "ac_id": "AC1", "command": null, "summary": "wrote tests/test_add.py with 3 tests"},
-    {"step": "verify_red", "ac_id": "AC1", "command": "pytest tests/...", "exit_code": 1, "summary": "RED: test fails as expected"},
+    {"step": "verify_red", "ac_id": "AC1", "command": "pytest tests/...", "exit_code": 1, "ts": "2026-01-01T00:00:00Z", "summary": "RED: test fails as expected"},
     {"step": "implement", "ac_id": "AC1", "command": null, "summary": "created add() function"},
     {"step": "verify_green", "ac_id": "AC1", "command": "pytest tests/...", "exit_code": 0, "ts": "2026-01-01T00:00:00Z", "summary": "GREEN: 3 passed"},
-    {"step": "verify_e2e", "ac_id": "AC1", "command": "python -c '...'", "exit_code": 0, "summary": "E2E output matches expected"},
+    {"step": "verify_e2e", "ac_id": "AC1", "command": "python -c '...'", "exit_code": 0, "ts": "2026-01-01T00:00:01Z", "summary": "E2E output matches expected"},
     {"step": "commit", "ac_id": "AC1", "command": "git commit ...", "exit_code": 0, "summary": "committed abc1234"}
   ]
 }
