@@ -49,3 +49,13 @@ Lessons from failures. Format: Symptom / Root cause / Recovery / Prevention (one
 - Root cause: leader startup cleanup discards the original done-claim (which held the real TDD execution_steps), and a worker re-verifying finished code cannot honestly produce fresh write_test/verify_red-exit-1 evidence — so the audit can never pass and the context goes stale.
 - Recovery: full fresh build in VERIFY_MODE=batch — the build iteration's done-claim carries the complete plan→write_test→verify_red→implement→verify_green sequence in one shot (slugify went COMPLETE at iter 1 with sol:xhigh consensus).
 - Prevention: don't resume a finished campaign expecting a consensus-only replay; if resume becomes a real workflow, fix governance (audit accepts a confirmation-mode done-claim, or leader preserves the verified done-claim across restarts) via ralplan+codex. Also: `init --mode fresh` OVERWRITES existing PRD/test-spec with blank templates — re-author plans afterwards.
+
+## 2026-07-14 — the verifier-side resume fix was not enough: the WORKER leg deadlocks too
+- Symptom: with confirmation-mode verification implemented and unit-green, the AC6 resume dogfood still BLOCKED — the resumed worker looked at the completed state, honestly reasoned "no action needed", never wrote an iter-signal, and idled into the 600s no-progress guard.
+- Root cause: D-16 leader-finalize (skip the worker when all US are verified) arms via an IN-MEMORY flag that a restart loses; the resume therefore dispatched a worker that had nothing it could honestly do.
+- Recovery: at startup, if derive_verification_mode already proves completion from the durable ledger, re-arm the finalize flag — the resume then goes straight to the ALL verify (4m09s to COMPLETE in the rerun).
+- Prevention: for any "loop skips a stage when state says done" design, ask where that decision LIVES — an in-memory flag silently reintroduces the skipped stage after every restart. And: unit-testing the verifier contract cannot catch a worker-leg deadlock; only the end-to-end resume dogfood did.
+
+## 2026-07-14 — correction: the "leader stdout spam" was the READER, not the leader
+- The earlier diagnosis that the zsh leader spams "can't find session: -d" was wrong. The leader consoles were always clean (793 real lines); the noise was injected by MY OWN read pipelines — `tr -d '\000'` in a Claude-Code shell resolves to the user's `alias tr='tmux rename-session -t'`, which eats the stream and prints the tmux error instead.
+- Rule: in any shell that sources user rc files, never assume core utilities are unshadowed. `command tr` (or avoiding tr) is mandatory in diagnostic pipelines, and `type <util>` is the first probe whenever output looks impossible.
