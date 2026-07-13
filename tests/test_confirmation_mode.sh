@@ -192,6 +192,16 @@ grep -q "including previously verified US" "$RUN" \
   && ok "ALL scope says full verify incl. previously verified (no skip-note contradiction)" \
   || no "ALL-scope skip-note contradiction not fixed"
 
+grep -q "resume_finalize_armed" "$RUN" \
+  && ok "startup arms D-16 finalize when the ledger proves completion (resume skips worker)" \
+  || no "resume finalize arm missing"
+grep -q 'If NO unverified stories remain' "$RUN" \
+  && ok "batch-continue prompt covers the nothing-remains case (signal ALL, never idle)" \
+  || no "batch nothing-remains escape hatch missing"
+grep -q "the FRESH evidence is YOURS" "$RUN" \
+  && ok "confirmation contract puts freshness on the verifier's own runs" \
+  || no "verifier-fresh contract wording missing"
+
 print -r -- "-- structural: AC3 regression — PR-A operator recovery stays intact"
 grep -q "_validate_operator_recovery_artifacts" "$RUN" \
   && ok "PR-A validation still wired at startup" || no "PR-A wiring gone"
