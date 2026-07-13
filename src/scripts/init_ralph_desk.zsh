@@ -569,14 +569,14 @@ When writing done-claim JSON, ALWAYS include execution_steps — what you did, i
     {"step": "write_test", "ac_id": "AC1", "command": null, "summary": "wrote tests/test_add.py with 3 tests"},
     {"step": "verify_red", "ac_id": "AC1", "command": "pytest tests/...", "exit_code": 1, "summary": "RED: test fails as expected"},
     {"step": "implement", "ac_id": "AC1", "command": null, "summary": "created add() function"},
-    {"step": "verify_green", "ac_id": "AC1", "command": "pytest tests/...", "exit_code": 0, "summary": "GREEN: 3 passed"},
+    {"step": "verify_green", "ac_id": "AC1", "command": "pytest tests/...", "exit_code": 0, "ts": "2026-01-01T00:00:00Z", "summary": "GREEN: 3 passed"},
     {"step": "verify_e2e", "ac_id": "AC1", "command": "python -c '...'", "exit_code": 0, "summary": "E2E output matches expected"},
     {"step": "commit", "ac_id": "AC1", "command": "git commit ...", "exit_code": 0, "summary": "committed abc1234"}
   ]
 }
 \`\`\`
 This is NOT optional. Every done-claim must include the steps you took and the evidence for each.
-execution_steps MUST be a JSON array of objects (not a dict with string keys). Each object MUST have: "step", "ac_id", "command", "exit_code", "summary".
+execution_steps MUST be a JSON array of objects (not a dict with string keys). Each object MUST have: "step", "ac_id", "command", "exit_code", "summary". Every verification step (verify_red/verify_green/verify_e2e/verify_existing/verify) MUST also carry "ts" — the ISO-8601 UTC time the command was run. In leader-derived confirmation mode the Verifier treats a verification step WITHOUT "ts" as not-fresh (FAIL), so omitting it is never safe.
 
 ## Stop behavior
 - Single US achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json with the specific US, signal verify, exit
