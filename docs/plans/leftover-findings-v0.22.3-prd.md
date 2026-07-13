@@ -211,6 +211,13 @@ rm -f "$M/<slug>-blocked."{json,md}   # operator clears, PR-E shape
 # relaunch inside tmux with the SAME env, then assert:
 grep -q 'verification_mode=confirmation' <leader log>        # observable 1
 ! jq -e '.execution_steps[]|select(.step=="verify_red")' "$M/<slug>-done-claim.json"  # observable 2
+# observable 1b — the resume skipped the worker via ledger-armed finalize:
+grep -q 'resume_finalize_armed=1' <leader log>   # or "Resume finalize armed"
+# NOTE (implementation round): observable 2 originally demanded a done-claim
+# with no verify_red; the refined contract makes the done-claim HISTORICAL
+# context (the verifier's own fresh reruns carry freshness), so observable 2
+# is now: the codex verdict's Worker Process Audit basis reflects
+# confirmation mode and decision=pass.
 # observable 3 — both engines' verdicts pass and COMPLETE exists:
 N=$(ls $TOY/.rlp-desk/logs/<slug>/iter-*.verify-verdict-claude.json | tail -1)
 jq -e '.verdict=="pass"' "$N"
