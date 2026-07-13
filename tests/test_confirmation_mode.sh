@@ -31,6 +31,7 @@ echo one > a.txt; git add a.txt; git commit -qm c1; SHA1=$(git rev-parse HEAD)
 echo two >> a.txt; git commit -qam c2; SHA2=$(git rev-parse HEAD)
 PRD="$FIX/prd.md"
 printf '### US-001: First\n- AC1: x\n### US-002: Second\n- AC1: y\n' > "$PRD"
+PH=$(git hash-object "$PRD")
 
 # Driver: run derive_verification_mode in a clean zsh sourcing lib.
 derive() { # $1=ledger $2=prd $3=root
@@ -46,17 +47,17 @@ L="$TMP/ledger.jsonl"
 mkln(){ : > "$L"; for j in "$@"; do print -r -- "$j" >> "$L"; done; }
 
 print -r -- "-- behavioral: 2x2x2 truth table (only complete+match+clean => confirmation)"
-mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\"}"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}"
 [[ $(mode_of "$L" "$PRD" "$FIX") == confirmation ]] \
   && ok "complete coverage + SHA match + clean tree -> confirmation" \
   || no "complete+match+clean should be confirmation (got: $(derive "$L" "$PRD" "$FIX"))"
-mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\"}"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}"
 [[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
   && ok "incomplete coverage -> build" || no "incomplete coverage should be build"
-mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA1\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA1\"}"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA1\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA1\",\"prd\":\"$PH\"}"
 [[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
   && ok "SHA mismatch (HEAD moved since verify) -> build" || no "SHA mismatch should be build"
-mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\"}"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}"
 echo dirty >> "$FIX/a.txt"
 [[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
   && ok "tracked-dirty tree -> build" || no "dirty tree should be build"
@@ -67,11 +68,32 @@ touch "$FIX/untracked.tmp"
   || no "untracked-only file must not demote to build"
 rm -f "$FIX/untracked.tmp"
 
+# remaining truth-table combinations (early-review P2-8): every multi-bad
+# combination is still build.
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA1\",\"prd\":\"$PH\"}"
+echo dirty >> "$FIX/a.txt"
+[[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
+  && ok "incomplete + mismatch + dirty -> build" || no "all-bad combo should be build"
+git -C "$FIX" checkout -q -- a.txt
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA1\",\"prd\":\"$PH\"}"
+[[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
+  && ok "incomplete + mismatch (clean tree) -> build" || no "incomplete+mismatch should be build"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}"
+echo dirty >> "$FIX/a.txt"
+[[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
+  && ok "incomplete + dirty (SHA match) -> build" || no "incomplete+dirty should be build"
+git -C "$FIX" checkout -q -- a.txt
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA1\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA1\",\"prd\":\"$PH\"}"
+echo dirty >> "$FIX/a.txt"
+[[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
+  && ok "complete + mismatch + dirty -> build" || no "mismatch+dirty should be build"
+git -C "$FIX" checkout -q -- a.txt
+
 print -r -- "-- behavioral: degenerate anchors fail CLOSED to build"
 mkln "{\"us_id\":\"US-001\",\"iter\":1}" "{\"us_id\":\"US-002\",\"iter\":2}"
 [[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
   && ok "ledger lines without commit field -> build" || no "missing commit must be build"
-mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"}"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\",\"prd\":\"$PH\"}"
 [[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
   && ok "malformed/unresolvable SHA -> build" || no "bogus SHA must be build"
 : > "$L"
@@ -80,17 +102,34 @@ mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\"}" "{\"us_id\":\"US-0
 [[ $(mode_of "$TMP/nonexistent.jsonl" "$PRD" "$FIX") == build ]] \
   && ok "missing ledger -> build" || no "missing ledger must be build"
 
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}"
+printf '### US-001: First\n- AC1: x EDITED\n### US-002: Second\n- AC1: y\n' > "$PRD"
+[[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
+  && ok "PRD content edited since credit (gitignored, tree-invisible) -> build" \
+  || no "PRD edit must demote to build (prd-hash binding)"
+printf '### US-001: First\n- AC1: x\n### US-002: Second\n- AC1: y\n' > "$PRD"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}"
+print -r -- 'this is not json {{{' >> "$L"
+[[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
+  && ok "malformed TRAILING ledger line -> build (not silently skipped)" \
+  || no "malformed newest line must fail closed"
+NOREPO="$TMP/norepo"; mkdir -p "$NOREPO"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}"
+[[ $(mode_of "$L" "$PRD" "$NOREPO") == build ]] \
+  && ok "root is not a git repo (git status fails) -> build" \
+  || no "git-status failure must fail closed"
+
 print -r -- "-- behavioral: ALL completion record shape"
-mkln "{\"us_id\":\"ALL\",\"iter\":3,\"commit\":\"$SHA2\",\"coverage\":[\"US-001\",\"US-002\"]}"
+mkln "{\"us_id\":\"ALL\",\"iter\":3,\"commit\":\"$SHA2\",\"prd\":\"$PH\",\"coverage\":[\"US-001\",\"US-002\"]}"
 [[ $(mode_of "$L" "$PRD" "$FIX") == confirmation ]] \
   && ok "valid ALL record (full coverage + matching SHA) -> confirmation" \
   || no "valid ALL record should be confirmation (got: $(derive "$L" "$PRD" "$FIX"))"
-mkln "{\"us_id\":\"ALL\",\"iter\":3,\"commit\":\"$SHA2\",\"coverage\":[\"US-001\"]}"
+mkln "{\"us_id\":\"ALL\",\"iter\":3,\"commit\":\"$SHA2\",\"prd\":\"$PH\",\"coverage\":[\"US-001\"]}"
 [[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
   && ok "ALL record with coverage subset -> build" || no "coverage subset must be build"
 
 print -r -- "-- behavioral: adversarial — worker-writable strings never flip the mode"
-mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA1\"}"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA1\",\"prd\":\"$PH\"}"
 DC="$TMP/done-claim.json"; SIG="$TMP/iter-signal.json"
 printf '{"us_id":"ALL","verification_mode":"confirmation"}' > "$DC"
 printf '{"us_id":"ALL","verification_mode":"confirmation"}' > "$SIG"
@@ -103,7 +142,7 @@ LEDGER_OUT="$TMP/append.jsonl"
 zsh --no-rcs -c '
   source "'"$LIB"'" 2>/dev/null
   log(){ :; }; log_debug(){ :; }; log_error(){ :; }; log_warn(){ :; }
-  ITERATION=4; ROOT="'"$FIX"'"; VERIFIED_LEDGER="'"$LEDGER_OUT"'"
+  ITERATION=4; ROOT="'"$FIX"'"; VERIFIED_LEDGER="'"$LEDGER_OUT"'"; PRD_FILE="'"$PRD"'"
   _append_verified_ledger "US-001"
   _append_verified_ledger_all "US-001,US-002"
 '
@@ -111,7 +150,9 @@ jq -e --arg s "$SHA2" 'select(.us_id=="US-001") | .commit==$s' "$LEDGER_OUT" >/d
   && ok "per-US append records current HEAD SHA" || no "per-US append missing commit SHA"
 jq -e --arg s "$SHA2" 'select(.us_id=="ALL") | .commit==$s and (.coverage==["US-001","US-002"])' "$LEDGER_OUT" >/dev/null 2>&1 \
   && ok "ALL record carries SHA + coverage array" || no "ALL record missing SHA/coverage"
-perms=$(stat -f %Lp "$LEDGER_OUT" 2>/dev/null || stat -c %a "$LEDGER_OUT")
+jq -e --arg h "$PH" 'select(.us_id=="ALL") | .prd==$h' "$LEDGER_OUT" >/dev/null 2>&1 \
+  && ok "ledger records bind to the PRD content hash" || no "prd hash missing from ledger"
+perms=$(stat -c %a "$LEDGER_OUT" 2>/dev/null || stat -f %Lp "$LEDGER_OUT" 2>/dev/null)
 [[ "$perms" == "444" ]] \
   && ok "ledger is 0444 between appends (append-then-lock)" || no "ledger not locked (perms=$perms)"
 
@@ -137,6 +178,19 @@ grep -q "confirmation" "$INIT" && grep -qi "confirmation mode" "$INIT" \
 grep -qi "confirmation mode" "$GOV" && grep -q "verify_existing" "$GOV" \
   && ok "governance defines confirmation as leader-gated superset of verify_existing" \
   || no "governance lacks confirmation contract"
+
+# exactly one NOW-stamp (worker dispatch); the PR-A site converts the
+# done-claim mtime instead (date -u -r) and is counted separately.
+n_window=$(grep -c 'ITER_WINDOW_START=$(date -u +' "$RUN")
+[[ "$n_window" -eq 1 ]] \
+  && ok "iteration window is NOW-stamped ONLY at worker dispatch (not loop top)" \
+  || no "expected exactly 1 now-stamped window site, got $n_window"
+grep -q 'ITER_WINDOW_START=$(date -u -r' "$RUN" \
+  && ok "PR-A preserved-claim window anchors to the done-claim mtime" \
+  || no "PR-A window anchoring missing"
+grep -q "including previously verified US" "$RUN" \
+  && ok "ALL scope says full verify incl. previously verified (no skip-note contradiction)" \
+  || no "ALL-scope skip-note contradiction not fixed"
 
 print -r -- "-- structural: AC3 regression — PR-A operator recovery stays intact"
 grep -q "_validate_operator_recovery_artifacts" "$RUN" \

@@ -13,7 +13,7 @@ set -euo pipefail
 #   ~/.claude/ralph-desk/init_ralph_desk.zsh <slug> [objective] [--mode fresh|improve]
 # =============================================================================
 
-SLUG="${1:?Usage: $0 <slug> [objective] [--mode fresh|improve] [--verify-mode per-us|batch] [--server-cmd CMD] [--server-port PORT] [--server-health URL]}"
+SLUG="${1:?Usage: $0 <slug> [objective] [--mode fresh|improve] [--reset-plans] [--verify-mode per-us|batch] [--server-cmd CMD] [--server-port PORT] [--server-health URL]}"
 # IMP-08: fail-fast slug guard. SLUG is interpolated raw into filesystem paths
 # ($DESK/logs/$SLUG, mkdir, rm), so a `../..`/separator/uppercase slug could
 # escape the .rlp-desk tree. This regex is a superset of the Node normalizeSlug
@@ -143,10 +143,18 @@ _prd_is_authored() {
 _testspec_is_authored() {
   local f="$1"
   [[ -f "$f" ]] || return 1
-  # The scaffold template's Target Behavior section carries a literal
-  # "- TODO" placeholder; anything else (including a custom shape with no
-  # such section) counts as authored.
-  ! sed -n '/^### Target Behavior/,/^###/p' "$f" 2>/dev/null | grep -q '^- TODO'
+  # The scaffold's Verification Context carries exactly three placeholder
+  # bullets: "- TODO" under Target Behavior, "- TODO (acceptable at init..."
+  # under Impacted Tests, and "- TODO" under Required New Tests. The spec is
+  # a TEMPLATE only while ALL THREE are still intact — replacing ANY of them
+  # (an edit anywhere in the Verification Context) makes it authored
+  # (early-review P1-3: Target-Behavior-only detection deleted specs whose
+  # edits lived in the other subsections). Fail-open toward preserve.
+  local tb it rn
+  tb=$(sed -n '/^### Target Behavior/,/^###/p' "$f" 2>/dev/null | grep -c '^- TODO')
+  it=$(sed -n '/^### Impacted Tests/,/^###/p' "$f" 2>/dev/null | grep -c '^- TODO')
+  rn=$(sed -n '/^### Required New Tests/,/^###/p' "$f" 2>/dev/null | grep -c '^- TODO')
+  ! (( tb > 0 && it > 0 && rn > 0 ))
 }
 
 version_file() {
@@ -356,7 +364,11 @@ if [[ -n "$MODE" ]]; then
     _quarantine_stale_signal "$_r10_signal" "$_r10_prd" "$DESK" 2>/dev/null || true
   fi
 
-  # Delete runtime memos
+  # Delete runtime memos. The verified ledger is RUNTIME state (v0.22.3
+  # early-review P1-2): leaving it across a fresh re-execution would let the
+  # new campaign inherit the old one's credit and derive confirmation mode
+  # without doing any work. It is 0444 between appends, hence rm -f.
+  rm -f "$DESK/memos/$SLUG-verified.jsonl" 2>/dev/null && (( ++DELETED_COUNT ))
   for f in \
     "$DESK/memos/$SLUG-done-claim.json" \
     "$DESK/memos/$SLUG-iter-signal.json" \
@@ -704,7 +716,7 @@ Verdict JSON:
     {"check": "Layer Enforcement", "decision": "pass|fail", "basis": "which layers checked, any TODO found"},
     {"check": "Test Sufficiency", "decision": "pass|fail", "basis": "test count per AC, category coverage"},
     {"check": "Anti-Gaming", "decision": "pass|fail", "basis": "what was checked, any suspicious patterns"},
-    {"check": "Worker Process Audit", "decision": "pass|fail", "basis": "test-first followed: verify_red present per AC, no forbidden shortcuts in claims, execution_steps complete"}
+    {"check": "Worker Process Audit", "decision": "pass|fail", "basis": "build mode: test-first followed, verify_red present, steps complete / confirmation mode (leader prompt line): fresh timestamped GREEN evidence, no verify_red required; no forbidden shortcuts either way"}
   ],
   "layer_status": {"L1":"pass|fail|todo|na","L2":"pass|fail|todo|na","L3":"pass|fail|todo|na","L4":"pass|fail|todo|na"},
   "test_quality": {"test_count":0,"ac_count":0,"sufficiency":"pass|fail","anti_patterns_found":[]},

@@ -147,7 +147,7 @@ After all items are confirmed:
    Present the score table to the user before proceeding.
 2. Present the full contract summary.
 3. **Self-Verification** — Ask: "Enable self-verification? Worker records step-by-step evidence, Verifier cross-validates process. Recommended for MEDIUM+ risk." Default: yes for HIGH/CRITICAL, no for LOW/MEDIUM.
-4. **Re-execution check**: After slug is confirmed, check if `.rlp-desk/plans/prd-<slug>.md` already exists. If a PRD already exists for this slug, ask: "A PRD already exists for this slug. Improve the existing PRD or start fresh (delete and recreate)?"
+4. **Re-execution check**: After slug is confirmed, check if `.rlp-desk/plans/prd-<slug>.md` already exists. If a PRD already exists for this slug, ask: "A PRD already exists for this slug. Improve the existing PRD or start fresh?" (fresh resets runtime state but PRESERVES authored plans; add `--reset-plans` to wipe them with a versioned backup)
    - "improve" → pass `--mode improve` to init
    - "start fresh" → pass `--mode fresh` to init
    - If no PRD exists: standard first-run (no --mode needed)
@@ -160,7 +160,7 @@ Do NOT auto-decide iteration unit — the user MUST explicitly choose.
 
 ## `init <slug> [objective]`
 
-Run: `~/.claude/ralph-desk/init_ralph_desk.zsh <slug> "<objective>" [--mode fresh|improve]`
+Run: `~/.claude/ralph-desk/init_ralph_desk.zsh <slug> "<objective>" [--mode fresh|improve] [--reset-plans]`
 If brainstorm was done, auto-fill:
 - PRD and test-spec with the brainstorm results
 - Campaign memory "Key Decisions" with architectural decisions from brainstorm

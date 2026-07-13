@@ -2296,12 +2296,14 @@ write_verifier_trigger() {
   # line. Derived ONLY from leader-durable state (ledger + git); worker files
   # never participate. Logged unconditionally — the [FLOW] line is a dogfood
   # observable (PRD AC6).
-  if [[ "${_VMODE_ITER:-}" != "$iter" ]]; then
+  local _vmode_key
+  _vmode_key="$iter:$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo none)"
+  if [[ "${_VMODE_ITER:-}" != "$_vmode_key" ]]; then
     local _vderived
     _vderived=$(derive_verification_mode "$VERIFIED_LEDGER" "$PRD_FILE" "$ROOT")
     typeset -g _VMODE="${_vderived%%|*}"
     typeset -g _VMODE_BASIS="${_vderived#*|}"
-    typeset -g _VMODE_ITER="$iter"
+    typeset -g _VMODE_ITER="$_vmode_key"
     log "  [FLOW] verification_mode=$_VMODE basis=\"$_VMODE_BASIS\" iter=$iter"
   fi
 
@@ -2323,13 +2325,16 @@ write_verifier_trigger() {
     fi
     if [[ -n "$us_id" ]]; then
       if [[ "$us_id" = "ALL" ]]; then
-        echo "- **Scope**: FULL VERIFY — check ALL acceptance criteria from the PRD"
+        # v0.22.3 (early-review P1-4): FULL VERIFY means full — never pair the
+        # ALL scope with a "skip re-verifying" note; the contradiction invited
+        # either a vacuous pass or a guaranteed failure.
+        echo "- **Scope**: FULL VERIFY — check ALL acceptance criteria from the PRD (including previously verified US)"
       else
         echo "- **Scope**: Verify ONLY the acceptance criteria for **${us_id}**"
-      fi
-      if [[ -n "$VERIFIED_US" ]]; then
-        echo "- **Previously verified US**: $VERIFIED_US"
-        echo "- **Note**: Skip re-verifying the above US. Focus on unverified stories."
+        if [[ -n "$VERIFIED_US" ]]; then
+          echo "- **Previously verified US**: $VERIFIED_US"
+          echo "- **Note**: Skip re-verifying the above US. Focus on unverified stories."
+        fi
       fi
     fi
 
@@ -3806,11 +3811,6 @@ main() {
   local HARD_CEILING=$(( ITER_TIMEOUT * 3 ))  # logged but NOT enforced — Worker extends indefinitely when active
 
   for (( ITERATION = 1; ITERATION <= MAX_ITER; ITERATION++ )); do
-    # v0.22.3 US-001: iteration window start — injected into the verifier
-    # prompts so confirmation-mode freshness ("step ts at or after this
-    # moment") is falsifiable. Set BEFORE any worker dispatch so worker
-    # execution steps fall inside the window.
-    ITER_WINDOW_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     # B3 (zsh-leader port): reset the lifecycle accumulator at iteration entry.
     # CORRECTNESS (not a telemetry-loss bug — verified): a "continue"/start-failed
     # iteration `continue`s BEFORE write_campaign_jsonl (e.g. worker-continue at the
@@ -3873,6 +3873,17 @@ main() {
         log "[recovery] Resuming verify phase — operator manual recovery detected (iter=$ITERATION)"
         log_debug "[recovery] iter=$ITERATION skip_worker=true reason=manual_recovery_validated"
         SKIP_NEXT_WORKER=1
+        # v0.22.3 (early-review P1-1): the preserved done-claim's evidence was
+        # produced under a PREVIOUS leader; anchor the freshness window to the
+        # claim file's own mtime so PR-A-accepted evidence is judged against
+        # the window it actually ran in (PR-A validation gates its integrity).
+        if [[ -z "${ITER_WINDOW_START:-}" && -f "$DONE_CLAIM_FILE" ]]; then
+          local _dc_epoch
+          _dc_epoch=$(stat -f %m "$DONE_CLAIM_FILE" 2>/dev/null || stat -c %Y "$DONE_CLAIM_FILE" 2>/dev/null || echo "")
+          if [[ -n "$_dc_epoch" ]]; then
+            ITER_WINDOW_START=$(date -u -r "$_dc_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null               || date -u -d "@$_dc_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+          fi
+        fi
       else
         log "[recovery] phase=verify ignored: ${RECOVERY_FAIL_REASON}"
         log_debug "[recovery] iter=$ITERATION skip_worker=false reason=\"${RECOVERY_FAIL_REASON}\""
@@ -3983,6 +3994,12 @@ main() {
 
     local worker_launch=""
     if (( ! SKIP_NEXT_WORKER )); then
+      # v0.22.3 US-001 (early-review P1-1): iteration window start is stamped
+      # ONLY when a worker is actually dispatched. D-16 finalize and PR-A
+      # preserved-artifact iterations reuse the window their evidence was
+      # produced in — resetting here would make every preserved done-claim's
+      # timestamps predate the window and fail confirmation freshness forever.
+      ITER_WINDOW_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       # --- governance.md s7 step 4: Build worker prompt + trigger ---
       write_worker_trigger "$ITERATION"
       local worker_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-prompt.md"

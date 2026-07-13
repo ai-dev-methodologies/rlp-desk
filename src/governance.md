@@ -541,7 +541,7 @@ Characteristics:
 │   ├── <slug>-complete.md           # SENTINEL (Leader only; deleted on re-execution)
 │   └── <slug>-blocked.md            # SENTINEL (Leader only; deleted on re-execution)
 ├── plans/
-│   ├── prd-<slug>.md                # PRD (in-place: --mode improve | deleted: --mode fresh)
+│   ├── prd-<slug>.md                # PRD (in-place: --mode improve | fresh preserves AUTHORED plans, template-only deleted; --reset-plans wipes with versioned backup)
 │   └── test-spec-<slug>.md          # Verification criteria (regenerated on re-execution)
 └── logs/<slug>/                          # Project-level operational data
     ├── campaign-report.md           # Campaign summary (versioned: campaign-report-v{N}.md on re-execution)

@@ -1784,25 +1784,48 @@ generate_sv_report() {
 # Worker Process Audit guards against a cooperative-but-sloppy worker, not
 # a Byzantine one — see PRD leftover-findings-v0.22.3).
 _ledger_append_line() {
-  local line="$1"
+  local line="$1" _rc=0
   [[ -n "${VERIFIED_LEDGER:-}" ]] || return 0
   mkdir -p "${VERIFIED_LEDGER:h}" 2>/dev/null
-  [[ -f "$VERIFIED_LEDGER" ]] && chmod 0644 "$VERIFIED_LEDGER" 2>/dev/null
-  print -r -- "$line" >> "$VERIFIED_LEDGER"
-  chmod 0444 "$VERIFIED_LEDGER" 2>/dev/null
+  if [[ -f "$VERIFIED_LEDGER" ]] && ! chmod 0644 "$VERIFIED_LEDGER" 2>/dev/null; then
+    log_error "verified ledger unlock failed ($VERIFIED_LEDGER) — append aborted"
+    return 1
+  fi
+  # early-review P2-6: relock ALWAYS runs (even when the append itself
+  # fails), so an interruption cannot leave the ledger writable; append
+  # failure is loud and propagated.
+  {
+    print -r -- "$line" >> "$VERIFIED_LEDGER" || _rc=1
+  } always {
+    chmod 0444 "$VERIFIED_LEDGER" 2>/dev/null       || log_warn "verified ledger relock failed ($VERIFIED_LEDGER)"
+  }
+  if (( _rc )); then
+    log_error "verified ledger append FAILED ($VERIFIED_LEDGER) — progress record lost for: $line"
+  fi
+  return $_rc
 }
 
 # F-14 (moved from run_ralph_desk.zsh, extended): append a verified-pass US
 # to the durable ledger. Records the current HEAD SHA so a later restart can
 # prove "nothing changed since this was verified" (the confirmation-mode
 # anchor). Skips ALL/empty; append-only, readers dedup.
+# _ledger_prd_hash: content hash of the PRD the credit was earned against.
+# The PRD lives under the gitignored runtime dir, so the tree-clean check
+# cannot see PRD edits — binding each ledger entry to the PRD content closes
+# the "same US ids, different plan" hole (early-review P1-2). git hash-object
+# needs no object database, so this works in any toy repo.
+_ledger_prd_hash() {
+  [[ -n "${PRD_FILE:-}" && -f "${PRD_FILE:-}" ]] || { echo ""; return 0; }
+  git hash-object "$PRD_FILE" 2>/dev/null || echo ""
+}
+
 _append_verified_ledger() {
   local us="$1"
   [[ -z "$us" || "$us" == "ALL" ]] && return 0
   local sha
   sha=$(git -C "${ROOT:-$PWD}" rev-parse HEAD 2>/dev/null || echo "")
-  _ledger_append_line "$(printf '{"us_id":"%s","iter":%s,"verified_at":"%s","commit":"%s"}' \
-    "$us" "${ITERATION:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha")"
+  _ledger_append_line "$(printf '{"us_id":"%s","iter":%s,"verified_at":"%s","commit":"%s","prd":"%s"}' \
+    "$us" "${ITERATION:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha" "$(_ledger_prd_hash)")"
 }
 
 # ALL completion record: written ONLY on the leader-gated COMPLETE path
@@ -1815,8 +1838,8 @@ _append_verified_ledger_all() {
   sha=$(git -C "${ROOT:-$PWD}" rev-parse HEAD 2>/dev/null || echo "")
   cov_json=$(jq -nc --arg c "$coverage_csv" '$c | split(",") | map(select(test("^US-[0-9]+$")))' 2>/dev/null)
   [[ -n "$cov_json" && "$cov_json" != "[]" ]] || return 0
-  _ledger_append_line "$(printf '{"us_id":"ALL","iter":%s,"verified_at":"%s","commit":"%s","coverage":%s}' \
-    "${ITERATION:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha" "$cov_json")"
+  _ledger_append_line "$(printf '{"us_id":"ALL","iter":%s,"verified_at":"%s","commit":"%s","prd":"%s","coverage":%s}' \
+    "${ITERATION:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha" "$(_ledger_prd_hash)" "$cov_json")"
 }
 
 # Full PRD US set via the anchored extractor (### US-NNN:), sorted unique.
@@ -1844,13 +1867,25 @@ derive_verification_mode() {
   local prd_us
   prd_us=$(_prd_us_set "$prd")
   [[ -n "$prd_us" ]] || { print -r -- "build|no US markers in PRD"; return 0; }
-  local newest
-  newest=$(jq -cR 'fromjson? // empty' "$ledger" 2>/dev/null | tail -1)
-  [[ -n "$newest" ]] || { print -r -- "build|empty ledger"; return 0; }
+  # early-review P2-5: judge the newest RAW nonempty line — a malformed
+  # trailing entry must fail closed, not silently yield to an older valid one.
+  local newest_raw newest
+  newest_raw=$(grep -v '^[[:space:]]*$' "$ledger" 2>/dev/null | tail -1)
+  [[ -n "$newest_raw" ]] || { print -r -- "build|empty ledger"; return 0; }
+  newest=$(print -r -- "$newest_raw" | jq -c 'select(type=="object")' 2>/dev/null)
+  [[ -n "$newest" ]] || { print -r -- "build|newest ledger line is malformed"; return 0; }
   local sha us covered
   sha=$(print -r -- "$newest" | jq -r '.commit // empty' 2>/dev/null)
   us=$(print -r -- "$newest" | jq -r '.us_id // empty' 2>/dev/null)
   [[ -n "$sha" ]] || { print -r -- "build|newest ledger entry has no commit anchor"; return 0; }
+  # early-review P1-2: the credit must bind to THIS PRD's content — the PRD is
+  # gitignored, so the tree-clean check below cannot see plan edits.
+  local rec_prd cur_prd
+  rec_prd=$(print -r -- "$newest" | jq -r '.prd // empty' 2>/dev/null)
+  cur_prd=$(git hash-object "$prd" 2>/dev/null || echo "")
+  if [[ -z "$rec_prd" || -z "$cur_prd" || "$rec_prd" != "$cur_prd" ]]; then
+    print -r -- "build|ledger entry does not bind to the current PRD content"; return 0
+  fi
   if [[ "$us" == "ALL" ]]; then
     covered=$(print -r -- "$newest" | jq -r '.coverage[]? // empty' 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u)
   else
@@ -1865,7 +1900,12 @@ derive_verification_mode() {
   if ! git -C "$root" diff --quiet "$sha" HEAD 2>/dev/null; then
     print -r -- "build|tracked content changed since the verified commit"; return 0
   fi
-  if [[ -n "$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+  local _st_out _st_rc
+  _st_out=$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null); _st_rc=$?
+  if (( _st_rc != 0 )); then
+    print -r -- "build|git status failed (not a repo?)"; return 0
+  fi
+  if [[ -n "$_st_out" ]]; then
     print -r -- "build|tracked working tree is dirty"; return 0
   fi
   print -r -- "confirmation|all PRD US verified at ${sha[1,10]} == HEAD, tree clean"
@@ -1905,7 +1945,9 @@ Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$COMPLETE_SENTINEL"
   if [[ -n "${VERIFIED_LEDGER:-}" && -n "${PRD_FILE:-}" && -f "${PRD_FILE:-}" ]]; then
     local _cov
     _cov=$(_prd_us_set "$PRD_FILE" | paste -sd, -)
-    [[ -n "$_cov" ]] && _append_verified_ledger_all "$_cov"
+    if [[ -n "$_cov" ]] && ! _append_verified_ledger_all "$_cov"; then
+      log_error "COMPLETE recorded but the ALL ledger record failed — a future resume will fail closed to build mode (re-runs verification instead of confirming)"
+    fi
   fi
 }
 

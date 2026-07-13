@@ -89,6 +89,26 @@ ls "$D/.rlp-desk/plans/"prd-t-v*.md >/dev/null 2>&1 \
 ls "$D/.rlp-desk/plans/"test-spec-t-v*.md >/dev/null 2>&1 \
   && ok "test-spec backup versioned before wipe" || no "no test-spec backup found"
 
+print -r -- "-- case 5b: verified ledger is RUNTIME state — fresh removes it (P1-2)"
+D=$(scaffold case5b)
+mkdir -p "$D/.rlp-desk/memos"
+print -r -- '{"us_id":"US-001","iter":1,"commit":"x","prd":"y"}' > "$D/.rlp-desk/memos/t-verified.jsonl"
+chmod 0444 "$D/.rlp-desk/memos/t-verified.jsonl"
+refresh "$D"
+test -f "$D/.rlp-desk/memos/t-verified.jsonl" \
+  && no "stale verified ledger survived fresh (old credit inherited)" \
+  || ok "fresh removes the verified ledger (0444 handled)"
+
+print -r -- "-- case 5c: test-spec edited ONLY outside Target Behavior is still authored (P1-3)"
+D=$(scaffold case5c)
+TS="$D/.rlp-desk/plans/test-spec-t.md"
+perl -0pi -e 's/(### Impacted Tests\n[^\n]*\n)- TODO[^\n]*/\1- real: tests\/test_x.sh may break/' "$TS"
+grep -q '^- real: tests/test_x.sh may break' "$TS" || no "fixture setup failed (Impacted Tests edit)"
+refresh "$D"
+grep -q '^- real: tests/test_x.sh may break' "$TS" 2>/dev/null \
+  && ok "spec with edits only in Impacted Tests preserved" \
+  || no "P1-3 regression: non-Target-Behavior edit misclassified as template"
+
 print -r -- "-- case 6: stale per-US splits from an old PRD do not survive fresh"
 D=$(scaffold case6)
 print -r -- "$AUTHORED_PRD" > "$D/.rlp-desk/plans/prd-t.md"
