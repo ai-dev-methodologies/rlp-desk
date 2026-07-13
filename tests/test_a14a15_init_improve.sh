@@ -70,11 +70,11 @@ cleanup() {
 trap cleanup EXIT
 
 run_init() {
-  local dir="$1" slug="$2" objective="$3" mode="$4"
+  local dir="$1" slug="$2" objective="$3" mode="$4"; shift 4 2>/dev/null || shift $#
   if [[ -z "$mode" ]]; then
-    ROOT="$dir" zsh "$INIT" "$slug" "$objective" >/dev/null 2>&1 || true
+    ROOT="$dir" zsh "$INIT" "$slug" "$objective" "$@" >/dev/null 2>&1 || true
   else
-    ROOT="$dir" zsh "$INIT" "$slug" "$objective" --mode "$mode" >/dev/null 2>&1 || true
+    ROOT="$dir" zsh "$INIT" "$slug" "$objective" --mode "$mode" "$@" >/dev/null 2>&1 || true
   fi
 }
 
@@ -113,7 +113,9 @@ TS_END
   assert_files_equal "$ts" "$before" "AC1-happy: custom test-spec content is unchanged after improve"
 }
 
-# AC1-negative
+# AC1-negative (v0.22.3 US-002: fresh PRESERVES an authored test-spec by
+# default; the wipe is the explicit --reset-plans path, which must leave a
+# versioned backup)
 test_ac1_negative_fresh_mode_is_not_a_noop_for_test_spec() {
   local dir
   dir="$(new_tmp)"
@@ -122,9 +124,12 @@ test_ac1_negative_fresh_mode_is_not_a_noop_for_test_spec() {
   local ts="$dir/.rlp-desk/plans/test-spec-ac14a15b.md"
   printf '%s\n' "CUSTOMIZED test-spec marker" > "$ts"
   run_init "$dir" ac14a15b "test" "fresh"
+  assert_file_contains_text "$ts" "CUSTOMIZED test-spec marker" \
+    "AC1-negative: fresh mode preserves an authored test-spec (v0.22.3)"
 
+  run_init "$dir" ac14a15b "test" "fresh" --reset-plans
   assert_file_not_contains_text "$ts" "CUSTOMIZED test-spec marker" \
-    "AC1-negative: fresh mode does not preserve custom test-spec"
+    "AC1-negative: --reset-plans restores the wipe"
 }
 
 # AC1-boundary
@@ -209,7 +214,8 @@ test_ac2_boundary_deletes_blocked_too_on_improve() {
 echo ""
 echo "--- AC3: fresh mode regenerates test-spec ---"
 
-# AC3-happy
+# AC3-happy (v0.22.3 US-002: the regeneration path now requires
+# --reset-plans for an authored test-spec, and versions a backup first)
 test_ac3_happy_fresh_regenerates_customized_test_spec() {
   local dir
   dir="$(new_tmp)"
@@ -217,10 +223,13 @@ test_ac3_happy_fresh_regenerates_customized_test_spec() {
 
   local ts="$dir/.rlp-desk/plans/test-spec-ac14a15f.md"
   printf '%s\n' "CUSTOMIZED test-spec marker" > "$ts"
-  run_init "$dir" ac14a15f "test" "fresh"
+  run_init "$dir" ac14a15f "test" "fresh" --reset-plans
 
   assert_file_not_contains_text "$ts" "CUSTOMIZED test-spec marker" \
-    "AC3-happy: fresh mode replaces customized test-spec"
+    "AC3-happy: fresh --reset-plans replaces customized test-spec"
+  ls "$dir/.rlp-desk/plans/"test-spec-ac14a15f-v*.md >/dev/null 2>&1 \
+    && pass "AC3-happy: backup versioned before the wipe" \
+    || fail "AC3-happy: no versioned backup after --reset-plans"
 }
 
 # AC3-negative

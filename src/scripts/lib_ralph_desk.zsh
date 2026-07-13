@@ -1774,6 +1774,105 @@ generate_sv_report() {
 }
 
 # =============================================================================
+# Verified Ledger + Verification-Mode Derivation (v0.22.3 US-001)
+# =============================================================================
+
+# Append one line to the durable verified ledger, keeping the file 0444
+# between appends (append-then-lock — same primitive as sentinel locking).
+# The lock is anti-sloppiness, not a security boundary: it stops a worker
+# from casually editing the leader's progress record (threat model: the
+# Worker Process Audit guards against a cooperative-but-sloppy worker, not
+# a Byzantine one — see PRD leftover-findings-v0.22.3).
+_ledger_append_line() {
+  local line="$1"
+  [[ -n "${VERIFIED_LEDGER:-}" ]] || return 0
+  mkdir -p "${VERIFIED_LEDGER:h}" 2>/dev/null
+  [[ -f "$VERIFIED_LEDGER" ]] && chmod 0644 "$VERIFIED_LEDGER" 2>/dev/null
+  print -r -- "$line" >> "$VERIFIED_LEDGER"
+  chmod 0444 "$VERIFIED_LEDGER" 2>/dev/null
+}
+
+# F-14 (moved from run_ralph_desk.zsh, extended): append a verified-pass US
+# to the durable ledger. Records the current HEAD SHA so a later restart can
+# prove "nothing changed since this was verified" (the confirmation-mode
+# anchor). Skips ALL/empty; append-only, readers dedup.
+_append_verified_ledger() {
+  local us="$1"
+  [[ -z "$us" || "$us" == "ALL" ]] && return 0
+  local sha
+  sha=$(git -C "${ROOT:-$PWD}" rev-parse HEAD 2>/dev/null || echo "")
+  _ledger_append_line "$(printf '{"us_id":"%s","iter":%s,"verified_at":"%s","commit":"%s"}' \
+    "$us" "${ITERATION:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha")"
+}
+
+# ALL completion record: written ONLY on the leader-gated COMPLETE path
+# (batch and final-ALL campaigns never take the per-US append, so without
+# this the ledger stays empty and a resume could never prove completion).
+# coverage_csv: comma-separated US ids that this completion covers.
+_append_verified_ledger_all() {
+  local coverage_csv="$1"
+  local sha cov_json
+  sha=$(git -C "${ROOT:-$PWD}" rev-parse HEAD 2>/dev/null || echo "")
+  cov_json=$(jq -nc --arg c "$coverage_csv" '$c | split(",") | map(select(test("^US-[0-9]+$")))' 2>/dev/null)
+  [[ -n "$cov_json" && "$cov_json" != "[]" ]] || return 0
+  _ledger_append_line "$(printf '{"us_id":"ALL","iter":%s,"verified_at":"%s","commit":"%s","coverage":%s}' \
+    "${ITERATION:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha" "$cov_json")"
+}
+
+# Full PRD US set via the anchored extractor (### US-NNN:), sorted unique.
+_prd_us_set() {
+  grep -oE '^### US-[0-9]+' "$1" 2>/dev/null | sed 's/^### //' | sort -u
+}
+
+# derive_verification_mode <ledger> <prd> <root>
+# Prints "<mode>|<basis>" where mode is confirmation|build. FAIL-CLOSED:
+# every missing/malformed anchor yields build (the strict TDD contract).
+#
+# confirmation iff ALL of:
+#   (a) the ledger's newest valid entry — a per-US line whose sibling lines
+#       cover every PRD US, or an ALL record whose coverage EQUALS the PRD
+#       US set — carries a commit SHA;
+#   (b) that SHA resolves in this repo AND `git diff --quiet <sha> HEAD`
+#       (no tracked content changed since the verified state — F-8/D-16
+#       auto-commits demote to build);
+#   (c) the tracked working tree is clean (--untracked-files=no).
+# The derivation reads ONLY leader-durable state (ledger + git) — strings in
+# done-claim/iter-signal never participate (anti-gaming single channel).
+derive_verification_mode() {
+  local ledger="$1" prd="$2" root="$3"
+  [[ -f "$ledger" && -f "$prd" ]] || { print -r -- "build|missing ledger or PRD"; return 0; }
+  local prd_us
+  prd_us=$(_prd_us_set "$prd")
+  [[ -n "$prd_us" ]] || { print -r -- "build|no US markers in PRD"; return 0; }
+  local newest
+  newest=$(jq -cR 'fromjson? // empty' "$ledger" 2>/dev/null | tail -1)
+  [[ -n "$newest" ]] || { print -r -- "build|empty ledger"; return 0; }
+  local sha us covered
+  sha=$(print -r -- "$newest" | jq -r '.commit // empty' 2>/dev/null)
+  us=$(print -r -- "$newest" | jq -r '.us_id // empty' 2>/dev/null)
+  [[ -n "$sha" ]] || { print -r -- "build|newest ledger entry has no commit anchor"; return 0; }
+  if [[ "$us" == "ALL" ]]; then
+    covered=$(print -r -- "$newest" | jq -r '.coverage[]? // empty' 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u)
+  else
+    covered=$(jq -cR 'fromjson? // empty' "$ledger" 2>/dev/null | jq -r 'select(.us_id != "ALL") | .us_id // empty' 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u)
+  fi
+  if [[ "$covered" != "$prd_us" ]]; then
+    print -r -- "build|ledger coverage does not equal the PRD US set"; return 0
+  fi
+  if ! git -C "$root" rev-parse --verify --quiet "${sha}^{commit}" >/dev/null 2>&1; then
+    print -r -- "build|ledger commit SHA does not resolve"; return 0
+  fi
+  if ! git -C "$root" diff --quiet "$sha" HEAD 2>/dev/null; then
+    print -r -- "build|tracked content changed since the verified commit"; return 0
+  fi
+  if [[ -n "$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    print -r -- "build|tracked working tree is dirty"; return 0
+  fi
+  print -r -- "confirmation|all PRD US verified at ${sha[1,10]} == HEAD, tree clean"
+  return 0
+}
+
+# =============================================================================
 # Sentinel Writers
 # =============================================================================
 
@@ -1798,6 +1897,16 @@ Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | atomic_write "$COMPLETE_SENTINEL"
     return 1
   fi
   log "COMPLETE sentinel written: $COMPLETE_SENTINEL"
+  # v0.22.3 US-001 AC0: leader-gated ALL completion record. Batch/final-ALL
+  # campaigns never take the per-US ledger append, so without this line the
+  # ledger stays empty and a restart could never derive confirmation mode.
+  # Riding the COMPLETE path keeps the record leader-only by construction
+  # (governance s7: only the leader writes sentinels).
+  if [[ -n "${VERIFIED_LEDGER:-}" && -n "${PRD_FILE:-}" && -f "${PRD_FILE:-}" ]]; then
+    local _cov
+    _cov=$(_prd_us_set "$PRD_FILE" | paste -sd, -)
+    [[ -n "$_cov" ]] && _append_verified_ledger_all "$_cov"
+  fi
 }
 
 # P1-D Cross-US dependency detection: scan a verdict summary or worker

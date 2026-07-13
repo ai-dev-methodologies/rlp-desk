@@ -629,7 +629,7 @@ Audit: each step object must have "step" field with value from §1f vocabulary (
 ## 4. Verifier Judgment Quality (§1f audit)
 Table: Iter | US | Checks | All Basis? | Independent? | IL-1? | Layer? | Sufficiency? | Anti-Gaming? | Worker Audit?
 Aggregate: Reasoning completeness %, Independent verification %, §1f category coverage %
-Audit: verify all 5 mandatory check categories (IL-1, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit) are present
+Audit: verify all 5 mandatory check categories (IL-1, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit) are present. The Worker Process Audit is mode-aware (v0.22.3): in leader-derived confirmation mode (all US verified, SHA-anchored unchanged tree) it audits fresh timestamped GREEN evidence instead of RED-before-GREEN.
 
 ## 5. AC Lifecycle
 Table: US | AC | First Claimed (iter) | First Verified (iter) | Reopen Count | Final Status

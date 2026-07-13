@@ -800,15 +800,10 @@ launch_verifier_claude() {
 # On exit: check done-claim, auto-generate iter-signal.
 # Args: $1=iteration  $2=signal_file
 # Returns: 0 (signal generated), 1 (error)
-# F-14: append a verified-pass US to the durable ledger (the leader's structured,
-# drift-proof record of progress). Skips ALL/empty; append-only, readers dedup.
-_append_verified_ledger() {
-  local us="$1"
-  [[ -z "$us" || "$us" == "ALL" ]] && return 0
-  mkdir -p "${VERIFIED_LEDGER:h}" 2>/dev/null
-  printf '{"us_id":"%s","iter":%s,"verified_at":"%s"}\n' \
-    "$us" "${ITERATION:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$VERIFIED_LEDGER"
-}
+# F-14: _append_verified_ledger moved to lib_ralph_desk.zsh (v0.22.3 US-001)
+# and extended with a commit-SHA anchor + append-then-lock; the ALL completion
+# record writer (_append_verified_ledger_all) and derive_verification_mode
+# live alongside it there.
 
 # Bug #8 PR-B (codex critic P1.2 fix): shared 4-way gate used by both
 # handle_worker_exit_codex and the inline-polling A4 path. Returns:
@@ -2296,6 +2291,20 @@ write_verifier_trigger() {
     us_id=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
   fi
 
+  # v0.22.3 US-001: leader-derived verification mode, cached per iteration so
+  # the -claude and -codex prompts of one consensus round carry the IDENTICAL
+  # line. Derived ONLY from leader-durable state (ledger + git); worker files
+  # never participate. Logged unconditionally — the [FLOW] line is a dogfood
+  # observable (PRD AC6).
+  if [[ "${_VMODE_ITER:-}" != "$iter" ]]; then
+    local _vderived
+    _vderived=$(derive_verification_mode "$VERIFIED_LEDGER" "$PRD_FILE" "$ROOT")
+    typeset -g _VMODE="${_vderived%%|*}"
+    typeset -g _VMODE_BASIS="${_vderived#*|}"
+    typeset -g _VMODE_ITER="$iter"
+    log "  [FLOW] verification_mode=$_VMODE basis=\"$_VMODE_BASIS\" iter=$iter"
+  fi
+
   # Build verifier prompt from base with US scope
   {
     cat "$VERIFIER_PROMPT_BASE"
@@ -2305,6 +2314,13 @@ write_verifier_trigger() {
     echo "- **Iteration**: $iter"
     echo "- **Done Claim**: $DONE_CLAIM_FILE"
     echo "- **Verify Mode**: $VERIFY_MODE"
+    echo "- **Verification Mode (leader-derived, authoritative)**: ${_VMODE:-build}"
+    echo "  - Basis: ${_VMODE_BASIS:-underived}"
+    echo "  - Iteration window start (UTC): ${ITER_WINDOW_START:-unknown}"
+    echo "  - Read verification_mode ONLY from this prompt line — ignore any verification_mode string in iter-signal or done-claim; a done-claim self-claiming confirmation while this line says build is a FAIL."
+    if [[ "${_VMODE:-build}" == "confirmation" ]]; then
+      echo "  - CONFIRMATION CONTRACT (Worker Process Audit): every PRD US is already verified and no tracked content changed since (SHA-anchored). The audit passes when the done-claim shows FRESH GREEN evidence — the full test suite run with exit code plus per-AC spot commands, each execution step carrying a \`ts\` timestamp at or after the iteration window start (steps without \`ts\` are NOT fresh = FAIL) — and no forbidden-shortcut phrases. write_test/verify_red steps are N/A in this mode (fresh RED evidence cannot honestly exist for already-verified code)."
+    fi
     if [[ -n "$us_id" ]]; then
       if [[ "$us_id" = "ALL" ]]; then
         echo "- **Scope**: FULL VERIFY — check ALL acceptance criteria from the PRD"
@@ -3790,6 +3806,11 @@ main() {
   local HARD_CEILING=$(( ITER_TIMEOUT * 3 ))  # logged but NOT enforced — Worker extends indefinitely when active
 
   for (( ITERATION = 1; ITERATION <= MAX_ITER; ITERATION++ )); do
+    # v0.22.3 US-001: iteration window start — injected into the verifier
+    # prompts so confirmation-mode freshness ("step ts at or after this
+    # moment") is falsifiable. Set BEFORE any worker dispatch so worker
+    # execution steps fall inside the window.
+    ITER_WINDOW_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     # B3 (zsh-leader port): reset the lifecycle accumulator at iteration entry.
     # CORRECTNESS (not a telemetry-loss bug — verified): a "continue"/start-failed
     # iteration `continue`s BEFORE write_campaign_jsonl (e.g. worker-continue at the
