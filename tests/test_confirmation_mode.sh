@@ -119,6 +119,19 @@ mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" "{
   && ok "root is not a git repo (git status fails) -> build" \
   || no "git-status failure must fail closed"
 
+OLDPH="$PH"
+printf '### US-001: First\n- AC1: x\n### US-002: Second\n- AC1: y2\n' > "$PRD"
+PH2=$(git hash-object "$PRD")
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$OLDPH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\",\"prd\":\"$PH2\"}"
+[[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
+  && ok "coverage mixing entries from an OLDER PRD -> build (per-entry prd filter)" \
+  || no "mixed-prd coverage must not confirm"
+printf '### US-001: First\n- AC1: x\n### US-002: Second\n- AC1: y\n' > "$PRD"
+mkln "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\",\"prd\":\"$PH\"} trailing-garbage"
+[[ $(mode_of "$L" "$PRD" "$FIX") == build ]] \
+  && ok "valid-JSON-plus-garbage newest line -> build (strict parse)" \
+  || no "json+garbage must fail closed"
+
 print -r -- "-- behavioral: ALL completion record shape"
 mkln "{\"us_id\":\"ALL\",\"iter\":3,\"commit\":\"$SHA2\",\"prd\":\"$PH\",\"coverage\":[\"US-001\",\"US-002\"]}"
 [[ $(mode_of "$L" "$PRD" "$FIX") == confirmation ]] \

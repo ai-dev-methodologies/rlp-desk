@@ -1869,11 +1869,18 @@ derive_verification_mode() {
   [[ -n "$prd_us" ]] || { print -r -- "build|no US markers in PRD"; return 0; }
   # early-review P2-5: judge the newest RAW nonempty line — a malformed
   # trailing entry must fail closed, not silently yield to an older valid one.
+  # final-review P2-1: STRICT parse — jq must exit 0 AND yield exactly one
+  # object (valid-JSON-plus-garbage or concatenated docs are malformed).
   local newest_raw newest
   newest_raw=$(grep -v '^[[:space:]]*$' "$ledger" 2>/dev/null | tail -1)
   [[ -n "$newest_raw" ]] || { print -r -- "build|empty ledger"; return 0; }
-  newest=$(print -r -- "$newest_raw" | jq -c 'select(type=="object")' 2>/dev/null)
-  [[ -n "$newest" ]] || { print -r -- "build|newest ledger line is malformed"; return 0; }
+  if ! print -r -- "$newest_raw" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    print -r -- "build|newest ledger line is malformed"; return 0
+  fi
+  newest=$(print -r -- "$newest_raw" | jq -c '.' 2>/dev/null)
+  if [[ -z "$newest" || $(print -r -- "$newest_raw" | jq -c '.' 2>/dev/null | grep -c '') -ne 1 ]]; then
+    print -r -- "build|newest ledger line is malformed"; return 0
+  fi
   local sha us covered
   sha=$(print -r -- "$newest" | jq -r '.commit // empty' 2>/dev/null)
   us=$(print -r -- "$newest" | jq -r '.us_id // empty' 2>/dev/null)
@@ -1889,7 +1896,10 @@ derive_verification_mode() {
   if [[ "$us" == "ALL" ]]; then
     covered=$(print -r -- "$newest" | jq -r '.coverage[]? // empty' 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u)
   else
-    covered=$(jq -cR 'fromjson? // empty' "$ledger" 2>/dev/null | jq -r 'select(.us_id != "ALL") | .us_id // empty' 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u)
+    # final-review P1-2: coverage counts ONLY entries bound to the CURRENT
+    # PRD hash — sibling lines earned against an older plan must not supply
+    # coverage for this one.
+    covered=$(jq -cR 'fromjson? // empty' "$ledger" 2>/dev/null | jq -r --arg p "$cur_prd" 'select(.us_id != "ALL" and .prd == $p) | .us_id // empty' 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u)
   fi
   if [[ "$covered" != "$prd_us" ]]; then
     print -r -- "build|ledger coverage does not equal the PRD US set"; return 0

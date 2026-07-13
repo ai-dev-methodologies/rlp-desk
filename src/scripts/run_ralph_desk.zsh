@@ -2292,21 +2292,17 @@ write_verifier_trigger() {
     us_id=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
   fi
 
-  # v0.22.3 US-001: leader-derived verification mode, cached per iteration so
-  # the -claude and -codex prompts of one consensus round carry the IDENTICAL
-  # line. Derived ONLY from leader-durable state (ledger + git); worker files
-  # never participate. Logged unconditionally — the [FLOW] line is a dogfood
-  # observable (PRD AC6).
-  local _vmode_key
-  _vmode_key="$iter:$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo none)"
-  if [[ "${_VMODE_ITER:-}" != "$_vmode_key" ]]; then
-    local _vderived
-    _vderived=$(derive_verification_mode "$VERIFIED_LEDGER" "$PRD_FILE" "$ROOT")
-    typeset -g _VMODE="${_vderived%%|*}"
-    typeset -g _VMODE_BASIS="${_vderived#*|}"
-    typeset -g _VMODE_ITER="$_vmode_key"
-    log "  [FLOW] verification_mode=$_VMODE basis=\"$_VMODE_BASIS\" iter=$iter"
-  fi
+  # v0.22.3 US-001: leader-derived verification mode. Derived FRESH on every
+  # verifier dispatch (final-review P2-2: a cache keyed on iter+HEAD still
+  # missed PRD edits and tree changes; derivation is a few git calls — the
+  # simplest correct thing is to never reuse it). Derived ONLY from
+  # leader-durable state (ledger + git); worker files never participate.
+  # The [FLOW] line is a dogfood observable (PRD AC6).
+  local _vderived
+  _vderived=$(derive_verification_mode "$VERIFIED_LEDGER" "$PRD_FILE" "$ROOT")
+  typeset -g _VMODE="${_vderived%%|*}"
+  typeset -g _VMODE_BASIS="${_vderived#*|}"
+  log "  [FLOW] verification_mode=$_VMODE basis=\"$_VMODE_BASIS\" iter=$iter"
 
   # Build verifier prompt from base with US scope
   {
@@ -4553,7 +4549,12 @@ main() {
                   fi
                   log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
                   log_debug "[FLOW] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
-                  _append_verified_ledger "$signal_us_id"   # F-14: durable source-of-truth
+                  # F-14: durable source-of-truth. On append failure the
+                  # in-session credit stands but the durable record is gone —
+                  # a later resume falls back to build mode (safe: re-verifies
+                  # instead of confirming), so surface it loudly and continue.
+                  _append_verified_ledger "$signal_us_id" \
+                    || log_error "durable ledger append failed for $signal_us_id — a resume will re-verify (build mode) instead of confirming"
                 fi
                 update_status "verifier" "pass_us"
                 # D-16: if this pass completed coverage (every US in US_LIST is now
@@ -4600,7 +4601,8 @@ main() {
                     VERIFIED_US="$_pus"
                   fi
                   log "  Partial progress: $_pus passed (overall FAIL). Verified so far: $VERIFIED_US"
-                  _append_verified_ledger "$_pus"   # F-14: durable source-of-truth
+                  _append_verified_ledger "$_pus" \
+                    || log_error "durable ledger append failed for $_pus — a resume will re-verify (build mode) instead of confirming"
                 fi
               done
               log_debug "[FLOW] iter=$ITERATION partial_progress prev=$_prev_verified now=$VERIFIED_US"
@@ -4635,11 +4637,24 @@ main() {
               echo "# Fix Contract (from Verifier iteration $ITERATION)"
               echo ""
               if [[ -n "$VERIFIED_US" ]]; then
-                echo "## Verified US (do NOT re-implement these)"
-                echo "$VERIFIED_US" | tr ',' '\n' | sed 's/^/- /'
-                echo ""
-                echo "**Focus ONLY on unverified user stories. The above are already verified.**"
-                echo ""
+                if [[ "${signal_us_id:-}" == "ALL" ]]; then
+                  # v0.22.3 (final-review P1-1): an ALL/consensus failure may
+                  # implicate exactly the already-verified stories — a blanket
+                  # do-not-touch would forbid the entire repair scope and the
+                  # fix loop could never converge. Scope Lock still applies:
+                  # only changes tied to the verdict's issues are in scope.
+                  echo "## Previously verified US (context)"
+                  echo "$VERIFIED_US" | tr ',' '\n' | sed 's/^/- /'
+                  echo ""
+                  echo "**This failure is at the FINAL/ALL verification. You MAY modify previously verified stories, but ONLY where a change is tied to a listed issue below (Scope Lock). Do not rewrite passing work that no issue implicates.**"
+                  echo ""
+                else
+                  echo "## Verified US (do NOT re-implement these)"
+                  echo "$VERIFIED_US" | tr ',' '\n' | sed 's/^/- /'
+                  echo ""
+                  echo "**Focus ONLY on unverified user stories. The above are already verified.**"
+                  echo ""
+                fi
               fi
               echo "## Summary"
               echo "$verdict_summary_fail"

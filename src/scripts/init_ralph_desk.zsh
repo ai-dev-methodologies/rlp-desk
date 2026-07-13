@@ -140,21 +140,169 @@ _prd_is_authored() {
   [[ -f "$f" ]] || return 1
   grep -E '^### US-[0-9]+:' "$f" 2>/dev/null | grep -vq '\[Title\]'
 }
+# v0.22.3 (final-review P1-3): the pristine test-spec template, emitted by a
+# function so the fresh-mode authored detector can compare the WHOLE file
+# against exactly what the scaffold would generate — no marker heuristics.
+_emit_testspec_template() {
+  local SLUG="$1"
+  cat <<EOF
+# Test Specification: $SLUG
+
+## Iron Law Reference
+> IL-3: NO PASS WITH TODO IN ANY REQUIRED VERIFICATION LAYER
+> IL-4: NO PASS WITHOUT TEST COUNT >= AC COUNT x 3
+
+---
+
+## Verification Commands
+### Build
+\`\`\`bash
+# TODO
+\`\`\`
+### Test
+\`\`\`bash
+# TODO
+\`\`\`
+### Lint
+\`\`\`bash
+# TODO
+\`\`\`
+
+---
+
+## Verification Context (fill BEFORE implementation)
+
+### Target Behavior
+What behavior does this project change or introduce?
+- TODO
+
+### Impacted Tests
+Existing tests that may break due to this change:
+- TODO (acceptable at init; Worker fills during first iteration)
+
+### Required New Tests
+Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
+- TODO
+
+### Forbidden Shortcuts (see Worker prompt for full list)
+- Do not mock external services when L2 integration test is required
+- Do not delete or weaken existing assertions to make tests pass
+- Do not add test-specific logic (if __name__ == '__test__' patterns)
+- Do not skip boundary cases listed in the PRD
+- Do not claim "code inspection" as verification — run the actual command
+- Do not say "too simple to test" — simple code breaks
+- Do not say "I'll test after" — tests passing immediately prove nothing
+- Do not say "already manually tested" — ad-hoc is not systematic
+- Do not say "partial check is enough" — partial proves nothing
+- Do not say "I'm confident" — confidence is not evidence
+- Do not say "existing code has no tests" — you are improving it, add tests
+- Do not write code before tests — delete it and start with tests
+
+### Pass/Fail Evidence Format
+- Command output with exit code 0
+- Quantitative result matching expected value
+- Screenshot comparison (for visual tasks)
+
+---
+
+## Verification Layers (ALL required sections — TODO in required layer = Verifier FAIL)
+
+### L1: Unit Test (REQUIRED)
+\`\`\`bash
+# TODO — unit test command (e.g., pytest, jest, go test)
+\`\`\`
+
+### L2: Integration (required if external services exist, otherwise "N/A — reason")
+\`\`\`bash
+# TODO — integration test command, or write: N/A — no external services (pure computation/transformation)
+\`\`\`
+
+### L3: E2E Simulation (REQUIRED)
+Known input → full pipeline → quantitative output comparison.
+Must cover ALL AC types: happy path + boundary + error path.
+- **Happy path input**: TODO (specific test data)
+- **Happy path expected output**: TODO (quantitative value)
+- **Happy path command**:
+\`\`\`bash
+# TODO — E2E happy path command
+\`\`\`
+- **Error path input**: TODO (invalid/boundary input that triggers error)
+- **Error path expected**: TODO (error type + non-zero exit code)
+- **Error path command**:
+\`\`\`bash
+# TODO — E2E error path command (expected exit ≠ 0)
+\`\`\`
+
+### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
+\`\`\`bash
+# TODO — deploy verification command, or write: N/A — no deployment (library/tool, local-only change)
+\`\`\`
+
+---
+
+## Mutation Testing Gate (CRITICAL risk only)
+- Required: only for CRITICAL risk classification (governance §1c)
+- Tool: TODO (e.g., mutmut, Stryker, go-mutesting) or "N/A — not CRITICAL risk"
+- Target: >= 60% mutation score on core business logic (project default; override in PRD if justified)
+- Scope: core business logic files (not config/tests/docs)
+- Command:
+\`\`\`bash
+# TODO — mutation testing command, or write: N/A — not CRITICAL risk
+\`\`\`
+
+---
+
+## Test Quality Checklist (Verifier checks these)
+- [ ] Tests verify behavior, not implementation details
+- [ ] Each test has meaningful assertions (not just "no error thrown")
+- [ ] Boundary cases covered (empty, max, zero, null, concurrent)
+- [ ] No tautological tests (expected value copied from implementation)
+- [ ] Mock usage limited to external boundaries only
+- [ ] No test-specific logic in production code
+- [ ] Each AC has >= 3 tests (happy + negative + boundary) per IL-4
+
+## Traceability Matrix (Worker fills during implementation)
+
+| US | AC | Test File :: Function | Layer | Evidence | Status |
+|----|----|----------------------|-------|----------|--------|
+| US-001 | AC1 | TODO | L1 | TODO | pending |
+
+---
+
+## Code Quality Gates (defaults — override in PRD with justification)
+- **Code duplication**: <= 3% (project-appropriate tool, e.g., jscpd, pylint, sonar)
+- **Mock ratio**: mock-based assertions <= 30% of total assertions
+- **Cyclomatic complexity**: <= 10 per function
+- **Function length**: <= 50 lines per function
+- **File length**: <= 800 lines per file
+
+---
+
+## Reproducibility Gate
+- [ ] Lock file exists and committed (package-lock.json, poetry.lock, go.sum, etc.) or "N/A — no external dependencies"
+- [ ] Clean install succeeds (npm ci, pip install, etc.) or "N/A — no external dependencies"
+- [ ] Security scan passes (or known vulnerabilities documented and acknowledged in PRD) or "N/A — no dependencies"
+- [ ] Environment variables documented (.env.example or equivalent) or "N/A — no env vars"
+
+---
+
+## Criteria → Verification Mapping
+
+| US | AC | Layer | Method | Command | Expected Output | Pass Criteria |
+|----|----|-------|--------|---------|-----------------|---------------|
+| US-001 | AC1 | L1 | TODO | TODO | TODO | TODO |
+EOF
+}
+
 _testspec_is_authored() {
   local f="$1"
   [[ -f "$f" ]] || return 1
-  # The scaffold's Verification Context carries exactly three placeholder
-  # bullets: "- TODO" under Target Behavior, "- TODO (acceptable at init..."
-  # under Impacted Tests, and "- TODO" under Required New Tests. The spec is
-  # a TEMPLATE only while ALL THREE are still intact — replacing ANY of them
-  # (an edit anywhere in the Verification Context) makes it authored
-  # (early-review P1-3: Target-Behavior-only detection deleted specs whose
-  # edits lived in the other subsections). Fail-open toward preserve.
-  local tb it rn
-  tb=$(sed -n '/^### Target Behavior/,/^###/p' "$f" 2>/dev/null | grep -c '^- TODO')
-  it=$(sed -n '/^### Impacted Tests/,/^###/p' "$f" 2>/dev/null | grep -c '^- TODO')
-  rn=$(sed -n '/^### Required New Tests/,/^###/p' "$f" 2>/dev/null | grep -c '^- TODO')
-  ! (( tb > 0 && it > 0 && rn > 0 ))
+  # final-review P1-3: authored = ANY byte differs from the pristine scaffold
+  # for this slug (marker heuristics deleted specs whose only edits were
+  # ADDITIONS next to intact placeholders). Exact comparison, fail-open
+  # toward preserve: identical to the template -> regenerate; anything
+  # else -> the operator touched it, keep it.
+  ! diff -q <(_emit_testspec_template "$SLUG") "$f" >/dev/null 2>&1
 }
 
 version_file() {
@@ -588,7 +736,7 @@ When writing done-claim JSON, ALWAYS include execution_steps — what you did, i
 }
 \`\`\`
 This is NOT optional. Every done-claim must include the steps you took and the evidence for each.
-execution_steps MUST be a JSON array of objects (not a dict with string keys). Each object MUST have: "step", "ac_id", "command", "exit_code", "summary". Every verification step (verify_red/verify_green/verify_e2e/verify_existing/verify) MUST also carry "ts" — the ISO-8601 UTC time the command was run. In leader-derived confirmation mode the Verifier treats a verification step WITHOUT "ts" as not-fresh (FAIL), so omitting it is never safe.
+execution_steps MUST be a JSON array of objects (not a dict with string keys). Each object MUST have: "step", "ac_id", "command", "exit_code", "summary". Every verification step (verify_red/verify_green/verify_e2e/verify_existing/verify) MUST also carry "ts" — the ISO-8601 UTC time the command was run (forensic evidence-age record; in confirmation mode freshness is judged on the VERIFIER's own reruns, not on these timestamps).
 
 ## Stop behavior
 - Single US achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json with the specific US, signal verify, exit
@@ -1021,153 +1169,7 @@ split_prd_by_us "$DESK/plans/prd-$SLUG.md" "$SLUG"
 # --- Test Spec ---
 F="$DESK/plans/test-spec-$SLUG.md"
 if [[ ! -f "$F" ]]; then
-  cat > "$F" <<EOF
-# Test Specification: $SLUG
-
-## Iron Law Reference
-> IL-3: NO PASS WITH TODO IN ANY REQUIRED VERIFICATION LAYER
-> IL-4: NO PASS WITHOUT TEST COUNT >= AC COUNT x 3
-
----
-
-## Verification Commands
-### Build
-\`\`\`bash
-# TODO
-\`\`\`
-### Test
-\`\`\`bash
-# TODO
-\`\`\`
-### Lint
-\`\`\`bash
-# TODO
-\`\`\`
-
----
-
-## Verification Context (fill BEFORE implementation)
-
-### Target Behavior
-What behavior does this project change or introduce?
-- TODO
-
-### Impacted Tests
-Existing tests that may break due to this change:
-- TODO (acceptable at init; Worker fills during first iteration)
-
-### Required New Tests
-Tests that MUST be written (minimum 3 per AC: happy + negative + boundary):
-- TODO
-
-### Forbidden Shortcuts (see Worker prompt for full list)
-- Do not mock external services when L2 integration test is required
-- Do not delete or weaken existing assertions to make tests pass
-- Do not add test-specific logic (if __name__ == '__test__' patterns)
-- Do not skip boundary cases listed in the PRD
-- Do not claim "code inspection" as verification — run the actual command
-- Do not say "too simple to test" — simple code breaks
-- Do not say "I'll test after" — tests passing immediately prove nothing
-- Do not say "already manually tested" — ad-hoc is not systematic
-- Do not say "partial check is enough" — partial proves nothing
-- Do not say "I'm confident" — confidence is not evidence
-- Do not say "existing code has no tests" — you are improving it, add tests
-- Do not write code before tests — delete it and start with tests
-
-### Pass/Fail Evidence Format
-- Command output with exit code 0
-- Quantitative result matching expected value
-- Screenshot comparison (for visual tasks)
-
----
-
-## Verification Layers (ALL required sections — TODO in required layer = Verifier FAIL)
-
-### L1: Unit Test (REQUIRED)
-\`\`\`bash
-# TODO — unit test command (e.g., pytest, jest, go test)
-\`\`\`
-
-### L2: Integration (required if external services exist, otherwise "N/A — reason")
-\`\`\`bash
-# TODO — integration test command, or write: N/A — no external services (pure computation/transformation)
-\`\`\`
-
-### L3: E2E Simulation (REQUIRED)
-Known input → full pipeline → quantitative output comparison.
-Must cover ALL AC types: happy path + boundary + error path.
-- **Happy path input**: TODO (specific test data)
-- **Happy path expected output**: TODO (quantitative value)
-- **Happy path command**:
-\`\`\`bash
-# TODO — E2E happy path command
-\`\`\`
-- **Error path input**: TODO (invalid/boundary input that triggers error)
-- **Error path expected**: TODO (error type + non-zero exit code)
-- **Error path command**:
-\`\`\`bash
-# TODO — E2E error path command (expected exit ≠ 0)
-\`\`\`
-
-### L4: Deploy Verification (required if deploying, otherwise "N/A — reason")
-\`\`\`bash
-# TODO — deploy verification command, or write: N/A — no deployment (library/tool, local-only change)
-\`\`\`
-
----
-
-## Mutation Testing Gate (CRITICAL risk only)
-- Required: only for CRITICAL risk classification (governance §1c)
-- Tool: TODO (e.g., mutmut, Stryker, go-mutesting) or "N/A — not CRITICAL risk"
-- Target: >= 60% mutation score on core business logic (project default; override in PRD if justified)
-- Scope: core business logic files (not config/tests/docs)
-- Command:
-\`\`\`bash
-# TODO — mutation testing command, or write: N/A — not CRITICAL risk
-\`\`\`
-
----
-
-## Test Quality Checklist (Verifier checks these)
-- [ ] Tests verify behavior, not implementation details
-- [ ] Each test has meaningful assertions (not just "no error thrown")
-- [ ] Boundary cases covered (empty, max, zero, null, concurrent)
-- [ ] No tautological tests (expected value copied from implementation)
-- [ ] Mock usage limited to external boundaries only
-- [ ] No test-specific logic in production code
-- [ ] Each AC has >= 3 tests (happy + negative + boundary) per IL-4
-
-## Traceability Matrix (Worker fills during implementation)
-
-| US | AC | Test File :: Function | Layer | Evidence | Status |
-|----|----|----------------------|-------|----------|--------|
-| US-001 | AC1 | TODO | L1 | TODO | pending |
-
----
-
-## Code Quality Gates (defaults — override in PRD with justification)
-- **Code duplication**: <= 3% (project-appropriate tool, e.g., jscpd, pylint, sonar)
-- **Mock ratio**: mock-based assertions <= 30% of total assertions
-- **Cyclomatic complexity**: <= 10 per function
-- **Function length**: <= 50 lines per function
-- **File length**: <= 800 lines per file
-
----
-
-## Reproducibility Gate
-- [ ] Lock file exists and committed (package-lock.json, poetry.lock, go.sum, etc.) or "N/A — no external dependencies"
-- [ ] Clean install succeeds (npm ci, pip install, etc.) or "N/A — no external dependencies"
-- [ ] Security scan passes (or known vulnerabilities documented and acknowledged in PRD) or "N/A — no dependencies"
-- [ ] Environment variables documented (.env.example or equivalent) or "N/A — no env vars"
-
----
-
-## Criteria → Verification Mapping
-
-| US | AC | Layer | Method | Command | Expected Output | Pass Criteria |
-|----|----|-------|--------|---------|-----------------|---------------|
-| US-001 | AC1 | L1 | TODO | TODO | TODO | TODO |
-EOF
+  _emit_testspec_template "$SLUG" > "$F"
   echo "  + $F"
 else echo "  · $F"; fi
 

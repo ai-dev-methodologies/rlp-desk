@@ -109,6 +109,15 @@ grep -q '^- real: tests/test_x.sh may break' "$TS" 2>/dev/null \
   && ok "spec with edits only in Impacted Tests preserved" \
   || no "P1-3 regression: non-Target-Behavior edit misclassified as template"
 
+print -r -- "-- case 5d: ADDITIONS next to intact placeholders still count as authored (P1-3 exact-compare)"
+D=$(scaffold case5d)
+TS="$D/.rlp-desk/plans/test-spec-t.md"
+print -r -- "- ADDED: operator note kept alongside the TODOs" >> "$TS"
+refresh "$D"
+grep -q "ADDED: operator note" "$TS" 2>/dev/null \
+  && ok "spec with only additions (all placeholders intact) preserved" \
+  || no "addition-only edit was destroyed (heuristic regression)"
+
 print -r -- "-- case 6: stale per-US splits from an old PRD do not survive fresh"
 D=$(scaffold case6)
 print -r -- "$AUTHORED_PRD" > "$D/.rlp-desk/plans/prd-t.md"
