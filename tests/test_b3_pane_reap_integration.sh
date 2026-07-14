@@ -61,7 +61,6 @@ D=$(mktemp -d)
 CAMPAIGN_JSONL="$D/c.jsonl"
 WORKER_MODEL=haiku; WORKER_ENGINE=claude; VERIFIER_ENGINE=claude; CONSENSUS_MODE=off
 CONSECUTIVE_FAILURES=0; ROOT="$D"; SLUG=t; typeset -gA US_FAIL_HISTORY=()
-export RLP_LIFECYCLE_METRICS=1
 LIFECYCLE_RECORDS=()
 
 # 1) The live emit site populates the accumulator.

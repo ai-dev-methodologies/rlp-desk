@@ -240,10 +240,8 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
       { verdict: 'pass', recommended_state_transition: 'complete' },
     ]),
     runIntegrationCheck: async () => ({ exitCode: 0 }),
-    // v0.22.0 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so this test's
-    // "null when disabled" assertion below needs an EXPLICIT opt-out — an
-    // unset process.env would otherwise emit lifecycle_metrics here too (see
-    // test-campaign-jsonl-shape.test.mjs for the populated-object coverage).
+    // v0.22.4: the RLP_LIFECYCLE_METRICS flag is REMOVED — passing the old
+    // opt-out here proves the env is ignored (field is an object, never null).
     env: { RLP_LIFECYCLE_METRICS: '0' },
     ...tmux.deps,
   });
@@ -252,9 +250,8 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   const lines = (await readText(analyticsFile)).trim().split('\n').map((line) => JSON.parse(line));
 
   assert.equal(lines.length, 2);
-  // v0.15.4 PR-B4: campaign.jsonl schema extended with lifecycle_metrics
-  // (null when disabled, object when enabled). Field is ALWAYS present in
-  // the record for shape predictability.
+  // v0.15.4 PR-B4 schema, v0.22.4 semantics: lifecycle_metrics is ALWAYS an
+  // object ({} when the iteration produced no records) — the opt-out is gone.
   assert.deepEqual(Object.keys(lines[0]).sort(), [
     'duration',
     'iter',
@@ -267,8 +264,9 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   ]);
   assert.equal(lines[0].iter, 1);
   assert.equal(lines[1].iter, 2);
-  // B4: with RLP_LIFECYCLE_METRICS explicitly opted out, the field is null.
-  assert.equal(lines[0].lifecycle_metrics, null);
+  // v0.22.4: the removed flag cannot null the field any more.
+  assert.notEqual(lines[0].lifecycle_metrics, null, 'opt-out env must be ignored');
+  assert.equal(typeof lines[0].lifecycle_metrics, 'object');
 });
 
 test('US-007 AC7.2 boundary: starting a new campaign versions an existing campaign.jsonl before appending fresh analytics', async (t) => {

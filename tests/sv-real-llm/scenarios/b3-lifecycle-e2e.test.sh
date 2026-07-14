@@ -182,7 +182,7 @@ EOF
   # ─── 2. EXERCISE ────────────────────────────────────────────────────
   local exercise_log="$sandbox_dir/exercise.log"
   # v0.15.4 audit C2: RLP_DESK_NODE_PATH override → source-tree leader (pre-merge);
-  # defaults to the installed leader otherwise. RLP_LIFECYCLE_METRICS=1 turns on B4.
+  # defaults to the installed leader otherwise. turns on B4.
   local node_leader_path="${RLP_DESK_NODE_PATH:-$HOME/.claude/ralph-desk/node/run.mjs}"
   if [[ ! -f "$node_leader_path" ]]; then
     SCENARIO_FAILURE_REASON="setup: leader not found at $node_leader_path (set RLP_DESK_NODE_PATH or install rlp-desk)"
@@ -191,7 +191,7 @@ EOF
   # signal_us_id=ALL routes the verify through FINAL_VERIFIER_MODEL (not VERIFIER_MODEL),
   # so --final-verifier-model haiku is REQUIRED — without it the only live verifier runs on
   # the default (opus), making the nightly slow/expensive (codex P2).
-  RLP_LIFECYCLE_METRICS=1 timeout 300 node "$node_leader_path" run "$slug" \
+  timeout 300 node "$node_leader_path" run "$slug" \
       --mode tmux --max-iter 2 --iter-timeout 120 \
       --worker-model haiku --verifier-model haiku --final-verifier-model haiku \
       > "$exercise_log" 2>&1 || true

@@ -87,7 +87,7 @@ EOF
     SCENARIO_FAILURE_REASON="setup: leader not found at $node_leader_path (set RLP_DESK_NODE_PATH or install rlp-desk)"
     return 1
   fi
-  if ! RLP_LIFECYCLE_METRICS=1 timeout 300 node "$node_leader_path" run "$slug" \
+  if ! timeout 300 node "$node_leader_path" run "$slug" \
       --mode tmux --max-iter 2 --iter-timeout 60 \
       --worker-model haiku --verifier-model haiku \
       > "$exercise_log" 2>&1; then

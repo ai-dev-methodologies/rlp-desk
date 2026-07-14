@@ -100,10 +100,10 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 ### F3.1 — lifecycle_metrics field absent (B4 telemetry regression)
 | Field | Value |
 |---|---|
-| Symptom | `campaign.jsonl.lifecycle_metrics` is null even when `RLP_LIFECYCLE_METRICS=1` |
+| Symptom | `campaign.jsonl.lifecycle_metrics` is null (telemetry is always on since v0.22.4, so null indicates this failure mode, not an opt-out) |
 | Root cause | `LifecycleMetricsCollector` instantiated with wrong env (e.g. options.env shadows process.env) |
 | Detection | `tests/node/test-campaign-jsonl-shape.test.mjs` AC4.3 (flag-set populated case); B3 Stage 1 presence assertion |
-| Recovery | Inject explicit collector via `options.lifecycleMetrics`, OR set `env: { RLP_LIFECYCLE_METRICS: '1' }` in run() options |
+| Recovery | Inject an explicit collector via `options.lifecycleMetrics` in run() options |
 | Reference | v0.15.4 PR-B4 + audit fix C2 |
 
 ### F3.2 — Stage 2 false-PASS on absent metric

@@ -11,7 +11,7 @@
 // - OPTION    : configuration snapshot at loop start
 // - FLOW      : execution progress (worker/verifier dispatch, signal reads, transitions)
 // - LIFECYCLE : v0.15.4 PR-B4 — tmux/process lifecycle metrics gated on
-//               RLP_LIFECYCLE_METRICS=1. Emission rules: see plan v3 §B4
+//               always on (v0.22.4). Emission rules: see plan v3 §B4
 //               Table (5 metrics). Helper is no-op when flag unset (verified
 //               by tests/node/test-campaign-jsonl-shape.mjs).
 

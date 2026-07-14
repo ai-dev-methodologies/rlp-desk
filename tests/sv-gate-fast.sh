@@ -133,14 +133,14 @@ check "B4 LifecycleMetricsCollector module exists" \
   test -f src/node/util/lifecycle-metrics.mjs
 check "B4 zsh log_lifecycle_metric helper exists" \
   grep -q "^log_lifecycle_metric()" src/scripts/lib_ralph_desk.zsh
-check "B4 zsh helper defaults RLP_LIFECYCLE_METRICS ON (:-1, opt-out via =0)" \
-  grep -q 'RLP_LIFECYCLE_METRICS:-1' src/scripts/lib_ralph_desk.zsh
+check "B4 (v0.22.4) the RLP_LIFECYCLE_METRICS flag is fully removed from the zsh leader" \
+  bash -c '! grep -q "RLP_LIFECYCLE_METRICS" src/scripts/lib_ralph_desk.zsh'
 check "B4 Node leader instantiates LifecycleMetricsCollector" \
   grep -q "new LifecycleMetricsCollector" src/node/runner/campaign-main-loop.mjs
 check "B4 lifecycle_metrics flushed into appendIterationAnalytics" \
   grep -q "lifecycle_metrics: lifecycleSnapshot" src/node/runner/campaign-main-loop.mjs
-check "B4 Node lifecycleMetricsEnabled defaults ON (opt-out via '0', not '=== 1')" \
-  grep -q "env\[ENV_FLAG_NAME\] !== '0'" src/node/util/lifecycle-metrics.mjs
+check "B4 (v0.22.4) Node collector has no flag gate (lifecycleMetricsEnabled removed)" \
+  bash -c '! grep -q "lifecycleMetricsEnabled\|_enabled" src/node/util/lifecycle-metrics.mjs' 
 # v0.15.5 full-wire — the 4 remaining metrics wired into the zsh leader.
 check "full-wire: zsh _lifecycle_emit_write_to_read helper exists" \
   grep -q "^_lifecycle_emit_write_to_read()" src/scripts/lib_ralph_desk.zsh
@@ -155,8 +155,8 @@ check "full-wire: verifier reap sites tag sentinel_type=verify-verdict (3 call s
 check "full-wire: iteration-top unlock sites call _lifecycle_mark_unlock" \
   bash -c '[ "$(grep -c "_lifecycle_mark_unlock" src/scripts/run_ralph_desk.zsh)" -ge 2 ]'
 # codex round 1 (P2-1, P2-2) — flag semantics unification + verdict lock-pair hygiene.
-check "codex-r1 P2-1: all zsh lifecycle gates use the unified != \"0\" form (no stale == \"1\")" \
-  bash -c '[ "$(grep -cE "RLP_LIFECYCLE_METRICS:-1\}\" != \"0\"" src/scripts/lib_ralph_desk.zsh)" -ge 6 ] && ! grep -qE "RLP_LIFECYCLE_METRICS:-1\}\" == \"1\"" src/scripts/lib_ralph_desk.zsh'
+check "B4 (v0.22.4) no leader emit-site carries a flag guard any more" \
+  bash -c '! grep -qE "RLP_LIFECYCLE_METRICS" src/scripts/run_ralph_desk.zsh src/scripts/lib_ralph_desk.zsh'
 check "codex-r1 P2-2: _lifecycle_clear_lock_mark helper exists" \
   grep -q "^_lifecycle_clear_lock_mark()" src/scripts/lib_ralph_desk.zsh
 # codex round 3 — three rounds of "another atomic-replace-with-a-pending-mark
@@ -186,12 +186,12 @@ check "B3 helper exports b3_assert_lifecycle_metrics_present" \
   grep -q "^b3_assert_lifecycle_metrics_present()" tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
 check "B3 helper exports b3_assert_lifecycle_metric_within_band" \
   grep -q "^b3_assert_lifecycle_metric_within_band()" tests/sv-real-llm/lib/b3-lifecycle-assertions.sh
-check "B3 bug-05 runs the campaign with RLP_LIFECYCLE_METRICS=1 (telemetry on)" \
-  grep -q "RLP_LIFECYCLE_METRICS=1" tests/sv-real-llm/scenarios/bug-05-worker-dead-on-reuse.test.sh
+check "B3 bug-05 no longer references the removed lifecycle flag (always-on since v0.22.4)" \
+  bash -c '! grep -q "RLP_LIFECYCLE_METRICS" tests/sv-real-llm/scenarios/bug-05-worker-dead-on-reuse.test.sh' 
 check "B3 bug-05 intentionally asserts NO pane telemetry (stale-pane → no deterministic reap)" \
   bash -c '! grep -q "b3_assert_lifecycle" tests/sv-real-llm/scenarios/bug-05-worker-dead-on-reuse.test.sh'
-check "B3 bug-07 sources B3 helper + RLP_LIFECYCLE_METRICS=1" \
-  grep -q "RLP_LIFECYCLE_METRICS=1" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
+check "B3 bug-07 no longer references the removed lifecycle flag" \
+  bash -c '! grep -q "RLP_LIFECYCLE_METRICS" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh' 
 check "B3 bug-07 calls Stage 1 presence assertion" \
   grep -q "b3_assert_lifecycle_metrics_present" tests/sv-real-llm/scenarios/bug-07-post-sentinel-race.test.sh
 check "B3 bug-07 reads campaign.jsonl from the zsh-leader analytics dir (not Node logs/)" \

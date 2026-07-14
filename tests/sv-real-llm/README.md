@@ -108,7 +108,7 @@ On FAIL, the captured state bundle holds the campaign artifacts (status.json, se
 3-night sample feeding the (currently advisory) `B3_STAGE2_BLOCKING` decision (runbook
 §7.5.2; `docs/plans/v0.15-phase-b3-revalidation-findings.md` §4). It runs **`b3-lifecycle-e2e`
 only** (the sole scenario that validates B3 end-to-end on the live zsh leader) with
-`RLP_REAL_LLM_GATE=1 RLP_LIFECYCLE_METRICS=1` **and `B3_STAGE2_BLOCKING=1`** — so a Stage-2
+`RLP_REAL_LLM_GATE=1` **and `B3_STAGE2_BLOCKING=1`** — so a Stage-2
 band breach FAILs the night (→ INVESTIGATE) instead of a silent INFO PASS. It appends a
 dated, scenario-set-stamped (`"set":"b3-e2e"`) verdict to `results/nightly-streak.jsonl`
 and reports the streak; `evaluate_streak` counts only `set=b3-e2e` nights so stale

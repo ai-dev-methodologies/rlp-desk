@@ -133,7 +133,7 @@ export function buildPaths(rootDir, slug, env = process.env) {
     laneAuditFile: path.join(campaignLogDir, 'lane-audit.json'),
     // v0.15.4 PR-B4: structured debug.log. log_lifecycle_metric (zsh) and
     // LifecycleMetricsCollector (Node) both emit here when
-    // RLP_LIFECYCLE_METRICS=1.
+    // lifecycle telemetry (always on since v0.22.4).
     debugLogFile: path.join(campaignLogDir, 'debug.log'),
 };
 }
@@ -1446,7 +1446,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   const stampAckField = options.stampAckField ?? defaultStampAckField;
   // v0.15.4 PR-B4: lifecycle observability collector. Tests inject
   // options.lifecycleMetrics for shape-contract verification; production
-  // path constructs from process.env (RLP_LIFECYCLE_METRICS=1 enables).
+  // path constructs from process.env (always on since v0.22.4).
   const debugLogger = makeDebugLogger(paths.debugLogFile);
   const lifecycleMetrics = options.lifecycleMetrics ?? new LifecycleMetricsCollector({
     env: options.env ?? process.env,

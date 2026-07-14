@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 
 import {
   LifecycleMetricsCollector,
-  lifecycleMetricsEnabled,
 } from '../../src/node/util/lifecycle-metrics.mjs';
 
 // PR-B4 (v0.15.4) — LifecycleMetricsCollector helper unit tests.
@@ -18,25 +17,24 @@ import {
 //   AC4.1 (per-event emission): record() accumulates; flush() emits a grouped
 //         object; sentinel lock/unlock pair produces sentinel_lock_to_unlock_ms.
 
-test('AC4.2 (v0.22.0 full-wire): collector is ENABLED by default when env flag is unset', () => {
+test('AC4.2 (v0.22.4): collector always records — no env, no .enabled getter', () => {
   const c = new LifecycleMetricsCollector({ env: {} });
-  assert.equal(c.enabled, true);
+  assert.equal(c.enabled, undefined, 'the enabled getter is gone with the flag');
   c.record('iter_signal_write_to_read_ms', 1234, { iter: 1 });
   const flushed = c.flush();
-  assert.ok(flushed, 'flush returns an object when enabled by default');
+  assert.ok(flushed, 'flush always returns an object');
   assert.ok(Array.isArray(flushed.iter_signal_write_to_read_ms));
 });
 
-test('AC4.2: collector is disabled when env flag is "0" (explicit opt-out)', () => {
+test('AC4.2 (v0.22.4): the legacy "0" opt-out is ignored — recording proceeds', () => {
   const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '0' } });
-  assert.equal(c.enabled, false);
   c.record('pane_reap_latency_ms', 4200, {});
-  assert.equal(c.flush(), null);
+  const flushed = c.flush();
+  assert.ok(flushed && flushed.pane_reap_latency_ms, 'legacy opt-out must not silence');
 });
 
-test('AC4.1: collector records when flag is "1" and groups by metric in flush', () => {
+test('AC4.1: collector records and groups by metric in flush (env irrelevant)', () => {
   const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
-  assert.equal(c.enabled, true);
   c.record('iter_signal_write_to_read_ms', 2400, { iter: 1, us_id: 'US-001' });
   c.record('verdict_write_to_read_ms', 1800, { iter: 1 });
   c.record('pane_reap_latency_ms', 3500, { iter: 1, sentinel: 'done-claim' });
@@ -151,18 +149,22 @@ test('AC4.1: debugLog is called per record when injected and enabled', () => {
   assert.equal(seen[0].fields.iter, 3);
 });
 
-test('AC4.2: debugLog is NOT called when explicitly disabled (zero overhead)', () => {
-  const seen = [];
-  const debugLog = (cat, fields) => seen.push({ cat, fields });
-  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '0' }, debugLog });
-  c.record('iter_signal_write_to_read_ms', 500, {});
-  assert.equal(seen.length, 0, 'no debugLog calls when disabled');
+test('AC4.2 (v0.22.4): debugLog fires even when the legacy opt-out is set', () => {
+  const calls = [];
+  const c = new LifecycleMetricsCollector({
+    env: { RLP_LIFECYCLE_METRICS: '0' },
+    debugLog: (line) => calls.push(line),
+  });
+  c.record('pane_eof_to_cleanup_ms', 10, {});
+  assert.ok(calls.length >= 1, 'debug log emits regardless of the removed flag');
 });
 
-test('lifecycleMetricsEnabled() exact boolean semantics (v0.22.0 full-wire: default ON, "0" opts out)', () => {
-  assert.equal(lifecycleMetricsEnabled({}), true, 'unset defaults to enabled');
-  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '0' }), false, 'explicit "0" opts out');
-  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '' }), true);
-  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: 'true' }), true);
-  assert.equal(lifecycleMetricsEnabled({ RLP_LIFECYCLE_METRICS: '1' }), true);
+test('the RLP_LIFECYCLE_METRICS flag is REMOVED (v0.22.4): env is ignored, collector always records', () => {
+  for (const env of [{}, { RLP_LIFECYCLE_METRICS: '0' }, { RLP_LIFECYCLE_METRICS: '' }, { RLP_LIFECYCLE_METRICS: '1' }]) {
+    const c = new LifecycleMetricsCollector({ env });
+    c.record('pane_eof_to_cleanup_ms', 5, { iter: 1 });
+    const out = c.flush();
+    assert.ok(out && Array.isArray(out.pane_eof_to_cleanup_ms) && out.pane_eof_to_cleanup_ms.length === 1,
+      `collector must record regardless of env ${JSON.stringify(env)}`);
+  }
 });

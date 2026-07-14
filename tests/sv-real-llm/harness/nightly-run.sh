@@ -99,7 +99,6 @@ if [[ "${RLP_REAL_LLM_GATE:-0}" != "1" ]]; then
   exit 77
 fi
 
-export RLP_LIFECYCLE_METRICS=1
 # codex P1: run the scenarios with Stage-2 band-blocking ON. The flip trigger is
 # "3 consecutive nights PASSING with B3_STAGE2_BLOCKING=1" (runbook line 275). With
 # it OFF, a Stage-2 INFO band exceedance still records PASS, so three over-band nights
@@ -113,7 +112,7 @@ TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 oc_b3e2e=""
 for s in "${SCENARIOS[@]}"; do
   echo "─── nightly: $s ───"
-  RLP_REAL_LLM_GATE=1 RLP_LIFECYCLE_METRICS=1 B3_STAGE2_BLOCKING=1 bash "$SCRIPT_DIR/run-scenario.sh" "$SCENARIOS_DIR/$s.test.sh"
+  RLP_REAL_LLM_GATE=1 B3_STAGE2_BLOCKING=1 bash "$SCRIPT_DIR/run-scenario.sh" "$SCENARIOS_DIR/$s.test.sh"
   rc=$?
   v="FAIL"; [[ "$rc" -eq 0 ]] && v="PASS"; [[ "$rc" -eq 77 ]] && v="SKIPPED"
   case "$s" in

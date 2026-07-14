@@ -460,7 +460,7 @@ _kill_pane_process() {
   # Uses zsh native $EPOCHREALTIME (microsec) — portable to macOS BSD where
   # `date +%N` is not supported.
   local _b4_t0_ms=0
-  if [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]]; then
+  if true; then  # v0.22.4: lifecycle-metrics flag removed — always on
     zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
     if [[ -n "${EPOCHREALTIME:-}" ]]; then
       local _b4_t0_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' — comma-decimal LC_NUMERIC renders EPOCHREALTIME with ','
@@ -523,7 +523,8 @@ _unlock_sentinel() {
 # v0.15.4 PR-B4: Lifecycle observability — log_lifecycle_metric
 # =============================================================================
 # Plan: docs/plans/v0.15-phase-b-plan-v3.md §B4 (P2.1 critic-round-2 fix).
-# Helper defaults ON; gated OFF only by explicit $RLP_LIFECYCLE_METRICS=0
+# v0.22.4: always-on (the lifecycle-metrics opt-out flag was removed after
+# two default-ON dogfood release cycles with no opt-out use)
 # (codex round 1 P2-1: unified on Node's `!== '0'` contract so a value like
 # "true" enables on both leaders instead of silently disabling zsh-only).
 # Emits to debug.log via log_debug, in a backgrounded subshell so the caller
@@ -579,7 +580,6 @@ typeset -gA LIFECYCLE_LOCK_TIMES=()
 typeset -gA LIFECYCLE_LOCK_ITERS=()
 
 log_lifecycle_metric() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0   # off-path: zero work, no fork
   local metric="$1"
   local value_ms="$2"
   local ctx="${3:-}"
@@ -707,7 +707,6 @@ _epoch_ms() {
 typeset -g _LC_CAPTURED_DELTA=""
 _lifecycle_capture_write_to_read() {
   _LC_CAPTURED_DELTA=""
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local file="$1"
   [[ -n "$file" && -f "$file" ]] || return 0
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
@@ -748,7 +747,6 @@ _lifecycle_capture_write_to_read() {
 # $3=delta_ms (from _lifecycle_capture_write_to_read)  $4=iter (optional)
 # $5=us_id (optional). No-ops when $3 is empty (nothing was captured).
 _lifecycle_emit_write_to_read() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local metric="$1" file="$2" delta="${3:-}" iter="${4:-}" us_id="${5:-}"
   [[ -n "$delta" ]] || return 0
   log_lifecycle_metric "$metric" "$delta" \
@@ -765,7 +763,6 @@ _lifecycle_emit_write_to_read() {
 #
 # Args: $1=sentinel_key  $2=iter (optional — codex P2 sweep F5, see below).
 _lifecycle_mark_lock_start() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local sentinel_key="$1" iter="${2:-}"
   [[ -n "$sentinel_key" ]] || return 0
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
@@ -781,7 +778,6 @@ _lifecycle_mark_lock_start() {
 # Args: $1=sentinel_key  $2=iter (fallback only — used when no iter was
 # stamped at mark-time, e.g. an older/direct caller that didn't pass one).
 _lifecycle_mark_unlock() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local sentinel_key="$1" fallback_iter="${2:-}"
   [[ -n "$sentinel_key" ]] || return 0
   local start="${LIFECYCLE_LOCK_TIMES[$sentinel_key]:-}"
@@ -809,7 +805,6 @@ _lifecycle_mark_unlock() {
 # each one's OWN stored iter, per the fix above) before the process exits.
 # A no-op when nothing is pending (the common, non-terminal-exit case).
 _lifecycle_flush_pending_locks() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local sentinel_key
   for sentinel_key in "${(k)LIFECYCLE_LOCK_TIMES[@]}"; do
     _lifecycle_mark_unlock "$sentinel_key"
@@ -834,7 +829,6 @@ _lifecycle_flush_pending_locks() {
 # next real lock (if any) starts clean, and an unlock with no intervening
 # relock is a correct no-op instead of a false pairing.
 _lifecycle_clear_lock_mark() {
-  [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]] || return 0
   local sentinel_key="$1"
   [[ -n "$sentinel_key" ]] || return 0
   unset "LIFECYCLE_LOCK_TIMES[$sentinel_key]"
@@ -1454,7 +1448,7 @@ write_campaign_jsonl() {
   # {value_ms, ts} (nothing to drop beyond .metric), so this is not a regression
   # for existing 3-arg callers.
   local lifecycle_json="null"
-  if [[ "${RLP_LIFECYCLE_METRICS:-1}" != "0" ]]; then
+  if true; then  # v0.22.4: lifecycle-metrics flag removed — always on
     if (( ${#LIFECYCLE_RECORDS[@]} > 0 )); then
       lifecycle_json=$(printf '%s\n' "${LIFECYCLE_RECORDS[@]}" \
         | jq -s 'group_by(.metric) | map({key: .[0].metric, value: map(del(.metric))}) | from_entries' 2>/dev/null) \

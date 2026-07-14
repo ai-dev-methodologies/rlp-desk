@@ -546,11 +546,10 @@ mkdir my-calc && cd my-calc
 
 ## Lifecycle Observability (v0.15.4+, default ON since v0.22.0)
 
-Structured tmux/process lifecycle telemetry is enabled by default on both the Node and zsh (`--mode tmux`) leaders. Set `RLP_LIFECYCLE_METRICS=0` to opt out.
+Structured tmux/process lifecycle telemetry is always on for both the Node and zsh (`--mode tmux`) leaders (the `RLP_LIFECYCLE_METRICS` opt-out flag was removed in v0.22.4 after two default-ON release cycles with no opt-out use).
 
 ```bash
 node ~/.claude/ralph-desk/node/run.mjs run my-slug --mode tmux            # telemetry on by default
-RLP_LIFECYCLE_METRICS=0 node ~/.claude/ralph-desk/node/run.mjs run my-slug --mode tmux   # opt out
 ```
 
 Five metrics are emitted per iteration:

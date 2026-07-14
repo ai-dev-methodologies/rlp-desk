@@ -48,7 +48,7 @@ b3_assert_lifecycle_metrics_present() {
   fi
 
   echo "ASSERT B3-S1 FAIL: no record carries a non-empty lifecycle_metrics object"
-  echo "                   Likely cause: RLP_LIFECYCLE_METRICS=1 not propagated, B4 collector inactive,"
+  echo "                   Likely cause: not propagated, B4 collector inactive,"
   echo "                   or every record emitted an empty {} (no metric recorded)."
   ASSERTIONS_FAILED=$((ASSERTIONS_FAILED+1))
   SCENARIO_FAILURE_REASON="B3-S1: B4 telemetry not emitting"

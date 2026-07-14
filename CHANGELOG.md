@@ -7,8 +7,18 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ## [Unreleased]
 
 ### Planned (not yet shipped)
-- Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
+
+## [0.22.4] — 2026-07-14
+
+### Removed
+- The `RLP_LIFECYCLE_METRICS` opt-out flag. Lifecycle telemetry has been
+  default-ON since v0.22.0 and two dogfood release cycles (v0.22.2, v0.22.3)
+  passed with no opt-out use — per the plan v3 ADR follow-up, the flag and
+  every gate site are gone and the five metrics are always emitted on both
+  leaders. Setting the old env var is harmless (ignored). `campaign.jsonl`'s
+  `lifecycle_metrics` field is now always an object (`{}` when an iteration
+  produced no records); `null` indicates a collector failure, not an opt-out.
 
 ## [0.22.3] — 2026-07-14
 

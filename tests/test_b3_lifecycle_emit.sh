@@ -38,10 +38,11 @@ emit_row() {  # $1=flag(0/1)  $2..=pre-flush log_lifecycle_metric "metric value"
   ' _ "$@"
 }
 
-# 1) explicit OFF (=0) -> null + legacy fields intact
-row=$(emit_row 0)
-[[ "$(print -r -- "$row" | jq -c .lifecycle_metrics)" == "null" ]] && ok "explicit off (=0) → lifecycle_metrics null" || no "off not null ($row)"
-[[ "$(print -r -- "$row" | jq -r '[.iter,.us_id,.slug] | join(",")')" == "1,US-001,t" ]] && ok "off → legacy fields intact (schema-neutral)" || no "off legacy fields drifted"
+# 1) v0.22.4: the flag is REMOVED — the legacy opt-out (=0) is ignored and
+# metrics emit anyway; legacy row fields stay intact.
+row=$(emit_row 0 "pane_eof_to_cleanup_ms 33")
+[[ "$(print -r -- "$row" | jq -c '.lifecycle_metrics.pane_eof_to_cleanup_ms | length')" == "1" ]] && ok "legacy =0 is ignored → metrics still emit" || no "removed flag still silences ($row)"
+[[ "$(print -r -- "$row" | jq -r '[.iter,.us_id,.slug] | join(",")')" == "1,US-001,t" ]] && ok "legacy fields intact (schema-neutral)" || no "legacy fields drifted"
 
 # 2) ON + 2 records -> grouped, length 2, numeric value_ms
 row=$(emit_row 1 "pane_eof_to_cleanup_ms 120" "pane_eof_to_cleanup_ms 80")
@@ -229,7 +230,7 @@ default_on=$(zsh -c '
   && ok "DEFAULT-ON: RLP_LIFECYCLE_METRICS unset now emits (was OFF pre-full-wire, pane_eof_to_cleanup_ms key present with >=1 record)" \
   || no "DEFAULT-ON regression: unset flag produced no pane_eof_to_cleanup_ms records ($default_on)"
 
-# 12) explicit opt-out (=0) still silences after the default flip.
+# 12) v0.22.4: the old explicit opt-out (=0) no longer silences anything.
 explicit_off=$(zsh -c '
   source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
   D=$(mktemp -d); CAMPAIGN_JSONL="$D/c.jsonl"
@@ -240,8 +241,8 @@ explicit_off=$(zsh -c '
   write_campaign_jsonl 1 US-001 pass
   print -r -- "$(tail -1 "$CAMPAIGN_JSONL" | jq -c .lifecycle_metrics)"
   rm -rf "$D"')
-[[ "$explicit_off" == "null" ]] && ok "explicit RLP_LIFECYCLE_METRICS=0 still silences" \
-  || no "explicit off not silenced ($explicit_off)"
+[[ "$explicit_off" != "null" ]] && ok "removed flag: =0 no longer silences (metrics present)" \
+  || no "removed flag still silences ($explicit_off)"
 
 # 13) log_lifecycle_metric: optional 4th/5th args (iter, us_id) embed as JSON
 # fields on the record — mirrors Node's ctx object for the 2 cheap write_to_read
@@ -339,15 +340,12 @@ truthy=$(zsh -c '
   && ok "P2-1: RLP_LIFECYCLE_METRICS=true enables (matches Node's !== '0' contract, pane_eof_to_cleanup_ms key present with >=1 record)" \
   || no "P2-1: value 'true' incorrectly disabled telemetry — no pane_eof_to_cleanup_ms records ($truthy)"
 
-# 18) P2-1 (structural): every zsh gate check uses the unified `!= "0"` form,
-# not `== "1"` (which silently diverges from Node on any non-"0"/non-"1"
-# value). Pins the fix so a future edit cannot silently reintroduce the
-# divergence at one of the (currently 6) gate sites.
-gate_count=$(grep -cE '"\$\{RLP_LIFECYCLE_METRICS:-1\}" != "0"' "$REPO/src/scripts/lib_ralph_desk.zsh")
-stale_gate_count=$(grep -cE '"\$\{RLP_LIFECYCLE_METRICS:-1\}" == "1"' "$REPO/src/scripts/lib_ralph_desk.zsh")
-[[ "$gate_count" -ge 6 && "$stale_gate_count" == "0" ]] \
-  && ok "P2-1: all gate sites use the unified != \"0\" form ($gate_count sites, 0 stale == \"1\" sites)" \
-  || no "P2-1: gate unification incomplete (!= \"0\" sites=$gate_count, stale == \"1\" sites=$stale_gate_count)"
+# 18) v0.22.4 (structural): the flag is REMOVED — no gate site of any form
+# may remain in either leader.
+gate_count=$(grep -cE 'RLP_LIFECYCLE_METRICS' "$REPO/src/scripts/lib_ralph_desk.zsh")
+[[ "$gate_count" == "0" ]] \
+  && ok "v0.22.4: zero flag references remain in the zsh leader" \
+  || no "v0.22.4: $gate_count flag references remain in lib_ralph_desk.zsh"
 
 # 19) P3: sentinel_lock_to_unlock_ms normal reuse — lock→unlock→re-lock→unlock
 # emits TWO sane pairs (not merged, not cross-paired), each carrying its own

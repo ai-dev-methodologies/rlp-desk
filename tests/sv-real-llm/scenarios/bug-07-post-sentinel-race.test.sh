@@ -96,8 +96,8 @@ EOF
   # DEBUG=1 so the zsh leader's log_debug (the ONLY emitter of the '[bug7] kill_pane_process'
   # reap trace) writes to its analytics debug.log — buildZshEnv spreads parentEnv, so this
   # env reaches the leader. A1 greps that debug.log (NOT exercise.log, which never sees the
-  # reap trace). RLP_LIFECYCLE_METRICS=1 keeps B3 telemetry on.
-  if ! DEBUG=1 RLP_LIFECYCLE_METRICS=1 timeout 600 node "$node_leader_path" run "$slug" \
+  # reap trace). keeps B3 telemetry on.
+  if ! DEBUG=1 timeout 600 node "$node_leader_path" run "$slug" \
       --mode tmux --max-iter 2 --iter-timeout 120 \
       --worker-model haiku --verifier-model haiku --final-verifier-model haiku \
       > "$exercise_log" 2>&1; then

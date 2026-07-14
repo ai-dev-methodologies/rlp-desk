@@ -5,7 +5,7 @@
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §4.2 (synthetic source).
 //
 // What this does:
-//   1. Run 5 iterations of a sandbox campaign with RLP_LIFECYCLE_METRICS=1
+//   1. Run 5 iterations of a sandbox campaign with
 //      and real tmux (us006 AC6.1 boundary pattern). pollForSignal is stubbed
 //      to return mocked verdicts; sendKeys / killPaneProcess / lockSentinel
 //      use the real production helpers so pane_eof_to_cleanup_ms and
@@ -271,7 +271,7 @@ function reportMetric(name, samples) {
 
 async function main() {
   console.log('━━━ B3 pre-merge band revalidation ━━━');
-  console.log(`[harness] running 5-iter sandbox campaign with RLP_LIFECYCLE_METRICS=1`);
+  console.log(`[harness] running 5-iter sandbox campaign with`);
 
   const { jsonlPath } = await run5IterCampaign();
 

@@ -87,37 +87,11 @@ async function readJsonl(filePath) {
 // v0.22.0 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so "flag unset" no
 // longer produces the disabled/null shape — an explicit "0" opt-out does.
 // ────────────────────────────────────────────────────────────────────────────
-test('B4 AC4.3/4.7: lifecycle_metrics is null when explicitly disabled (RLP_LIFECYCLE_METRICS=0)', async (t) => {
-  const campaign = await setupCampaign(t);
-  const tmux = createTmuxFakes();
-  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
-
-  // Inject an explicitly-disabled collector deterministically (the test
-  // process's ambient env now defaults to ENABLED, so "env: {}" would no
-  // longer simulate the disabled path).
-  const disabledCollector = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '0' } });
-
-  await run(campaign.slug, {
-    rootDir: campaign.rootDir,
-    mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
-    pollForSignal: createPoller([
-      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
-      { verdict: 'pass', recommended_state_transition: 'continue' },
-      { verdict: 'pass', recommended_state_transition: 'complete' },
-    ]),
-    runIntegrationCheck: async () => ({ exitCode: 0 }),
-    lifecycleMetrics: disabledCollector,
-    ...tmux.deps,
-  });
-
-  const jsonlPath = deskPath(campaign.rootDir, 'logs', campaign.slug, 'campaign.jsonl');
-  const records = await readJsonl(jsonlPath);
-  assert.ok(records.length >= 1, 'campaign.jsonl has at least one iter record');
-  for (const r of records) {
-    assert.ok('lifecycle_metrics' in r, 'each record carries lifecycle_metrics field');
-    assert.equal(r.lifecycle_metrics, null, 'lifecycle_metrics is null when collector disabled');
-  }
+test('B4 (v0.22.4): the flag is removed — a collector built with RLP_LIFECYCLE_METRICS=0 still emits', () => {
+  const collector = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '0' } });
+  collector.record('pane_eof_to_cleanup_ms', 7, { iter: 1 });
+  const flushed = collector.flush();
+  assert.ok(flushed && flushed.pane_eof_to_cleanup_ms, 'env opt-out no longer exists; metrics always flush');
 });
 
 // ────────────────────────────────────────────────────────────────────────────
