@@ -195,7 +195,7 @@ async function run5IterCampaign() {
   // shadows process.env when present, so we either pass env={...flag} or
   // inject the collector directly. Direct injection is cleaner.
   const { LifecycleMetricsCollector } = await import('../../../src/node/util/lifecycle-metrics.mjs');
-  const collector = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
+  const collector = new LifecycleMetricsCollector();
 
   try {
     const { run } = await import('../../../src/node/runner/campaign-main-loop.mjs');
@@ -204,7 +204,6 @@ async function run5IterCampaign() {
       mode: 'tmux',
       sessionName,
       workerModel: 'gpt-5.5:medium',
-      env: { RLP_LIFECYCLE_METRICS: '1' },
       maxIterations: 6,
       pollForSignal: createPoller(queue),
       runIntegrationCheck: async () => ({ exitCode: 0 }),

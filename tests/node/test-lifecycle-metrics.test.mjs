@@ -10,10 +10,9 @@ import {
 // Plan: docs/plans/v0.15-phase-b-plan-v3.md §B4.
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §3 Table 2.
 //
-// Two contracts under test:
-//   AC4.2 (zero-overhead when explicitly disabled): record() / markLockStart() /
-//         markUnlock() / flush() must short-circuit. flush() returns null.
-//         v0.22.0 full-wire: the flag defaults ON — "0" is the sole opt-out.
+// Two contracts under test (v0.22.4: the opt-out flag is REMOVED):
+//   AC4.2 (always-on): the collector records/flushes regardless of any env,
+//         and the legacy RLP_LIFECYCLE_METRICS value is ignored entirely.
 //   AC4.1 (per-event emission): record() accumulates; flush() emits a grouped
 //         object; sentinel lock/unlock pair produces sentinel_lock_to_unlock_ms.
 

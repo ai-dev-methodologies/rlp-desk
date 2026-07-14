@@ -36,8 +36,6 @@
   <dict>
     <key>RLP_REAL_LLM_GATE</key>
     <string>1</string>
-    <key>RLP_LIFECYCLE_METRICS</key>
-    <string>1</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:__EXTRA_PATH__</string>
   </dict>

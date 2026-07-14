@@ -11,11 +11,10 @@ import { LifecycleMetricsCollector } from '../../src/node/util/lifecycle-metrics
 // Plan: docs/plans/v0.15-phase-b-plan-v3.md §B4 (AC4.3, AC4.6, AC4.7).
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §3 Table 2.
 //
-// Asserts the campaign.jsonl per-iter record shape under both flag states
-// (v0.22.0 full-wire: RLP_LIFECYCLE_METRICS now defaults ON; "0" is the sole
-// opt-out — see src/node/util/lifecycle-metrics.mjs):
-//   - Flag "0" (explicit opt-out): lifecycle_metrics field is null. Existing
-//                analytics consumers see no breakage.
+// Asserts the campaign.jsonl per-iter record shape (v0.22.4: the
+// RLP_LIFECYCLE_METRICS opt-out is REMOVED — see
+// src/node/util/lifecycle-metrics.mjs):
+//   - lifecycle_metrics is always an object; the legacy "0" env is ignored.
 //   - Flag ON (unset, or any value other than "0"): lifecycle_metrics is an
 //                object grouped by metric name; each value is an array of
 //                per-record entries with value_ms (number, non-negative
@@ -83,9 +82,8 @@ async function readJsonl(filePath) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// AC4.3 / AC4.7 — Flag explicitly disabled: lifecycle_metrics is null (no breakage)
-// v0.22.0 full-wire: RLP_LIFECYCLE_METRICS now defaults ON, so "flag unset" no
-// longer produces the disabled/null shape — an explicit "0" opt-out does.
+// AC4.3 / AC4.7 (v0.22.4) — the flag is gone: the legacy "0" opt-out is
+// ignored and metrics always emit.
 // ────────────────────────────────────────────────────────────────────────────
 test('B4 (v0.22.4): the flag is removed — a collector built with RLP_LIFECYCLE_METRICS=0 still emits', () => {
   const collector = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '0' } });

@@ -31,10 +31,9 @@
 //                     (the collector accumulates, the iter-end flush emits)
 
 export class LifecycleMetricsCollector {
-  // env is accepted (and ignored) so legacy callers passing the removed
-  // opt-out env keep constructing without error.
-  constructor({ env = process.env, debugLog = null } = {}) {
-    void env;
+  // Legacy callers may still pass an env key in the options object; the
+  // destructuring simply never reads it.
+  constructor({ debugLog = null } = {}) {
     this._debugLog = debugLog;
     this._records = [];
     this._sentinelLockTimes = new Map();

@@ -460,12 +460,10 @@ _kill_pane_process() {
   # Uses zsh native $EPOCHREALTIME (microsec) — portable to macOS BSD where
   # `date +%N` is not supported.
   local _b4_t0_ms=0
-  if true; then  # v0.22.4: lifecycle-metrics flag removed — always on
-    zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
-    if [[ -n "${EPOCHREALTIME:-}" ]]; then
-      local _b4_t0_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' — comma-decimal LC_NUMERIC renders EPOCHREALTIME with ','
-      _b4_t0_ms=${_b4_t0_str:0:13}
-    fi
+  zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    local _b4_t0_str="${${EPOCHREALTIME//./}//,/}"   # strip BOTH '.' and ',' — comma-decimal LC_NUMERIC renders EPOCHREALTIME with ','
+    _b4_t0_ms=${_b4_t0_str:0:13}
   fi
   tmux send-keys -t "$pane_id" C-c 2>/dev/null
   sleep 0.5
@@ -1448,15 +1446,13 @@ write_campaign_jsonl() {
   # {value_ms, ts} (nothing to drop beyond .metric), so this is not a regression
   # for existing 3-arg callers.
   local lifecycle_json="null"
-  if true; then  # v0.22.4: lifecycle-metrics flag removed — always on
-    if (( ${#LIFECYCLE_RECORDS[@]} > 0 )); then
-      lifecycle_json=$(printf '%s\n' "${LIFECYCLE_RECORDS[@]}" \
-        | jq -s 'group_by(.metric) | map({key: .[0].metric, value: map(del(.metric))}) | from_entries' 2>/dev/null) \
-        || lifecycle_json="null"
-      [[ -n "$lifecycle_json" ]] || lifecycle_json="null"
-    else
-      lifecycle_json="{}"
-    fi
+  if (( ${#LIFECYCLE_RECORDS[@]} > 0 )); then
+    lifecycle_json=$(printf '%s\n' "${LIFECYCLE_RECORDS[@]}" \
+      | jq -s 'group_by(.metric) | map({key: .[0].metric, value: map(del(.metric))}) | from_entries' 2>/dev/null) \
+      || lifecycle_json="null"
+    [[ -n "$lifecycle_json" ]] || lifecycle_json="null"
+  else
+    lifecycle_json="{}"
   fi
 
   # codex P2 sweep F6: build the complete line in a variable FIRST (a single
