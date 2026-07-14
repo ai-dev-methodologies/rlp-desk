@@ -10,6 +10,49 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Later: remove `RLP_LIFECYCLE_METRICS` flag entirely (per plan v3 ADR follow-ups).
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.3] — 2026-07-14
+
+Resume-safe verification + plan preservation. Fixes the 2x-reproduced
+deadlock where restarting a campaign over an already-verified deliverable
+could never re-reach COMPLETE, and stops `init --mode fresh` from
+destroying operator-authored plans. Validated by live dogfood: the exact
+previously-deadlocking resume scenario now completes in ~4 minutes with
+both claude and codex consensus.
+
+### Added
+- **Confirmation-mode verification**: at verify dispatch the leader derives
+  `verification_mode` from durable state — the verified ledger (now
+  recording the HEAD commit SHA and the PRD content hash on every per-US
+  credit, plus a leader-written ALL completion record on the COMPLETE
+  path) checked against the current repo (SHA resolves, no tracked change
+  since, clean tree). Full coverage + intact anchors → `confirmation`;
+  anything missing or mismatched fails CLOSED to `build`. The mode is
+  injected into both verifier prompts as the sole authoritative channel;
+  in confirmation mode the Worker Process Audit judges on the verifier's
+  OWN fresh reruns instead of demanding RED-before-GREEN evidence that
+  cannot honestly exist for already-verified code.
+- **Resume finalize**: a leader restart whose ledger already proves
+  completion skips the worker round-trip entirely (re-arms D-16) — a
+  resumed worker with nothing to build previously idled into the
+  no-progress guard.
+- `--reset-plans` flag for `init`: explicitly wipes the PRD/test-spec with
+  a versioned backup (`prd-<slug>-v1.md`, ...).
+
+### Fixed
+- `init --mode fresh` preserves operator-AUTHORED plans (exact comparison
+  against the pristine scaffold, per file); only untouched templates are
+  regenerated. The verified ledger and stale per-US splits are now reset
+  with the rest of the runtime state.
+- An ALL/consensus failure no longer blanket-forbids repairing previously
+  verified stories — the fix contract allows changes tied to the verdict's
+  issues (Scope Lock retained).
+- Verified-ledger hardening: append-then-lock (0444 between appends),
+  checked appends with loud failure (safe build-mode degradation on loss),
+  strict newest-line parsing (malformed or JSON+garbage entries fail
+  closed).
+- Worker done-claim schema: verification steps carry a `ts` timestamp
+  (forensic evidence-age record).
+
 ## [0.22.2] — 2026-07-11
 
 Codex 0.144 compatibility + fast-fail on provider quota exhaustion. Both
