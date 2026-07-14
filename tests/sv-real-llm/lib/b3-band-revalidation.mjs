@@ -5,8 +5,8 @@
 // Audit: docs/plans/v0.15-phase-b-lifecycle-audit.md §4.2 (synthetic source).
 //
 // What this does:
-//   1. Run 5 iterations of a sandbox campaign with
-//      and real tmux (us006 AC6.1 boundary pattern). pollForSignal is stubbed
+//   1. Run 5 iterations of a sandbox campaign with real tmux
+//      (us006 AC6.1 boundary pattern). pollForSignal is stubbed
 //      to return mocked verdicts; sendKeys / killPaneProcess / lockSentinel
 //      use the real production helpers so pane_eof_to_cleanup_ms and
 //      pane_reap_latency_ms are measured on a real tmux teardown path.
@@ -191,9 +191,8 @@ async function run5IterCampaign() {
     } catch {}
   };
 
-  // Explicit collector with flag forced on. campaign-main-loop's options.env
-  // shadows process.env when present, so we either pass env={...flag} or
-  // inject the collector directly. Direct injection is cleaner.
+  // Explicit collector injection so the harness owns the instance it later
+  // reads back (telemetry is always on since v0.22.4 — no env involved).
   const { LifecycleMetricsCollector } = await import('../../../src/node/util/lifecycle-metrics.mjs');
   const collector = new LifecycleMetricsCollector();
 
@@ -270,7 +269,7 @@ function reportMetric(name, samples) {
 
 async function main() {
   console.log('━━━ B3 pre-merge band revalidation ━━━');
-  console.log(`[harness] running 5-iter sandbox campaign with`);
+  console.log('[harness] running 5-iter sandbox campaign');
 
   const { jsonlPath } = await run5IterCampaign();
 

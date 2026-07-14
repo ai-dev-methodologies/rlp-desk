@@ -15,8 +15,7 @@ import { LifecycleMetricsCollector } from '../../src/node/util/lifecycle-metrics
 // RLP_LIFECYCLE_METRICS opt-out is REMOVED — see
 // src/node/util/lifecycle-metrics.mjs):
 //   - lifecycle_metrics is always an object; the legacy "0" env is ignored.
-//   - Flag ON (unset, or any value other than "0"): lifecycle_metrics is an
-//                object grouped by metric name; each value is an array of
+//   - Shape: an object grouped by metric name; each value is an array of
 //                per-record entries with value_ms (number, non-negative
 //                integer) + ts.
 

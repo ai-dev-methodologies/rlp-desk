@@ -103,7 +103,7 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Symptom | `campaign.jsonl.lifecycle_metrics` is null (telemetry is always on since v0.22.4, so null indicates this failure mode, not an opt-out) |
 | Root cause | `LifecycleMetricsCollector.flush()` failed or its records were dropped before the analytics writer ran (since v0.22.4 there is no env gate — the collector cannot be disabled) |
 | Detection | `tests/node/test-campaign-jsonl-shape.test.mjs` AC4.3 (flag-set populated case); B3 Stage 1 presence assertion |
-| Recovery | Inject an explicit collector via `options.lifecycleMetrics` in run() options |
+| Recovery | Check debug.log `[LIFECYCLE]` lines and the campaign.jsonl append-failure warnings to locate where records were lost; fix the flush/append failure and re-run — the collector itself cannot be disabled, so no configuration change can repair this |
 | Reference | v0.15.4 PR-B4 + audit fix C2 |
 
 ### F3.2 — Stage 2 false-PASS on absent metric
