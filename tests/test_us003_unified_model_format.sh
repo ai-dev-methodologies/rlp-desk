@@ -131,6 +131,42 @@ if _func_or_fail "AC1-L1-5g: luna:high alias → model=gpt-5.6-luna"; then
     "AC1-L1-5g: luna:high alias → model=gpt-5.6-luna"
 fi
 
+# Full versioned claude ids WITH effort → claude engine (parity with opus:max).
+# Any colon-bearing name that is NOT a claude short alias / claude-* id is codex,
+# so claude-opus-4-8:high / claude-fable-5:max must classify as claude.
+_run_parse "claude-opus-4-8:high" "verifier"
+if _func_or_fail "AC1-L1-5h: claude-opus-4-8:high → engine=claude"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
+    "AC1-L1-5h: claude-opus-4-8:high → engine=claude"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "claude-opus-4-8" \
+    "AC1-L1-5i: claude-opus-4-8:high → model=claude-opus-4-8"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "high" \
+    "AC1-L1-5j: claude-opus-4-8:high → effort=high"
+fi
+
+_run_parse "claude-fable-5:max" "final-verifier"
+if _func_or_fail "AC1-L1-5k: claude-fable-5:max → engine=claude"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
+    "AC1-L1-5k: claude-fable-5:max → engine=claude"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "claude-fable-5" \
+    "AC1-L1-5l: claude-fable-5:max → model=claude-fable-5"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "max" \
+    "AC1-L1-5m: claude-fable-5:max → effort=max"
+fi
+
+# Bracket+colon combo: the 1M context suffix [1m] must survive alongside effort,
+# and the claude-* glob must still classify it as claude (not codex). Guards the
+# zsh case-glob handling of the literal brackets in the input.
+_run_parse "claude-opus-4-8[1m]:high" "verifier"
+if _func_or_fail "AC1-L1-5n: claude-opus-4-8[1m]:high → engine=claude"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
+    "AC1-L1-5n: claude-opus-4-8[1m]:high → engine=claude"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "claude-opus-4-8[1m]" \
+    "AC1-L1-5o: claude-opus-4-8[1m]:high → model=claude-opus-4-8[1m]"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "high" \
+    "AC1-L1-5p: claude-opus-4-8[1m]:high → effort=high"
+fi
+
 _run_parse "gpt-5.3-codex-spark:high" "worker"
 if _func_or_fail "AC1-L1-6: gpt-5.3-codex-spark:high → reasoning=high"; then
   assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "high" \

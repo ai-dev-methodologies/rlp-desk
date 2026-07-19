@@ -65,9 +65,12 @@ run_test "AC1-boundary: step 7d or Archive label in rlp-desk.md" "$(( count >= 1
 count=$(count_grep 'baseline_commit' "$CMD")
 run_test "AC2-happy: baseline_commit in rlp-desk.md" "$(( count >= 1 ))" "1"
 
-# AC2-negative: appears in Preparation or early section (before Leader Loop / report sections)
+# AC2-negative: appears in Preparation or early section (before Leader Loop / report sections).
+# Anchor on the "### Leader Loop" heading instead of a hardcoded line number so
+# unrelated doc growth above Preparation cannot break this assertion.
 first_line=$(grep -n 'baseline_commit' "$CMD" 2>/dev/null | head -1 | cut -d: -f1)
-run_test "AC2-negative: baseline_commit in early section of rlp-desk.md (line < 405, within Preparation)" "$(( ${first_line:-999} < 405 ))" "1"
+leader_line=$(grep -n '^### Leader Loop' "$CMD" 2>/dev/null | head -1 | cut -d: -f1)
+run_test "AC2-negative: baseline_commit first appears before the Leader Loop section (within Preparation)" "$(( ${first_line:-999999} < ${leader_line:-0} ))" "1"
 
 # AC2-boundary: git rev-parse used to capture baseline commit
 count=$(count_grep 'git rev-parse\|rev-parse HEAD' "$CMD")

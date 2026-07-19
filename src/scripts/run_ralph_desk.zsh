@@ -257,8 +257,12 @@ _auto_detect_engine() {
     local model_part="${model_val%%:*}"
     local level_part="${model_val##*:}"
     case "$model_part" in
-      haiku|sonnet|opus)
-        # Claude model with effort — keep engine as claude, store effort
+      haiku|sonnet|opus|claude|claude-*)
+        # Claude model with effort — keep engine as claude, store effort.
+        # Matches short aliases (haiku/sonnet/opus), bare `claude`, AND full
+        # versioned ids (claude-opus-4-8, claude-fable-5, claude-opus-4-8[1m]).
+        # The `claude-*` glob also covers the bracket+effort combo
+        # (claude-opus-4-8[1m]:high → model=claude-opus-4-8[1m], effort=high).
         eval "$engine_var=claude"
         eval "$model_var=$model_part"
         [[ -n "$effort_var" ]] && eval "$effort_var=$level_part"
@@ -270,6 +274,9 @@ _auto_detect_engine() {
         [[ "$model_part" == "sol" ]]   && model_part="gpt-5.6-sol"
         [[ "$model_part" == "terra" ]] && model_part="gpt-5.6-terra"
         [[ "$model_part" == "luna" ]]  && model_part="gpt-5.6-luna"
+        # Warn (stderr) when the name — after alias expansion above — is not even
+        # a gpt-* slug: a likely typo being silently routed to codex.
+        [[ "$model_part" != gpt-* ]] && print -u2 "[rlp-desk] note: model '$model_part' is not a claude id or known codex model — routing to codex engine. Verify this is intended."
         eval "$engine_var=codex"
         eval "$model_var=$model_part"
         [[ -n "$codex_model_var" ]] && eval "$codex_model_var=$model_part"

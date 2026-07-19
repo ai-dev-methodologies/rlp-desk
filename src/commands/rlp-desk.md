@@ -71,19 +71,19 @@ Ask about these items one by one (or in small groups):
 
    | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
    |------------|--------|-----------------|----------------|-----------|
-   | LOW | haiku | sonnet | opus | off |
-   | MEDIUM | sonnet | opus | opus | off |
-   | HIGH | opus | opus | opus | off |
-   | CRITICAL | opus | opus | opus + human | off |
+   | LOW | haiku | claude-opus-4-8:high | claude-fable-5:max | off |
+   | MEDIUM | sonnet | claude-opus-4-8:high | claude-fable-5:max | off |
+   | HIGH | opus | claude-opus-4-8:high | claude-fable-5:max | off |
+   | CRITICAL | opus | claude-opus-4-8:high | claude-fable-5:max + human | off |
 
    **Model mapping — Cross-engine** (codex installed, recommended):
 
    | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
    |------------|--------|-----------------|----------------|-----------|
-   | LOW | gpt-5.6-luna:medium | sonnet | opus | final-only |
-   | MEDIUM | gpt-5.6-terra:medium | opus | opus | final-only |
-   | HIGH | gpt-5.6-sol:medium | opus | opus | all |
-   | CRITICAL | gpt-5.6-sol:high | opus | opus + human | all |
+   | LOW | gpt-5.6-luna:medium | claude-opus-4-8:high | claude-fable-5:max | final-only |
+   | MEDIUM | gpt-5.6-terra:medium | claude-opus-4-8:high | claude-fable-5:max | final-only |
+   | HIGH | gpt-5.6-sol:medium | claude-opus-4-8:high | claude-fable-5:max | all |
+   | CRITICAL | gpt-5.6-sol:high | claude-opus-4-8:high | claude-fable-5:max + human | all |
 
    **Worker model selection** (cross-engine, codex 0.144 / GPT-5.6 generation — see model-upgrade-table.md for the full catalog):
    - **gpt-5.6-terra:medium** — default recommendation (balanced everyday model; progressive upgrade climbs high → xhigh, then jumps model to gpt-5.6-sol:high on repeated failure)
@@ -92,6 +92,11 @@ Ask about these items one by one (or in small groups):
    - **gpt-5.5 / gpt-5.4 / gpt-5.4-mini** — previous-generation models, still fully supported (low..xhigh ladders) if the account lacks 5.6 access
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
    - Aliases: `sol`/`terra`/`luna`/`spark` expand to their full slugs; `max`/`ultra` reasoning efforts exist only on the 5.6 family (luna: max only) — parseable as starting points but NOT used by the upgrade ladder (effort ceiling is xhigh; past xhigh the ladder jumps luna → terra → sol, entering at :high)
+
+   **Verifier model selection** (fully-explicit, version-pinned):
+   - **per-US Verifier `claude-opus-4-8:high`** — version-pinned full id (not the floating `opus` alias) so the verify tier does not silently drift when the alias remaps; explicit `:high` effort. The claude engine accepts effort on both short aliases (`opus:max`) AND full ids (`claude-opus-4-8:high`).
+   - **Final Verifier `claude-fable-5:max`** — the final gate runs the top model at top effort (`:max`). Version-pinned + explicit effort for the same drift reason.
+   - When `--consensus` is on, the **claude leg** of consensus reuses the verifier model+effort for per-US and the final-verifier model+effort for the final pass — so with explicit verifier efforts the consensus claude legs are also fully explicit (no implicit default). `--consensus-model` / `--final-consensus-model` configure only the **codex leg**.
 
    **Context window behavior (claude models — v0.14.6+)**:
    - All claude models default to **200K**. `sonnet` and `opus` aliases both run at the standard window.
@@ -180,8 +185,8 @@ Tell the user:
    ```
    Available run commands (copy the one you want):
 
-   # ★ Recommended: cross-engine + final-consensus (full context + blind-spot coverage):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.6-terra:medium --consensus final-only --debug
+   # ★ Recommended: fully-explicit cross-engine config (every role pinned model:effort, no implicit defaults):
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.6-terra:medium --verifier-model claude-opus-4-8:high --final-verifier-model claude-fable-5:max --consensus all --consensus-model gpt-5.6-sol:xhigh --final-consensus-model gpt-5.6-sol:xhigh --verify-mode per-us --debug
 
    # Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):
    /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
@@ -194,13 +199,13 @@ Tell the user:
 
    # Full options reference:
    #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
-   #   --worker-model MODEL                   haiku|sonnet|opus or gpt-5.6-sol:high|terra:medium|spark:high (default: haiku)
+   #   --worker-model MODEL                   claude (haiku|sonnet|opus|claude-opus-4-8:high, effort optional) or codex (gpt-5.6-sol:high|terra:medium|spark:high) (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
-   #   --verifier-model MODEL                 per-US verifier (default: sonnet)
-   #   --final-verifier-model MODEL           final ALL verifier (default: opus)
-   #   --consensus off|all|final-only         cross-engine consensus (default: off)
-   #   --consensus-model MODEL                per-US cross-verifier (default: gpt-5.6-terra:medium)
-   #   --final-consensus-model MODEL          final cross-verifier (default: gpt-5.6-sol:high)
+   #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended claude-opus-4-8:high — version-pinned + explicit effort)
+   #   --final-verifier-model MODEL           final ALL verifier (default: opus; recommended claude-fable-5:max — top model + top effort)
+   #   --consensus off|all|final-only         cross-engine consensus; claude leg reuses verifier/final-verifier model+effort (default: off)
+   #   --consensus-model MODEL                per-US cross-verifier — codex leg only (default: gpt-5.6-terra:medium)
+   #   --final-consensus-model MODEL          final cross-verifier — codex leg only (default: gpt-5.6-sol:high)
    #   --verify-mode per-us|batch             (default: per-us)
    #   --cb-threshold N                       (default: 6)
    #   --max-iter N                           (default: 100)
@@ -229,10 +234,10 @@ Tell the user:
 
    # Full options reference:
    #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
-   #   --worker-model MODEL                   haiku|sonnet|opus (default: haiku)
+   #   --worker-model MODEL                   haiku|sonnet|opus, or full claude id with effort (claude-opus-4-8:high) (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
-   #   --verifier-model MODEL                 per-US verifier (default: sonnet)
-   #   --final-verifier-model MODEL           final ALL verifier (default: opus)
+   #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended claude-opus-4-8:high — version-pinned + explicit effort)
+   #   --final-verifier-model MODEL           final ALL verifier (default: opus; recommended claude-fable-5:max — top model + top effort)
    #   --verify-mode per-us|batch             (default: per-us)
    #   --cb-threshold N                       (default: 6)
    #   --max-iter N                           (default: 100)
@@ -257,16 +262,16 @@ Tell the user:
 
 Options (parse from `$ARGUMENTS`):
 - `--mode native|tmux` (default: `native`) — execution mode. `native` = slash command is the leader, calls `Agent(...)` (claude) and `Bash("codex exec ...")` (codex). `tmux` = slash command spawns the zsh runner via `node run.mjs --mode tmux`. Legacy `--mode agent` typed against the slash command emits a deprecation notice and redirects to `--mode native` (NOT to be confused with `node run.mjs --mode agent`, which is the deprecated Node-leader alpha — see "Direct Node CLI invocation" below).
-- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.6-sol:xhigh`, `gpt-5.5:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
+- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` (no colon) = claude engine; `model:effort` = claude engine when `model` is a claude name (short alias `haiku`/`sonnet`/`opus` OR full versioned id `claude-*`), otherwise codex engine (`model:reasoning`). Examples: `haiku`, `sonnet`, `opus`, `opus:max`, `claude-opus-4-8:high`, `claude-fable-5:max`, `claude-opus-4-8[1m]:high` (1M context + effort), `spark:high`, `gpt-5.6-sol:xhigh`, `gpt-5.5:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/effort-or-reasoning; a colon-bearing name is codex ONLY when the model part is neither a claude short alias nor a `claude-*`/`claude` name.
 - `--lock-worker-model` — disable automatic model upgrade on failure. Worker stays on the specified model regardless of consecutive failures.
-- `--verifier-model MODEL` (default: `sonnet`) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier.
-- `--final-verifier-model MODEL` (default: `opus`) — final ALL verification model. Independent from per-US verifier. Used only for the final full-AC verify pass.
+- `--verifier-model MODEL` (default: `sonnet`; recommended `claude-opus-4-8:high`) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier. Claude engine accepts `model:effort` on both short aliases (`opus:max`) AND full `claude-*` ids (`claude-opus-4-8:high`); version-pinning prevents alias drift.
+- `--final-verifier-model MODEL` (default: `opus`; recommended `claude-fable-5:max`) — final ALL verification model. Independent from per-US verifier. Used only for the final full-AC verify pass. The final gate runs the top model at top effort (`claude-fable-5:max`).
 - `--consensus off|all|final-only` (default: `off`) — cross-engine consensus verification mode.
   - `off`: single-engine verification only
   - `all`: cross-engine consensus on every verify (per-US and final)
   - `final-only`: cross-engine consensus only on the final ALL verify
-- `--consensus-model MODEL` (default: `gpt-5.6-terra:medium`) — per-US cross-verifier model. Lighter weight for cost efficiency.
-- `--final-consensus-model MODEL` (default: `gpt-5.6-sol:high`) — final cross-verifier model. Stricter. Note: spark is not allowed here (100k output limit).
+- `--consensus-model MODEL` (default: `gpt-5.6-terra:medium`) — per-US cross-verifier model. Configures the **codex leg only**; the claude leg of per-US consensus reuses `--verifier-model` (model + effort). Lighter weight for cost efficiency.
+- `--final-consensus-model MODEL` (default: `gpt-5.6-sol:high`) — final cross-verifier model. Configures the **codex leg only**; the claude leg of final consensus reuses `--final-verifier-model` (model + effort). Stricter. Note: spark is not allowed here (100k output limit).
 - `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
   - `per-us`: verify after each US, then final full verify of all AC
   - `batch`: verify only after all US done (legacy behavior)
@@ -392,7 +397,7 @@ External wrappers calling `--mode agent` must migrate to `--mode tmux` by 0.17.0
 
 ### Preparation
 1. Validate scaffold: `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
-2. **Codex CLI pre-validation**: If `--consensus` is not `off` OR `--worker-model` uses codex format (contains `:`) OR `--verifier-model` / `--final-verifier-model` / `--consensus-model` / `--final-consensus-model` uses codex format, check that `codex` CLI exists in PATH. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
+2. **Codex CLI pre-validation**: If `--consensus` is not `off` OR any of `--worker-model` / `--verifier-model` / `--final-verifier-model` / `--consensus-model` / `--final-consensus-model` resolves to the **codex engine**, check that `codex` CLI exists in PATH. Resolve engine via `parse_model_flag()` (the DETECTED engine), NOT by "contains a colon" — a colon-bearing claude id like `claude-opus-4-8:high` or `opus:max` is still the claude engine and must NOT trip the codex check. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
 3. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
 4. Clean previous `done-claim.json`, `verify-verdict.json`.
 5. **Always**: write baseline log entry to `.rlp-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
@@ -464,7 +469,7 @@ rm -f .rlp-desk/memos/<slug>-verify-verdict.json
 **⑤ Execute Worker**
 - If `--debug`: debug_log `[FLOW] iter=N phase=worker engine=<engine> model=<model> dispatched=true`
 
-Determine engine from `--worker-model` format: plain name (e.g., `haiku`) = claude engine, `model:reasoning` format (e.g., `spark:high`) = codex engine. Use `parse_model_flag()` to split.
+Determine engine from `--worker-model` format: plain name (e.g., `haiku`) = claude engine; `model:effort` where `model` is a claude name — short alias `haiku`/`sonnet`/`opus` OR full versioned id `claude-*` (e.g., `opus:max`, `claude-opus-4-8:high`) — = claude engine; any other `model:reasoning` (e.g., `spark:high`) = codex engine. Use `parse_model_flag()` to split.
 
 If claude engine (default):
 ```
@@ -524,7 +529,7 @@ Determine which verifier model to use based on scope:
 - If `us_id` is a specific story (per-US verify) → use `--verifier-model` (default: sonnet)
 - If `us_id` is "ALL" (final verify) → use `--final-verifier-model` (default: opus)
 
-Determine engine from the selected verifier model format (same as Worker): plain name = claude, `model:reasoning` = codex.
+Determine engine from the selected verifier model format (same as Worker): plain name = claude; `model:effort` with a claude model name (short alias OR full `claude-*` id, e.g. `claude-opus-4-8:high`) = claude; any other `model:reasoning` = codex.
 
 If claude engine (default):
 ```
@@ -803,13 +808,13 @@ Example:
 
 Run options:
   --mode native|tmux                   Execution mode (default: native)
-  --worker-model MODEL                 Worker model: haiku|sonnet|opus or gpt-5.6-sol:high|terra:medium|spark:high (default: haiku)
+  --worker-model MODEL                 Worker model: haiku|sonnet|opus|claude-opus-4-8:high (claude, effort optional) or gpt-5.6-sol:high|terra:medium|spark:high (codex) (default: haiku)
   --lock-worker-model                  Disable auto model upgrade on failure
-  --verifier-model MODEL               per-US verifier (default: sonnet)
-  --final-verifier-model MODEL         Final ALL verifier (default: opus)
-  --consensus off|all|final-only       Cross-engine consensus (default: off)
-  --consensus-model MODEL              per-US cross-verifier (default: gpt-5.6-terra:medium)
-  --final-consensus-model MODEL        Final cross-verifier (default: gpt-5.6-sol:high)
+  --verifier-model MODEL               per-US verifier (default: sonnet; recommended claude-opus-4-8:high)
+  --final-verifier-model MODEL         Final ALL verifier (default: opus; recommended claude-fable-5:max)
+  --consensus off|all|final-only       Cross-engine consensus; claude leg reuses verifier/final-verifier (default: off)
+  --consensus-model MODEL              per-US cross-verifier — codex leg only (default: gpt-5.6-terra:medium)
+  --final-consensus-model MODEL        Final cross-verifier — codex leg only (default: gpt-5.6-sol:high)
   --verify-mode per-us|batch           Verification strategy (default: per-us)
   --cb-threshold N                     Consecutive failures before BLOCKED (default: 6)
   --max-iter N                         Max iterations (default: 100)

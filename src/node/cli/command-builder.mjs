@@ -5,6 +5,21 @@ const CLAUDE_BIN = 'claude';
 const CODEX_BIN = 'codex';
 const CLAUDE_MODELS = new Set(['haiku', 'sonnet', 'opus']);
 
+// Single source of truth for "is this bare model name a claude model?":
+// the short aliases (haiku/sonnet/opus), the bare `claude`, OR any full
+// versioned claude id (claude-opus-4-8, claude-fable-5, claude-opus-4-8[1m],
+// ...). The startsWith('claude-') branch also covers the bracket+effort combo
+// (claude-opus-4-8[1m] is the model part of claude-opus-4-8[1m]:high). Used by
+// both isClaudeEngine (which splits the flag first) and parseModelFlag so the
+// two never drift.
+function isClaudeModelName(model) {
+  if (typeof model !== 'string' || model.length === 0) {
+    return false;
+  }
+
+  return model === 'claude' || CLAUDE_MODELS.has(model) || model.startsWith('claude-');
+}
+
 // v0.13.0: surface engine classification for tmux+claude warning + observability.
 export function isClaudeEngine(modelFlag) {
   if (typeof modelFlag !== 'string' || modelFlag.length === 0) {
@@ -12,15 +27,7 @@ export function isClaudeEngine(modelFlag) {
   }
 
   const head = modelFlag.split(':', 1)[0];
-  if (!head) {
-    return false;
-  }
-
-  if (CLAUDE_MODELS.has(head)) {
-    return true;
-  }
-
-  return head.startsWith('claude-');
+  return isClaudeModelName(head);
 }
 
 function assertTuiMode(mode, builderName) {
@@ -115,7 +122,7 @@ export function parseModelFlag(value, role = 'worker') {
     throw new Error(`--${role}-model model is required`);
   }
 
-  if (CLAUDE_MODELS.has(model)) {
+  if (isClaudeModelName(model)) {
     return {
       engine: 'claude',
       model,

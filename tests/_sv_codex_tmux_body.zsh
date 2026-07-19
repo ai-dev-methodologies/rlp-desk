@@ -36,6 +36,23 @@ _auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER
 [[ "$VERIFIER_ENGINE" == claude && "$VERIFIER_EFFORT" == max ]] \
   && svok "S1.5 verifier opus:max → claude/max (mixed-engine independence)" || svno "S1.5 engine=$VERIFIER_ENGINE effort=$VERIFIER_EFFORT"
 
+# full versioned claude ids WITH effort → claude engine (not codex)
+WORKER_MODEL="claude-opus-4-8:high"; WORKER_ENGINE="claude"; WORKER_EFFORT=""; WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""
+_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT
+[[ "$WORKER_ENGINE" == claude && "$WORKER_MODEL" == claude-opus-4-8 && "$WORKER_EFFORT" == high ]] \
+  && svok "S1.6 claude-opus-4-8:high → claude/claude-opus-4-8/high" || svno "S1.6 engine=$WORKER_ENGINE model=$WORKER_MODEL effort=$WORKER_EFFORT"
+
+VERIFIER_MODEL="claude-fable-5:max"; VERIFIER_ENGINE="claude"; VERIFIER_EFFORT=""; VERIFIER_CODEX_MODEL=""; VERIFIER_CODEX_REASONING=""
+_auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING VERIFIER_EFFORT
+[[ "$VERIFIER_ENGINE" == claude && "$VERIFIER_MODEL" == claude-fable-5 && "$VERIFIER_EFFORT" == max ]] \
+  && svok "S1.7 claude-fable-5:max → claude/claude-fable-5/max" || svno "S1.7 engine=$VERIFIER_ENGINE model=$VERIFIER_MODEL effort=$VERIFIER_EFFORT"
+
+# bracket+colon combo: 1M suffix survives alongside effort, still claude engine
+WORKER_MODEL="claude-opus-4-8[1m]:high"; WORKER_ENGINE="claude"; WORKER_EFFORT=""; WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""
+_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT
+[[ "$WORKER_ENGINE" == claude && "$WORKER_MODEL" == "claude-opus-4-8[1m]" && "$WORKER_EFFORT" == high ]] \
+  && svok "S1.8 claude-opus-4-8[1m]:high → claude/claude-opus-4-8[1m]/high" || svno "S1.8 engine=$WORKER_ENGINE model=$WORKER_MODEL effort=$WORKER_EFFORT"
+
 # ---------------------------------------------------------------------------
 sect "S2  parse_model_flag — CLI --worker-model/--verifier-model parsing"
 [[ "$(parse_model_flag opus:high worker)" == "claude opus high" ]] && svok "S2.1 opus:high → 'claude opus high'" || svno "S2.1 got '$(parse_model_flag opus:high worker)'"
@@ -43,6 +60,9 @@ sect "S2  parse_model_flag — CLI --worker-model/--verifier-model parsing"
 [[ "$(parse_model_flag spark:low verifier)" == "codex gpt-5.3-codex-spark low" ]] && svok "S2.3 spark:low → 'codex gpt-5.3-codex-spark low'" || svno "S2.3 got '$(parse_model_flag spark:low verifier)'"
 [[ "$(parse_model_flag sonnet worker)" == "claude sonnet" ]] && svok "S2.4 sonnet → 'claude sonnet'" || svno "S2.4 got '$(parse_model_flag sonnet worker)'"
 parse_model_flag "a:b:c" worker >/dev/null 2>&1; [[ $? -ne 0 ]] && svok "S2.5 'a:b:c' rejected (2 colons)" || svno "S2.5 invalid not rejected"
+[[ "$(parse_model_flag claude-opus-4-8:high verifier)" == "claude claude-opus-4-8 high" ]] && svok "S2.6 claude-opus-4-8:high → 'claude claude-opus-4-8 high'" || svno "S2.6 got '$(parse_model_flag claude-opus-4-8:high verifier)'"
+[[ "$(parse_model_flag claude-fable-5:max final-verifier)" == "claude claude-fable-5 max" ]] && svok "S2.7 claude-fable-5:max → 'claude claude-fable-5 max'" || svno "S2.7 got '$(parse_model_flag claude-fable-5:max final-verifier)'"
+[[ "$(parse_model_flag 'claude-opus-4-8[1m]:high' worker)" == "claude claude-opus-4-8[1m] high" ]] && svok "S2.8 claude-opus-4-8[1m]:high → 'claude claude-opus-4-8[1m] high'" || svno "S2.8 got '$(parse_model_flag 'claude-opus-4-8[1m]:high' worker)'"
 
 # ---------------------------------------------------------------------------
 sect "S3  check_dead_pane — engine-aware liveness (codex bash=alive, claude bash=dead)"

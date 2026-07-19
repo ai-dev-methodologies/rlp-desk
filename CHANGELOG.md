@@ -9,6 +9,30 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.6] — 2026-07-20
+
+### Fixed
+- **Versioned Claude model ids with reasoning effort no longer misroute to the
+  codex engine.** `--verifier-model claude-opus-4-8:high`,
+  `--final-verifier-model claude-fable-5:max`, and bracket forms like
+  `claude-opus-4-8[1m]:high` now correctly classify as engine=claude in all
+  three parse sites (zsh `parse_model_flag`, zsh `_auto_detect_engine` — the
+  live `--mode tmux` path — and Node `parseModelFlag`). Previously only the
+  short aliases (haiku/sonnet/opus) were recognized in the `model:effort`
+  form, so any full `claude-*` id with a colon silently fell through to the
+  codex engine (observed live as `engines.verifier: "codex"` in
+  `session-config.json`, aborting per-US verification).
+
+### Changed
+- Unknown colon-bearing model names still route to codex but now emit a
+  stderr warning (known codex slugs/aliases stay silent).
+- Recommended run configuration is now fully explicit per role
+  (model:effort for every role, no implicit defaults): per-US verifier
+  `claude-opus-4-8:high`, final verifier `claude-fable-5:max`, cross-checks
+  `gpt-5.6-sol:xhigh`. `--consensus-model`/`--final-consensus-model` remain
+  codex-only; the claude leg of consensus follows the (now explicit)
+  verifier / final-verifier model+effort.
+
 ## [0.22.5] — 2026-07-20
 
 ### Changed

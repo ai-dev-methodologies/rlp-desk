@@ -110,7 +110,11 @@ parse_model_flag() {
     local level="${value##*:}"
     # Detect engine by model name
     case "$model" in
-      haiku|sonnet|opus)
+      haiku|sonnet|opus|claude|claude-*)
+        # Short aliases (haiku/sonnet/opus), bare `claude`, AND full versioned
+        # claude ids (claude-opus-4-8, claude-fable-5, claude-opus-4-8[1m], ...)
+        # route to the claude engine. The `claude-*` glob also covers the
+        # bracket+effort combo like claude-opus-4-8[1m]:high.
         echo "claude $model $level"
         ;;
       spark)
@@ -128,6 +132,11 @@ parse_model_flag() {
         echo "codex gpt-5.6-luna $level"
         ;;
       *)
+        # Catch-all: any colon-bearing name that is not a claude name or a known
+        # codex alias is passed to codex verbatim. Warn (stderr, so the stdout
+        # result stays parseable) when it is not even a gpt-* slug — a likely
+        # typo being silently routed to codex.
+        [[ "$model" != gpt-* ]] && print -u2 "[rlp-desk] note: model '$model' is not a claude id or known codex model — routing to codex engine. Verify this is intended."
         echo "codex $model $level"
         ;;
     esac

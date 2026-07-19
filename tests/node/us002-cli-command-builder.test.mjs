@@ -116,6 +116,50 @@ test('parseModelFlag: inherited object keys are not treated as aliases (construc
   });
 });
 
+// Full versioned claude ids WITH effort route to the claude engine (parity with
+// the short opus:max alias above). Effort is a separate axis kept verbatim.
+test('parseModelFlag returns claude engine and effort for claude-opus-4-8:high', async () => {
+  const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
+
+  assert.deepEqual(parseModelFlag('claude-opus-4-8:high', 'verifier'), {
+    engine: 'claude',
+    model: 'claude-opus-4-8',
+    effort: 'high',
+  });
+});
+
+test('parseModelFlag returns claude engine and effort for claude-fable-5:max', async () => {
+  const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
+
+  assert.deepEqual(parseModelFlag('claude-fable-5:max', 'final-verifier'), {
+    engine: 'claude',
+    model: 'claude-fable-5',
+    effort: 'max',
+  });
+});
+
+// Bracket+colon combo: the 1M context suffix must survive alongside effort. The
+// model part keeps the [1m] verbatim (buildClaudeCmd reads it for the 1M header).
+test('parseModelFlag keeps the [1m] suffix for claude-opus-4-8[1m]:high', async () => {
+  const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
+
+  assert.deepEqual(parseModelFlag('claude-opus-4-8[1m]:high', 'worker'), {
+    engine: 'claude',
+    model: 'claude-opus-4-8[1m]',
+    effort: 'high',
+  });
+});
+
+// Bare `claude` (no version, no colon) stays the claude engine.
+test('parseModelFlag treats bare claude as the claude engine', async () => {
+  const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
+
+  assert.deepEqual(parseModelFlag('claude', 'worker'), {
+    engine: 'claude',
+    model: 'claude',
+  });
+});
+
 // codex 0.144 / GPT-5.6 aliases — mirror of the zsh parse sites (spark precedent).
 test('parseModelFlag maps sol:max to gpt-5.6-sol with max reasoning', async () => {
   const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
