@@ -47,32 +47,54 @@ Source: the codex CLI's own model catalog (embedded catalog of codex-cli
 | gpt-5.3-codex-spark | Ultra-fast coding, 100k context | low, medium, high, xhigh | high |
 
 - `max` and `ultra` are NEW effort tiers introduced with the GPT-5.6 family;
-  `gpt-5.6-luna` supports `max` but not `ultra`.
+  `gpt-5.6-luna` supports `max` but not `ultra`. **The upgrade ladder does NOT
+  use them** (policy 2026-07-20): effort ceiling is `:xhigh`; past `:xhigh` the
+  ladder jumps models (luna → terra → sol, entering at `:high`) instead of
+  raising effort. `:max`/`:ultra` remain valid `--worker-model` starting points
+  for parsing purposes, but they are dead-end keys (no further upgrade).
 - CLI aliases: `sol` → gpt-5.6-sol, `terra` → gpt-5.6-terra, `luna` →
   gpt-5.6-luna (same convention as the existing `spark` alias).
 - `gpt-5.5-pro` and `gpt-5.4-nano` appear in some OpenAI surfaces but are NOT
   in the codex CLI catalog — not usable as rlp-desk worker/verifier models.
 
-## GPT-5.6 — Sol / Terra (full effort ladder: low → … → xhigh → max → ultra)
-
-| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11+ |
-|------------|-----|-----|-----|-----|------|-----|
-| LOW | :low | :medium | :high | :xhigh | :max | BLOCKED |
-| MEDIUM | :medium | :high | :xhigh | :max | :ultra | BLOCKED |
-| HIGH | :high | :xhigh | :max | :ultra | :ultra | BLOCKED |
-| CRITICAL | :xhigh | :max | :ultra | :ultra | :ultra | BLOCKED |
-
-(Prefix each cell with `gpt-5.6-sol` or `gpt-5.6-terra`. Default CB of 6
-reaches column 5-6; raise `--cb-threshold` to exercise the max/ultra tail.)
-
-## GPT-5.6 — Luna (ceiling at max; no ultra tier)
+## GPT-5.6 — Sol (frontier; `sol:xhigh` = final ceiling of the whole ladder)
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9+ |
 |------------|-----|-----|-----|-----|-----|
-| LOW | gpt-5.6-luna:low | gpt-5.6-luna:medium | gpt-5.6-luna:high | gpt-5.6-luna:xhigh | BLOCKED |
-| MEDIUM | gpt-5.6-luna:medium | gpt-5.6-luna:high | gpt-5.6-luna:xhigh | gpt-5.6-luna:max | BLOCKED |
-| HIGH | gpt-5.6-luna:high | gpt-5.6-luna:xhigh | gpt-5.6-luna:max | gpt-5.6-luna:max | BLOCKED |
-| CRITICAL | gpt-5.6-luna:xhigh | gpt-5.6-luna:max | gpt-5.6-luna:max | gpt-5.6-luna:max | BLOCKED |
+| LOW | gpt-5.6-sol:low | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | BLOCKED |
+| MEDIUM | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh | BLOCKED |
+| HIGH | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh | BLOCKED |
+| CRITICAL | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh | BLOCKED |
+
+(`gpt-5.6-sol:xhigh` has no next step — ceiling reached → repeat until CB.
+HIGH starts at `sol:medium` and CRITICAL at `sol:high`, never at the ceiling
+itself, so the ladder retains upgrade headroom.)
+
+## GPT-5.6 — Terra (xhigh then cross-model jump to Sol)
+
+| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11+ |
+|------------|-----|-----|-----|-----|------|-----|
+| LOW | terra:low | terra:medium | terra:high | terra:xhigh | sol:high | BLOCKED |
+| MEDIUM | terra:medium | terra:high | terra:xhigh | sol:high | sol:xhigh | BLOCKED |
+| HIGH | terra:high | terra:xhigh | sol:high | sol:xhigh | sol:xhigh | BLOCKED |
+| CRITICAL | terra:xhigh | sol:high | sol:xhigh | sol:xhigh | sol:xhigh | BLOCKED |
+
+(Cells abbreviate `gpt-5.6-terra` / `gpt-5.6-sol`. After `terra:xhigh` the
+ladder jumps to `gpt-5.6-sol:high` — model step-up enters at `:high`, never a
+lower effort. Default CB of 6 reaches column 5-6.)
+
+## GPT-5.6 — Luna (xhigh then cross-model jump to Terra)
+
+| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11+ |
+|------------|-----|-----|-----|-----|------|-----|
+| LOW | luna:low | luna:medium | luna:high | luna:xhigh | terra:high | BLOCKED |
+| MEDIUM | luna:medium | luna:high | luna:xhigh | terra:high | terra:xhigh | BLOCKED |
+| HIGH | luna:high | luna:xhigh | terra:high | terra:xhigh | sol:high | BLOCKED |
+| CRITICAL | luna:xhigh | terra:high | terra:xhigh | sol:high | sol:xhigh | BLOCKED |
+
+(Cells abbreviate `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol`. After
+`luna:xhigh` the ladder jumps to `gpt-5.6-terra:high`; the full escalation
+chain is luna → terra → sol, ceiling `gpt-5.6-sol:xhigh`.)
 
 ## GPT-5.4 / GPT-5.4-mini (low → medium → high → xhigh)
 

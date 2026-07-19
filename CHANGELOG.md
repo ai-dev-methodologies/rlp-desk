@@ -9,6 +9,22 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.5] — 2026-07-20
+
+### Changed
+- **GPT-5.6 upgrade ladder no longer uses `:max`/`:ultra`** (policy from
+  tire-plletdata campaign operations). Effort ceiling is `:xhigh`; past
+  `:xhigh` the ladder now jumps models instead of raising effort:
+  `luna:xhigh → terra:high`, `terra:xhigh → sol:high`, and
+  `gpt-5.6-sol:xhigh` is the final ceiling of the whole ladder. Cross-model
+  entry is always `:high` (no effort regression). `:max`/`:ultra` remain
+  parseable `--worker-model` starting points but are dead-end ladder keys.
+- Cross-engine complexity mapping recommendations updated: HIGH starts at
+  `gpt-5.6-sol:medium`, CRITICAL at `gpt-5.6-sol:high` (never at the
+  ceiling, preserving upgrade headroom).
+- Claude ladder (haiku→sonnet→opus) and previous-generation GPT ladders
+  (spark / 5.4 / 5.4-mini / 5.5) are unchanged.
+
 ## [0.22.4] — 2026-07-14
 
 ### Removed

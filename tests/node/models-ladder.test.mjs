@@ -162,17 +162,27 @@ test('cross-consumer equivalence: every shipped ladder key normalizes the same w
   }
 });
 
-// codex 0.144 / GPT-5.6 family ladders (max|ultra efforts; luna has no ultra).
-test('shipped ladder: gpt-5.6-sol climbs xhigh -> max -> ultra -> ceiling', async () => {
+// codex 0.144 / GPT-5.6 family ladders (2026-07-20 policy: effort ceiling is
+// xhigh; past xhigh the ladder jumps models luna -> terra -> sol entering at
+// :high; gpt-5.6-sol:xhigh is the final ceiling; max/ultra are dead ends).
+test('shipped ladder: gpt-5.6-sol:xhigh is the final ceiling (no max/ultra climb)', async () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
-  assert.equal(ladder['gpt-5.6-sol:xhigh'], 'gpt-5.6-sol:max');
-  assert.equal(ladder['gpt-5.6-sol:max'], 'gpt-5.6-sol:ultra');
+  assert.equal(ladder['gpt-5.6-sol:high'], 'gpt-5.6-sol:xhigh');
+  assert.equal(ladder['gpt-5.6-sol:xhigh'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.6-sol:max'], CEILING_SENTINEL);
   assert.equal(ladder['gpt-5.6-sol:ultra'], CEILING_SENTINEL);
 });
 
-test('shipped ladder: gpt-5.6-luna ceilings at max (no ultra tier)', async () => {
+test('shipped ladder: gpt-5.6-terra:xhigh jumps model to gpt-5.6-sol:high', async () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
-  assert.equal(ladder['gpt-5.6-luna:xhigh'], 'gpt-5.6-luna:max');
+  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-5.6-sol:high');
+  assert.equal(ladder['gpt-5.6-terra:max'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.6-terra:ultra'], CEILING_SENTINEL);
+});
+
+test('shipped ladder: gpt-5.6-luna:xhigh jumps model to gpt-5.6-terra:high (max is a dead end)', async () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
+  assert.equal(ladder['gpt-5.6-luna:xhigh'], 'gpt-5.6-terra:high');
   assert.equal(ladder['gpt-5.6-luna:max'], CEILING_SENTINEL);
 });
 

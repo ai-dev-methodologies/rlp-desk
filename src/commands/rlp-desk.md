@@ -82,16 +82,16 @@ Ask about these items one by one (or in small groups):
    |------------|--------|-----------------|----------------|-----------|
    | LOW | gpt-5.6-luna:medium | sonnet | opus | final-only |
    | MEDIUM | gpt-5.6-terra:medium | opus | opus | final-only |
-   | HIGH | gpt-5.6-sol:high | opus | opus | all |
-   | CRITICAL | gpt-5.6-sol:xhigh | opus | opus + human | all |
+   | HIGH | gpt-5.6-sol:medium | opus | opus | all |
+   | CRITICAL | gpt-5.6-sol:high | opus | opus + human | all |
 
    **Worker model selection** (cross-engine, codex 0.144 / GPT-5.6 generation — see model-upgrade-table.md for the full catalog):
-   - **gpt-5.6-terra:medium** — default recommendation (balanced everyday model; progressive upgrade climbs high → xhigh → max → ultra on repeated failure)
-   - **gpt-5.6-luna:medium** — LOW-complexity default (fast/affordable; ladder ceilings at max — no ultra tier)
-   - **gpt-5.6-sol** — HIGH/CRITICAL starts (frontier agentic model; reserve :max/:ultra as upgrade-ladder headroom rather than starting there)
+   - **gpt-5.6-terra:medium** — default recommendation (balanced everyday model; progressive upgrade climbs high → xhigh, then jumps model to gpt-5.6-sol:high on repeated failure)
+   - **gpt-5.6-luna:medium** — LOW-complexity default (fast/affordable; ladder ceiling at xhigh, then jumps model to gpt-5.6-terra:high)
+   - **gpt-5.6-sol** — HIGH/CRITICAL starts (frontier agentic model; HIGH starts at `sol:medium`, CRITICAL at `sol:high` — `sol:xhigh` is the final ladder ceiling, so starting below it keeps upgrade headroom)
    - **gpt-5.5 / gpt-5.4 / gpt-5.4-mini** — previous-generation models, still fully supported (low..xhigh ladders) if the account lacks 5.6 access
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
-   - Aliases: `sol`/`terra`/`luna`/`spark` expand to their full slugs; `max`/`ultra` reasoning efforts exist only on the 5.6 family (luna: max only)
+   - Aliases: `sol`/`terra`/`luna`/`spark` expand to their full slugs; `max`/`ultra` reasoning efforts exist only on the 5.6 family (luna: max only) — parseable as starting points but NOT used by the upgrade ladder (effort ceiling is xhigh; past xhigh the ladder jumps luna → terra → sol, entering at :high)
 
    **Context window behavior (claude models — v0.14.6+)**:
    - All claude models default to **200K**. `sonnet` and `opus` aliases both run at the standard window.
@@ -257,7 +257,7 @@ Tell the user:
 
 Options (parse from `$ARGUMENTS`):
 - `--mode native|tmux` (default: `native`) — execution mode. `native` = slash command is the leader, calls `Agent(...)` (claude) and `Bash("codex exec ...")` (codex). `tmux` = slash command spawns the zsh runner via `node run.mjs --mode tmux`. Legacy `--mode agent` typed against the slash command emits a deprecation notice and redirects to `--mode native` (NOT to be confused with `node run.mjs --mode agent`, which is the deprecated Node-leader alpha — see "Direct Node CLI invocation" below).
-- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.6-sol:max`, `gpt-5.5:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
+- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` = claude engine, `model:reasoning` = codex engine. Examples: `haiku`, `sonnet`, `opus`, `spark:high`, `gpt-5.6-sol:xhigh`, `gpt-5.5:high`. Parsed by `parse_model_flag()` which auto-splits engine/model/reasoning.
 - `--lock-worker-model` — disable automatic model upgrade on failure. Worker stays on the specified model regardless of consecutive failures.
 - `--verifier-model MODEL` (default: `sonnet`) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier.
 - `--final-verifier-model MODEL` (default: `opus`) — final ALL verification model. Independent from per-US verifier. Used only for the final full-AC verify pass.
