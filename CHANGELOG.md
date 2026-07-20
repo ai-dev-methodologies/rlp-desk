@@ -9,6 +9,36 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.9] — 2026-07-20
+
+### Added — campaign hardening v1 (post-mortem driven)
+- **Done-claim commit-integrity oracle.** Done-claim commit steps now record
+  the resulting `commit_sha`; before any LLM verification the leader verifies
+  the claimed SHA against git (resolves, reachable from HEAD, HEAD advanced
+  beyond a per-iteration snapshot) and that the tracked-dirty delta is clean
+  (untracked and pre-campaign dirt excluded). A false commit claim
+  short-circuits to a machine-generated COMMIT-INTEGRITY fix contract —
+  no verifier round is burned. Separate failure counter with a
+  force-verifier cap; honest iterations and no-commit modes are no-ops.
+- **Fail-closed campaign waivers.** `.rlp-desk/plans/waivers.json` (bound to
+  the campaign slug) lets a pre-existing baseline finding be waived ONLY with
+  an immutable sha256-pinned baseline artifact containing that finding.
+  Operator authorization is out-of-band via `--waivers-sha256 <hash>`;
+  rejections are loud (six distinct diagnostics to status.json + logs);
+  honored waivers are injected into both prompts and verdicts cite their ids.
+  Campaign-introduced regressions are never waivable.
+- **Verdict-schema normalizer.** One shared definition absorbs all three
+  verdict producer shapes (`id|criterion|criterion_id`,
+  `description|summary`); the SV report and fix contracts no longer render
+  `undefined`/`unknown`/`unspecified` when the source JSON carries values,
+  and reasoning-completeness reflects real categories. zsh fix-contract jq
+  sites use equivalent fallback chains (3-producer golden parity fixtures).
+- **Always-on launch breadcrumb.** `logs/<slug>/launch-record.json` is
+  written synchronously at t0 by both production writers (run.mjs before
+  flag parsing, enriched after; the zsh leader at startup) and finalized
+  with the exit outcome via an HUP-extended trap — a campaign that dies
+  before iteration 1 now always leaves a diagnosable record.
+
 ## [0.22.8] — 2026-07-20
 
 ### Fixed
