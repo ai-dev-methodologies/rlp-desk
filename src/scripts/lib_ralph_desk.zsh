@@ -1773,6 +1773,371 @@ generate_sv_report() {
 }
 
 # =============================================================================
+# Leader-side mechanical pre-gate (Feature 1)
+# =============================================================================
+# Runs campaign-defined deterministic checks BEFORE any LLM verifier is
+# dispatched. Convention: $DESK/plans/pregate-<slug>.sh — a plain shell script
+# executed with `zsh <file>` from the campaign ROOT. Absent → true no-op
+# (PREGATE_RAN=0, no logging, byte-identical behavior). Present → exit 0 = pass
+# (proceed to normal LLM verification), non-zero = fail (leader short-circuits
+# and redispatches the worker with the mechanical output as the fix contract).
+#
+# Iron Law compatibility: the pre-gate can ONLY early-FAIL. A pass simply
+# proceeds to the unchanged full LLM verification — it never produces a pass
+# verdict of its own.
+#
+# Soft timeout (default 300s, RLP_PREGATE_TIMEOUT) via the same in-process
+# background-pid + watchdog pattern used by generate_sv_report; a timed-out gate
+# is treated as a FAIL with "pregate timeout after Ns" in the fix contract.
+#
+# Sets globals for the caller: PREGATE_RAN (0|1), PREGATE_EXIT, PREGATE_DUR,
+# PREGATE_OUTPUT (tail -40 of stdout+stderr), PREGATE_FILE (gate path).
+run_pregate() {
+  local iter="$1"
+  local slug="${2:-$SLUG}"
+  PREGATE_RAN=0; PREGATE_EXIT=0; PREGATE_DUR=0; PREGATE_OUTPUT=""; PREGATE_FILE=""
+
+  local gate_file="$DESK/plans/pregate-${slug}.sh"
+  [[ -f "$gate_file" ]] || return 0   # absent → no-op, no side effects, no logging
+
+  PREGATE_RAN=1
+  PREGATE_FILE="$gate_file"
+  local timeout_secs="${RLP_PREGATE_TIMEOUT:-300}"
+  [[ "$timeout_secs" == <-> ]] || timeout_secs=300
+
+  local out_file="$LOGS_DIR/iter-$(printf '%03d' $iter).pregate-output.log"
+  local timeout_flag_file="$LOGS_DIR/.pregate_timeout_${$}.tmp"
+  rm -f "$timeout_flag_file" 2>/dev/null
+  local t0
+  t0=$(date +%s)
+
+  # Run the gate from the campaign root. `exec zsh` makes the backgrounded pid
+  # be the gate process itself (not a wrapper subshell), so the watchdog kill
+  # actually reaches it. </dev/null so an inherited pane stdin can't block it.
+  ( cd "$ROOT" && exec zsh "$gate_file" ) </dev/null > "$out_file" 2>&1 &
+  local gate_pid=$!
+
+  # Watchdog: after timeout_secs, flag + kill the gate if still alive. Its fds
+  # are detached to /dev/null so the backgrounded sleep never holds the leader's
+  # (or a test's captured) stdout pipe open past this function's return.
+  local wd_pid
+  (
+    sleep "$timeout_secs"
+    if kill -0 "$gate_pid" 2>/dev/null; then
+      touch "$timeout_flag_file"
+      kill "$gate_pid" 2>/dev/null
+    fi
+  ) </dev/null >/dev/null 2>&1 &
+  wd_pid=$!
+
+  wait "$gate_pid"; PREGATE_EXIT=$?
+  kill "$wd_pid" 2>/dev/null
+  wait "$wd_pid" 2>/dev/null
+  PREGATE_DUR=$(( $(date +%s) - t0 ))
+
+  local tail_out
+  tail_out=$(tail -40 "$out_file" 2>/dev/null)
+
+  if [[ -f "$timeout_flag_file" ]]; then
+    rm -f "$timeout_flag_file" 2>/dev/null
+    PREGATE_EXIT=124
+    PREGATE_OUTPUT="pregate timeout after ${timeout_secs}s"$'\n'"$tail_out"
+    return 1
+  fi
+
+  PREGATE_OUTPUT="$tail_out"
+  (( PREGATE_EXIT == 0 )) && return 0
+  return 1
+}
+
+# Shared counter/cap decision for BOTH pre-gate layers (layer 1 = static gate
+# script, layer 2 = execution_steps replay). Updates the same-US pre-gate counter
+# (NEVER touches the consecutive-failure circuit breaker) and returns:
+#   - 0 (short-circuit): still under PREGATE_FAIL_CAP — caller writes the fix
+#     contract, skips LLM verification, and redispatches the Worker.
+#   - 1 (force): the same US has now failed the pre-gate PREGATE_FAIL_CAP times —
+#     the counter is reset and the caller must run one full LLM verifier round
+#     (whose verdict drives the CB as normal) instead of another short-circuit.
+# Both layers feed the SAME counter, so a mix of layer-1 and layer-2 fails on one
+# US still trips the cap at 3 combined.
+_pregate_bump() {
+  local us_id="${1:-ALL}"
+  # Reset the streak when the in-flight US changes (per-US counter).
+  if [[ "$us_id" != "$_PREGATE_FAIL_US" ]]; then
+    PREGATE_FAILURES=0
+    _PREGATE_FAIL_US="$us_id"
+  fi
+  (( PREGATE_FAILURES++ ))
+  if (( PREGATE_FAILURES >= PREGATE_FAIL_CAP )); then
+    PREGATE_FAILURES=0
+    _PREGATE_FAIL_US=""
+    return 1
+  fi
+  return 0
+}
+
+# Layer 1 fail: register + build the PRE-GATE FAILURE (mechanical) fix contract at
+# iter-<N>.fix-contract.md. Returns 0 (short-circuit) or 1 (force verifier round).
+# Reads PREGATE_FILE / PREGATE_EXIT / PREGATE_OUTPUT (set by run_pregate).
+_pregate_register_fail() {
+  local iter="$1" us_id="${2:-ALL}"
+  _pregate_bump "$us_id" || return 1
+  local pregate_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
+  {
+    echo "# Fix Contract (PRE-GATE FAILURE, iteration $iter)"
+    echo ""
+    echo "## PRE-GATE FAILURE (mechanical)"
+    echo "The leader-side mechanical pre-gate rejected your work BEFORE LLM verification."
+    echo "These are deterministic checks (compile / lint / file existence / test count)."
+    echo "Fix them first — the pre-gate must exit 0 before any verifier runs."
+    echo ""
+    echo "- **Gate script**: ${PREGATE_FILE}"
+    echo "- **Exit code**: ${PREGATE_EXIT}"
+    echo ""
+    echo "## Output (tail)"
+    echo '```'
+    echo "$PREGATE_OUTPUT"
+    echo '```'
+    echo ""
+    echo "## Next Iteration Contract"
+    echo "Make the pre-gate pass (exit 0), then continue the contracted work. Scope Lock: only changes that fix the failing checks above are in scope."
+  } | atomic_write "$pregate_contract"
+  return 0
+}
+
+# Layer 2 fail (execution_steps replay mismatch): register + build the PRE-GATE
+# FAILURE (replay mismatch) fix contract. Returns 0 (short-circuit) or 1 (force).
+# Reads PREGATE_REPLAY_STEP / _AC / _CMD / _CLAIMED / _ACTUAL / _OUTPUT (set by
+# run_pregate_replay).
+_pregate_register_fail_replay() {
+  local iter="$1" us_id="${2:-ALL}"
+  _pregate_bump "$us_id" || return 1
+  local pregate_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
+  {
+    echo "# Fix Contract (PRE-GATE FAILURE, iteration $iter)"
+    echo ""
+    echo "## PRE-GATE FAILURE (replay mismatch)"
+    echo "The leader RE-RAN a verification command you recorded in done-claim.json"
+    echo "execution_steps and got a DIFFERENT exit code than you claimed. The claim"
+    echo "does not reproduce. Fix the underlying work (or stop recording a command"
+    echo "whose result you did not actually observe) — a claimed result that does not"
+    echo "replay is a FAIL."
+    echo ""
+    echo "- **Step**: ${PREGATE_REPLAY_STEP}"
+    echo "- **AC**: ${PREGATE_REPLAY_AC}"
+    echo "- **Command**: \`${PREGATE_REPLAY_CMD}\`"
+    echo "- **Claimed exit_code**: ${PREGATE_REPLAY_CLAIMED}"
+    echo "- **Actual exit_code (leader replay)**: ${PREGATE_REPLAY_ACTUAL}"
+    echo ""
+    echo "## Output (tail)"
+    echo '```'
+    echo "$PREGATE_REPLAY_OUTPUT"
+    echo '```'
+    echo ""
+    echo "## Next Iteration Contract"
+    echo "Make the command above actually produce the claimed exit code, then continue. Scope Lock: only changes that fix this mismatch are in scope."
+  } | atomic_write "$pregate_contract"
+  return 0
+}
+
+# --- Layer 2: execution_steps replay ---
+# Safe-command gate for replay. A command is eligible ONLY if it BEGINS with an
+# allowlisted tool AND contains none of the dangerous denylist patterns. Both are
+# documented single regex constants (zsh ERE via [[ =~ ]]).
+_PREGATE_CMD_ALLOWLIST='^[[:space:]]*(npm|npx|pnpm|yarn|node|python3?|pytest|go|cargo|make|tsc|eslint|vitest|jest|playwright|zsh|bash|sh|jq|diff|grep|test)([[:space:]]|$)'
+_PREGATE_CMD_DENYLIST='rm |git push|git commit|curl |wget |sudo |> /|>> /'
+_pregate_cmd_is_safe() {
+  local cmd="$1"
+  [[ "$cmd" =~ $_PREGATE_CMD_ALLOWLIST ]] || return 1
+  [[ "$cmd" =~ $_PREGATE_CMD_DENYLIST ]] && return 1
+  return 0
+}
+
+# Run one replay command from the campaign root with a soft per-command timeout.
+# Sets _PREGATE_CMD_TIMED_OUT (0|1) and returns the command's exit code (or the
+# watchdog-kill code on timeout). Same background-pid + watchdog pattern as run_pregate.
+_pregate_run_cmd_timed() {
+  local cmd="$1" secs="$2" out_file="$3"
+  _PREGATE_CMD_TIMED_OUT=0
+  [[ "$secs" == <-> ]] || secs=120
+  (( secs < 1 )) && secs=1
+  local flag="$LOGS_DIR/.pregate_cmd_timeout_${$}.tmp"
+  rm -f "$flag" 2>/dev/null
+  ( cd "$ROOT" && exec zsh -c "$cmd" ) </dev/null > "$out_file" 2>&1 &
+  local pid=$!
+  (
+    sleep "$secs"
+    if kill -0 "$pid" 2>/dev/null; then touch "$flag"; kill "$pid" 2>/dev/null; fi
+  ) </dev/null >/dev/null 2>&1 &
+  local wd=$!
+  wait "$pid"; local rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  if [[ -f "$flag" ]]; then rm -f "$flag" 2>/dev/null; _PREGATE_CMD_TIMED_OUT=1; fi
+  return $rc
+}
+
+# Layer 2: replay verify-* commands recorded in done-claim.json execution_steps
+# and compare each replayed exit code to the worker's CLAIMED exit_code (EQUALITY
+# — a verify_red claiming exit 1 that replays to exit 1 is a MATCH, not a fail).
+# NO new schema — uses the existing §1f step/ac_id/command/exit_code fields.
+#
+# Division of labor (governance §3a): replay only catches "the claimed command is
+# false". Command OMISSION, insufficient tests, and tautological checks remain the
+# LLM verifier's sufficiency/anti-gaming responsibility. The pre-gate never creates
+# a pass; full LLM verification always runs after it passes.
+#
+# Absent done-claim, no execution_steps, or none eligible → silent no-op (one [GOV]
+# line), NOT a fail — schema enforcement is the verifier's job. A dangerous or
+# non-allowlisted command is SKIPPED (never executed), logged, and does not fail.
+#
+# Args: $1=iter  $2=overall_deadline_epoch (optional; whole-pregate RLP_PREGATE_TIMEOUT
+# bound — 0/empty = per-command timeout only). Sets PREGATE_REPLAY_RAN (0|1),
+# PREGATE_REPLAY_FAIL (0|1), and on fail PREGATE_REPLAY_STEP/_AC/_CMD/_CLAIMED/
+# _ACTUAL/_OUTPUT. Returns 0 (pass or no-op) / 1 (mismatch → caller short-circuits).
+run_pregate_replay() {
+  local iter="$1" deadline="${2:-0}"
+  PREGATE_REPLAY_RAN=0; PREGATE_REPLAY_FAIL=0; PREGATE_REPLAY_OUTPUT=""
+  PREGATE_REPLAY_STEP=""; PREGATE_REPLAY_CMD=""; PREGATE_REPLAY_CLAIMED=""
+  PREGATE_REPLAY_ACTUAL=""; PREGATE_REPLAY_AC=""
+  [[ -f "$DONE_CLAIM_FILE" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local count
+  count=$(jq '(.execution_steps // []) | length' "$DONE_CLAIM_FILE" 2>/dev/null || echo 0)
+  [[ "$count" == <-> ]] || count=0
+  (( count == 0 )) && return 0
+
+  local cmd_timeout="${RLP_PREGATE_CMD_TIMEOUT:-120}"
+  [[ "$cmd_timeout" == <-> ]] || cmd_timeout=120
+
+  local any_eligible=0 i
+  for (( i = 0; i < count; i++ )); do
+    local step cmd claimed ac
+    step=$(jq -r ".execution_steps[$i].step // \"\"" "$DONE_CLAIM_FILE" 2>/dev/null)
+    cmd=$(jq -r ".execution_steps[$i].command // \"\"" "$DONE_CLAIM_FILE" 2>/dev/null)
+    claimed=$(jq -r ".execution_steps[$i].exit_code // \"\"" "$DONE_CLAIM_FILE" 2>/dev/null)
+    ac=$(jq -r ".execution_steps[$i].ac_id // \"\"" "$DONE_CLAIM_FILE" 2>/dev/null)
+
+    # Schema eligibility: verify* step with a non-null command.
+    [[ "$step" == verify* ]] || continue
+    [[ -n "$cmd" && "$cmd" != "null" ]] || continue
+    # Claimed exit must be an integer to compare against (verify_red keeps its
+    # own non-zero claim — equality handles it).
+    [[ "$claimed" == <-> || "$claimed" == -<-> ]] || {
+      log_debug "[GOV] iter=$iter phase=pregate_replay step=$step ac=$ac action=skip reason=no_claimed_exit"
+      continue
+    }
+    # Safety eligibility: allowlist begin + denylist none. Skipped ≠ fail.
+    if ! _pregate_cmd_is_safe "$cmd"; then
+      log_debug "[GOV] iter=$iter phase=pregate_replay step=$step ac=$ac action=skip reason=unsafe_or_not_allowlisted"
+      continue
+    fi
+    # Whole-pregate deadline (layer1+layer2 ≤ RLP_PREGATE_TIMEOUT).
+    local eff_timeout=$cmd_timeout now remaining
+    if (( deadline > 0 )); then
+      now=$(date +%s); remaining=$(( deadline - now ))
+      if (( remaining <= 0 )); then
+        PREGATE_REPLAY_RAN=1; PREGATE_REPLAY_FAIL=1
+        PREGATE_REPLAY_STEP="$step"; PREGATE_REPLAY_AC="$ac"; PREGATE_REPLAY_CMD="$cmd"
+        PREGATE_REPLAY_CLAIMED="$claimed"; PREGATE_REPLAY_ACTUAL="timeout"
+        PREGATE_REPLAY_OUTPUT="pre-gate overall timeout reached before replaying this step"
+        log_debug "[GOV] iter=$iter phase=pregate_replay step=$step ac=$ac action=fail reason=overall_timeout"
+        return 1
+      fi
+      (( remaining < eff_timeout )) && eff_timeout=$remaining
+    fi
+
+    any_eligible=1
+    PREGATE_REPLAY_RAN=1
+    local out_file="$LOGS_DIR/iter-$(printf '%03d' $iter).pregate-replay-${i}.log"
+    local actual
+    _pregate_run_cmd_timed "$cmd" "$eff_timeout" "$out_file"; actual=$?
+    if (( _PREGATE_CMD_TIMED_OUT )); then
+      PREGATE_REPLAY_FAIL=1
+      PREGATE_REPLAY_STEP="$step"; PREGATE_REPLAY_AC="$ac"; PREGATE_REPLAY_CMD="$cmd"
+      PREGATE_REPLAY_CLAIMED="$claimed"; PREGATE_REPLAY_ACTUAL="timeout (${eff_timeout}s)"
+      PREGATE_REPLAY_OUTPUT="pregate replay command timeout after ${eff_timeout}s"$'\n'"$(tail -40 "$out_file" 2>/dev/null)"
+      log_debug "[GOV] iter=$iter phase=pregate_replay step=$step ac=$ac claimed=$claimed actual=timeout action=fail"
+      return 1
+    fi
+    log_debug "[GOV] iter=$iter phase=pregate_replay step=$step ac=$ac claimed=$claimed actual=$actual"
+    if [[ "$actual" != "$claimed" ]]; then
+      PREGATE_REPLAY_FAIL=1
+      PREGATE_REPLAY_STEP="$step"; PREGATE_REPLAY_AC="$ac"; PREGATE_REPLAY_CMD="$cmd"
+      PREGATE_REPLAY_CLAIMED="$claimed"; PREGATE_REPLAY_ACTUAL="$actual"
+      PREGATE_REPLAY_OUTPUT="$(tail -40 "$out_file" 2>/dev/null)"
+      return 1
+    fi
+  done
+
+  if (( ! any_eligible )); then
+    log_debug "[GOV] iter=$iter phase=pregate_replay eligible=0 action=noop"
+    PREGATE_REPLAY_RAN=0
+  fi
+  return 0
+}
+
+# =============================================================================
+# Parallel consensus evidence isolation (Feature 2)
+# =============================================================================
+# When two verifiers run concurrently, a DB-mutating or E2E rerun on one side
+# can false-FAIL the other (it sees in-flight fixture rows during a "no residue"
+# check). The lock below serializes those reruns. Static/unit/file checks stay
+# parallel. mkdir is atomic across processes, so it is a portable mutex with no
+# flock dependency. Used by the injected prompt contract AND directly unit-tested.
+#
+# Usage:  _evidence_lock acquire <lockdir> [wait_secs]   → 0 acquired, 1 timed out
+#         _evidence_lock release <lockdir>               → always 0
+_evidence_lock() {
+  local op="$1" lockdir="$2" wait_secs="${3:-120}"
+  [[ "$wait_secs" == <-> ]] || wait_secs=120
+  case "$op" in
+    acquire)
+      local waited=0
+      mkdir -p "${lockdir:h}" 2>/dev/null
+      while ! mkdir "$lockdir" 2>/dev/null; do
+        (( waited >= wait_secs )) && return 1
+        sleep 1
+        (( waited++ ))
+      done
+      return 0
+      ;;
+    release)
+      rmdir "$lockdir" 2>/dev/null
+      return 0
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+# Single source of truth for the evidence-isolation contract injected into BOTH
+# parallel verifier prompts. Emits to stdout (the caller pipes it into the prompt).
+_emit_evidence_lock_contract() {
+  local lockdir="$1"
+  echo ""
+  echo "---"
+  echo "## EVIDENCE ISOLATION (parallel consensus — mandatory)"
+  echo "Another verifier is checking the SAME work at the SAME time. Concurrent"
+  echo "DB-mutating or E2E reruns can make each other falsely FAIL (one side sees"
+  echo "the other's in-flight fixture rows during a 'no residue' check)."
+  echo ""
+  echo "BEFORE any DB-mutating or end-to-end rerun, acquire this lock; release it"
+  echo "the moment that step finishes:"
+  echo '```sh'
+  echo "LOCK=\"$lockdir\""
+  echo "# acquire (waits up to 120s for the other verifier to finish its mutation window)"
+  echo "waited=0; until mkdir \"\$LOCK\" 2>/dev/null; do [ \$waited -ge 120 ] && break; sleep 1; waited=\$((waited+1)); done"
+  echo "#   ... run your DB-mutating / E2E step here ..."
+  echo "rmdir \"\$LOCK\" 2>/dev/null   # release"
+  echo '```'
+  echo "Static analysis, unit tests, file-existence and read-only checks do NOT"
+  echo "need the lock — run those freely in parallel. Do not hold the lock longer"
+  echo "than a single mutating step."
+}
+
+# =============================================================================
 # Verified Ledger + Verification-Mode Derivation (v0.22.3 US-001)
 # =============================================================================
 

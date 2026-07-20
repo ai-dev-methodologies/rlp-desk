@@ -29,7 +29,15 @@ export const RUN_DEFAULTS = {
   consensusMode: 'off',
   consensusModel: 'gpt-5.6-terra:medium',
   finalConsensusModel: 'gpt-5.6-sol:high',
+  // Feature 2: parallel consensus verification (claude + codex concurrently).
+  // DEFAULT OFF — the sequential consensus path is byte-identical when off.
+  consensusParallel: false,
   verifyMode: 'per-us',
+  // Feature 1: soft timeout (seconds) for the leader-side mechanical pre-gate
+  // (overall — bounds layer 1 + layer 2 combined).
+  preGateTimeout: 300,
+  // Feature 1 layer 2: per-command soft timeout (seconds) for execution_steps replay.
+  preGateCmdTimeout: 120,
   cbThreshold: 6,
   maxIterations: 100,
   iterTimeout: 600,
@@ -72,10 +80,13 @@ function buildHelpText() {
     '  --consensus off|all|final-only',
     '  --consensus-model MODEL',
     '  --final-consensus-model MODEL',
+    '  --consensus-parallel            (run claude + codex consensus verifiers concurrently; default OFF)',
     '  --verify-mode per-us|batch',
     '  --cb-threshold N',
     '  --max-iter N',
     '  --iter-timeout N',
+    '  --pre-gate-timeout N            (overall soft timeout in seconds for the pre-gate: layer1 script + layer2 replay; default 300)',
+    '  --pre-gate-cmd-timeout N        (per-command soft timeout in seconds for execution_steps replay; default 120)',
     '  --debug',
     '  --autonomous',
     '  --lane-strict',
@@ -152,6 +163,20 @@ export function parseRunOptions(args, cwd) {
         break;
       case '--final-consensus-model':
         options.finalConsensusModel = consumeValue(args, index, token);
+        index += 1;
+        break;
+      case '--consensus-parallel':
+        // Feature 2: dispatch the claude + codex consensus verifiers concurrently.
+        options.consensusParallel = true;
+        break;
+      case '--pre-gate-timeout':
+        // Feature 1: overall soft timeout (seconds) for the mechanical pre-gate.
+        options.preGateTimeout = parseInteger(consumeValue(args, index, token), token);
+        index += 1;
+        break;
+      case '--pre-gate-cmd-timeout':
+        // Feature 1 layer 2: per-command soft timeout for execution_steps replay.
+        options.preGateCmdTimeout = parseInteger(consumeValue(args, index, token), token);
         index += 1;
         break;
       case '--verify-mode':
@@ -422,6 +447,12 @@ function buildZshEnv(slug, options, parentEnv) {
     CONSENSUS_MODE: options.consensusMode,
     CONSENSUS_MODEL: options.consensusModel,
     FINAL_CONSENSUS_MODEL: options.finalConsensusModel,
+    // Feature 2: 1 = parallel consensus verification; 0 = sequential (default).
+    RLP_CONSENSUS_PARALLEL: options.consensusParallel ? '1' : '0',
+    // Feature 1: mechanical pre-gate overall soft timeout in seconds.
+    RLP_PREGATE_TIMEOUT: String(options.preGateTimeout),
+    // Feature 1 layer 2: per-command replay soft timeout in seconds.
+    RLP_PREGATE_CMD_TIMEOUT: String(options.preGateCmdTimeout),
     LOCK_WORKER_MODEL: options.lockWorkerModel ? '1' : '0',
     AUTONOMOUS_MODE: options.autonomous ? '1' : '0',
     LANE_MODE: options.laneStrict ? 'strict' : 'warn',

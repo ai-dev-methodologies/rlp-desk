@@ -406,6 +406,13 @@ STATUS_FILE="$RUNTIME_DIR/status.json"
 SESSION_CONFIG="$RUNTIME_DIR/session-config.json"
 WORKER_HEARTBEAT="$RUNTIME_DIR/worker-heartbeat.json"
 VERIFIER_HEARTBEAT="$RUNTIME_DIR/verifier-heartbeat.json"
+# Feature 2: separate heartbeat for the codex verifier in the 4th (consensus)
+# pane when parallel consensus is ON — the claude/codex triggers must not both
+# write the single VERIFIER_HEARTBEAT concurrently.
+CONSENSUS_HEARTBEAT="$RUNTIME_DIR/consensus-heartbeat.json"
+# Feature 2: dedicated evidence-isolation lockdir (mkdir-atomic) so two parallel
+# verifiers do not race on DB-mutating / E2E reruns. See _evidence_lock.
+CONSENSUS_EVIDENCE_LOCK="$RUNTIME_DIR/evidence.lock"
 COST_LOG="$LOGS_DIR/cost-log.jsonl"
 
 # --- Session Naming ---
@@ -443,6 +450,17 @@ _LAST_FAILED_US=""            # last failed US ID (same-US tracking for upgrade 
 _MODEL_UPGRADED=0             # 1 if Worker model was auto-upgraded during campaign
 _ORIGINAL_WORKER_MODEL=""     # WORKER_MODEL saved before first upgrade (for restore on pass)
 _ORIGINAL_WORKER_CODEX_REASONING=""  # WORKER_CODEX_REASONING saved before first upgrade
+# --- Feature 1: leader-side mechanical pre-gate ---
+PREGATE_FAILURES=0            # same-US mechanical pre-gate fail counter (SEPARATE from
+                             # CONSECUTIVE_FAILURES — a pre-gate fail never touches the CB)
+_PREGATE_FAIL_US=""          # US the current PREGATE_FAILURES streak is accumulated for
+PREGATE_FAIL_CAP="${PREGATE_FAIL_CAP:-3}"  # same-US pre-gate fails at this count → force one
+                             # full LLM verifier round instead of another short-circuit
+_validate_int_knob PREGATE_FAIL_CAP 3 1
+# --- Feature 2: parallel consensus verification (default OFF) ---
+CONSENSUS_PARALLEL="${RLP_CONSENSUS_PARALLEL:-0}"  # 1 = dispatch claude + codex verifiers
+                             # concurrently (separate panes); 0 = sequential (unchanged)
+CONSENSUS_PANE=""            # 4th pane, created lazily at the first parallel consensus round
 
 # =============================================================================
 # Utility Functions
@@ -1222,6 +1240,13 @@ create_session() {
   # the deprecation banner at startup is more honest (we exit 2, we don't
   # silently disable).
 
+  # Feature 1/2: record whether a mechanical pre-gate is present and whether
+  # parallel consensus is enabled (campaign-start config snapshot).
+  local _pregate_state="absent"
+  [[ -f "$DESK/plans/pregate-${SLUG}.sh" ]] && _pregate_state="enabled"
+  local _consensus_parallel_state="false"
+  (( CONSENSUS_PARALLEL )) && _consensus_parallel_state="true"
+
   # Write session config (atomic write)
   echo '{
   "session_name": "'"$SESSION_NAME"'",
@@ -1249,7 +1274,9 @@ create_session() {
   },
   "verification": {
     "verify_mode": "'"$VERIFY_MODE"'",
-    "consensus_mode": "'"$CONSENSUS_MODE"'"
+    "consensus_mode": "'"$CONSENSUS_MODE"'",
+    "consensus_parallel": '"$_consensus_parallel_state"',
+    "pregate": "'"$_pregate_state"'"
   },
   "config": {
     "max_iter": '"$MAX_ITER"',
@@ -2289,6 +2316,18 @@ write_verifier_trigger() {
   local verifier_engine="${2:-$VERIFIER_ENGINE}"  # allow override for consensus
   local verifier_model="${3:-$VERIFIER_MODEL}"
   local suffix="${4:-}"  # optional suffix for consensus (e.g., "-claude", "-codex")
+  # Feature 2 (parallel consensus) optional overrides. All default to today's
+  # behavior so the sequential path is byte-identical when parallel is OFF:
+  #   $5 verdict_override     — redirect the verifier's verdict to a distinct path
+  #                            (parallel needs per-engine paths; both engines
+  #                             otherwise write the single canonical VERDICT_FILE).
+  #   $6 heartbeat_override   — heartbeat file for this trigger (codex uses the
+  #                             separate CONSENSUS_HEARTBEAT in the 4th pane).
+  #   $7 evidence_lock_path   — when set, inject the evidence-isolation lock
+  #                             contract into the prompt (parallel only).
+  local verdict_override="${5:-}"
+  local heartbeat_override="${6:-$VERIFIER_HEARTBEAT}"
+  local evidence_lock_path="${7:-}"
   local prompt_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier${suffix}-prompt.md"
   local trigger_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier${suffix}-trigger.sh"
   local output_log="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier${suffix}-output.log"
@@ -2354,6 +2393,24 @@ write_verifier_trigger() {
       echo '  {"iteration":N,"us_id":"US-NNN","source_a":"prd","source_b":"test-spec","conflict":"description","resolution":"followed PRD"}'
       echo "Do NOT wait for human input. Keep verifying."
     fi
+
+    # Feature 2: parallel-consensus per-engine verdict redirect. Both engines
+    # otherwise write the single canonical verify-verdict path baked into the
+    # base prompt; in parallel they MUST write distinct files.
+    if [[ -n "$verdict_override" ]]; then
+      echo ""
+      echo "---"
+      echo "## VERDICT PATH OVERRIDE (authoritative — parallel consensus)"
+      echo "Write your verdict JSON to EXACTLY this path (a FILE, not stdout):"
+      echo "  $verdict_override"
+      echo "IGNORE any other verify-verdict path mentioned earlier in this prompt — that path is for sequential mode. This override wins."
+    fi
+
+    # Feature 2: evidence-isolation lock contract (single source of truth in
+    # _emit_evidence_lock_contract). Injected only when parallel consensus is on.
+    if [[ -n "$evidence_lock_path" ]]; then
+      _emit_evidence_lock_contract "$evidence_lock_path"
+    fi
   } | atomic_write "$prompt_file"
 
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
@@ -2377,7 +2434,7 @@ write_verifier_trigger() {
 # Trigger for iteration $iter verifier${suffix} - generated by run_ralph_desk.zsh
 # DO NOT use exec here -- it breaks heartbeat cleanup
 
-HEARTBEAT_FILE="$VERIFIER_HEARTBEAT"
+HEARTBEAT_FILE="$heartbeat_override"
 
 # Background heartbeat writer (tmux pattern)
 (
@@ -3332,6 +3389,242 @@ _should_use_consensus() {
   esac
 }
 
+# --- Merge two consensus verdicts into the canonical VERDICT_FILE (shared) ---
+# Extracted from run_consensus_verification so the sequential AND parallel paths
+# apply the SAME NO ENGINE PRIORITY rule and fix-contract format. Reads the
+# CLAUDE_VERDICT / CODEX_VERDICT / CONSENSUS_ROUND globals set by the caller.
+# Returns 0 (both pass) or 2 (disagreement → outer leader fix-loop retries).
+_consensus_finalize() {
+  local iter="$1" cons_us_id="$2" claude_verdict_file="$3" codex_verdict_file="$4"
+
+  # Both pass → success
+  if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then
+    # Create merged verdict with per-engine details. This atomic_write REPLACES
+    # the canonical VERDICT_FILE; atomic_write() drops any pending lock-start
+    # mark for the replaced basename (lib_ralph_desk.zsh), so no per-site clear.
+    {
+      echo '{'
+      echo '  "verdict": "pass",'
+      echo '  "us_id": "'"$cons_us_id"'",'
+      echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
+      echo '  "summary": "Consensus PASS: both claude and codex verified independently",'
+      echo '  "recommended_state_transition": "complete",'
+      echo '  "consensus": {'
+      echo '    "claude": { "verdict": "pass", "file": "'"$claude_verdict_file"'" },'
+      echo '    "codex": { "verdict": "pass", "file": "'"$codex_verdict_file"'" },'
+      echo '    "round": '"$CONSENSUS_ROUND"
+      echo '  }'
+      echo '}'
+    } | atomic_write "$VERDICT_FILE"
+    return 0
+  fi
+
+  # Consensus disagreement
+  log_debug "[GOV] iter=$iter phase=consensus_disagreement round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT action=fix_contract"
+
+  # NOTE: pre_existing_failure heuristic was removed (v0.3.5).
+  # Consensus disagreement now ALWAYS flows to fix contract.
+  # Codex CLI crash (no verdict file) is handled upstream (caller return 1 → BLOCKED).
+
+  # --- Consensus disagreement: build fix contract ---
+  local fix_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
+  {
+    echo "# Fix Contract (Consensus Round $CONSENSUS_ROUND, iteration $iter)"
+    echo ""
+    echo "## Claude Verdict: $CLAUDE_VERDICT"
+    if [[ "$CLAUDE_VERDICT" = "fail" ]]; then
+      echo "### Claude Issues"
+      jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$claude_verdict_file" 2>/dev/null || echo "- (no structured issues)"
+    fi
+    echo ""
+    echo "## Codex Verdict: $CODEX_VERDICT"
+    if [[ "$CODEX_VERDICT" = "fail" ]]; then
+      echo "### Codex Issues"
+      jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$codex_verdict_file" 2>/dev/null || echo "- (no structured issues)"
+    fi
+    echo ""
+    echo "## Traceability"
+    echo "Only changes that resolve a listed issue are allowed."
+  } | atomic_write "$fix_contract"
+
+  log "  Combined fix contract: $fix_contract"
+
+  # Create a merged fail verdict for the main loop — include issues from BOTH verdicts
+  local merged_issues="[]"
+  local claude_issues codex_issues
+  claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
+  codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
+  merged_issues=$(echo "$claude_issues $codex_issues" | jq -s 'add // []')
+  {
+    echo '{'
+    echo '  "verdict": "fail",'
+    echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
+    echo '  "summary": "Consensus disagreement: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
+    echo '  "issues": '"$merged_issues"','
+    echo '  "recommended_state_transition": "continue",'
+    echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": '"$CONSENSUS_ROUND"' }'
+    echo '}'
+  } | atomic_write "$VERDICT_FILE"
+  return 2  # consensus disagreement → outer fix-loop retries
+}
+
+# --- Feature 2: lazily create the 4th (consensus) pane for parallel consensus ---
+# Reuses the same tmux split pattern as the worker/verifier panes so the pane is
+# monitored by the existing heartbeat/copy-mode-guard machinery. Idempotent:
+# returns immediately if CONSENSUS_PANE is already a live pane. Records the pane
+# id into session-config.json (panes.consensus) for recovery/telemetry parity.
+_ensure_consensus_pane() {
+  if [[ -n "$CONSENSUS_PANE" ]] \
+     && tmux display-message -p -t "$CONSENSUS_PANE" '#{pane_id}' >/dev/null 2>&1; then
+    return 0
+  fi
+  # Split below the verifier pane (mirrors verifier = split below worker).
+  CONSENSUS_PANE=$(tmux split-window -v -d -t "$VERIFIER_PANE" -P -F '#{pane_id}' -c "$ROOT" 2>/dev/null)
+  if [[ -z "$CONSENSUS_PANE" ]]; then
+    log_error "Failed to create consensus pane for parallel consensus"
+    return 1
+  fi
+  tmux select-layout -t "$SESSION_NAME" tiled 2>/dev/null || true
+  log "  Consensus pane created: $CONSENSUS_PANE"
+  if [[ -f "$SESSION_CONFIG" ]] && command -v jq >/dev/null 2>&1; then
+    jq --arg p "$CONSENSUS_PANE" '.panes.consensus = $p' "$SESSION_CONFIG" \
+      | atomic_write "$SESSION_CONFIG" 2>/dev/null || true
+  fi
+  wait_for_pane_ready "$CONSENSUS_PANE" 10 2>/dev/null || true
+  return 0
+}
+
+# --- Feature 2: parallel consensus verification (claude + codex concurrently) ---
+# Dispatches claude into the verifier pane and codex into the consensus pane at
+# the SAME time (no wait between launches), then polls BOTH per-engine verdict
+# files. Both arrived → _consensus_finalize (identical merge / NO ENGINE PRIORITY
+# as the sequential path). One side never arrives within ITER_TIMEOUT → treated
+# as an infrastructure failure, the same as the sequential missing-verdict case
+# (caller writes an infra_failure BLOCKED). Only reached when CONSENSUS_PARALLEL=1.
+run_consensus_verification_parallel() {
+  local iter="$1"
+  local cons_us_id="${2:-${signal_us_id:-ALL}}"
+  [[ "$cons_us_id" == (ALL|US-<->) ]] || cons_us_id="ALL"
+
+  # Same model selection as the sequential path (final=stricter, per-US=lighter).
+  local _cons_claude_model _cons_codex_model _cons_claude_effort
+  if [[ "$cons_us_id" == "ALL" ]]; then
+    _cons_claude_model="$FINAL_VERIFIER_MODEL"; _cons_codex_model="$FINAL_CONSENSUS_MODEL"
+    _cons_claude_effort="$FINAL_VERIFIER_EFFORT"
+  else
+    _cons_claude_model="$VERIFIER_MODEL"; _cons_codex_model="$CONSENSUS_MODEL"
+    _cons_claude_effort="$VERIFIER_EFFORT"
+  fi
+  local claude_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-claude.json"
+  local codex_verdict_file="$LOGS_DIR/iter-$(printf '%03d' $iter).verify-verdict-codex.json"
+
+  CONSENSUS_ROUND=1
+  CLAUDE_VERDICT=""
+  CODEX_VERDICT=""
+  VERIFIER_ABORT_REASON=""
+
+  log "  Consensus verification (PARALLEL: claude + codex concurrently)..."
+
+  # 4th pane for the codex cross-verifier.
+  if ! _ensure_consensus_pane; then
+    VERIFIER_ABORT_REASON="Parallel consensus: could not create consensus pane"
+    return 1
+  fi
+
+  # Codex "model:reasoning" split (mirrors run_single_verifier's validation).
+  local _cx_model="$VERIFIER_CODEX_MODEL" _cx_reason="$VERIFIER_CODEX_REASONING"
+  if [[ -n "$_cons_codex_model" && "$_cons_codex_model" == *:* ]]; then
+    local _m="${_cons_codex_model%%:*}" _r="${_cons_codex_model##*:}"
+    if [[ -n "$_m" && "$_cons_codex_model" != *:*:* && "$_r" == (minimal|low|medium|high|xhigh|max|ultra) ]]; then
+      _cx_model="$_m"; _cx_reason="$_r"
+    else
+      log "  WARNING: malformed consensus codex model '$_cons_codex_model' — falling back to $_cx_model:$_cx_reason"
+    fi
+  elif [[ -n "$_cons_codex_model" ]]; then
+    _cx_model="$_cons_codex_model"
+  fi
+
+  # Clear any stale per-engine verdicts before launch.
+  rm -f "$claude_verdict_file" "$codex_verdict_file" 2>/dev/null
+
+  # Build BOTH triggers with per-engine verdict redirect + evidence-lock contract
+  # (the evidence-lock is injected ONLY here — parallel — via the 7th arg).
+  write_verifier_trigger "$iter" "claude" "$_cons_claude_model" "-claude" \
+    "$claude_verdict_file" "$VERIFIER_HEARTBEAT" "$CONSENSUS_EVIDENCE_LOCK"
+  local claude_prompt="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier-claude-prompt.md"
+  write_verifier_trigger "$iter" "codex" "$_cons_codex_model" "-codex" \
+    "$codex_verdict_file" "$CONSENSUS_HEARTBEAT" "$CONSENSUS_EVIDENCE_LOCK"
+  local codex_prompt="$LOGS_DIR/iter-$(printf '%03d' $iter).verifier-codex-prompt.md"
+
+  # Clean both panes to a ready shell before launching.
+  wait_for_pane_ready "$VERIFIER_PANE" 10 2>/dev/null || true
+  wait_for_pane_ready "$CONSENSUS_PANE" 10 2>/dev/null || true
+
+  # --- Dispatch BOTH simultaneously (no poll between the two launches) ---
+  local claude_launch codex_launch
+  claude_launch="$(build_claude_cmd tui "$_cons_claude_model" "" "" "$_cons_claude_effort")"
+  if ! launch_verifier_claude "$VERIFIER_PANE" "$claude_prompt" "$iter" "$claude_launch"; then
+    VERIFIER_ABORT_REASON="Parallel consensus: claude verifier failed to start"
+    log_error "$VERIFIER_ABORT_REASON"
+    return 1
+  fi
+  codex_launch="${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+  launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter" "$codex_launch"
+  log_debug "[GOV] iter=$iter phase=consensus_parallel dispatched=both claude_pane=$VERIFIER_PANE codex_pane=$CONSENSUS_PANE"
+
+  # --- Poll BOTH verdict files until both present+valid, or ITER_TIMEOUT ---
+  local _poll_start
+  _poll_start=$(date +%s)
+  local _claude_ok=0 _codex_ok=0
+  while true; do
+    # codex may write the legacy path; migrate only affects the canonical
+    # VERDICT_FILE, so per-engine files are read directly here.
+    (( _claude_ok )) || { [[ -f "$claude_verdict_file" ]] && jq . "$claude_verdict_file" >/dev/null 2>&1 && _claude_ok=1; }
+    (( _codex_ok ))  || { [[ -f "$codex_verdict_file"  ]] && jq . "$codex_verdict_file"  >/dev/null 2>&1 && _codex_ok=1; }
+    if (( _claude_ok && _codex_ok )); then
+      sleep 3   # small grace so a still-writing verifier finalizes its JSON
+      break
+    fi
+    local _elapsed=$(( $(date +%s) - _poll_start ))
+    if (( _elapsed >= ITER_TIMEOUT )); then
+      # One-side-missing / timeout = infrastructure failure, identical treatment
+      # to the sequential missing-verdict case (caller → infra_failure BLOCKED).
+      VERIFIER_ABORT_REASON="Parallel consensus verifier did not return a verdict within ${ITER_TIMEOUT}s (claude=$_claude_ok codex=$_codex_ok) — infrastructure failure"
+      log_error "$VERIFIER_ABORT_REASON"
+      return 1
+    fi
+    # Codex quota exhaustion is terminal — abort early rather than polling out.
+    if (( ! _codex_ok )); then
+      local _vq_pane
+      _vq_pane=$(tmux capture-pane -t "$CONSENSUS_PANE" -p 2>/dev/null || true)
+      if detect_quota_exhausted "$_vq_pane"; then
+        VERIFIER_ABORT_REASON="Parallel consensus codex aborted: provider usage limit reached (quota exhausted)"
+        log_error "$VERIFIER_ABORT_REASON"
+        return 1
+      fi
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+
+  # Reap both panes so neither TUI keeps self-reviewing and rewriting its verdict.
+  _kill_pane_process "$VERIFIER_PANE" "verifier-claude" "verify-verdict" 2>/dev/null || true
+  _kill_pane_process "$CONSENSUS_PANE" "verifier-codex" "verify-verdict" 2>/dev/null || true
+
+  CLAUDE_VERDICT=$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)
+  CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
+  if [[ -z "$CLAUDE_VERDICT" || "$CLAUDE_VERDICT" == "null" || -z "$CODEX_VERDICT" || "$CODEX_VERDICT" == "null" ]]; then
+    VERIFIER_ABORT_REASON="Parallel consensus: a verdict file was present but had no verdict field (claude='$CLAUDE_VERDICT' codex='$CODEX_VERDICT')"
+    log_error "$VERIFIER_ABORT_REASON"
+    return 1
+  fi
+  log "  Consensus (parallel): claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT"
+  log_debug "[GOV] iter=$iter phase=consensus_parallel round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT"
+
+  # Merge + verdict decision — identical logic as the sequential path.
+  _consensus_finalize "$iter" "$cons_us_id" "$claude_verdict_file" "$codex_verdict_file"
+  return $?
+}
+
 # --- US-004: Run consensus verification (claude + codex sequentially) ---
 run_consensus_verification() {
   local iter="$1"
@@ -3343,6 +3636,15 @@ run_consensus_verification() {
   # JSON-safe. It is always "ALL" or "US-<digits>"; anything else → ALL (a value
   # with a quote/backslash/control char would otherwise produce invalid JSON).
   [[ "$cons_us_id" == (ALL|US-<->) ]] || cons_us_id="ALL"
+
+  # Feature 2: parallel consensus (default OFF). When ON, delegate to the
+  # concurrent path; the sequential body below is untouched (byte-identical when
+  # off — the guard is the ONLY change to this function's off-path).
+  if (( CONSENSUS_PARALLEL )); then
+    run_consensus_verification_parallel "$iter" "$cons_us_id"
+    return $?
+  fi
+
   # D-1c: wire the documented consensus cross-verifier model knobs. Primary
   # (claude) uses VERIFIER_MODEL/FINAL_VERIFIER_MODEL; cross (codex) uses
   # CONSENSUS_MODEL/FINAL_CONSENSUS_MODEL ("model:reasoning"). Final (ALL)
@@ -3431,86 +3733,9 @@ run_consensus_verification() {
     fi   # D-22: removed dead `elif (( ROUND >= 6 ))` (ROUND is always 1)
     log_debug "[GOV] iter=$iter phase=consensus round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT combined_action=$_combined_action"
 
-    # Both pass → success
-    if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then
-      # Create merged verdict with per-engine details. This atomic_write
-      # REPLACES the canonical VERDICT_FILE that the codex sub-call's
-      # run_single_verifier just locked — codex round 3: no per-site clear
-      # needed here anymore, atomic_write() itself drops any pending
-      # lock-start mark for the replaced basename (lib_ralph_desk.zsh).
-      {
-        echo '{'
-        echo '  "verdict": "pass",'
-        echo '  "us_id": "'"$cons_us_id"'",'
-        echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-        echo '  "summary": "Consensus PASS: both claude and codex verified independently",'
-        echo '  "recommended_state_transition": "complete",'
-        echo '  "consensus": {'
-        echo '    "claude": { "verdict": "pass", "file": "'"$claude_verdict_file"'" },'
-        echo '    "codex": { "verdict": "pass", "file": "'"$codex_verdict_file"'" },'
-        echo '    "round": '"$CONSENSUS_ROUND"
-        echo '  }'
-        echo '}'
-      } | atomic_write "$VERDICT_FILE"
-      return 0
-    fi
-
-    # Consensus disagreement
-    log_debug "[GOV] iter=$iter phase=consensus_disagreement round=$CONSENSUS_ROUND claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT action=fix_contract"
-
-    # NOTE: pre_existing_failure heuristic was removed (v0.3.5).
-    # It used unreliable grep-in-description string matching to classify
-    # consensus failures as "pre-existing", bypassing the consensus rule.
-    # Consensus disagreement now ALWAYS flows to fix contract.
-    # Codex CLI crash (no verdict file) is handled upstream via run_single_verifier return 1 → BLOCKED.
-
-    # --- Consensus disagreement: build fix contract ---
-    local fix_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
-    {
-      echo "# Fix Contract (Consensus Round $CONSENSUS_ROUND, iteration $iter)"
-      echo ""
-      echo "## Claude Verdict: $CLAUDE_VERDICT"
-      if [[ "$CLAUDE_VERDICT" = "fail" ]]; then
-        echo "### Claude Issues"
-        jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$claude_verdict_file" 2>/dev/null || echo "- (no structured issues)"
-      fi
-      echo ""
-      echo "## Codex Verdict: $CODEX_VERDICT"
-      if [[ "$CODEX_VERDICT" = "fail" ]]; then
-        echo "### Codex Issues"
-        jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$codex_verdict_file" 2>/dev/null || echo "- (no structured issues)"
-      fi
-      echo ""
-      echo "## Traceability"
-      echo "Only changes that resolve a listed issue are allowed."
-    } | atomic_write "$fix_contract"
-
-    log "  Combined fix contract: $fix_contract"
-
-    # D-22: disagreement → synthesize a merged fail verdict + return 2 (the outer
-    # leader fix-loop owns the retry). This was wrapped in an always-true
-    # `if (( CONSENSUS_ROUND < 6 ))`; that wrapper, the loop `done`, and the
-    # post-loop "Consensus failed after 6 rounds" block are removed as dead code.
-    # Create a merged fail verdict for the main loop — include issues from BOTH verdicts
-    local merged_issues="[]"
-    local claude_issues codex_issues
-    claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
-    codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
-    merged_issues=$(echo "$claude_issues $codex_issues" | jq -s 'add // []')
-    # codex round 3: no per-site clear needed — atomic_write() drops the
-    # pending mark for VERDICT_FILE's basename automatically (same as the
-    # pass-merge site above).
-    {
-      echo '{'
-      echo '  "verdict": "fail",'
-      echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-      echo '  "summary": "Consensus disagreement: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
-      echo '  "issues": '"$merged_issues"','
-      echo '  "recommended_state_transition": "continue",'
-      echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": '"$CONSENSUS_ROUND"' }'
-      echo '}'
-    } | atomic_write "$VERDICT_FILE"
-    return 2  # consensus disagreement → outer fix-loop retries
+    # Merge + verdict decision (shared with the parallel path — NO ENGINE PRIORITY).
+    _consensus_finalize "$iter" "$cons_us_id" "$claude_verdict_file" "$codex_verdict_file"
+    return $?
 }
 
 # =============================================================================
@@ -4250,6 +4475,76 @@ main() {
         # fired during the verify poll (no-progress / stall / R12).
         [[ -n "$signal_us_id" ]] && CURRENT_US="$signal_us_id"
         log "  Worker claims done (us_id=${signal_us_id:-all}). Dispatching Verifier..."
+
+        # --- Feature 1: leader-side mechanical pre-gate ---
+        # Deterministic campaign-defined checks ($DESK/plans/pregate-<slug>.sh) run
+        # BEFORE any LLM verifier is dispatched. On fail we skip LLM verification
+        # entirely and redispatch the Worker with the mechanical output as the fix
+        # contract (same worker-redispatch machinery as a verify-fail round). This
+        # can ONLY early-FAIL — a pass proceeds to the unchanged full verification.
+        # The pre-gate has its own counter (PREGATE_FAILURES) so it never touches
+        # the consecutive-failure circuit breaker; when the same US fails the
+        # pre-gate PREGATE_FAIL_CAP times, we force one full LLM verifier round
+        # (its verdict then drives the CB as normal) instead of another short-circuit.
+        # Two layers, same insertion point (before write_verifier_trigger), in order:
+        #   Layer 1 — campaign-static gate script ($DESK/plans/pregate-<slug>.sh).
+        #   Layer 2 — replay of verify-* commands the Worker recorded in
+        #             done-claim.json execution_steps; a claimed exit that does not
+        #             reproduce is a fail.
+        # Both feed the SAME per-US PREGATE_FAILURES 3-cap and can ONLY early-FAIL —
+        # a pass proceeds to the unchanged full LLM verification (Iron Law). On the
+        # 3rd same-US pre-gate fail we force one full verifier round (its verdict
+        # drives the CB). _pg_short = short-circuit+redispatch; _pg_force = forced round.
+        local _pg_short=0 _pg_force=0
+        local _pg_t0=$(date +%s)
+        local _pg_deadline=$(( _pg_t0 + ${RLP_PREGATE_TIMEOUT:-300} ))
+
+        # --- Layer 1: static gate script ---
+        run_pregate "$ITERATION" "$SLUG"
+        if (( PREGATE_RAN )); then
+          log_debug "[GOV] iter=$ITERATION phase=pregate layer=1 exit=$PREGATE_EXIT dur=${PREGATE_DUR}s us=${signal_us_id:-all}"
+          if (( PREGATE_EXIT != 0 )); then
+            if _pregate_register_fail "$ITERATION" "${signal_us_id:-ALL}"; then
+              log "  Pre-gate L1 FAILED (exit=$PREGATE_EXIT, ${PREGATE_DUR}s) — skipping LLM verification, redispatching Worker (pre-gate fail ${PREGATE_FAILURES}/${PREGATE_FAIL_CAP})."
+              _pg_short=1
+            else
+              log "  Pre-gate L1 failed ${PREGATE_FAIL_CAP}× for ${signal_us_id:-ALL} — forcing full LLM verifier round."
+              log_debug "[GOV] iter=$ITERATION phase=pregate action=force_verifier layer=1 us=${signal_us_id:-all}"
+              _pg_force=1
+            fi
+          fi
+        fi
+
+        # --- Layer 2: execution_steps replay (only if L1 did not already resolve) ---
+        if (( ! _pg_short && ! _pg_force )); then
+          run_pregate_replay "$ITERATION" "$_pg_deadline"
+          if (( PREGATE_REPLAY_RAN )); then
+            log_debug "[GOV] iter=$ITERATION phase=pregate layer=2 replay_fail=$PREGATE_REPLAY_FAIL us=${signal_us_id:-all}"
+          fi
+          if (( PREGATE_REPLAY_FAIL )); then
+            if _pregate_register_fail_replay "$ITERATION" "${signal_us_id:-ALL}"; then
+              log "  Pre-gate L2 FAILED (replay mismatch: ${PREGATE_REPLAY_STEP} claimed=${PREGATE_REPLAY_CLAIMED} actual=${PREGATE_REPLAY_ACTUAL}) — skipping LLM verification, redispatching Worker (pre-gate fail ${PREGATE_FAILURES}/${PREGATE_FAIL_CAP})."
+              _pg_short=1
+            else
+              log "  Pre-gate L2 failed ${PREGATE_FAIL_CAP}× for ${signal_us_id:-ALL} — forcing full LLM verifier round."
+              log_debug "[GOV] iter=$ITERATION phase=pregate action=force_verifier layer=2 us=${signal_us_id:-all}"
+              _pg_force=1
+            fi
+          fi
+        fi
+
+        # --- Resolve the pre-gate decision ---
+        if (( _pg_short )); then
+          # Short-circuit: LLM verification skipped, Worker redispatched with the
+          # fix contract written by the register-fail helper (L1 or L2).
+          log_debug "[DECIDE] iter=$ITERATION phase=pregate_fail trigger=pregate pregate_failures=$PREGATE_FAILURES fix_contract=$LOGS_DIR/iter-$(printf '%03d' $ITERATION).fix-contract.md"
+          update_status "verifier" "pregate_fail"
+          continue
+        elif (( ! _pg_force )); then
+          # Both layers passed / absent — a real verifier round follows; reset streak.
+          PREGATE_FAILURES=0
+          _PREGATE_FAIL_US=""
+        fi
 
         # AC1: capture verifier start timestamp
         ITER_VERIFIER_START=$(date +%s)

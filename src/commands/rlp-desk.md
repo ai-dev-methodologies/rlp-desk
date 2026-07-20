@@ -206,10 +206,13 @@ Tell the user:
    #   --consensus off|all|final-only         cross-engine consensus; claude leg reuses verifier/final-verifier model+effort (default: off)
    #   --consensus-model MODEL                per-US cross-verifier — codex leg only (default: gpt-5.6-terra:medium)
    #   --final-consensus-model MODEL          final cross-verifier — codex leg only (default: gpt-5.6-sol:high)
+   #   --consensus-parallel                   run claude+codex consensus verifiers concurrently (default: off)
    #   --verify-mode per-us|batch             (default: per-us)
    #   --cb-threshold N                       (default: 6)
    #   --max-iter N                           (default: 100)
    #   --iter-timeout N                       tmux only (default: 600)
+   #   --pre-gate-timeout N                   mechanical pre-gate soft timeout, seconds (default: 300)
+   #   --pre-gate-cmd-timeout N               layer-2 replay per-command timeout, seconds (default: 120)
    #   --debug                                debug logging
    #   --with-self-verification               post-campaign SV report
    #   --flywheel off|on-fail                 direction review on fail (default: off)
@@ -242,6 +245,8 @@ Tell the user:
    #   --cb-threshold N                       (default: 6)
    #   --max-iter N                           (default: 100)
    #   --iter-timeout N                       tmux only (default: 600)
+   #   --pre-gate-timeout N                   mechanical pre-gate soft timeout, seconds (default: 300)
+   #   --pre-gate-cmd-timeout N               layer-2 replay per-command timeout, seconds (default: 120)
    #   --debug                                debug logging
    #   --with-self-verification               post-campaign SV report
    #   --flywheel off|on-fail                 direction review on fail (default: off)
@@ -272,12 +277,15 @@ Options (parse from `$ARGUMENTS`):
   - `final-only`: cross-engine consensus only on the final ALL verify
 - `--consensus-model MODEL` (default: `gpt-5.6-terra:medium`) — per-US cross-verifier model. Configures the **codex leg only**; the claude leg of per-US consensus reuses `--verifier-model` (model + effort). Lighter weight for cost efficiency.
 - `--final-consensus-model MODEL` (default: `gpt-5.6-sol:high`) — final cross-verifier model. Configures the **codex leg only**; the claude leg of final consensus reuses `--final-verifier-model` (model + effort). Stricter. Note: spark is not allowed here (100k output limit).
+- `--consensus-parallel` (default: OFF) — run the claude and codex consensus verifiers **concurrently** (claude in the verifier pane, codex in a 4th consensus pane) instead of sequentially. Both verdict files are polled and merged with the same NO ENGINE PRIORITY rule (both must pass). Because the two verifiers re-run evidence at the same time, both prompts carry an evidence-isolation lock contract (acquire `.rlp-desk/logs/<slug>/runtime/evidence.lock` before any DB-mutating or E2E rerun). When off, the sequential consensus path is byte-identical to before.
 - `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
   - `per-us`: verify after each US, then final full verify of all AC
   - `batch`: verify only after all US done (legacy behavior)
 - `--cb-threshold N` — circuit breaker threshold: consecutive failures before BLOCKED (default: 6). When `--consensus` is not `off`, effective threshold is automatically doubled (e.g., default becomes 12).
 - `--max-iter N` (default: 100)
 - `--iter-timeout N` — per-iteration timeout in seconds (default: 600). Enforced in tmux mode only. Agent mode: not enforced (Agent() has no timeout API).
+- `--pre-gate-timeout N` — overall soft timeout in seconds for the mechanical pre-gate, bounding layer 1 (gate script) + layer 2 (execution_steps replay) combined (default: 300). See the pre-gate convention below.
+- `--pre-gate-cmd-timeout N` — per-command soft timeout in seconds for the layer-2 execution_steps replay (default: 120). A per-command timeout counts as a replay mismatch (fail).
 - `--debug` — enable debug logging (writes to ~/.claude/ralph-desk/analytics/<slug>/debug.log)
 - `--with-self-verification` — enable campaign-level self-verification analysis. After COMPLETE, Leader analyzes all iteration records (done-claims + verdicts) and generates a campaign self-verification summary with patterns and recommendations for next planning cycle. (Note: execution_steps and reasoning are ALWAYS recorded per governance §1f — this flag adds post-campaign analysis.)
 
@@ -399,6 +407,7 @@ External wrappers calling `--mode agent` must migrate to `--mode tmux` by 0.17.0
 1. Validate scaffold: `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
 2. **Codex CLI pre-validation**: If `--consensus` is not `off` OR any of `--worker-model` / `--verifier-model` / `--final-verifier-model` / `--consensus-model` / `--final-consensus-model` resolves to the **codex engine**, check that `codex` CLI exists in PATH. Resolve engine via `parse_model_flag()` (the DETECTED engine), NOT by "contains a colon" — a colon-bearing claude id like `claude-opus-4-8:high` or `opus:max` is still the claude engine and must NOT trip the codex check. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
 3. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
+3b. **Mechanical pre-gate (optional, TWO layers)**: runs AFTER each Worker done-claim and BEFORE dispatching the LLM Verifier, in order. **Layer 1** — if `.rlp-desk/plans/pregate-<slug>.sh` exists, the tmux leader runs it (plain shell script via `zsh`, from the project root); exit 0 = pass, non-zero = fail. **Layer 2** — after layer 1 passes, the leader replays the verify-* commands the Worker recorded in `done-claim.json` `execution_steps[]` (existing §1f schema) and compares each replayed exit code to the CLAIMED `exit_code` (EQUALITY — a `verify_red` claiming non-zero that replays to the same non-zero is a MATCH; claimed 0 / actual ≠0 is a FAIL). Only `^verify*` steps with a non-null command that begins with an allowlisted tool and contains no denylisted pattern are replayed; others are skipped (logged, not run, not a fail). Per-command timeout is `--pre-gate-cmd-timeout` (default 120s); the whole pre-gate is bounded by `--pre-gate-timeout` (default 300s). On fail (either layer) LLM verification is skipped and the Worker is redispatched with a fix contract (`PRE-GATE FAILURE (mechanical)` or `PRE-GATE FAILURE (replay mismatch)`). Keep layer-1 checks deterministic only (compile / lint / file existence / test count) — no LLM-judgment checks; replay only catches false claims, so command omission / test sufficiency stay the Verifier's job. `init` scaffolds a commented `pregate-<slug>.sh.example`; copy it to `pregate-<slug>.sh` to activate layer 1 (layer 2 needs no scaffold — it reads done-claim). Absent gate + no eligible steps = no-op. The pre-gate can only early-FAIL — it never produces a pass (Iron Law preserved; see governance §3a).
 4. Clean previous `done-claim.json`, `verify-verdict.json`.
 5. **Always**: write baseline log entry to `.rlp-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
 6. If `--debug`: also create/clear `~/.claude/ralph-desk/analytics/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> ~/.claude/ralph-desk/analytics/<slug>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.

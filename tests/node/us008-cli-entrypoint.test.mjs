@@ -172,6 +172,9 @@ test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env
       '--iter-timeout', '900',
       '--cb-threshold', '4',
       '--consensus', 'final-only',
+      '--consensus-parallel',
+      '--pre-gate-timeout', '120',
+      '--pre-gate-cmd-timeout', '45',
       '--lock-worker-model',
       '--autonomous',
       '--lane-strict',
@@ -205,6 +208,9 @@ test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env
   assert.equal(spawned.env.ITER_TIMEOUT, '900');
   assert.equal(spawned.env.CB_THRESHOLD, '4');
   assert.equal(spawned.env.CONSENSUS_MODE, 'final-only');
+  assert.equal(spawned.env.RLP_CONSENSUS_PARALLEL, '1', 'Feature 2: --consensus-parallel forwards RLP_CONSENSUS_PARALLEL=1');
+  assert.equal(spawned.env.RLP_PREGATE_TIMEOUT, '120', 'Feature 1: --pre-gate-timeout forwards RLP_PREGATE_TIMEOUT');
+  assert.equal(spawned.env.RLP_PREGATE_CMD_TIMEOUT, '45', 'Feature 1 L2: --pre-gate-cmd-timeout forwards RLP_PREGATE_CMD_TIMEOUT');
   assert.equal(spawned.env.LOCK_WORKER_MODEL, '1');
   assert.equal(spawned.env.AUTONOMOUS_MODE, '1');
   assert.equal(spawned.env.LANE_MODE, 'strict');
@@ -271,6 +277,9 @@ test('US-008 AC8.2 boundary: bare `run <slug>` now defaults to --mode tmux and a
   assert.equal(spawned.env.CB_THRESHOLD, '6', 'default cb-threshold');
   assert.equal(spawned.env.VERIFY_MODE, 'per-us', 'default verify-mode');
   assert.equal(spawned.env.CONSENSUS_MODE, 'off', 'default consensus');
+  assert.equal(spawned.env.RLP_CONSENSUS_PARALLEL, '0', 'Feature 2: parallel consensus OFF by default');
+  assert.equal(spawned.env.RLP_PREGATE_TIMEOUT, '300', 'Feature 1: default pre-gate timeout 300s');
+  assert.equal(spawned.env.RLP_PREGATE_CMD_TIMEOUT, '120', 'Feature 1 L2: default replay per-command timeout 120s');
 });
 
 test('US-008 AC8.2 negative: the run command rejects unknown flags instead of launching with a silent parse failure', async () => {
@@ -313,10 +322,13 @@ test('US-008 AC8.3 boundary: node src/node/run.mjs --help includes every run fla
     '--consensus',
     '--consensus-model',
     '--final-consensus-model',
+    '--consensus-parallel',
     '--verify-mode',
     '--cb-threshold',
     '--max-iter',
     '--iter-timeout',
+    '--pre-gate-timeout',
+    '--pre-gate-cmd-timeout',
     '--debug',
     '--autonomous',
     '--with-self-verification',

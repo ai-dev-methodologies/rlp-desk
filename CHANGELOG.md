@@ -9,6 +9,32 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.7] — 2026-07-20
+
+### Added
+- **Two-layer mechanical pre-gate (verification layering).** Before dispatching
+  the expensive LLM verifier, the leader now runs: (Layer 1) an optional
+  campaign-static gate script `.rlp-desk/plans/pregate-<slug>.sh` (absent =
+  no-op; soft timeout via `--pre-gate-timeout`, default 300s), then (Layer 2)
+  a replay gate that re-executes the `verify*` commands the worker recorded in
+  done-claim `execution_steps[]` and compares actual vs claimed exit codes
+  (equality — a `verify_red` claiming nonzero that replays nonzero matches).
+  Only allowlisted test/check commands are replayed (dangerous patterns are
+  skipped, never executed); per-command timeout via `--pre-gate-cmd-timeout`
+  (default 120s). Any failure skips LLM verification and redispatches the
+  worker with the mechanical output as a `PRE-GATE FAILURE` fix contract.
+  Pre-gate failures use a separate counter (not CB `consecutive_failures`);
+  3 same-US pre-gate failures force a full LLM verifier round. Iron Law
+  compatible: the pre-gate only produces early FAILs — it never creates a
+  pass, and full LLM verification always runs when it passes.
+- **Parallel consensus verification** behind `--consensus-parallel`
+  (default OFF; sequential behavior unchanged when off). When on, the claude
+  verdict and codex cross-check run simultaneously (dedicated 4th tmux pane),
+  with an evidence-isolation lock contract injected into both verifier
+  prompts: DB-mutating/E2E evidence reruns serialize on a leader-provisioned
+  mutex while static/unit/file checks stay parallel. Verdict merge and
+  NO ENGINE PRIORITY semantics are unchanged (single shared finalize path).
+
 ## [0.22.6] — 2026-07-20
 
 ### Fixed

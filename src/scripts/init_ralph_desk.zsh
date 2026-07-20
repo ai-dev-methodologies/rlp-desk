@@ -1176,6 +1176,53 @@ else echo "  · $F"; fi
 # Split test-spec into per-US files (no-op with warning if no US section markers)
 split_test_spec_by_us "$DESK/plans/test-spec-$SLUG.md" "$SLUG"
 
+# --- Mechanical pre-gate template (Feature 1) ---
+# Optional deterministic checks the LEADER runs before each LLM verification.
+# Copy pregate-<slug>.sh.example → pregate-<slug>.sh to activate; absent = no-op.
+F="$DESK/plans/pregate-$SLUG.sh.example"
+if [[ ! -f "$F" ]]; then
+  cat > "$F" <<EOF
+#!/usr/bin/env zsh
+# Mechanical pre-gate for campaign: $SLUG
+#
+# HOW IT WORKS
+#   Rename this file to  pregate-$SLUG.sh  to activate it.
+#   The leader runs it (from the project root) AFTER the Worker claims done and
+#   BEFORE dispatching the LLM Verifier. Exit 0 = pass (LLM verification runs as
+#   usual). Non-zero exit = FAIL: the leader SKIPS LLM verification and
+#   redispatches the Worker, using the tail of this script's output as the fix
+#   contract. It can ONLY early-FAIL — it never produces a pass verdict, so the
+#   normal Verifier still runs on every pass (Iron Law preserved).
+#
+#   This file is LAYER 1 (campaign-static checks). LAYER 2 runs automatically with
+#   no scaffold: after layer 1 passes, the leader replays the verify-* commands you
+#   recorded in done-claim.json execution_steps and fails if a claimed exit code
+#   does not reproduce. See governance §3a.
+#
+# CONTRACT (keep it strict)
+#   - DETERMINISTIC checks only: compile/build, lint/typecheck, required-file
+#     existence, "tests actually ran" (test count > 0). NO LLM-judgment checks.
+#   - Fast and side-effect-free. Soft timeout defaults to 300s
+#     (override: run.mjs --pre-gate-timeout N, or RLP_PREGATE_TIMEOUT env).
+#   - Print WHY it failed to stdout/stderr — that tail becomes the fix contract.
+#
+# EXAMPLES (uncomment + adapt; each failing check should exit non-zero)
+#   # 1) required entrypoint exists
+#   # [[ -f src/index.ts ]] || { echo "missing src/index.ts"; exit 1; }
+#
+#   # 2) typecheck compiles (catches TS2307 etc. — a 30s check, not an opus round)
+#   # npx tsc --noEmit || { echo "typecheck failed"; exit 1; }
+#
+#   # 3) tests actually ran (count > 0), not "0 tests"
+#   # out=\$(npm test 2>&1) || { echo "\$out" | tail -40; exit 1; }
+#   # echo "\$out" | grep -qE '[1-9][0-9]* (passing|passed|tests)' || {
+#   #   echo "0 tests ran — did the suite get wired up?"; exit 1; }
+
+exit 0
+EOF
+  echo "  + $F"
+else echo "  · $F"; fi
+
 # --- .gitignore for runtime artifacts ---
 GITIGNORE="$ROOT/.gitignore"
 MARKER="# RLP Desk runtime artifacts"

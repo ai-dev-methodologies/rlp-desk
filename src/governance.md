@@ -390,8 +390,63 @@ The fast gate fails immediately if any pollForSignal call site lacks a `_handleP
 ## 3. State Flow
 
 ```
-RUNNING → DONE_CLAIMED → VERIFYING → COMPLETE | CONTINUE | BLOCKED
+RUNNING → DONE_CLAIMED → [PRE-GATE] → VERIFYING → COMPLETE | CONTINUE | BLOCKED
 ```
+
+### 3a. Mechanical Pre-Gate (early-FAIL only — Iron Law compatible)
+
+An optional leader-side mechanical pre-gate runs AFTER the Worker claims done and
+BEFORE any LLM Verifier is dispatched. It has **two layers**, both at that same
+insertion point, in order:
+
+- **Layer 1 — static gate script** (`.rlp-desk/plans/pregate-<slug>.sh`): campaign
+  deterministic checks only (compile / lint / file existence / test count).
+- **Layer 2 — execution_steps replay**: after Layer 1 passes, the Leader re-runs
+  the verification commands the Worker itself recorded in `done-claim.json`
+  `execution_steps[]` (existing §1f `step`/`ac_id`/`command`/`exit_code` schema — no
+  new schema) and compares each replayed exit code to the CLAIMED `exit_code`.
+  - Only steps whose `step` matches `^verify*`, whose `command` is non-null, and
+    whose command begins with an allowlisted tool (`npm npx pnpm yarn node python(3)
+    pytest go cargo make tsc eslint vitest jest playwright zsh bash sh jq diff grep
+    test`) AND contains none of the denylist patterns (`rm `, `git push`,
+    `git commit`, `curl `, `wget `, `sudo `, `> /`, `>> /`) are eligible. Ineligible
+    steps are SKIPPED (logged, not run, not a fail).
+  - **Comparison is EQUALITY, not "must be 0"**: a `verify_red` step whose claimed
+    `exit_code` is non-zero by design (RED phase) that replays to the same non-zero
+    code is a MATCH. A mismatch — especially claimed 0, actual ≠0 — is a FAIL.
+  - Each command runs from the campaign root with a per-command soft timeout
+    (`--pre-gate-cmd-timeout`, default 120s); the whole pre-gate (Layer 1 + Layer 2)
+    is bounded by `--pre-gate-timeout` (default 300s). A per-command timeout counts
+    as a mismatch (fail).
+
+The pre-gate is **early-FAIL only** — neither layer can ever produce a `pass`
+verdict. On pass (or when absent / no eligible steps) the full LLM verification
+runs unchanged, so no Iron Law or Evidence Gate is ever bypassed. On fail (either
+layer), the Leader skips LLM verification and redispatches the Worker with a fix
+contract (`PRE-GATE FAILURE (mechanical)` for Layer 1, `PRE-GATE FAILURE (replay
+mismatch)` for Layer 2). A pre-gate fail does NOT touch the consecutive-failure
+circuit breaker (it has its own counter, shared across both layers); when the same
+US fails the pre-gate `PREGATE_FAIL_CAP` times (default 3), the Leader forces one
+full LLM verifier round whose verdict then drives the CB as normal.
+
+**Division of labor**: replay (Layer 2) only catches "the claimed command is
+false" — command OMISSION, insufficient tests, and tautological checks remain the
+LLM Verifier's sufficiency / anti-gaming responsibility (§1a, §1f). The pre-gate
+never creates a pass; full LLM verification always runs after it passes. Purpose:
+stop a 30-second mechanical defect (missing file, type error, zero tests, a claimed
+result that does not reproduce) from burning a full LLM verification round.
+
+### 3b. Parallel Consensus Evidence Isolation (`--consensus-parallel`)
+
+When consensus runs the two verifiers concurrently (opt-in, default OFF), both
+re-run evidence at the same time. A DB-mutating or E2E rerun on one side can
+false-FAIL the other (it sees in-flight fixture rows during a "no residue"
+check). Both verifier prompts therefore carry an evidence-isolation contract:
+before any DB-mutating or E2E rerun, acquire a shared lock
+(`.rlp-desk/logs/<slug>/runtime/evidence.lock`, mkdir-atomic, wait up to 120s)
+and release it immediately after. Static, unit, file-existence and read-only
+checks stay parallel. The merge rule (NO ENGINE PRIORITY: both must pass) is
+identical to sequential consensus.
 
 ## 4. Model Routing
 

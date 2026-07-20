@@ -93,6 +93,15 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Recovery | `scripts/postinstall.js:163-167` walks installed dir, chmod 0o644 BEFORE copy; user-facing fallback documented in S1 runbook (`npm uninstall -g` first) |
 | Reference | scripts/postinstall.js unlock-walk; v0.15.4 S1 rollback runbook |
 
+### F2.4 — Parallel consensus fixture interference (Feature 2)
+| Field | Value |
+|---|---|
+| Symptom | With `--consensus-parallel`, one verifier false-FAILs on a "no residue" / clean-state check because the other verifier's concurrent DB-mutating or E2E rerun left in-flight fixture rows visible during the window |
+| Root cause | Both consensus verifiers re-run evidence at the same time; DB-mutating / E2E reruns are not isolated across the two processes |
+| Detection | `tests/test_consensus_parallel.sh` (evidence-lock interference case — lock held during a mutation window blocks the second acquire) |
+| Recovery | Both parallel verifier prompts carry an evidence-isolation contract (single source: `_emit_evidence_lock_contract`) instructing them to acquire `.rlp-desk/logs/<slug>/runtime/evidence.lock` (mkdir-atomic, wait up to 120s) before any DB-mutating/E2E rerun and release after. Static/unit/file checks stay parallel. Off by default → no exposure unless opted in |
+| Reference | `_evidence_lock` / `_emit_evidence_lock_contract` in `lib_ralph_desk.zsh`; `run_consensus_verification_parallel` in `run_ralph_desk.zsh`; governance §3b |
+
 ---
 
 ## §3 — Telemetry & observability (v0.15.4+)
