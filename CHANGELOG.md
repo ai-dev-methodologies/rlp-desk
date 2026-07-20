@@ -9,6 +9,25 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.11] — 2026-07-21
+
+### Fixed
+- **Off-case/synonym verdicts can no longer false-BLOCK a campaign.** The zsh
+  leader now normalizes every verdict read (mirroring the shared
+  verdict-schema contract) before branching or feeding the
+  unrecognized-verdicts circuit breaker; reporting normalizes once at its
+  ingestion boundaries so all five report sections agree.
+- **`--debug` now works on the production tmux path** (it was parsed but
+  never forwarded to the zsh leader; only `DEBUG=1` in the environment
+  worked).
+- **git snapshot errors are fail-closed.** A failing git read during the t0
+  preexisting-dirty capture or F-8 recovery now blocks with a clear
+  infra_failure instead of silently passing as "clean tree"; a git error in
+  the commit-integrity oracle forces a full verifier round without counting
+  toward the oracle failure cap — an error can never corroborate a commit
+  claim. Dependency checks run before the snapshot so missing-tool errors
+  keep their actionable message.
+
 ## [0.22.10] — 2026-07-21
 
 ### Fixed
