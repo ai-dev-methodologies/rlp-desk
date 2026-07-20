@@ -9,6 +9,22 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.10] — 2026-07-21
+
+### Fixed
+- **Parallel-consensus pane lifecycle parity.** The 4th (consensus) pane is
+  now torn down by cleanup() like the worker/verifier panes, and a per-side
+  liveness check in the parallel poll classifies a mid-round pane death as an
+  infrastructure failure within ~2 poll ticks with correct attribution —
+  previously it burned the full submit-anchored timeout window under a
+  misattributed reason, and the pane could outlive the campaign.
+- **Done-claim sentinel telemetry recorded only the last iteration's sample**
+  (per-iteration mark overwrote the pending entry). The lock→close-out
+  duration now emits at the archival site each iteration on both leaders;
+  failure-modes F3.3 retired.
+- us006 tmux test flake (deterministic pane-readiness handshake) and five
+  unrunnable legacy audit scripts archived to `tests/legacy-audit-archive/`.
+
 ## [0.22.9] — 2026-07-20
 
 ### Added — campaign hardening v1 (post-mortem driven)
