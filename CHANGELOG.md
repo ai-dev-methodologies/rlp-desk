@@ -9,6 +9,27 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.12] — 2026-07-21
+
+### Added — plan gates (field post-mortem: 6 BLOCKED / 9 manual restarts from an ungated PRD)
+- **Unattended-completion mandate (IL-2½).** Campaigns must run with zero
+  owner interaction: PRDs gain a REQUIRED "Delegated Decisions" section
+  (scaffolded by init), owner-decision-style acceptance criteria are banned
+  (legitimate BLOCK reasons are a closed 3-set: irreversible destruction,
+  contract change, protected-path violation — stated in the worker prompt),
+  and the brainstorm completion gate checks the PRD can complete unattended.
+- **Gate-receipt binding.** `gate-receipt <slug>` records a deterministic
+  PRD content hash + scorecard when the brainstorm gate passes; init/run
+  recompute and compare, so a PRD written outside the gate or edited after
+  it (new US, changed AC) is detected and surfaced loudly with a documented
+  revise flow. Pre-receipt campaigns get a backward-compatible warning only.
+- **`--worktree`**: opt-in campaign isolation in a leader-provisioned git
+  worktree (campaign/<slug> branch, scaffold copy); shared-checkout edits can
+  no longer contaminate campaign gates. Default path unchanged;
+  `clean <slug> --remove-worktree` cleans up.
+- BLOCKED sentinels carry a closed-set `cause` field
+  (infra|contract_gap|defect) for automatic routing.
+
 ## [0.22.11] — 2026-07-21
 
 ### Fixed
