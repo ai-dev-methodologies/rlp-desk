@@ -97,6 +97,14 @@ VERIFIER_MODEL="${VERIFIER_MODEL:-sonnet}"
 FINAL_VERIFIER_MODEL="${FINAL_VERIFIER_MODEL:-opus}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 ITER_TIMEOUT="${ITER_TIMEOUT:-600}"
+# ③/④ request-b: submit-anchored timeout. ITER_TIMEOUT is the TASK budget and
+# now counts from the first progress signal, not from dispatch. SUBMISSION_TIMEOUT
+# bounds how long the leader waits for that first progress signal before
+# classifying the dispatch as a SUBMISSION failure (banner-delayed / prompt not
+# consumed) and re-dispatching — instead of burning the task budget and hard-
+# BLOCKing. SUBMISSION_MAX_REDISPATCH caps the re-dispatch cycles per dispatch.
+SUBMISSION_TIMEOUT="${SUBMISSION_TIMEOUT:-90}"
+SUBMISSION_MAX_REDISPATCH="${SUBMISSION_MAX_REDISPATCH:-2}"
 HEARTBEAT_STALE_THRESHOLD="${HEARTBEAT_STALE_THRESHOLD:-120}"
 MAX_RESTARTS="${MAX_RESTARTS:-3}"
 IDLE_NUDGE_THRESHOLD="${IDLE_NUDGE_THRESHOLD:-30}"
@@ -105,6 +113,8 @@ MAX_NUDGES="${MAX_NUDGES:-3}"
 _validate_int_knob MAX_ITER 20 1
 _validate_int_knob POLL_INTERVAL 5 1
 _validate_int_knob ITER_TIMEOUT 600 1
+_validate_int_knob SUBMISSION_TIMEOUT 90 1
+_validate_int_knob SUBMISSION_MAX_REDISPATCH 2 0
 _validate_int_knob HEARTBEAT_STALE_THRESHOLD 120 1
 _validate_int_knob MAX_RESTARTS 3 0
 _validate_int_knob IDLE_NUDGE_THRESHOLD 30 1
@@ -612,6 +622,16 @@ launch_worker_claude() {
   local worker_launch="$4"
 
   log "  Launching Worker claude in pane $pane_id..."
+  # request-b seal #2 (same gap as launch_verifier_claude): lingering-process
+  # guard so a re-dispatch onto a pane still hosting an idle claude TUI starts a
+  # fresh process instead of pasting the shell command into the chat.
+  local _pre_cmd
+  _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
+  if [[ "$_pre_cmd" != "zsh" && "$_pre_cmd" != "bash" && -n "$_pre_cmd" ]]; then
+    log_debug "Worker pane has lingering process ($_pre_cmd), cleaning..."
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
+  fi
   paste_to_pane "$pane_id" "$worker_launch"
   tmux send-keys -t "$pane_id" C-m
 
@@ -782,6 +802,19 @@ launch_verifier_claude() {
   local verifier_launch="$4"
 
   log "  Launching Verifier claude in pane $pane_id..."
+  # request-b seal #2: lingering-process guard (mirrors launch_worker_codex /
+  # launch_verifier_codex). Without it, a submit-anchored RE-DISPATCH lands on a
+  # pane still hosting the previous idle claude TUI — the shell launch string is
+  # then pasted INTO the claude chat as a user message (corrupting the verifier)
+  # instead of starting a fresh process. Fires exactly in the banner-delay case
+  # the re-dispatch exists to recover.
+  local _pre_cmd
+  _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
+  if [[ "$_pre_cmd" != "zsh" && "$_pre_cmd" != "bash" && -n "$_pre_cmd" ]]; then
+    log_debug "Verifier pane has lingering process ($_pre_cmd), cleaning..."
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
+    tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
+  fi
   paste_to_pane "$pane_id" "$verifier_launch"
   tmux send-keys -t "$pane_id" C-m
 
@@ -829,6 +862,52 @@ launch_verifier_claude() {
 # and extended with a commit-SHA anchor + append-then-lock; the ALL completion
 # record writer (_append_verified_ledger_all) and derive_verification_mode
 # live alongside it there.
+
+# ② F-8 auto-commit robustness (request-b): stage + commit the Worker's OWN
+# uncommitted files, tolerating a campaign-artifact path that lives under a
+# .gitignore rule (evidence dirs like test-results/ are force-tracked by repo
+# convention, so a NEW receipt/screenshot there makes a plain `git add` refuse
+# with "paths ignored by one of your .gitignore files"). Try a normal `git add`
+# first; ONLY if that fails retry `git add -f`, STRICTLY limited to the same
+# already-scoped worker-file list (never `-A`, never a broadened path) — the list
+# was already narrowed to exclude CAMPAIGN_PREEXISTING_DIRTY upstream, so a
+# force-add cannot sweep an operator's or non-campaign file. Returns 0 when the
+# work is committed, 1 when add/commit could not complete (caller downgrades to
+# warn+carryover+continue, NOT a hard BLOCK — the Verifier is the real gate).
+_bug8_autocommit() {
+  local root="$1" msg="$2"; shift 2
+  local -a files=("$@")
+  (( ${#files} == 0 )) && return 1
+  # --literal-pathspecs (global flag; NOTE: there is no core.literalPathspecs
+  # config key — `-c` would be silently ignored): the list comes verbatim from
+  # `git diff --name-only`, so a file whose NAME contains a glob metacharacter
+  # (`*`, `?`, `[`) must not re-glob at add time — without this, `add -f -- '*'`
+  # would sweep the entire tree (operator preexisting-dirty + gitignored files)
+  # past the comm scoping.
+  if ! git --literal-pathspecs -C "$root" add -- "${files[@]}" 2>/dev/null; then
+    # An ignored campaign-artifact path made the plain add refuse. Force-add, but
+    # ONLY the pre-scoped worker files — same list, never broadened.
+    git --literal-pathspecs -C "$root" add -f -- "${files[@]}" 2>/dev/null || return 1
+  fi
+  git -C "$root" commit -q -m "$msg" 2>/dev/null || return 1
+  return 0
+}
+
+# ② F-8 carryover (request-b): when the leader-recovery auto-commit cannot
+# complete even with a scoped force-add, the Worker's uncommitted file list is
+# appended here so the NEXT worker fix contract re-commits it (write_worker_trigger
+# injects then consumes this record). This exists so an unrecoverable git state is
+# a graceful continue, not a campaign-killing BLOCK.
+_bug8_carryover_file() { print -r -- "${BUG8_CARRYOVER_FILE:-$LOGS_DIR/bug8-carryover.txt}"; }
+_bug8_record_carryover() {
+  local us_id="$1" files="$2"
+  [[ -n "$files" ]] || return 0
+  local dest; dest=$(_bug8_carryover_file)
+  {
+    echo "# us_id=$us_id uncommitted at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s\n' "$files"
+  } >> "$dest" 2>/dev/null || true
+}
 
 # Bug #8 PR-B (codex critic P1.2 fix): shared 4-way gate used by both
 # handle_worker_exit_codex and the inline-polling A4 path. Returns:
@@ -971,17 +1050,21 @@ _bug8_check_synth_allowed() {
         # as success: proceed to synthesis (the Verifier still gates correctness).
         log "  Bug #8 F-8 (D-20): Worker files already committed (commit race) — nothing to auto-commit; proceeding."
         log_debug "[GOV] iter=$iter bug8=autocommit_noop_already_committed us_id=$us_id files='$_bug8_first5'"
-      elif git -C "$ROOT" add -- "${_bug8_add[@]}" && git -C "$ROOT" commit -q -m "chore(leader-recovery): commit Worker's uncommitted $us_id changes (Bug #8 F-8)"; then
+      elif _bug8_autocommit "$ROOT" "chore(leader-recovery): commit Worker's uncommitted $us_id changes (Bug #8 F-8)" "${_bug8_add[@]}"; then
         log "  Leader-recovery auto-commit OK (Worker files only) — Verifier will gate correctness."
       else
-        log_error "  Bug #8: leader-recovery auto-commit failed. Refusing synthesis. files: $_bug8_first5"
-        log_debug "[GOV] iter=$iter bug8=block_autocommit_failed us_id=$us_id files='$_bug8_first5'"
-        write_blocked_sentinel \
-          "worker_incomplete_uncommitted: leader-recovery auto-commit failed ($_bug8_first5)" \
-          "$us_id" \
-          "metric_failure"
-        _emit_a4_fallback_audit "$us_id" "$iter" "blocked_autocommit_failed"
-        return 1
+        # ② request-b: the auto-commit could not complete even with a scoped
+        # `git add -f` (a genuinely unwritable index / broken git state). A new
+        # campaign-artifact under a gitignored evidence path is now recoverable
+        # via the force-add above, so reaching here means an infra-level git
+        # failure — which must NOT hard-BLOCK a campaign whose work is otherwise
+        # done. Warn loudly, carry the uncommitted list into the next Worker fix
+        # contract, and proceed to synthesis: the Verifier remains the
+        # completeness gate (it FAILs on missing/uncommitted deliverables → fix
+        # loop), so "no false PASS" is preserved without killing the run.
+        log_error "  Bug #8 F-8: leader-recovery auto-commit could NOT complete even with a scoped force-add — proceeding WITHOUT commit; carrying files to the next fix contract (Verifier remains the completeness gate). Uncommitted: $_bug8_first5"
+        log_debug "[GOV] iter=$iter bug8=autocommit_failed_continue us_id=$us_id files='$_bug8_first5'"
+        _bug8_record_carryover "$us_id" "$_bug8_worker_files"
       fi
     fi
   fi
@@ -2199,6 +2282,22 @@ write_worker_trigger() {
       cat "$fix_contract_file"
     fi
 
+    # ② F-8 carryover (request-b): uncommitted deliverables from a prior
+    # leader-recovery auto-commit that could not complete. Surface them so THIS
+    # Worker re-commits them, then consume (delete) the record so it is injected
+    # exactly once. Force-add hint covers the gitignored evidence-path case.
+    local _bug8_carry; _bug8_carry=$(_bug8_carryover_file)
+    if [[ -f "$_bug8_carry" ]]; then
+      echo ""
+      echo "---"
+      echo "## IMPORTANT: Uncommitted deliverables carried over (leader-recovery)"
+      echo "A prior iteration produced the files below but the Leader could not commit them."
+      echo "You MUST \`git add\` and \`git commit\` them as part of this iteration"
+      echo "(use \`git add -f <path>\` if a file lives under a gitignored evidence path such as test-results/):"
+      cat "$_bug8_carry"
+      rm -f "$_bug8_carry" 2>/dev/null || true
+    fi
+
     # Per-US mode: tell Worker exactly which US to work on
     if [[ "$VERIFY_MODE" = "per-us" && -n "$US_LIST" ]]; then
       if [[ -n "$next_us" ]]; then
@@ -2657,6 +2756,18 @@ poll_for_signal() {
   local poll_start
   poll_start=$(date +%s)
   _POLL_A4_ALREADY_REAPED=0
+  # ④ request-b seal #4/#7: submit-anchored timeout, single-sourced here so the
+  # worker poll, the sequential claude verifier, AND the final verifier all use
+  # the same anchoring as the consensus codex path (no split-brain). The task
+  # budget (ITER_TIMEOUT) counts from the FIRST observed execution-start signal;
+  # before that only SUBMISSION_TIMEOUT applies per window, with bounded Enter
+  # re-injection to recover a prompt sitting unsubmitted behind a startup/quota
+  # banner. If the prompt never starts, this returns 1 early classified as a
+  # SUBMISSION failure — the caller's existing recovery runs after ~SUBMISSION
+  # seconds instead of silently burning the whole ITER_TIMEOUT (the field
+  # amplification that turned an unsubmitted prompt into a timeout BLOCK).
+  local _pfs_first_progress_ts=0
+  local _pfs_resubmits=0
 
   # Initialize idle tracking for this pane
   LAST_PANE_CONTENT[$pane_id]=""
@@ -2667,10 +2778,30 @@ poll_for_signal() {
     now=$(date +%s)
     local elapsed=$(( now - poll_start ))
 
-    # Per-iteration timeout check
-    if (( elapsed >= ITER_TIMEOUT )); then
-      log_error "$role timed out after ${ITER_TIMEOUT}s for iteration $ITERATION"
-      return 1  # timeout
+    # Submit-anchored timeout check (replaces the dispatch-anchored check).
+    # Defensive ${:-} defaults: poll_for_signal is also exercised by extraction
+    # harnesses that may not source the config block; unset knobs must degrade
+    # to the shipped defaults, never to zero-width arithmetic.
+    if (( _pfs_first_progress_ts == 0 )) && (( $+functions[_pane_shows_progress] )) && _pane_shows_progress "$pane_id"; then
+      _pfs_first_progress_ts=$now
+      log_debug "[FLOW] iter=$ITERATION role=$role first_progress_ts=$now (ITER_TIMEOUT re-based to first progress)"
+    fi
+    if (( _pfs_first_progress_ts > 0 )); then
+      if (( now - _pfs_first_progress_ts >= ITER_TIMEOUT )); then
+        log_error "$role timed out after ${ITER_TIMEOUT}s of task time (submit-anchored) for iteration $ITERATION"
+        return 1  # timeout
+      fi
+    elif (( now - poll_start >= ${SUBMISSION_TIMEOUT:-90} * (_pfs_resubmits + 1) )); then
+      if (( _pfs_resubmits < ${SUBMISSION_MAX_REDISPATCH:-2} )); then
+        (( _pfs_resubmits += 1 ))
+        log "  $role: no execution-start signal after ${elapsed}s — re-injecting Enter (submission recovery $_pfs_resubmits/$SUBMISSION_MAX_REDISPATCH)"
+        log_debug "[GOV] iter=$ITERATION role=$role submission_recovery=$_pfs_resubmits elapsed=${elapsed}s"
+        tmux send-keys -t "$pane_id" C-m 2>/dev/null || true
+      else
+        log_error "$role: prompt never started executing (${elapsed}s, $_pfs_resubmits Enter re-injections) — SUBMISSION failure, not a task timeout"
+        log_debug "[GOV] iter=$ITERATION role=$role submission_failure=1 elapsed=${elapsed}s"
+        return 1  # submission failure — early, budget not burned
+      fi
     fi
 
     # Check if signal file appeared
@@ -3065,6 +3196,10 @@ run_single_verifier() {
     local codex_poll_start
     codex_poll_start=$(date +%s)
     local _verdict_detected_at=0
+    # ④ submit-anchored timeout state (request-b): first_progress_ts anchors the
+    # task deadline at the first execution-start signal (not dispatch); the
+    # re-dispatch counter bounds banner-delayed "submission failure" retries.
+    local _first_progress_ts=0 _redispatch_count=0
     VERIFIER_ABORT_REASON=""
     while true; do
       # Wait for verdict file with valid JSON. D-26 (codex review, MEDIUM):
@@ -3093,27 +3228,62 @@ run_single_verifier() {
           break
         fi
       fi
-      # Quota exhaustion is terminal for this run: codex prints its usage-limit
-      # error and parks at the prompt, so no verdict can ever arrive. Abort now
-      # rather than polling out the remaining ITER_TIMEOUT. Only meaningful
-      # before a verdict exists — once one is on disk, finish reading it.
+      # Pre-verdict: capture the pane ONCE for both quota detection and the ④
+      # submit-anchored timeout (first-progress detection). Once a verdict is on
+      # disk the grace path above owns termination, so this is skipped.
       if (( _verdict_detected_at == 0 )); then
         local _vq_pane
         _vq_pane=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null || true)
+        # Quota exhaustion is terminal: codex prints its usage-limit error and
+        # parks, so no verdict can arrive. Abort now rather than polling out.
+        # (detect_quota_exhausted stays strict — a non-exhaustion warning banner
+        # like "resets available" / weekly-limit does NOT match, so it does not
+        # abort; it just means we keep waiting / re-dispatch below — request ③.3.)
         if detect_quota_exhausted "$_vq_pane"; then
           VERIFIER_ABORT_REASON="Codex verifier$suffix aborted: provider usage limit reached (quota exhausted — retry after the reset)"
           log_error "$VERIFIER_ABORT_REASON"
           return 1
         fi
+        # ④ anchor: record the first execution-start signal timestamp.
+        if (( _first_progress_ts == 0 )) && _pane_shows_progress "$_vq_pane"; then
+          _first_progress_ts=$(date +%s)
+          log_debug "[FLOW] iter=$iter codex verifier$suffix first_progress_ts=$_first_progress_ts (timeout re-based to first progress)"
+        fi
       fi
-      local codex_elapsed=$(( $(date +%s) - codex_poll_start ))
-      if (( codex_elapsed >= ITER_TIMEOUT )); then
-        if (( _verdict_detected_at > 0 )); then
+      # ④ submit-anchored deadline. ITER_TIMEOUT counts from first progress, not
+      # dispatch; a no-first-progress submit window classifies a SUBMISSION
+      # failure and re-dispatches (bounded) rather than hard-timing-out — so a
+      # banner-delayed submission never becomes a "verifier timed out" BLOCK.
+      if (( _verdict_detected_at == 0 )); then
+        local _dstate
+        _dstate=$(_submission_deadline_state "$_first_progress_ts" "$codex_poll_start" "$(date +%s)" "$ITER_TIMEOUT" "$SUBMISSION_TIMEOUT")
+        case "$_dstate" in
+          task_timeout)
+            log_error "Codex verifier$suffix timed out after ${ITER_TIMEOUT}s (task budget, counted from first progress)"
+            return 1
+            ;;
+          submission_failure)
+            if (( _redispatch_count < SUBMISSION_MAX_REDISPATCH )); then
+              (( _redispatch_count++ ))
+              log "  Codex verifier$suffix: no execution-start signal within ${SUBMISSION_TIMEOUT}s (banner-delayed / prompt unsubmitted) — re-dispatching (${_redispatch_count}/${SUBMISSION_MAX_REDISPATCH})."
+              log_debug "[FLOW] iter=$iter codex verifier$suffix submission_failure redispatch=$_redispatch_count"
+              launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
+              codex_poll_start=$(date +%s)   # reset the submit window for the re-dispatch
+            else
+              VERIFIER_ABORT_REASON="Codex verifier$suffix never started (no execution-start signal after ${SUBMISSION_MAX_REDISPATCH} re-dispatches) — submission failure"
+              log_error "$VERIFIER_ABORT_REASON"
+              return 1
+            fi
+            ;;
+        esac
+      else
+        # Verdict present but this loop iteration didn't break (still inside the
+        # 30s finalize grace) — the ITER_TIMEOUT ceiling still applies as before.
+        local codex_elapsed=$(( $(date +%s) - codex_poll_start ))
+        if (( codex_elapsed >= ITER_TIMEOUT )); then
           log "  Codex verifier$suffix timed out waiting, but verdict exists. Proceeding."
           break
         fi
-        log_error "Codex verifier$suffix timed out after ${ITER_TIMEOUT}s"
-        return 1
       fi
       sleep "$POLL_INTERVAL"
     done
@@ -3572,10 +3742,18 @@ run_consensus_verification_parallel() {
   launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter" "$codex_launch"
   log_debug "[GOV] iter=$iter phase=consensus_parallel dispatched=both claude_pane=$VERIFIER_PANE codex_pane=$CONSENSUS_PANE"
 
-  # --- Poll BOTH verdict files until both present+valid, or ITER_TIMEOUT ---
+  # --- Poll BOTH verdict files until both present+valid, or the submit-anchored
+  # deadline. ④ (request-b): the ITER_TIMEOUT task budget counts from when BOTH
+  # sides are actually STARTED (running or already done), not from dispatch — a
+  # banner-delayed submission on either pane is re-dispatched (bounded) instead
+  # of burning the shared budget and hard-BLOCKing. This is the field-BLOCK site
+  # ("Consensus verification failed ... before verdict"). ---
   local _poll_start
   _poll_start=$(date +%s)
   local _claude_ok=0 _codex_ok=0
+  # Per-side first-progress + dispatch clocks + bounded re-dispatch counters.
+  local _cl_fp=0 _cx_fp=0 _cl_disp=$_poll_start _cx_disp=$_poll_start
+  local _cl_redisp=0 _cx_redisp=0 _both_started_ts=0
   while true; do
     # codex may write the legacy path; migrate only affects the canonical
     # VERDICT_FILE, so per-engine files are read directly here.
@@ -3585,22 +3763,67 @@ run_consensus_verification_parallel() {
       sleep 3   # small grace so a still-writing verifier finalizes its JSON
       break
     fi
-    local _elapsed=$(( $(date +%s) - _poll_start ))
-    if (( _elapsed >= ITER_TIMEOUT )); then
-      # One-side-missing / timeout = infrastructure failure, identical treatment
-      # to the sequential missing-verdict case (caller → infra_failure BLOCKED).
-      VERIFIER_ABORT_REASON="Parallel consensus verifier did not return a verdict within ${ITER_TIMEOUT}s (claude=$_claude_ok codex=$_codex_ok) — infrastructure failure"
-      log_error "$VERIFIER_ABORT_REASON"
-      return 1
+    local _now=$(date +%s)
+    # --- Per-side progress / quota detection (only while a side is unresolved) ---
+    if (( ! _claude_ok )); then
+      local _cl_pane
+      _cl_pane=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null || true)
+      if (( _cl_fp == 0 )) && _pane_shows_progress "$_cl_pane"; then _cl_fp=$_now; fi
     fi
-    # Codex quota exhaustion is terminal — abort early rather than polling out.
     if (( ! _codex_ok )); then
       local _vq_pane
       _vq_pane=$(tmux capture-pane -t "$CONSENSUS_PANE" -p 2>/dev/null || true)
+      # Quota exhaustion is terminal (strict detector: non-exhaustion warning
+      # banners do NOT match, so they don't abort — request ③.3).
       if detect_quota_exhausted "$_vq_pane"; then
         VERIFIER_ABORT_REASON="Parallel consensus codex aborted: provider usage limit reached (quota exhausted)"
         log_error "$VERIFIER_ABORT_REASON"
         return 1
+      fi
+      if (( _cx_fp == 0 )) && _pane_shows_progress "$_vq_pane"; then _cx_fp=$_now; fi
+    fi
+    # A side is "started" once it is running (progress seen) OR already done.
+    local _cl_started=0 _cx_started=0
+    (( _claude_ok || _cl_fp > 0 )) && _cl_started=1
+    (( _codex_ok  || _cx_fp > 0 )) && _cx_started=1
+    if (( _cl_started && _cx_started )); then
+      # Both running/done → anchor the task deadline here (once) and enforce it.
+      (( _both_started_ts == 0 )) && _both_started_ts=$_now
+      if (( _now - _both_started_ts >= ITER_TIMEOUT )); then
+        VERIFIER_ABORT_REASON="Parallel consensus verifier did not return a verdict within ${ITER_TIMEOUT}s after both started (claude=$_claude_ok codex=$_codex_ok) — timeout"
+        log_error "$VERIFIER_ABORT_REASON"
+        return 1
+      fi
+    else
+      # A side has not started (banner-delayed / prompt unsubmitted). Re-dispatch
+      # the stalled side(s) once their submit window elapses; only give up when
+      # re-dispatches are exhausted — never a bare task-timeout BLOCK for an
+      # unsubmitted prompt.
+      if (( ! _cl_started && _now - _cl_disp >= SUBMISSION_TIMEOUT )); then
+        if (( _cl_redisp < SUBMISSION_MAX_REDISPATCH )); then
+          (( _cl_redisp++ ))
+          log "  Parallel consensus claude: no execution-start signal within ${SUBMISSION_TIMEOUT}s — re-dispatching (${_cl_redisp}/${SUBMISSION_MAX_REDISPATCH})."
+          log_debug "[FLOW] iter=$iter consensus_parallel claude submission_failure redispatch=$_cl_redisp"
+          launch_verifier_claude "$VERIFIER_PANE" "$claude_prompt" "$iter" "$claude_launch" || true
+          _cl_disp=$(date +%s)
+        else
+          VERIFIER_ABORT_REASON="Parallel consensus claude never started (no start signal after ${SUBMISSION_MAX_REDISPATCH} re-dispatches) — submission failure"
+          log_error "$VERIFIER_ABORT_REASON"
+          return 1
+        fi
+      fi
+      if (( ! _cx_started && _now - _cx_disp >= SUBMISSION_TIMEOUT )); then
+        if (( _cx_redisp < SUBMISSION_MAX_REDISPATCH )); then
+          (( _cx_redisp++ ))
+          log "  Parallel consensus codex: no execution-start signal within ${SUBMISSION_TIMEOUT}s — re-dispatching (${_cx_redisp}/${SUBMISSION_MAX_REDISPATCH})."
+          log_debug "[FLOW] iter=$iter consensus_parallel codex submission_failure redispatch=$_cx_redisp"
+          launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter" "$codex_launch"
+          _cx_disp=$(date +%s)
+        else
+          VERIFIER_ABORT_REASON="Parallel consensus codex never started (no start signal after ${SUBMISSION_MAX_REDISPATCH} re-dispatches) — submission failure"
+          log_error "$VERIFIER_ABORT_REASON"
+          return 1
+        fi
       fi
     fi
     sleep "$POLL_INTERVAL"
@@ -3933,6 +4156,24 @@ main() {
 
   fi
 
+  # F-8 scope guard (F-19): snapshot the tracked files that are ALREADY dirty
+  # before the campaign touches anything. The F-8 leader-recovery auto-commit
+  # (Bug #8 Gate 3) must commit only the Worker's OWN edits and never sweep an
+  # operator's pre-existing uncommitted work into a Worker-recovery commit.
+  # `git diff --name-only HEAD` lists tracked files modified vs HEAD (staged or
+  # not); untracked cruft is excluded and is never auto-committed. Empty when the
+  # tree starts clean. Recorded once; excluded at recovery time in Gate 3.
+  # request-b seal #3: this capture MUST precede the resume-finalize
+  # derive_verification_mode call below — that call applies the ①b
+  # preexisting-dirty exclusion, which is empty/unset until this line runs.
+  # (Previously captured after the resume block, which nullified ①b on the
+  # primary resumed-campaign path — the exact field case it was built for.)
+  typeset -g CAMPAIGN_PREEXISTING_DIRTY
+  # NEW-4: same HEAD-or-empty-tree base as Gate 3, so the pre-existing-dirty snapshot
+  # and the recovery-time dirty check compare against the SAME baseline (the comm -23
+  # exclusion in Gate 3 only works if both lists are computed against the same base).
+  CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
+
   # v0.22.3 (AC6 dogfood finding): resume finalize. If the durable ledger
   # already PROVES completion (the confirmation basis: full coverage, SHA
   # resolves and matches HEAD, PRD hash matches, tree clean), dispatching a
@@ -4022,19 +4263,6 @@ main() {
 
   # Print security warning (governance.md s7: --dangerously-skip-permissions)
   print_security_warning
-
-  # F-8 scope guard (F-19): snapshot the tracked files that are ALREADY dirty
-  # before the campaign touches anything. The F-8 leader-recovery auto-commit
-  # (Bug #8 Gate 3) must commit only the Worker's OWN edits and never sweep an
-  # operator's pre-existing uncommitted work into a Worker-recovery commit.
-  # `git diff --name-only HEAD` lists tracked files modified vs HEAD (staged or
-  # not); untracked cruft is excluded and is never auto-committed. Empty when the
-  # tree starts clean. Recorded once; excluded at recovery time in Gate 3.
-  typeset -g CAMPAIGN_PREEXISTING_DIRTY
-  # NEW-4: same HEAD-or-empty-tree base as Gate 3, so the pre-existing-dirty snapshot
-  # and the recovery-time dirty check compare against the SAME baseline (the comm -23
-  # exclusion in Gate 3 only works if both lists are computed against the same base).
-  CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
 
   # Validate scaffold
   validate_scaffold
@@ -4455,7 +4683,12 @@ main() {
             log_error "  verify_partial_malformed repeated $CONSECUTIVE_FAILURES times (>= $EFFECTIVE_CB_THRESHOLD) — blocking."
             write_blocked_sentinel "verify_partial_malformed repeated $CONSECUTIVE_FAILURES times" "${vp_us_id:-${CURRENT_US:-ALL}}" "repeat_axis"
             update_status "blocked" "verify_partial_malformed_cb"
-            break
+            # request-b incidental #2: was `break`, which fell through to the
+            # post-loop "Max iterations reached" path — mislabeling this BLOCKED
+            # as a timeout (status overwritten to timeout/max_iter) even though it
+            # still returned 1. Return 1 DIRECTLY so the exit stays non-zero AND
+            # the terminal status/label remains BLOCKED.
+            return 1
           fi
           continue
         fi
@@ -5209,3 +5442,17 @@ if [[ -z "${TMUX:-}" ]]; then
 fi
 
 main "$@"
+_main_rc=$?
+# request-b incidental #2: make the terminal exit code authoritative on the
+# sentinel state so EVERY blocked termination exits NON-ZERO and COMPLETE exits
+# 0 — independent of which internal return path fired (a late background-watchdog
+# BLOCKED could otherwise race a return 0, and some historical block paths
+# mislabeled). The EXIT trap (_emit_final_cost_log; cleanup) still runs; zsh
+# preserves the code across it, so this only pins what main hands back.
+if [[ -f "$COMPLETE_SENTINEL" ]]; then
+  exit 0
+elif [[ -f "$BLOCKED_SENTINEL" ]]; then
+  (( _main_rc != 0 )) && exit "$_main_rc"
+  exit 1
+fi
+exit "$_main_rc"

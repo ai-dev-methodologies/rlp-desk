@@ -119,20 +119,49 @@ out=$(zsh --no-rcs -c '
 [[ "$out" == *"RC=0"* ]] && ok "both verdicts present → return 0 (consensus pass)" || no "parallel both-pass wrong ($out)"
 [[ "$out" == *"DISPATCH=claude,codex,"* ]] && ok "both engines dispatched (claude then codex) BEFORE polling" || no "dispatch order/both wrong ($out)"
 
-# AC-C4: only claude verdict arrives → timeout → infrastructure failure (return 1).
+# AC-C4: only claude verdict arrives → return 1 (caller maps to infra_failure
+# BLOCKED). request-b ④ split this into two classifications by the submit anchor:
+#   (a) codex STARTED (showed progress) but produced no verdict → task timeout
+#       measured from _both_started_ts (not dispatch).
+#   (b) codex NEVER started (no progress signal) → submission failure after the
+#       bounded re-dispatches.
+# Both return 1; the abort reason differs. The config vars live in run_ralph_desk
+# (not the sourced slice) so the mock sets them explicitly.
+
+# (a) started-but-silent → timeout. Force progress true so both sides are
+# "started"; codex never writes a verdict → deadline (from first progress) fires.
 out=$(zsh --no-rcs -c '
   source "'"$LIB"'" 2>/dev/null
   '"$finalize_body"'
   '"$par_body"'
   '"$mocks"'
-  ITER_TIMEOUT=2; CLAUDE_TAG=pass; CODEX_TAG=
-  LOGS_DIR="'"$TMP"'/p4"; mkdir -p "$LOGS_DIR"
+  _pane_shows_progress(){ return 0; }   # both panes look "running"
+  ITER_TIMEOUT=2; SUBMISSION_TIMEOUT=60; SUBMISSION_MAX_REDISPATCH=2
+  CLAUDE_TAG=pass; CODEX_TAG=
+  LOGS_DIR="'"$TMP"'/p4a"; mkdir -p "$LOGS_DIR"
   VERDICT_FILE="$LOGS_DIR/verdict.json"
   run_consensus_verification_parallel 8 US-001; rc=$?
   print "RC=$rc REASON=$VERIFIER_ABORT_REASON"
 ')
-[[ "$out" == *"RC=1"* ]] && ok "one-verdict-missing → return 1 (infra failure)" || no "missing-verdict rc wrong ($out)"
-[[ "$out" == *"infrastructure failure"* ]] && ok "abort reason marks infrastructure failure (AC-C4)" || no "abort reason missing ($out)"
+[[ "$out" == *"RC=1"* ]] && ok "started-but-silent codex → return 1 (caller → infra_failure)" || no "started-silent rc wrong ($out)"
+[[ "$out" == *"after both started"* ]] && ok "abort reason: task timeout anchored at both-started (AC-C4a)" || no "timeout reason missing ($out)"
+
+# (b) never-started → submission failure (bounded re-dispatch). No progress ever.
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null
+  '"$finalize_body"'
+  '"$par_body"'
+  '"$mocks"'
+  _pane_shows_progress(){ return 1; }   # neither pane ever "starts"
+  ITER_TIMEOUT=60; SUBMISSION_TIMEOUT=1; SUBMISSION_MAX_REDISPATCH=1
+  CLAUDE_TAG=pass; CODEX_TAG=
+  LOGS_DIR="'"$TMP"'/p4b"; mkdir -p "$LOGS_DIR"
+  VERDICT_FILE="$LOGS_DIR/verdict.json"
+  run_consensus_verification_parallel 8 US-001; rc=$?
+  print "RC=$rc REASON=$VERIFIER_ABORT_REASON"
+')
+[[ "$out" == *"RC=1"* ]] && ok "never-started codex → return 1 (caller → infra_failure)" || no "never-started rc wrong ($out)"
+[[ "$out" == *"submission failure"* ]] && ok "abort reason: bounded re-dispatch → submission failure (AC-C4b)" || no "submission-failure reason missing ($out)"
 
 # ---------------------------------------------------------------------------
 print -r -- "-- structural: flag gate + evidence-lock injected in BOTH parallel prompts, parallel-only"

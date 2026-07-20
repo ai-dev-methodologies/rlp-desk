@@ -139,6 +139,13 @@ export _API_RETRY_INTERVAL_S
 ITERATION=1
 ITER_TIMEOUT=5
 POLL_INTERVAL=0
+# request-b ④: submit-anchored knobs + progress predicate stub. The stub
+# reports "no progress" so the poll exercises the API-retry path; SUBMISSION
+# windows are far larger than this harness's runtime, so classification never
+# preempts the API-exhaustion RC:2 contract under test.
+SUBMISSION_TIMEOUT=90
+SUBMISSION_MAX_REDISPATCH=2
+_pane_shows_progress() { return 1; }
 typeset -A LAST_PANE_CONTENT
 typeset -A PANE_IDLE_SINCE
 

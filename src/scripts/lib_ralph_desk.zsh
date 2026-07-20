@@ -2274,15 +2274,39 @@ derive_verification_mode() {
   if ! git -C "$root" diff --quiet "$sha" HEAD 2>/dev/null; then
     print -r -- "build|tracked content changed since the verified commit"; return 0
   fi
-  local _st_out _st_rc
-  _st_out=$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null); _st_rc=$?
-  if (( _st_rc != 0 )); then
+  # request-b ①b: unrelated RESIDENT user dirt must not pin build mode. Reuse the
+  # PROVEN Bug#8 F-8 exclusion semantics: the working-tree-dirty gate fails only
+  # when (tracked-dirty set MINUS CAMPAIGN_PREEXISTING_DIRTY) is non-empty — the
+  # exact same `comm -23` subtraction against the sorted preexisting snapshot that
+  # F-8 uses. Tracked dirt captured at process start (a user's resident uncommitted
+  # files, which the campaign never touches) no longer forces build; any NEW
+  # campaign-era tracked dirt still does. The SHA anchor `git diff --quiet <sha>
+  # HEAD` above stays byte-identical — THAT is the anti-gaming guarantee for
+  # committed deliverables. Field case: a resumed campaign in a repo with resident
+  # user files was pinned to build forever, so codex strict-failed every
+  # re-verification while claude passed — the asymmetry was mode MISCLASSIFICATION,
+  # not prompt divergence (the confirmation clause is already shared by both
+  # engines via VERIFIER_PROMPT_BASE + write_verifier_trigger).
+  # Known caveat (accepted, mirrors Bug#8 D-25): CAMPAIGN_PREEXISTING_DIRTY
+  # re-captures at each process start, so on a RELAUNCH a prior segment's
+  # uncommitted file counts as preexisting and is excluded here. This is safe
+  # because confirmation mode's real safety net is the VERIFIER's OWN fresh
+  # full-suite re-run plus the committed-deliverable SHA anchor — not this
+  # working-tree check. (HEAD resolves here: the SHA-anchor checks above already
+  # proved a committed verified state.)
+  local _tracked_dirty
+  _tracked_dirty=$(git -C "$root" diff --name-only HEAD 2>/dev/null)
+  if (( $? != 0 )); then
     print -r -- "build|git status failed (not a repo?)"; return 0
   fi
-  if [[ -n "$_st_out" ]]; then
-    print -r -- "build|tracked working tree is dirty"; return 0
+  local _campaign_dirty
+  _campaign_dirty=$(comm -23 \
+    <(printf '%s\n' "$_tracked_dirty" | grep -v '^[[:space:]]*$' | sort -u) \
+    <(printf '%s\n' "${CAMPAIGN_PREEXISTING_DIRTY:-}" | grep -v '^[[:space:]]*$' | sort -u))
+  if [[ -n "$_campaign_dirty" ]]; then
+    print -r -- "build|tracked working tree has campaign-era changes since the verified commit"; return 0
   fi
-  print -r -- "confirmation|all PRD US verified at ${sha[1,10]} == HEAD, tree clean"
+  print -r -- "confirmation|all PRD US verified at ${sha[1,10]} == HEAD, tree clean (resident preexisting dirt excluded)"
   return 0
 }
 
@@ -2693,6 +2717,55 @@ detect_quota_exhausted() {
   tail=$(print -r -- "$text" | tail -n 20)
   print -r -- "$tail" | grep -qiE 'hit your usage limit|usage limit reached' || return 1
   print -r -- "$tail" | grep -qiE 'try again at|will reset at|resets at|purchase more credits|settings/usage' || return 1
+  return 0
+}
+
+# ③/④ request-b: multi-signal execution-start predicate. A trigger prompt is
+# "submitted and running" when the pane shows ANY of: the active-task footer
+# ("esc to interrupt" / "background terminal running"), a spinner/verb the CLIs
+# render while working, or a NONZERO input-token counter ("N in", never "0 in").
+# NEVER trust a single glyph (repo gotcha: a banner can echo the prompt without
+# executing it) — this ORs several independent signals. An echoed-but-idle prompt
+# (prompt text present, none of these signals) is therefore treated as UNSUBMITTED.
+# The token set is deliberately restricted to signals that ONLY appear while the
+# model is actually running: the active-task footer, the CLIs' spinner verbs, and
+# a nonzero input-token counter. Generic tool names (exec/Bash/Edit/Read/…) are
+# intentionally EXCLUDED — the dispatched instruction is "Read and execute the
+# instructions in <path>", so matching `exec`/`Read` would false-fire on the mere
+# echo of the prompt and defeat the submit-anchored timeout (the very case this
+# guards). Returns 0 = progress seen, 1 = no start signal.
+_RLP_PROGRESS_RE='esc to interrupt|background terminal running|thinking|working|kneading|crunching|clauding|billowing|brewing|tinkering|burrowing|saut|Exploring|Prestidigitating|Undulating|razzle|bunning|zesting|fermenting|actualizing|composing|evaporating|churning'
+_pane_shows_progress() {
+  local snap="$1"
+  [[ -n "$snap" ]] || return 1
+  print -r -- "$snap" | grep -qiE "$_RLP_PROGRESS_RE" && return 0
+  # nonzero input-token counter (codex/claude "N in · M out" footer). "0 in" is
+  # idle; any nonzero count is proof the model consumed the prompt.
+  print -r -- "$snap" | grep -qE '[1-9][0-9]* in\b' && return 0
+  return 1
+}
+
+# ③/④ request-b: submit-anchored deadline classifier (the root fix). The task
+# timeout (ITER_TIMEOUT) MUST count from the FIRST progress signal, not from
+# dispatch — a banner that delays submission must never burn the task budget and
+# be mis-read as a task/infra timeout. Args (all epoch seconds / seconds):
+#   $1 first_progress_ts  epoch when progress was first seen; 0 = never seen
+#   $2 dispatch_ts        epoch when the trigger was sent
+#   $3 now                epoch now
+#   $4 iter_timeout       task budget, counted FROM first_progress_ts
+#   $5 submit_timeout     max wait for first progress before it's a submission failure
+# Prints exactly one state:
+#   running            progress seen, still within the task deadline
+#   task_timeout       progress seen, first_progress_ts+iter_timeout has passed
+#   pending            no progress yet, still within the submit window
+#   submission_failure no progress AND submit window exceeded → RE-DISPATCH (never a hard BLOCK)
+_submission_deadline_state() {
+  local fp="${1:-0}" disp="${2:-0}" now="${3:-0}" iter_to="${4:-0}" submit_to="${5:-0}"
+  if (( fp > 0 )); then
+    if (( now - fp >= iter_to )); then print -r -- "task_timeout"; else print -r -- "running"; fi
+    return 0
+  fi
+  if (( now - disp >= submit_to )); then print -r -- "submission_failure"; else print -r -- "pending"; fi
   return 0
 }
 
