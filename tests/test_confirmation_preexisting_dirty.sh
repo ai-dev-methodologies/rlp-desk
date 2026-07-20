@@ -121,13 +121,15 @@ branch_line=$(awk '/^write_verifier_trigger\(\)/{f=1} f&&/if \[\[ "\$verifier_en
 # resume-finalize derive_verification_mode call, or the ①b exclusion is empty on
 # the primary resumed-campaign path (the exact field case). Line-order assert on
 # the real code.
-cap_line=$(grep -n '^  CAMPAIGN_PREEXISTING_DIRTY=\$(git -C "\$ROOT" diff --name-only' "$RUN" | head -1 | cut -d: -f1)
+# (IMP-09 updated the capture to the fail-closed _git_snapshot helper — match
+# the assignment itself, not one specific git invocation form.)
+cap_line=$(grep -n 'CAMPAIGN_PREEXISTING_DIRTY=\$(_git_snapshot\|^  CAMPAIGN_PREEXISTING_DIRTY=\$(git' "$RUN" | head -1 | cut -d: -f1)
 resume_line=$(grep -n '_resume_derived=\$(derive_verification_mode' "$RUN" | head -1 | cut -d: -f1)
 [[ -n "$cap_line" && -n "$resume_line" && "$cap_line" -lt "$resume_line" ]] \
   && ok "seal#3: CAMPAIGN_PREEXISTING_DIRTY captured (L$cap_line) BEFORE resume-finalize derive (L$resume_line)" \
   || no "seal#3: capture/resume ordering wrong (cap=$cap_line resume=$resume_line) — ①b dead on resume path"
 # And exactly ONE assignment site remains (no duplicate capture drift).
-[[ "$(grep -c '^  CAMPAIGN_PREEXISTING_DIRTY=\$(git' "$RUN")" == "1" ]] \
+[[ "$(grep -c 'CAMPAIGN_PREEXISTING_DIRTY=\$(_git_snapshot\|^  CAMPAIGN_PREEXISTING_DIRTY=\$(git' "$RUN")" == "1" ]] \
   && ok "seal#3: single capture site (no duplicate-assignment drift)" \
   || no "seal#3: unexpected number of capture sites"
 

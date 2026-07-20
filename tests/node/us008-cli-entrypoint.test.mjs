@@ -220,6 +220,59 @@ test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env
   assert.equal(spawned.env.ROOT, tempCwd);
 });
 
+// IMP-03 F3: --debug was a dead flag on the tmux path — parsed into
+// options.debug but never mapped in buildZshEnv, so the zsh leader's DEBUG
+// only ever came from the operator's own environment via ...parentEnv. It now
+// forwards DEBUG=1 to the leader.
+test('US-008 IMP-03: --mode tmux --debug forwards DEBUG=1 to the zsh leader', async (t) => {
+  const tempCwd = await createTempDir(t);
+  const cli = await import('../../src/node/run.mjs');
+  let spawned = null;
+
+  const exitCode = await cli.main(
+    ['run', 'demo', '--mode', 'tmux', '--debug'],
+    {
+      cwd: tempCwd,
+      stdout: { write() {} },
+      stderr: { write() {} },
+      runCampaign: async () => ({ status: 'continue' }),
+      fileExists: () => true,
+      zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+      spawnZsh: async (zshPath, env, cwd) => { spawned = { zshPath, env, cwd }; return 0; },
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(spawned.env.DEBUG, '1', 'IMP-03 F3: --debug forwards DEBUG=1 to the leader');
+});
+
+// IMP-03 F3 sibling: without --debug the CLI must not set DEBUG (only the
+// operator environment could, via ...parentEnv).
+test('US-008 IMP-03: --mode tmux without --debug does NOT set DEBUG from the CLI', async (t) => {
+  const tempCwd = await createTempDir(t);
+  const cli = await import('../../src/node/run.mjs');
+  const savedDebug = process.env.DEBUG;
+  delete process.env.DEBUG;
+  t.after(() => { if (savedDebug !== undefined) process.env.DEBUG = savedDebug; });
+  let spawned = null;
+
+  const exitCode = await cli.main(
+    ['run', 'demo', '--mode', 'tmux'],
+    {
+      cwd: tempCwd,
+      stdout: { write() {} },
+      stderr: { write() {} },
+      runCampaign: async () => ({ status: 'continue' }),
+      fileExists: () => true,
+      zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+      spawnZsh: async (zshPath, env, cwd) => { spawned = { zshPath, env, cwd }; return 0; },
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(spawned.env.DEBUG, undefined, 'no --debug → the CLI must not set DEBUG');
+});
+
 test('US-008 AC8.2 tmux missing zsh runner: surfaces actionable error and exits non-zero', async (t) => {
   const tempCwd = await createTempDir(t);
   const cli = await import('../../src/node/run.mjs');

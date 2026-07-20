@@ -60,6 +60,9 @@ function recipeToFacts(sc) {
 
 test('US-001 Part A: pure predicate matches the shared parity matrix', () => {
   for (const sc of matrix.scenarios) {
+    // GIT-FC (IMP-09): gitError rows exercise the I/O wrapper's infra path (rc 2
+    // / infra:true), not the pure predicate — asserted in the GIT-FC block below.
+    if (sc.gitError) continue;
     const facts = recipeToFacts(sc);
     const result = evaluateCommitOracle(facts);
     assert.equal(result.asserted, sc.expectAsserted, `${sc.name}: asserted`);
@@ -234,4 +237,67 @@ test('US-001 Part B: commit-claim without commit_sha, HEAD did NOT advance → r
   });
   assert.equal(result.ok, false);
   assert.match(result.reason, /no_sha_no_advance/);
+});
+
+// --- Part C: GIT-FC (IMP-09) fail-closed git-snapshot errors ----------------
+
+async function makeNonRepoDir(name) {
+  // A real dir that is NOT a git repo → every git command here errors.
+  return fs.mkdtemp(path.join(os.tmpdir(), `commit-oracle-nonrepo-${name}-`));
+}
+
+// Case 7: the swallow is deleted — a git error now REJECTS (throws) instead of
+// silently returning an empty (clean) list.
+test('US-001 GIT-FC: _gitTrackedDirtyWorkerFiles rejects on a git error (no silent empty)', async () => {
+  const nonRepo = await makeNonRepoDir('dirty');
+  await assert.rejects(() => _gitTrackedDirtyWorkerFiles(nonRepo, []));
+});
+
+// Case 8: _defaultCheckCommitIntegrity surfaces the git error as an infra result
+// (asserted, not-ok, infra:true, git_facts_unavailable) — only when a commit IS
+// asserted (the pure predicate never sees garbage facts).
+test('US-001 GIT-FC: _defaultCheckCommitIntegrity → infra result on a git error when a commit is asserted', async () => {
+  const nonRepo = await makeNonRepoDir('check');
+  const result = await _defaultCheckCommitIntegrity(nonRepo, {
+    doneClaim: doneClaimWithCommit('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'),
+    iterStartHead: 'a'.repeat(40),
+    preexistingDirty: [],
+  });
+  assert.equal(result.asserted, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.infra, true, 'a git error must be flagged infra, not a worker lie');
+  assert.equal(result.reason, 'git_facts_unavailable');
+});
+
+// Case 9: no commit asserted + broken git → still the no-op result (infra only
+// matters when a commit is asserted; the no-claim early return needs no git).
+test('US-001 GIT-FC: no commit claim + broken git → no-op (asserted=false), never infra', async () => {
+  const nonRepo = await makeNonRepoDir('noclaim');
+  const result = await _defaultCheckCommitIntegrity(nonRepo, {
+    doneClaim: { execution_steps: [{ step: 'test', exit_code: 0 }] },
+    preexistingDirty: [],
+  });
+  assert.equal(result.asserted, false);
+  assert.equal(result.ok, true);
+  assert.notEqual(result.infra, true);
+});
+
+// Case 10: shared-fixture PARITY row — the git-error scenario in matrix.json
+// pins that Node reason === zsh ORACLE_REASON === expectReason, and Node
+// infra:true ↔ zsh rc 2 (asserted in tests/test_commit_oracle.sh).
+test('US-001 GIT-FC: matrix git-error row parity (Node reason === zsh reason)', async () => {
+  const scenario = matrix.scenarios.find((sc) => sc.gitError === true);
+  assert.ok(scenario, 'matrix must carry a gitError parity row');
+  assert.equal(scenario.expectReason, 'git_facts_unavailable');
+
+  const nonRepo = await makeNonRepoDir('parity');
+  const result = await _defaultCheckCommitIntegrity(nonRepo, {
+    doneClaim: doneClaimWithCommit(SHA.head),
+    iterStartHead: 'a'.repeat(40),
+    preexistingDirty: [],
+  });
+  assert.equal(result.asserted, scenario.expectAsserted);
+  assert.equal(result.ok, scenario.expectOk);
+  assert.equal(result.infra, true);
+  assert.equal(result.reason, scenario.expectReason);
 });

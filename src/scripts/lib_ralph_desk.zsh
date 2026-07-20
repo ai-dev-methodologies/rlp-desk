@@ -59,6 +59,32 @@ _git_dirty_base() {
   fi
 }
 
+# GIT-FC (backlog IMP-09): fail-closed git snapshot. Prints git's stdout and
+# returns git's exit code, retrying ONCE after 2s (transient index.lock /
+# concurrent worker git op). On failure it logs the git stderr ITSELF —
+# callers usually invoke this inside $(...) subshells, where a typeset -g
+# error variable would not propagate — prints NOTHING, and returns non-zero.
+# Callers MUST branch on rc and must NEVER treat failure as an empty (clean)
+# list. That silent empty was the bug class this helper exists to kill.
+_git_snapshot() {
+  local -a _args=("$@")
+  local _out _rc _err
+  _err=$(mktemp "${TMPDIR:-/tmp}/rlp-git-snap.XXXXXX") || _err="/dev/null"
+  _out=$(git "${_args[@]}" 2>"$_err"); _rc=$?
+  if (( _rc != 0 )); then
+    sleep 2
+    _out=$(git "${_args[@]}" 2>"$_err"); _rc=$?
+  fi
+  if (( _rc != 0 )); then
+    log_error "  [GIT-FC] git ${_args[*]} failed rc=$_rc: $(head -c 200 "$_err" 2>/dev/null | tr '\n' ' ')"
+    log_debug "[GIT-FC] snapshot_failed rc=$_rc args='${_args[*]}'"
+  else
+    print -rn -- "$_out"
+  fi
+  [[ "$_err" != "/dev/null" ]] && rm -f "$_err"
+  return $_rc
+}
+
 # build_claude_cmd() — centralized claude CLI command builder
 # Single source of truth for all claude invocation flags (--mcp-config, DISABLE_OMC, --effort, etc.)
 # Inspired by codex-plugin-cc companion pattern: CLI abstraction in one place.
@@ -1315,6 +1341,37 @@ _canonical_block_reason() {
   echo "$raw" | sed -E 's/^(hygiene_violated:[[:space:]]*|wrapped:[[:space:]]*)//' | cut -c1-80
 }
 
+# --- IMP-01: canonical verdict/transition normalizer -------------------------
+# Parity contract: src/node/shared/verdict-schema.mjs normalizeVerdictString /
+# normalizeTransitionString — synonym tables MUST stay identical (pinned by
+# tests/test_verdict_normalize.sh + test-verdict-schema-contract.test.mjs
+# driving tests/fixtures/verdict-schema/verdict-string-cases.json through BOTH).
+# Rules: strip CR, trim, lowercase, collapse space/hyphen runs to "_", closed
+# synonym map. Unknown values pass through canonicalized-but-unmapped so the
+# unknown-verdict CB branch (run_ralph_desk.zsh "unrecognized verifier verdicts")
+# still fires. "" and "null" pass through untouched — the consensus null-retry
+# guards (A12/D-14) depend on those exact values.
+_normalize_verdict() {
+  local raw="$1" field="${2:-verdict}"
+  local v
+  v=$(print -rn -- "$raw" | tr -d '\r' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/([[:space:]]|-)+/_/g')
+  if [[ "$field" == "transition" ]]; then
+    case "$v" in
+      completed|done) v="complete" ;;
+    esac
+  else
+    case "$v" in
+      passed)         v="pass" ;;
+      failed|failure) v="fail" ;;
+      block)          v="blocked" ;;
+    esac
+  fi
+  print -r -- "$v"
+}
+
 # --- US-018 (R6 P1-F): Test density enforcement (≥3 tests/AC) ---
 # Counts ACs per US in the PRD (lines like `- AC1:`, `- AC2:`) and tests per US
 # in the test-spec (lines like `### Test ` or `**T-`). Emits a warning when any
@@ -2143,14 +2200,23 @@ run_pregate_replay() {
 # --porcelain` (which counts untracked and would false-fail). Echoes one
 # worker-dirty file per line (empty when the tracked tree is clean).
 # Globals read: ROOT, CAMPAIGN_PREEXISTING_DIRTY.
+# Returns: 0 (ok — clean tree or worker-dirty list on stdout) / 2 (GIT-FC infra:
+# the git snapshot itself failed — a git error must NEVER be read as a clean
+# tree, which would let the oracle corroborate a claim whose tree is dirty).
 _commit_oracle_tracked_dirty() {
   local dirty
-  dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
+  dirty=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)") || return 2
   [[ -n "$dirty" ]] || return 0
   comm -23 \
     <(printf '%s\n' "$dirty" | sort -u) \
     <(printf '%s\n' "${CAMPAIGN_PREEXISTING_DIRTY:-}" | sort -u) \
     | grep -v '^[[:space:]]*$'
+  # GIT-FC (IMP-09): pin rc 0 on the success path. The trailing `grep -v` exits 1
+  # when the worker-file list is empty after the preexisting exclusion (a NORMAL
+  # clean outcome); the old caller captured stdout and ignored rc, but the rc-2
+  # infra contract now inspects rc, so grep's empty-match must not masquerade as a
+  # git failure. Only the `_git_snapshot` failure above returns non-zero (2).
+  return 0
 }
 
 # _commit_oracle_check(): the commit-integrity predicate (sourceable + invokable
@@ -2162,7 +2228,10 @@ _commit_oracle_tracked_dirty() {
 #       when the repo had no commits then). Globals read: ROOT,
 #       CAMPAIGN_PREEXISTING_DIRTY. Sets ORACLE_ASSERTED (0|1), ORACLE_REASON,
 #       ORACLE_DETAIL, ORACLE_CLAIMED_SHA.
-# Returns: 0 (pass OR no-op → proceed) / 1 (mismatch → caller routes to fix loop).
+# Returns: 0 (pass OR no-op → proceed) / 1 (mismatch → caller routes to fix
+#   loop) / 2 (GIT-FC infra — git facts unavailable; caller forces a full
+#   verifier round WITHOUT bumping the oracle fail counter: an error can never
+#   corroborate a commit claim). Sets ORACLE_REASON=git_facts_unavailable on rc 2.
 _commit_oracle_check() {
   local dc_file="$1" iter_start_head="${2:-}"
   ORACLE_ASSERTED=0; ORACLE_REASON=""; ORACLE_DETAIL=""; ORACLE_CLAIMED_SHA=""
@@ -2194,8 +2263,17 @@ _commit_oracle_check() {
   local head_advanced=0
   [[ -n "$current_head" && "$current_head" != "$iter_start_head" ]] && head_advanced=1
 
+  # GIT-FC (IMP-09): gather the tracked-dirty set rc-aware. A git ERROR must not
+  # collapse to an empty (clean) list — both branches below would then read a
+  # corrupt "clean" tree. Route git failure to rc 2 (infra) BEFORE adjudicating.
+  local _dirty_out
+  if ! _dirty_out=$(_commit_oracle_tracked_dirty); then
+    ORACLE_REASON="git_facts_unavailable"
+    ORACLE_DETAIL="commit-oracle git snapshot failed (git error) — oracle cannot adjudicate; forcing full verifier round."
+    return 2
+  fi
   local -a dirty_files
-  dirty_files=("${(@f)$(_commit_oracle_tracked_dirty)}")
+  dirty_files=("${(@f)_dirty_out}")
   dirty_files=(${dirty_files:#})   # prune the lone empty element from empty output
   local tracked_dirty=0
   (( ${#dirty_files} > 0 )) && tracked_dirty=1

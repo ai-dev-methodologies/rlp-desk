@@ -1,0 +1,32 @@
+[
+  { "raw": "pass", "field": "verdict", "expected": "pass" },
+  { "raw": "fail", "field": "verdict", "expected": "fail" },
+  { "raw": "blocked", "field": "verdict", "expected": "blocked" },
+  { "raw": "request_info", "field": "verdict", "expected": "request_info" },
+
+  { "raw": "PASS", "field": "verdict", "expected": "pass" },
+  { "raw": "Pass ", "field": "verdict", "expected": "pass" },
+  { "raw": "  FAIL\t", "field": "verdict", "expected": "fail" },
+  { "raw": "Blocked", "field": "verdict", "expected": "blocked" },
+
+  { "raw": "Request-Info", "field": "verdict", "expected": "request_info" },
+  { "raw": "request info", "field": "verdict", "expected": "request_info" },
+
+  { "raw": "passed", "field": "verdict", "expected": "pass" },
+  { "raw": "FAILED", "field": "verdict", "expected": "fail" },
+  { "raw": "failure", "field": "verdict", "expected": "fail" },
+  { "raw": "block", "field": "verdict", "expected": "blocked" },
+
+  { "raw": "null", "field": "verdict", "expected": "null" },
+  { "raw": "", "field": "verdict", "expected": "" },
+
+  { "raw": "inconclusive", "field": "verdict", "expected": "inconclusive" },
+  { "raw": "PASS.", "field": "verdict", "expected": "pass." },
+  { "raw": "not sure", "field": "verdict", "expected": "not_sure" },
+
+  { "raw": "Complete", "field": "transition", "expected": "complete" },
+  { "raw": "completed", "field": "transition", "expected": "complete" },
+  { "raw": "DONE", "field": "transition", "expected": "complete" },
+  { "raw": "continue", "field": "transition", "expected": "continue" },
+  { "raw": "keep going", "field": "transition", "expected": "keep_going" }
+]

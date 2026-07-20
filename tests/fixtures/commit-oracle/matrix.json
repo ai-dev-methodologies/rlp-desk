@@ -99,6 +99,18 @@
       "dirty": "clean",
       "expectAsserted": false,
       "expectOk": true
+    },
+    {
+      "name": "git-error-infra",
+      "_comment": "GIT-FC (IMP-09): a git ERROR gathering the tracked-dirty set must NOT read as a clean tree. The tree here is genuinely dirty (tracked) so a false-clean read would corroborate the claim; both runtimes shim/force a git-diff failure and assert the infra result instead. gitError:true rows are handled by each harness's dedicated GIT-FC block, NOT the generic asserted/ok matrix loop (rc 2 / infra:true is outside the ok=0|1 contract).",
+      "gitError": true,
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "this-iter",
+      "dirty": "tracked",
+      "expectAsserted": true,
+      "expectOk": false,
+      "expectReason": "git_facts_unavailable"
     }
   ]
 }

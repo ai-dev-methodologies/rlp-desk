@@ -87,6 +87,9 @@ print -r -- "== shared parity matrix (zsh _commit_oracle_check vs real git) =="
 _n=$(jq '.scenarios | length' "$MATRIX")
 for (( i=0; i<_n; i++ )); do
   name=$(jq -r ".scenarios[$i].name" "$MATRIX")
+  # GIT-FC (IMP-09): gitError rows need a shimmed git failure (rc 2 / infra) and
+  # are asserted in the dedicated GIT-FC block below, not this asserted/ok loop.
+  [[ "$(jq -r ".scenarios[$i].gitError // false" "$MATRIX")" == "true" ]] && continue
   cS=$(jq -r ".scenarios[$i].commitStep" "$MATRIX")
   cSha=$(jq -r ".scenarios[$i].commitSha" "$MATRIX")
   adv=$(jq -r ".scenarios[$i].advance" "$MATRIX")
@@ -161,6 +164,124 @@ if [[ -n "$oline" && -n "$pline" && "$oline" -lt "$pline" ]]; then
 else
   no "oracle must precede the pre-gate (oracle=$oline pregate=$pline)"
 fi
+
+print -r -- "== GIT-FC (IMP-09): fail-closed git snapshot on the oracle/F-8 paths =="
+# Shared git-error parity row: BOTH sides assert its expectReason (Node mirror in
+# tests/node/test-done-claim-commit-oracle.test.mjs).
+_ge_idx=$(jq -r '.scenarios | map(.gitError == true) | index(true)' "$MATRIX")
+_ge_reason=$(jq -r ".scenarios[$_ge_idx].expectReason" "$MATRIX")
+
+# 1. _git_snapshot happy: real repo with a dirty tracked file → prints it, rc 0.
+line=$(build_repo gfc-happy true head this-iter tracked)
+R="${line%%$'\t'*}"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  ROOT="'"$R"'"
+  o=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)"); rc=$?
+  print "RC=$rc OUT=[$o]"
+')
+[[ "$out" == *"RC=0"* && "$out" == *"a.txt"* ]] && ok "_git_snapshot happy: prints dirty file, rc 0" \
+  || no "_git_snapshot happy wrong ($out)"
+
+# 2. _git_snapshot failure: non-repo dir → rc≠0, EMPTY stdout, [GIT-FC] logged,
+#    retried once (2 real git calls — counted via a git shim; sleep stubbed).
+: > "$TMP/gfc-err.log"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }
+  log_error(){ print -r -- "$*" >> "'"$TMP"'/gfc-err.log"; }
+  sleep(){ :; }
+  _GC="'"$TMP"'/gcount"; : > "$_GC"
+  git(){ print x >> "$_GC"; command git "$@"; }
+  o=$(_git_snapshot -C "'"$TMP"'/notrepo" status); rc=$?
+  print "RC=$rc OUT=[$o] CALLS=$(grep -c . "$_GC")"
+')
+if [[ "$out" == *"OUT=[]"* && "$out" != *"RC=0"* && "$out" == *"CALLS=2"* ]] \
+   && grep -q '\[GIT-FC\]' "$TMP/gfc-err.log"; then
+  ok "_git_snapshot failure: empty stdout, rc≠0, retried once, logged [GIT-FC]"
+else
+  no "_git_snapshot failure wrong (out=$out err=$(cat "$TMP/gfc-err.log" 2>/dev/null))"
+fi
+
+# 3. _commit_oracle_tracked_dirty: git error → rc 2 (NOT rc 0/empty).
+line=$(build_repo gfc-td true head this-iter tracked)
+R="${line%%$'\t'*}"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  sleep(){ :; }
+  git(){ case "$*" in *"diff --name-only"*) return 128;; *) command git "$@";; esac }
+  ROOT="'"$R"'"; CAMPAIGN_PREEXISTING_DIRTY=""
+  _commit_oracle_tracked_dirty; print "RC=$?"
+')
+[[ "$out" == *"RC=2"* ]] && ok "_commit_oracle_tracked_dirty: git error → rc 2 (not empty/clean)" \
+  || no "_commit_oracle_tracked_dirty infra wrong ($out)"
+
+# 4. _commit_oracle_check: git error → rc 2 + REASON=git_facts_unavailable, with a
+#    genuinely DIRTY tree (no false corroboration). THIS IS THE MATRIX PARITY ROW.
+line=$(build_repo gfc-check true head this-iter tracked)
+R="${line%%$'\t'*}"; rest="${line#*$'\t'}"
+ISH="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"; DC="${rest%%$'\t'*}"; PRE="${rest#*$'\t'}"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  sleep(){ :; }
+  git(){ case "$*" in *"diff --name-only"*) return 128;; *) command git "$@";; esac }
+  ROOT="'"$R"'"; CAMPAIGN_PREEXISTING_DIRTY="'"$PRE"'"
+  _commit_oracle_check "'"$DC"'" "'"$ISH"'"; rc=$?
+  print "RC=$rc REASON=$ORACLE_REASON"
+')
+[[ "$out" == *"RC=2"* && "$out" == *"REASON=$_ge_reason"* ]] \
+  && ok "_commit_oracle_check: git error → rc 2 + REASON=$_ge_reason (matrix parity, no false corroboration)" \
+  || no "_commit_oracle_check infra wrong (want RC=2 REASON=$_ge_reason; got $out)"
+
+# 5. Gate 3 fail-closed: extract _bug8_check_synth_allowed; Gate 1/2 pass, diff
+#    fails → return 1 + infra_failure sentinel, NO auto-commit.
+_synth_body=$(sed -n '/^_bug8_check_synth_allowed() {$/,/^}$/p' "$RUN")
+line=$(build_repo gfc-gate3 true head this-iter tracked)
+R="${line%%$'\t'*}"; rest="${line#*$'\t'}"
+ISH="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"; DC="${rest%%$'\t'*}"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null
+  '"$_synth_body"'
+  log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  sleep(){ :; }
+  SENT="'"$TMP"'/gate3-sentinel.log"; : > "$SENT"
+  write_blocked_sentinel(){ print -r -- "REASON=$1 CAT=$3" >> "$SENT"; }
+  _emit_a4_fallback_audit(){ :; }
+  _COMMITS="'"$TMP"'/gate3-commits.log"; : > "$_COMMITS"
+  git(){ case "$*" in
+    *"diff --name-only"*) return 128;;
+    *" add "*|*" commit -m"*) print x >> "$_COMMITS"; command git "$@";;
+    *) command git "$@";;
+  esac }
+  ROOT="'"$R"'"; DONE_CLAIM_FILE="'"$DC"'"; LOGS_DIR="'"$TMP"'/gate3-logs"; mkdir -p "$LOGS_DIR"
+  CAMPAIGN_PREEXISTING_DIRTY=""
+  _bug8_check_synth_allowed 1 US-001 clean; print "RC=$?"
+  print "SENT=[$(cat "$SENT")]"
+  print "COMMITS=$(grep -c . "$_COMMITS")"
+')
+if [[ "$out" == *"RC=1"* && "$out" == *"CAT=infra_failure"* \
+      && "$out" == *"dirty-check failed"* && "$out" == *"COMMITS=0"* ]]; then
+  ok "Gate 3 fail-closed: git error → return 1 + infra_failure sentinel, no auto-commit"
+else
+  no "Gate 3 fail-closed wrong ($out)"
+fi
+
+# 6. Site A assignment-form: `if ! VAR=$(_git_snapshot ...)` propagates rc (guards
+#    the `local x=$(...)` rc-eating regression).
+line=$(build_repo gfc-siteA true head this-iter tracked)
+R="${line%%$'\t'*}"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  sleep(){ :; }
+  git(){ case "$*" in *"diff --name-only"*) return 128;; *) command git "$@";; esac }
+  ROOT="'"$R"'"
+  if ! CAMPAIGN_PREEXISTING_DIRTY=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)"); then
+    print "BLOCKED"
+  else
+    print "PROCEEDED var=[$CAMPAIGN_PREEXISTING_DIRTY]"
+  fi
+')
+[[ "$out" == *"BLOCKED"* ]] && ok "Site A assignment-form: git error propagates through VAR=\$(...) → BLOCKED" \
+  || no "Site A rc-eating regression ($out)"
 
 print -r -- ""
 print -r -- "RESULTS: $PASS passed, $FAIL failed"

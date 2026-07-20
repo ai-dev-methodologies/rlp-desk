@@ -28,14 +28,56 @@ function firstPresent(...values) {
   return undefined;
 }
 
-// AC label = first present of id | criterion | criterion_id.
-// Text = first present of description | summary.
+// IMP-01: canonical verdict/transition string tables. The zsh leader mirrors
+// these exactly (_normalize_verdict in lib_ralph_desk.zsh); parity is pinned by
+// tests/fixtures/verdict-schema/verdict-string-cases.json driven through BOTH
+// implementations. Rules: strip CR, trim, lowercase, collapse space/hyphen runs
+// to "_", then a CLOSED synonym map. Unknown values pass through canonicalized
+// but unmapped so the leader's unknown-verdict CB branch still fires. null and
+// undefined pass through untouched.
+export const VERDICT_SYNONYMS = Object.freeze({
+  passed: 'pass',
+  failed: 'fail',
+  failure: 'fail',
+  block: 'blocked',
+});
+export const TRANSITION_SYNONYMS = Object.freeze({
+  completed: 'complete',
+  done: 'complete',
+});
+
+function normalizeToken(raw, synonyms) {
+  if (raw === undefined || raw === null) return raw;
+  const v = String(raw)
+    .replace(/\r/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  return synonyms[v] ?? v;
+}
+
+export function normalizeVerdictString(raw) {
+  return normalizeToken(raw, VERDICT_SYNONYMS);
+}
+export function normalizeTransitionString(raw) {
+  return normalizeToken(raw, TRANSITION_SYNONYMS);
+}
+
+// AC label = first present of id | criterion | criterion_id | label.
+// Text = first present of description | summary | text.
+// The trailing `label`/`text` fallbacks make normalizeIssue idempotent: an
+// already-normalized issue (which carries `label`/`text` but none of the raw
+// producer field names) round-trips unchanged instead of collapsing to the
+// "?" / "no description" absent-fallbacks. This is what lets IMP-06 hoist
+// normalization to the ingestion boundary safely — a stray second application
+// (partial revert, a re-introduced per-item call) can no longer mangle issues.
+// Byte-identical for the three raw producer shapes (their earlier fields win).
 export function normalizeIssue(issue) {
   const src = issue ?? {};
   return {
-    label: firstPresent(src.id, src.criterion, src.criterion_id) ?? '?',
+    label: firstPresent(src.id, src.criterion, src.criterion_id, src.label) ?? '?',
     severity: src.severity ?? 'major',
-    text: firstPresent(src.description, src.summary) ?? 'no description',
+    text: firstPresent(src.description, src.summary, src.text) ?? 'no description',
     fix_hint: src.fix_hint,
   };
 }
@@ -72,6 +114,8 @@ export function normalizeVerdict(verdict) {
   return {
     ...src,
     us_id: src.us_id,
+    verdict: normalizeVerdictString(src.verdict),
+    recommended_state_transition: normalizeTransitionString(src.recommended_state_transition),
     issues: (src.issues ?? []).map(normalizeIssue),
     reasoning: normalizeReasoning(src.reasoning),
     criteria_results: src.criteria_results ?? [],

@@ -1036,7 +1036,20 @@ _bug8_check_synth_allowed() {
   local _bug8_dirty
   # NEW-4: diff against HEAD, or git's empty-tree when the repo has no commits yet,
   # so a Worker that staged-but-never-committed its work is still detected here.
-  _bug8_dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
+  # GIT-FC (IMP-09): fail-closed via the Gate 2 idiom. A git ERROR here must NOT
+  # read as "clean" ([[ -n ]] false → gate passes → synthesis proceeds on an
+  # unverified tree). Keep the `local` declaration separate so the assignment rc
+  # is not eaten.
+  if ! _bug8_dirty=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)"); then
+    log_error "  Bug #8: Gate 3 dirty-check failed (git error). Refusing synthesis."
+    log_debug "[GOV] iter=$iter bug8=block_git_dirty_check_failed us_id=$us_id"
+    write_blocked_sentinel \
+      "git dirty-check failed during done-claim gate (git error, not a clean tree); refusing to synthesize verify signal" \
+      "$us_id" \
+      "infra_failure"
+    _emit_a4_fallback_audit "$us_id" "$iter" "blocked_git_unverifiable"
+    return 1
+  fi
   if [[ -n "$_bug8_dirty" ]]; then
     # F-8 recovery (F-19 scoped): by Gate 1 a done-claim exists, so uncommitted
     # TRACKED changes are most likely the Worker's own US work it failed to commit
@@ -3536,7 +3549,7 @@ _final_verify_one_us() {
 
   # Read verdict
   local verdict
-  verdict=$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)
+  verdict=$(_normalize_verdict "$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)")
   [[ "$verdict" == "pass" ]] && return 0
   return 1
 }
@@ -3930,8 +3943,8 @@ run_consensus_verification_parallel() {
   _kill_pane_process "$VERIFIER_PANE" "verifier-claude" "verify-verdict" 2>/dev/null || true
   _kill_pane_process "$CONSENSUS_PANE" "verifier-codex" "verify-verdict" 2>/dev/null || true
 
-  CLAUDE_VERDICT=$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)
-  CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
+  CLAUDE_VERDICT=$(_normalize_verdict "$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)")
+  CODEX_VERDICT=$(_normalize_verdict "$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)")
   if [[ -z "$CLAUDE_VERDICT" || "$CLAUDE_VERDICT" == "null" || -z "$CODEX_VERDICT" || "$CODEX_VERDICT" == "null" ]]; then
     VERIFIER_ABORT_REASON="Parallel consensus: a verdict file was present but had no verdict field (claude='$CLAUDE_VERDICT' codex='$CODEX_VERDICT')"
     log_error "$VERIFIER_ABORT_REASON"
@@ -4000,7 +4013,7 @@ run_consensus_verification() {
       return 1
     fi
     ITER_VERIFIER_CLAUDE_DURATION_S=$(( $(date +%s) - _claude_t0 ))
-    CLAUDE_VERDICT=$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)
+    CLAUDE_VERDICT=$(_normalize_verdict "$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)")
     # A12 fix: validate claude verdict is not null/empty — if so, retry once before proceeding
     if [[ -z "$CLAUDE_VERDICT" || "$CLAUDE_VERDICT" == "null" ]]; then
       log "  WARNING: Claude verdict is '$CLAUDE_VERDICT' — likely interrupted. Retrying claude verifier..."
@@ -4010,7 +4023,7 @@ run_consensus_verification() {
         log_error "Claude verifier retry also failed"
         return 1
       fi
-      CLAUDE_VERDICT=$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)
+      CLAUDE_VERDICT=$(_normalize_verdict "$(jq -r '.verdict' "$claude_verdict_file" 2>/dev/null)")
       if [[ -z "$CLAUDE_VERDICT" || "$CLAUDE_VERDICT" == "null" ]]; then
         log_error "Claude verdict still null after retry — consensus cannot proceed"
         return 1
@@ -4027,7 +4040,7 @@ run_consensus_verification() {
       return 1
     fi
     ITER_VERIFIER_CODEX_DURATION_S=$(( $(date +%s) - _codex_t0 ))
-    CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
+    CODEX_VERDICT=$(_normalize_verdict "$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)")
     # D-14: validate codex verdict is not null/empty — retry once (symmetry with the
     # claude null-retry above). A transient codex interruption otherwise counts as a
     # non-pass, burns a consensus round, and can BLOCK after 6 rounds.
@@ -4039,7 +4052,7 @@ run_consensus_verification() {
         log_error "Codex verifier retry also failed"
         return 1
       fi
-      CODEX_VERDICT=$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)
+      CODEX_VERDICT=$(_normalize_verdict "$(jq -r '.verdict' "$codex_verdict_file" 2>/dev/null)")
       if [[ -z "$CODEX_VERDICT" || "$CODEX_VERDICT" == "null" ]]; then
         log_error "Codex verdict still null after retry — consensus cannot proceed"
         return 1
@@ -4258,6 +4271,14 @@ main() {
 
   fi
 
+  # IMP-09 ordering: dependency checks BEFORE the fail-closed t0 snapshot.
+  # Tooling errors (missing codex/jq/tmux) are more fundamental and carry
+  # actionable install guidance; pre-IMP-09 the snapshot was silent on git
+  # errors so ordering never mattered, but a fail-closed snapshot on a
+  # broken/non-git ROOT would otherwise mask the dependency message
+  # (observed via test_us005_final_consensus AC3).
+  check_dependencies
+
   # F-8 scope guard (F-19): snapshot the tracked files that are ALREADY dirty
   # before the campaign touches anything. The F-8 leader-recovery auto-commit
   # (Bug #8 Gate 3) must commit only the Worker's OWN edits and never sweep an
@@ -4274,7 +4295,15 @@ main() {
   # NEW-4: same HEAD-or-empty-tree base as Gate 3, so the pre-existing-dirty snapshot
   # and the recovery-time dirty check compare against the SAME baseline (the comm -23
   # exclusion in Gate 3 only works if both lists are computed against the same base).
-  CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
+  # GIT-FC (IMP-09): fail-closed. A git ERROR here must NOT collapse the exclusion
+  # baseline to ∅ — that would let F-8 auto-commit SWEEP operator files into a
+  # worker-recovery commit. Every downstream F-8/①b/oracle exclusion consumes this
+  # baseline, so a broken git at t0 is a startup hard-stop, not a clean tree.
+  if ! CAMPAIGN_PREEXISTING_DIRTY=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)"); then
+    log_error "Preexisting-dirty t0 snapshot failed — cannot establish the F-8 operator-file exclusion baseline. Refusing to start."
+    write_blocked_sentinel "preexisting-dirty t0 snapshot failed (git error, not a clean tree) — F-8 exclusion baseline unavailable" "" "infra_failure"
+    exit 1
+  fi
 
   # v0.22.3 (AC6 dogfood finding): resume finalize. If the durable ledger
   # already PROVES completion (the confirmation basis: full coverage, SHA
@@ -4370,8 +4399,8 @@ main() {
   PREV_PRD_HASH=$(compute_prd_hash)
   PREV_PRD_US_LIST=$(count_prd_us)
 
-  # Dependency checks
-  check_dependencies
+  # Dependency checks: moved BEFORE the t0 preexisting-dirty snapshot (IMP-09
+  # ordering fix) — kept here as a comment anchor only.
 
   # Print security warning (governance.md s7: --dangerously-skip-permissions)
   print_security_warning
@@ -4873,6 +4902,14 @@ main() {
             log "  Commit-integrity oracle failed ${ORACLE_FAIL_CAP}× for ${signal_us_id:-ALL} — forcing full LLM verifier round."
             log_debug "[GOV] iter=$ITERATION phase=oracle action=force_verifier reason=${ORACLE_REASON} us=${signal_us_id:-all}"
           fi
+        elif (( _oracle_rc == 2 )); then
+          # GIT-FC (IMP-09): the oracle could not read git facts (index lock, repo
+          # corruption, bad CWD). An error can never corroborate a commit claim, so
+          # force a full LLM verifier round — but do NOT bump the oracle fail
+          # counter (this is infra, not a worker lie) and never BLOCK: the verifier
+          # remains the correctness gate. Falls through to the pre-gate + full verify.
+          log "  Commit-integrity oracle could not read git facts (${ORACLE_REASON}) — forcing a full LLM verifier round (no oracle fail bump)."
+          log_debug "[GIT-FC] iter=$ITERATION phase=oracle_infra reason=${ORACLE_REASON} us=${signal_us_id:-all}"
         fi
 
         # --- Feature 1: leader-side mechanical pre-gate ---
@@ -5169,13 +5206,13 @@ main() {
 
         # --- governance.md s7 step 7: Read verdict via jq ---
         local verdict
-        verdict=$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)
+        verdict=$(_normalize_verdict "$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)")
         local recommended
-        recommended=$(jq -r '.recommended_state_transition' "$VERDICT_FILE" 2>/dev/null)
         # F-23: normalize so a verifier's phrasing variant doesn't strand a
         # genuinely-complete campaign at MAX_ITER. "Complete"/"completed"/"done"
-        # all mean complete; comparison below is lowercase-exact.
-        recommended="${recommended:l}"
+        # all mean complete. Unified through _normalize_verdict (IMP-01) so the
+        # verdict field and the transition field share one canonical surface.
+        recommended=$(_normalize_verdict "$(jq -r '.recommended_state_transition' "$VERDICT_FILE" 2>/dev/null)" transition)
         local verdict_summary
         verdict_summary=$(jq -r '.summary // "no summary"' "$VERDICT_FILE" 2>/dev/null)
 

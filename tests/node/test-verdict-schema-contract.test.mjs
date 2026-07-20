@@ -19,7 +19,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
-import { normalizeIssue, normalizeVerdict } from '../../src/node/shared/verdict-schema.mjs';
+import {
+  normalizeIssue,
+  normalizeVerdict,
+  normalizeVerdictString,
+  normalizeTransitionString,
+} from '../../src/node/shared/verdict-schema.mjs';
 import { buildFixContract } from '../../src/node/runner/campaign-main-loop.mjs';
 import { generateSVReport } from '../../src/node/reporting/campaign-reporting.mjs';
 
@@ -230,6 +235,94 @@ test('AC3.2: reasoning-completeness is 100% for the verifier-verdict fixture (no
   const report = await fs.readFile(result.reportPath, 'utf8');
 
   assert.match(report, /Reasoning completeness: 100%/, 'all 5 required categories are present in the fixture reasoning array');
+});
+
+// IMP-01: verdict/transition STRING normalizer + zsh↔Node parity.
+const zshLibPath = path.join(repoRoot, 'src', 'scripts', 'lib_ralph_desk.zsh');
+
+async function loadVerdictStringCases() {
+  const content = await fs.readFile(
+    path.join(fixturesDir, 'verdict-string-cases.json'),
+    'utf8',
+  );
+  return JSON.parse(content);
+}
+
+function normalizeStringForField(raw, field) {
+  return field === 'transition'
+    ? normalizeTransitionString(raw)
+    : normalizeVerdictString(raw);
+}
+
+// Shell the REAL zsh helper (same invocation form the zsh test uses) and strip
+// the single trailing newline `print -r --` adds, so comparison is byte-for-byte
+// against the Node return value.
+async function runZshNormalize(raw, field) {
+  const script = `source ${JSON.stringify(zshLibPath)} 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }; _normalize_verdict "$1" "$2"`;
+  const { stdout } = await execFileAsync('zsh', ['--no-rcs', '-c', script, '_', raw, field]);
+  return stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout;
+}
+
+// IMP-01 (1): the Node string normalizer produces the expected canonical value
+// for every shared fixture case (case/trim/separator/synonym/guard/unknown).
+test('IMP-01: normalizeVerdictString/normalizeTransitionString match every shared fixture case', async () => {
+  const cases = await loadVerdictStringCases();
+  for (const { raw, field, expected } of cases) {
+    assert.equal(
+      normalizeStringForField(raw, field),
+      expected,
+      `[${field}] ${JSON.stringify(raw)} should normalize to ${JSON.stringify(expected)}`,
+    );
+  }
+});
+
+// IMP-01 (2): shared-fixture parity — the zsh helper output === the Node output
+// byte-for-byte for every case (the synonym tables must not drift).
+test('IMP-01: zsh _normalize_verdict matches the Node normalizer byte-for-byte', async () => {
+  const cases = await loadVerdictStringCases();
+  for (const { raw, field } of cases) {
+    const zshOut = await runZshNormalize(raw, field);
+    const nodeOut = normalizeStringForField(raw, field);
+    assert.equal(
+      zshOut,
+      nodeOut,
+      `[${field}] ${JSON.stringify(raw)}: zsh ${JSON.stringify(zshOut)} !== node ${JSON.stringify(nodeOut)}`,
+    );
+  }
+});
+
+// IMP-01 (3): normalizeVerdict wires the string rule into the verdict +
+// recommended_state_transition fields (case/synonym variants canonicalized).
+test('IMP-01: normalizeVerdict canonicalizes the verdict + transition strings', async () => {
+  const fixture = await loadFixture('verifier-verdict');
+  const normalized = normalizeVerdict({
+    ...fixture,
+    verdict: 'PASS',
+    recommended_state_transition: 'Done',
+  });
+  assert.equal(normalized.verdict, 'pass');
+  assert.equal(normalized.recommended_state_transition, 'complete');
+});
+
+// IMP-06: normalizeVerdict must be idempotent so hoisting normalization to the
+// reporting ingestion boundary is safe against a stray second application
+// (partial revert, a re-introduced per-item call). Double application must
+// deep-equal single application for every producer shape — including the issue
+// label/text, which pre-hardening collapsed to "?"/"no description".
+test('IMP-06: normalizeVerdict is idempotent (double application deep-equals single)', async () => {
+  for (const { name } of FIXTURES) {
+    const fixture = await loadFixture(name);
+    const once = normalizeVerdict(fixture);
+    const twice = normalizeVerdict(once);
+    assert.deepEqual(twice, once, `${name}: normalizeVerdict must be idempotent`);
+  }
+  // Variant strings + raw issue shape also round-trip unchanged on re-application.
+  const v = normalizeVerdict({
+    verdict: 'PASS',
+    recommended_state_transition: 'Done',
+    issues: [{ id: 'AC-1', description: 'x' }],
+  });
+  assert.deepEqual(normalizeVerdict(v), v, 'variant verdict + issues idempotent');
 });
 
 // AC3.1: normalizeVerdict is tolerant of the legacy object-keyed reasoning

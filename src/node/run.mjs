@@ -477,6 +477,11 @@ function buildZshEnv(slug, options, parentEnv) {
     // $TMUX early-return (no in-pane `claude --print`); the SV report itself is
     // produced by the Node post-pass in runTmuxViaZsh after the zsh child exits.
     WITH_SELF_VERIFICATION: options.withSelfVerification ? '1' : '0',
+    // IMP-03 F3: forward the --debug CLI flag to the zsh leader (it was a dead
+    // flag on the tmux path — DEBUG previously only reached the leader via the
+    // operator's own environment through ...parentEnv). Spread last so the flag
+    // overrides parentEnv when set, and leaves operator-env DEBUG intact when not.
+    ...(options.debug ? { DEBUG: '1' } : {}),
   };
 }
 

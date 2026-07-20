@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { resolveDeskRoot } from '../util/desk-root.mjs';
-import { normalizeVerdict } from '../shared/verdict-schema.mjs';
+import { normalizeVerdict, normalizeVerdictString } from '../shared/verdict-schema.mjs';
 
 const execFileAsync = promisify(execFile);
 const REQUIRED_ANALYTICS_FIELDS = [
@@ -79,7 +79,13 @@ async function readAnalytics(analyticsFile) {
   return content
     .split('\n')
     .filter(Boolean)
-    .map((line) => JSON.parse(line));
+    .map((line) => JSON.parse(line))
+    // IMP-06: normalize the verdict field at the analytics ingestion boundary so
+    // every downstream consumer (verification list, SV validation table) sees the
+    // canonical string. Rows without a verdict field pass through byte-identical.
+    .map((record) => (record.verdict === undefined
+      ? record
+      : { ...record, verdict: normalizeVerdictString(record.verdict) }));
 }
 
 function extractObjective(prdContent) {
@@ -307,7 +313,8 @@ function computeVerifierQuality(verdicts) {
   let withIndependent = 0;
 
   for (const v of verdicts) {
-    const reasoning = normalizeVerdict(v).reasoning;
+    // IMP-06: records are normalized at the ingestion boundary — read directly.
+    const reasoning = v.reasoning;
     const checks = reasoning.map((entry) => entry.check).filter(Boolean);
     const present = REQUIRED_CATEGORY_PATTERNS.filter((pattern) =>
       checks.some((check) => pattern.test(check)));
@@ -350,7 +357,8 @@ function buildAcLifecycle(doneClaims, verdicts) {
   }
 
   for (const v of verdicts) {
-    const normalized = normalizeVerdict(v);
+    // IMP-06: records are normalized at the ingestion boundary — read directly.
+    const normalized = v;
     const iter = normalized.iteration ?? 0;
     const usId = normalized.us_id ?? usIdByIteration.get(iter) ?? 'unknown';
     if (!lifecycle[usId]) {
@@ -466,7 +474,9 @@ export async function generateSVReport({
   for (const file of verdictFiles) {
     const data = await readJsonIfExists(path.join(logsDir, file));
     if (data) {
-      verdicts.push(data);
+      // IMP-06: normalize ONCE at the ingestion boundary so lifecycle, patterns,
+      // deep-dive, and summary counts can never disagree on the same record.
+      verdicts.push(normalizeVerdict(data));
     }
   }
 
@@ -493,7 +503,8 @@ export async function generateSVReport({
   const failedVerdicts = verdicts.filter((v) => v.verdict === 'fail');
   const failureLines = failedVerdicts.length > 0
     ? failedVerdicts.map((v) => {
-      const normalized = normalizeVerdict(v);
+      // IMP-06: records are normalized at the ingestion boundary — read directly.
+      const normalized = v;
       const issues = normalized.issues.map((i) => `  - ${i.label} [${i.severity}]: ${i.text}`).join('\n');
       return `### Iteration ${v.iteration ?? '?'} — ${normalized.us_id ?? 'unknown'}\n${issues || '  - No structured issues.'}`;
     })

@@ -121,6 +121,23 @@ out=$(zsh --no-rcs -c '
 [[ "$out" == *"RC=0"* ]] && ok "both verdicts present → return 0 (consensus pass)" || no "parallel both-pass wrong ($out)"
 [[ "$out" == *"DISPATCH=claude,codex,"* ]] && ok "both engines dispatched (claude then codex) BEFORE polling" || no "dispatch order/both wrong ($out)"
 
+# IMP-01: verdict-phrasing variants at the parallel read sites (2-3) — a verifier
+# emitting "PASS" / "Pass " (trailing space) must NOT diverge from lowercase
+# "pass". _normalize_verdict wraps the reads; both engines resolve to pass →
+# merged VERDICT_FILE verdict == pass, RC=0.
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null
+  '"$finalize_body"'
+  '"$par_body"'
+  '"$mocks"'
+  ITER_TIMEOUT=10; CLAUDE_TAG=PASS; CODEX_TAG="Pass "
+  LOGS_DIR="'"$TMP"'/p2b"; mkdir -p "$LOGS_DIR"
+  VERDICT_FILE="$LOGS_DIR/verdict.json"
+  run_consensus_verification_parallel 7 US-001; rc=$?
+  print "RC=$rc V=$(jq -r .verdict "$VERDICT_FILE" 2>/dev/null)"
+')
+[[ "$out" == *"RC=0 V=pass"* ]] && ok "phrasing variants (PASS / 'Pass ') → merged verdict pass, RC=0 (IMP-01)" || no "IMP-01 parallel variant wrong ($out)"
+
 # AC-C4: only claude verdict arrives → return 1 (caller maps to infra_failure
 # BLOCKED). request-b ④ split this into two classifications by the submit anchor:
 #   (a) codex STARTED (showed progress) but produced no verdict → task timeout

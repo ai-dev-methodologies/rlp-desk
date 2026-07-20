@@ -258,13 +258,12 @@ async function _gitDirtyBase(rootDir) {
 // untracked and would false-fail. Mirrors zsh _commit_oracle_tracked_dirty.
 export async function _gitTrackedDirtyWorkerFiles(rootDir, preexistingDirty = []) {
   const base = await _gitDirtyBase(rootDir);
-  let dirty = [];
-  try {
-    const { stdout } = await execFileAsync('git', ['-C', rootDir, 'diff', '--name-only', base]);
-    dirty = stdout.split('\n').filter(Boolean);
-  } catch {
-    dirty = [];
-  }
+  // GIT-FC (IMP-09): do NOT swallow a git error into an empty (clean) list — a
+  // failed diff must PROPAGATE (throw) so the caller forces a full verifier
+  // round instead of the oracle corroborating a claim against a corrupt empty
+  // dirty set. Mirrors zsh _commit_oracle_tracked_dirty's rc-2 contract.
+  const { stdout } = await execFileAsync('git', ['-C', rootDir, 'diff', '--name-only', base]);
+  const dirty = stdout.split('\n').filter(Boolean);
   const pre = new Set(preexistingDirty ?? []);
   return dirty.filter((file) => !pre.has(file));
 }
@@ -289,7 +288,23 @@ export async function _defaultCheckCommitIntegrity(rootDir, { doneClaim, iterSta
       claimedShaReachable = await _gitIsAncestor(rootDir, claimedSha, 'HEAD');
     }
   }
-  const trackedDirtyWorkerFiles = await _gitTrackedDirtyWorkerFiles(rootDir, preexistingDirty);
+  // GIT-FC (IMP-09): a git error gathering the tracked-dirty set is infra, not a
+  // worker lie — surface it as a distinct infra result (matching zsh rc 2) so the
+  // loop forces a full verifier round without counting it toward the oracle cap.
+  // The pure evaluateCommitOracle never sees garbage facts (Purity principle 6).
+  let trackedDirtyWorkerFiles;
+  try {
+    trackedDirtyWorkerFiles = await _gitTrackedDirtyWorkerFiles(rootDir, preexistingDirty);
+  } catch (err) {
+    return {
+      asserted: true,
+      ok: false,
+      infra: true,
+      reason: 'git_facts_unavailable',
+      detail: `commit-oracle git snapshot failed (git error): ${String(err)}`,
+      claimedSha,
+    };
+  }
   return evaluateCommitOracle({
     doneClaim,
     iterStartHead,
@@ -1716,7 +1731,12 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   // commit oracle excludes these so an operator's pre-existing uncommitted work is
   // never counted against a Worker's commit claim. Re-captured each process (not
   // persisted) — same behavior + D-25 caveat as the zsh snapshot.
-  const campaignPreexistingDirty = await _gitTrackedDirtyWorkerFiles(rootDir, []);
+  // GIT-FC (IMP-09) scope note: _gitTrackedDirtyWorkerFiles now THROWS on a git
+  // error (the ORACLE path in _defaultCheckCommitIntegrity relies on that to emit
+  // an infra result). This t0 CAPTURE keeps its prior lenient behavior (empty on
+  // error) — fail-closing the Node capture site is IMP-05's durable-t0 work, not
+  // IMP-09's oracle scope; over-tightening it here would half-implement IMP-05.
+  const campaignPreexistingDirty = await _gitTrackedDirtyWorkerFiles(rootDir, []).catch(() => []);
 
   // PR-A (Bug #10): operator-recovery hygiene. If the operator hand-rolled a
   // `phase=verify` recovery (jq-patches status.json, writes manual artifacts,
@@ -2212,7 +2232,14 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         iterStartHead: state.iter_start_head ?? '',
         preexistingDirty: campaignPreexistingDirty,
       });
-      if (oracleResult.asserted && !oracleResult.ok) {
+      if (oracleResult.infra === true) {
+        // GIT-FC (IMP-09): a git error is infra, not a worker lie — an error can
+        // never corroborate a commit claim. Force a full verifier round (fall
+        // through) WITHOUT bumping consecutive_failures and never BLOCK from here.
+        console.error(
+          `[GIT-FC] commit-integrity oracle could not read git facts (${oracleResult.reason}) — forcing a full verifier round (no failure bump)`,
+        );
+      } else if (oracleResult.asserted && !oracleResult.ok) {
         const oracleUsId = signal.us_id ?? state.current_us;
         console.error(
           `[oracle] commit-integrity FAILED (${oracleResult.reason}) — skipping verification, redispatching Worker`,

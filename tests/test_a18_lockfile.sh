@@ -31,6 +31,14 @@ extract_fn() {
 
 setup_scaffold() {
   local root="$1"
+  # GIT-FC (IMP-09): a real campaign root is always a git repo, and the leader's
+  # t0 preexisting-dirty snapshot now fail-closes (exit 1) if git is unreadable at
+  # $ROOT. Model that invariant so the runner reaches its terminal paths instead
+  # of the startup hard-stop. `git init` alone is enough — the scaffold files stay
+  # untracked, so `git diff --name-only <empty-tree>` is a clean empty snapshot.
+  git init -q "$root" 2>/dev/null
+  git -C "$root" config user.email test@example.com 2>/dev/null
+  git -C "$root" config user.name test 2>/dev/null
   mkdir -p "$root/.rlp-desk"/{prompts,context,memos,logs,plans}
   printf '# Worker\n' > "$root/.rlp-desk/prompts/${SLUG}.worker.prompt.md"
   printf '# Verifier\n' > "$root/.rlp-desk/prompts/${SLUG}.verifier.prompt.md"

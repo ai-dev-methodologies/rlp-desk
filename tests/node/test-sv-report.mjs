@@ -309,3 +309,80 @@ test('T10: Failure Deep Dive shows real label + text, not unknown/unspecified', 
   assert.match(report, /AC-1\.1 \[major\]: test failure/, 'should render the real criterion_id + summary from the fail-shape fixture');
   assert.doesNotMatch(report, /unknown \[.*\]: unspecified/, 'must not render the unknown/unspecified placeholder');
 });
+
+// IMP-06: verdict phrasing variants ("PASS", "Fail ", "passed") must be counted
+// identically by EVERY report section — lifecycle, patterns, deep-dive, summary,
+// and the analytics validation table — now that normalization is hoisted to the
+// two ingestion boundaries. Before IMP-06 the lifecycle table (normalized) and
+// the pattern/summary counts (raw) disagreed on the same records.
+test('IMP-06: verdict phrasing variants yield ONE consistent count across all sections', async (t) => {
+  const { slug, logsDir, prdFile, testSpecFile, analyticsFile, outputDir } = await setupSVTest(t);
+  const { generateSVReport } = await import('../../src/node/reporting/campaign-reporting.mjs');
+
+  // 4 verdicts across 4 US: pass / PASS / "Fail " / passed → 3 pass, 1 fail.
+  for (let i = 1; i <= 4; i += 1) {
+    await writeDoneClaim(logsDir, i, makeDoneClaim({ iteration: i, usId: `US-00${i}`, steps: [] }));
+  }
+  await writeVerdict(logsDir, 1, { iteration: 1, us_id: 'US-001', verdict: 'pass', reasoning: {}, issues: [] });
+  await writeVerdict(logsDir, 2, { iteration: 2, us_id: 'US-002', verdict: 'PASS', reasoning: {}, issues: [] });
+  await writeVerdict(logsDir, 3, {
+    iteration: 3, us_id: 'US-003', verdict: 'Fail ', reasoning: {},
+    issues: [{ criterion_id: 'AC-3.1', severity: 'major', summary: 'variant fail' }],
+  });
+  await writeVerdict(logsDir, 4, { iteration: 4, us_id: 'US-004', verdict: 'passed', reasoning: {}, issues: [] });
+
+  // A variant verdict in the analytics stream too (section-1 validation table).
+  await writeAnalyticsLine(analyticsFile, {
+    iter: 5, us_id: 'US-005', worker_model: 'm', worker_engine: 'codex',
+    verdict: 'PASS', duration: 10, timestamp: '2026-04-12T00:00:00Z',
+  });
+
+  const result = await generateSVReport({ slug, logsDir, prdFile, testSpecFile, analyticsFile, outputDir });
+  const report = await readText(result.reportPath);
+  const data = await readJson(path.join(outputDir, 'self-verification-data.json'));
+
+  // Summary return value (raw-count site pre-IMP-06) counts variants: 3 pass / 1 fail.
+  assert.match(result.summary, /Pass\/Fail: 3\/1/, 'summary counts variants as 3 pass / 1 fail');
+
+  // extractPatterns (report section 7) agrees on the same counts.
+  assert.match(report, /3 of 4 iterations passed\./, 'patterns strengths count 3 passes');
+  assert.match(report, /1 of 4 iterations failed verification\./, 'patterns weaknesses count 1 fail');
+
+  // self-verification-data.json patterns block agrees with the report text.
+  assert.ok(data.patterns.strengths.includes('3 of 4 iterations passed.'), 'sv-data strengths agree with report');
+  assert.ok(data.patterns.weaknesses.includes('1 of 4 iterations failed verification.'), 'sv-data weaknesses agree with report');
+
+  // AC lifecycle: the PASS-variant US is marked verified (lifecycle already
+  // normalized pre-IMP-06 — this pins that patterns/summary now match it).
+  assert.match(report, /\| US-002 \| 2 \| 2 \| 0 \| verified \|/, 'PASS-variant US marked verified in lifecycle');
+
+  // Failure Deep Dive includes the trailing-space "Fail " iteration + its issue.
+  assert.match(report, /### Iteration 3 — US-003/, 'deep dive includes the "Fail " iteration');
+  assert.match(report, /AC-3\.1 \[major\]: variant fail/, 'deep dive renders the variant-fail issue');
+  assert.doesNotMatch(report, /\| unknown \|/, 'no unknown lifecycle bucket');
+
+  // Section 1 validation table normalizes the analytics "PASS" row to canonical.
+  assert.match(report, /\| 5 \| US-005 \| pass \|/, 'analytics validation table renders PASS as pass');
+});
+
+// IMP-06: canonical (already-lowercase) verdicts produce the SAME counts — the
+// boundary normalization is a no-op for canonical inputs (regression pin).
+test('IMP-06: canonical verdicts are unchanged by the boundary normalization', async (t) => {
+  const { slug, logsDir, prdFile, testSpecFile, analyticsFile, outputDir } = await setupSVTest(t);
+  const { generateSVReport } = await import('../../src/node/reporting/campaign-reporting.mjs');
+
+  for (let i = 1; i <= 4; i += 1) {
+    await writeDoneClaim(logsDir, i, makeDoneClaim({ iteration: i, usId: `US-00${i}`, steps: [] }));
+  }
+  await writeVerdict(logsDir, 1, makeVerdict({ iteration: 1, usId: 'US-001', verdict: 'pass' }));
+  await writeVerdict(logsDir, 2, makeVerdict({ iteration: 2, usId: 'US-002', verdict: 'pass' }));
+  await writeVerdict(logsDir, 3, makeVerdict({ iteration: 3, usId: 'US-003', verdict: 'fail' }));
+  await writeVerdict(logsDir, 4, makeVerdict({ iteration: 4, usId: 'US-004', verdict: 'pass' }));
+
+  const result = await generateSVReport({ slug, logsDir, prdFile, testSpecFile, analyticsFile, outputDir });
+  const report = await readText(result.reportPath);
+
+  assert.match(result.summary, /Pass\/Fail: 3\/1/, 'canonical counts identical to the variant case');
+  assert.match(report, /3 of 4 iterations passed\./);
+  assert.match(report, /1 of 4 iterations failed verification\./);
+});
