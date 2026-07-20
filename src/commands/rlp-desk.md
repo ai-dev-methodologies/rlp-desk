@@ -53,6 +53,7 @@ Ask about these items one by one (or in small groups):
    - Default recommendation: one US per iteration for 3+ stories.
 5. **Verification Commands** — build, test, lint commands
 6. **Completion / Blocked Criteria**
+6.5. **위임 규칙 (Delegated Decisions)** — a campaign runs with **ZERO owner/user interaction**. Enumerate every decision class the loop could meet at runtime and pre-decide it now, so the worker never needs to ask. At minimum decide: 신규 표면/산출물 등록 관례 (how new files/surfaces get registered), 원장·레지스트리 갱신 규칙 (how ledgers/registries are updated), fixture·합성데이터 처분 (how test fixtures / synthetic data are produced and disposed), 알려진 baseline 처분 (how known baselines are rebaselined). These become the PRD's REQUIRED **위임 규칙 (Delegated Decisions)** section. Do NOT author any AC of the shape "stop and ask the owner when …": the ONLY legitimate blocked reasons are ① irreversible destruction, ② the contract itself must change, ③ a protected path would be violated. Any other "owner decision needed" is a planning miss — convert it into a delegation rule here.
 7. **Worker / Verifier Model** — Evaluate PRD complexity using 5 factors (overall = highest factor), then recommend model.
 
    **Complexity Evaluation Table**:
@@ -150,6 +151,7 @@ After all items are confirmed:
    If all ACs score 6-9: **WARN** — proceed with logged warning, show low-scoring dimensions.
    If all ACs score 10-12: **PASS** — clean.
    Present the score table to the user before proceeding.
+1.5. **무인-완주 점검 (Unattended-completion check)** — ask, for this exact PRD: "Can the loop run to completion with ZERO human interaction? Is there any AC or constraint that would induce a runtime owner/user decision?" Any interaction-inducing AC (e.g. "stop and confirm with the owner", "await sign-off", "ask which convention to use") is a **REJECT** — do not proceed. Convert it into a delegation rule in the PRD's **위임 규칙** section (신규 표면/산출물 등록 관례, 원장·레지스트리 갱신 규칙, fixture·합성데이터 처분, baseline 처분). The only legitimate runtime blocks are ① irreversible destruction, ② contract-change-required, ③ protected-path violation; a PRD may not manufacture any other stopping point. A PRD that cannot guarantee unattended completion is **not complete**.
 2. Present the full contract summary.
 3. **Self-Verification** — Ask: "Enable self-verification? Worker records step-by-step evidence, Verifier cross-validates process. Recommended for MEDIUM+ risk." Default: yes for HIGH/CRITICAL, no for LOW/MEDIUM.
 4. **Re-execution check**: After slug is confirmed, check if `.rlp-desk/plans/prd-<slug>.md` already exists. If a PRD already exists for this slug, ask: "A PRD already exists for this slug. Improve the existing PRD or start fresh?" (fresh resets runtime state but PRESERVES authored plans; add `--reset-plans` to wipe them with a versioned backup)
@@ -157,9 +159,24 @@ After all items are confirmed:
    - "start fresh" → pass `--mode fresh` to init
    - If no PRD exists: standard first-run (no --mode needed)
 5. On approval, offer to run `init`.
+6. **Seal the gate (REQUIRED — gate-receipt binding).** Once `init` has written the PRD files (`prd-<slug>.md` + any `prd-<slug>-US-*.md`), run:
+   ```
+   node ~/.claude/ralph-desk/node/run.mjs gate-receipt <slug> --scorecard "PASS:<n> WARN:<m> REJECT:<k>"
+   ```
+   This writes `.rlp-desk/plans/gate-receipt-<slug>.json` (content hash of every PRD file + the scorecard summary + `passed_at`). `init` and `run` compare the live PRD hash against this receipt and WARN loudly on any drift (see below). A campaign whose PRD was authored or edited **outside** this gate has no matching receipt, and the drift is surfaced at run start. **Do not skip this step** — it is what binds the Ambiguity/무인-완주 gates to the artifact instead of to your memory of having run them.
 
-Do NOT create files during brainstorm.
+Do NOT create files during brainstorm (the PRD is written by `init`; the gate-receipt is written after `init`, in step 6 above).
 Do NOT auto-decide iteration unit — the user MUST explicitly choose.
+
+### `revise <slug>` — re-gate a modified PRD
+
+When you must change a PRD after it was sealed (add a US, edit an AC, restructure), do it through the formal re-gate path so the receipt stays authoritative:
+
+1. Edit the PRD files (`prd-<slug>.md` / `prd-<slug>-US-*.md`).
+2. **Re-run the gate scorecard** on the modified PRD — score every AC per the Ambiguity Gate (IL-2) AND re-run the 무인-완주 점검 above. Present the new score table.
+3. Re-seal: `node ~/.claude/ralph-desk/node/run.mjs gate-receipt <slug> --scorecard "PASS:<n> WARN:<m> REJECT:<k>"` — this refreshes `gate-receipt-<slug>.json` to the new PRD hash.
+
+Editing a PRD without re-gating is exactly the bypass request-d closes: the next `run` will detect the hash mismatch and WARN loudly (baseline.log + startup banner + `status.json` `gate_receipt:"mismatch"`). Ungated changes are never silently accepted.
 
 ---
 

@@ -1131,6 +1131,21 @@ if [[ ! -f "$F" ]]; then
 ## Objective
 $OBJECTIVE
 
+## 위임 규칙 (Delegated Decisions) — REQUIRED
+<!--
+  request-d ①-a: a campaign runs with ZERO owner/user interaction. Every
+  decision the loop could meet at runtime MUST be pre-decided here at plan time.
+  A PRD that leaves a runtime decision to "ask the owner" is NOT complete — the
+  brainstorm 무인-완주 (unattended-completion) gate REJECTS it.
+  Fill each rule below with the concrete policy the worker follows without asking.
+  Delete a line only if you can prove the campaign can never meet that decision.
+-->
+- **신규 표면/산출물 등록 관례** (new surfaces/artifacts): [e.g. "register every new file under src/ in MANIFEST.txt; no owner sign-off needed"]
+- **원장·레지스트리 갱신 규칙** (ledger/registry updates): [e.g. "append to registry.json in sorted order; regenerate the derived index in the same commit"]
+- **fixture·합성데이터 처분** (fixtures / synthetic data): [e.g. "generate deterministic fixtures under tests/fixtures/; commit them; never call external services"]
+- **알려진 baseline 처분** (known baselines): [e.g. "rebaseline provenance fingerprints in-place when the source changed intentionally; document the delta in memory.md"]
+- (add any other decision class this campaign will meet — the goal is: the worker never needs an owner mid-run)
+
 ## User Stories
 
 ### US-001: [Title]
@@ -1165,6 +1180,37 @@ else echo "  · $F"; fi
 
 # Split PRD into per-US files (no-op with warning if no US markers)
 split_prd_by_us "$DESK/plans/prd-$SLUG.md" "$SLUG"
+
+# request-d ①-b: init-time gate-receipt drift check. Mirror of lib_ralph_desk.zsh
+# compute_prd_content_hash / src/node/util/gate-receipt.mjs computePrdContentHash
+# — KEEP THE THREE IN SYNC (main PRD first, then per-US files C-sorted, each line
+# "<basename>:<sha256(file)>\n", digest = sha256 of the concatenation). Only warns
+# when a receipt already EXISTS but the PRD now differs (e.g. --mode improve edited
+# a sealed PRD). Silent when no receipt exists yet — the receipt is written AFTER
+# init by `gate-receipt <slug>`.
+_gr_receipt="$DESK/plans/gate-receipt-$SLUG.json"
+if [[ -f "$_gr_receipt" ]] && command -v jq >/dev/null 2>&1; then
+  _gr_sha() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; else sha256sum "$1" 2>/dev/null | awk '{print $1}'; fi; }
+  _gr_main="$DESK/plans/prd-$SLUG.md"
+  if [[ -f "$_gr_main" ]]; then
+    _gr_manifest="prd-$SLUG.md:$(_gr_sha "$_gr_main")
+"
+    for _gr_b in ${(f)"$(cd "$DESK/plans" 2>/dev/null && ls -1 2>/dev/null | grep -E "^prd-${SLUG}-US-.*\.md$" | LC_ALL=C sort)"}; do
+      [[ -n "$_gr_b" ]] && _gr_manifest+="${_gr_b}:$(_gr_sha "$DESK/plans/$_gr_b")
+"
+    done
+    if command -v shasum >/dev/null 2>&1; then
+      _gr_live=$(printf '%s' "$_gr_manifest" | shasum -a 256 2>/dev/null | awk '{print $1}')
+    else
+      _gr_live=$(printf '%s' "$_gr_manifest" | sha256sum 2>/dev/null | awk '{print $1}')
+    fi
+    _gr_rec=$(jq -r '.prd_sha256 // ""' "$_gr_receipt" 2>/dev/null)
+    if [[ -n "$_gr_rec" && "$_gr_rec" != "$_gr_live" ]]; then
+      echo "  WARNING: gate-receipt MISMATCH — the PRD changed since it was sealed." >&2
+      echo "           Re-gate: score the modified PRD, then run 'gate-receipt $SLUG' (see /rlp-desk revise)." >&2
+    fi
+  fi
+fi
 
 # --- Test Spec ---
 F="$DESK/plans/test-spec-$SLUG.md"

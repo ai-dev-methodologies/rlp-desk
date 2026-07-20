@@ -1196,6 +1196,7 @@ update_status() {
   "original_worker_model": '"$_owm_json"',
   "verified_us": '"$verified_us_json"''"$consensus_json"',
   "iter_start_head": "'"${ITER_START_HEAD:-}"'",
+  "gate_receipt": "'"${GATE_RECEIPT_STATUS:-none}"'",
   "updated_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
 }' | atomic_write "$STATUS_FILE"
 }
@@ -2864,6 +2865,18 @@ write_blocked_sentinel() {
   # Optional 3rd arg: reason_category (default metric_failure).
   # See governance.md §1f Failure Taxonomy for the 6-value enum.
   local category="${3:-metric_failure}"
+  # request-d ③: optional 4th arg `cause` (infra|contract_gap|defect). Distinct
+  # from reason_category — cause is a 3-value OPERATOR-ROUTING field:
+  #   infra        = transient/environment (git error, dispatch, timeout, dead pane)
+  #   contract_gap = the PRD must change (a planning miss — a decision the loop met
+  #                  that should have been delegated at plan time; request-d ①
+  #                  prevents these upstream, so callsites rarely emit it)
+  #   defect       = a malformed/incorrect artifact was produced
+  # Default `infra` (most common + safest to auto-retry). Closed set enforced;
+  # an unrecognized value degrades to infra. Operators may refine callsite
+  # classifications over time.
+  local cause="${4:-infra}"
+  case "$cause" in infra|contract_gap|defect) ;; *) cause="infra" ;; esac
   local recoverable suggested_action json_path
   recoverable=$(_blocked_recoverable_for_category "$category")
   suggested_action=$(_blocked_action_for_category "$category")
@@ -2909,6 +2922,7 @@ write_blocked_sentinel() {
     --arg utc "$now_iso" \
     --arg category "$category" \
     --arg detail "$reason" \
+    --arg cause "$cause" \
     --argjson recoverable "$recoverable" \
     --arg action "$suggested_action" \
     --argjson hygiene "$hygiene_violated" \
@@ -2921,6 +2935,7 @@ write_blocked_sentinel() {
       reason_category: $category,
       reason_detail: $detail,
       failure_category: null,
+      cause: $cause,
       recoverable: $recoverable,
       suggested_action: $action,
       meta: { blocked_hygiene_violated: $hygiene }
@@ -2978,6 +2993,118 @@ count_prd_us() {
   else
     echo ""
   fi
+}
+
+# =============================================================================
+# request-d ①-b: gate-receipt binding (zsh side)
+# =============================================================================
+# sha256 of a file's bytes (hex). shasum is mac-default; sha256sum on Linux.
+_rlp_sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  else
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+_rlp_sha256_stdin() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 2>/dev/null | awk '{print $1}'
+  else
+    sha256sum 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+# Content hash over ALL PRD files for a slug, byte-for-byte reproducible by
+# src/node/util/gate-receipt.mjs computePrdContentHash(). Order: main PRD first,
+# then per-US files (prd-<slug>-US-*.md) sorted by basename in C locale. Each
+# file contributes a line "<basename>:<sha256(file)>\n"; the digest is sha256 of
+# those lines concatenated (trailing newline included). No main PRD → empty.
+compute_prd_content_hash() {
+  local plans_dir="$1" slug="$2"
+  local main="$plans_dir/prd-$slug.md"
+  [[ -f "$main" ]] || { printf ''; return 0; }
+  local -a ordered
+  ordered=("prd-$slug.md")
+  local b
+  for b in ${(f)"$(cd "$plans_dir" 2>/dev/null && ls -1 2>/dev/null | grep -E "^prd-${slug}-US-.*\.md$" | LC_ALL=C sort)"}; do
+    [[ -n "$b" ]] && ordered+=("$b")
+  done
+  local manifest="" name h
+  for name in "${ordered[@]}"; do
+    h=$(_rlp_sha256_file "$plans_dir/$name")
+    manifest+="${name}:${h}
+"
+  done
+  printf '%s' "$manifest" | _rlp_sha256_stdin
+}
+
+# Compare the live PRD hash to plans/gate-receipt-<slug>.json. Echoes exactly one
+# of: ok | missing | mismatch (mirror of gate-receipt.mjs verifyGateReceipt).
+verify_gate_receipt() {
+  local plans_dir="$1" slug="$2"
+  local receipt="$plans_dir/gate-receipt-$slug.json"
+  local live rec
+  live=$(compute_prd_content_hash "$plans_dir" "$slug")
+  [[ -f "$receipt" ]] || { printf 'missing'; return 0; }
+  rec=$(jq -r '.prd_sha256 // ""' "$receipt" 2>/dev/null)
+  [[ -n "$rec" ]] || { printf 'missing'; return 0; }
+  [[ "$rec" == "$live" ]] && printf 'ok' || printf 'mismatch'
+}
+
+# =============================================================================
+# request-d ②: campaign worktree isolation (zsh side)
+# =============================================================================
+# Create (or reuse) a dedicated git worktree for the campaign and copy the
+# .rlp-desk scaffold into it. Echoes the worktree path on success (stdout);
+# echoes nothing and returns 1 on any failure so the caller falls back to the
+# in-place path. All human-readable logs go to stderr (stdout is the path only,
+# so the caller can `ROOT=$(setup_campaign_worktree ...)`).
+setup_campaign_worktree() {
+  local origin_root="$1" slug="$2" desk_rel="${3:-.rlp-desk}"
+  local wt_parent="$origin_root/$desk_rel/worktrees"
+  local wt_dir="$wt_parent/$slug"
+  local branch="campaign/$slug"
+
+  if ! git -C "$origin_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    print -u2 "[worktree] WARNING: --worktree requested but $origin_root is not a git work tree — running in-place."
+    return 1
+  fi
+
+  if [[ -e "$wt_dir/.git" ]]; then
+    print -u2 "[worktree] reusing existing campaign worktree: $wt_dir"
+  else
+    mkdir -p "$wt_parent"
+    if git -C "$origin_root" show-ref --verify --quiet "refs/heads/$branch"; then
+      if ! git -C "$origin_root" worktree add "$wt_dir" "$branch" >/dev/null 2>&1; then
+        print -u2 "[worktree] WARNING: 'git worktree add $wt_dir $branch' failed — running in-place."
+        return 1
+      fi
+    else
+      if ! git -C "$origin_root" worktree add "$wt_dir" -b "$branch" >/dev/null 2>&1; then
+        print -u2 "[worktree] WARNING: 'git worktree add -b $branch $wt_dir' failed — running in-place."
+        return 1
+      fi
+    fi
+    print -u2 "[worktree] created $wt_dir on branch $branch (HEAD-based)"
+  fi
+
+  # Copy the campaign scaffold from the origin .rlp-desk into the worktree's own
+  # .rlp-desk. The worktree checks out HEAD's tracked tree, but .rlp-desk is
+  # gitignored, so it is absent there — copy only the durable plan/prompt/context/
+  # memo inputs. Explicitly NOT copied: logs/ (fresh runtime per worktree) and
+  # worktrees/ (would recurse).
+  local sub
+  for sub in plans prompts context memos; do
+    if [[ -d "$origin_root/$desk_rel/$sub" ]]; then
+      mkdir -p "$wt_dir/$desk_rel/$sub"
+      cp -R "$origin_root/$desk_rel/$sub/." "$wt_dir/$desk_rel/$sub/" 2>/dev/null
+    fi
+  done
+  print -u2 "[worktree] copied .rlp-desk scaffold (plans/prompts/context/memos) into $wt_dir/$desk_rel"
+  print -u2 "[worktree] NOTE: campaign runs in the worktree — if your project needs installed deps (node_modules/.venv/etc.), run your install step (npm/pnpm/yarn/pip install) inside $wt_dir. rlp-desk does not assume a package manager."
+
+  printf '%s' "$wt_dir"
+  return 0
 }
 
 split_prd_by_us() {

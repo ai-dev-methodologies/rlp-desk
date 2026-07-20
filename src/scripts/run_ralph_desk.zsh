@@ -389,6 +389,28 @@ _API_RETRY_INTERVAL_S="${_API_RETRY_INTERVAL_S:-30}"
 _validate_int_knob _API_MAX_RETRIES 5 1        # D-19
 _validate_int_knob _API_RETRY_INTERVAL_S 30 1  # D-19
 
+# Source shared business logic (relocated here from below — request-d ②: needed
+# before the worktree ROOT-switch and Derived Paths that follow).
+LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$LIB_DIR/lib_ralph_desk.zsh"
+
+# request-d ②: optional campaign worktree isolation. When run.mjs --worktree was
+# used it exports RLP_CAMPAIGN_WORKTREE=1. We create/switch to a dedicated git
+# worktree BEFORE any ROOT-derived path (DESK etc.) is computed, so the ENTIRE
+# campaign — scaffold, runtime, whole-tree gates — lives in the isolated tree and
+# cannot be poisoned by the origin checkout's uncommitted edits. Default (unset)
+# leaves ROOT untouched: the byte-identical in-place path.
+if [[ "${RLP_CAMPAIGN_WORKTREE:-0}" == "1" ]]; then
+  _wt_desk_rel="${RLP_DESK_RUNTIME_DIR:-.rlp-desk}"
+  _wt_new_root=$(setup_campaign_worktree "$ROOT" "$SLUG" "$_wt_desk_rel")
+  if [[ -n "$_wt_new_root" && -d "$_wt_new_root" ]]; then
+    ROOT="$_wt_new_root"
+    print -u2 "[worktree] campaign ROOT switched to $ROOT"
+  else
+    print -u2 "[worktree] worktree setup failed — proceeding in-place at $ROOT"
+  fi
+fi
+
 # --- Derived Paths ---
 DESK="$ROOT/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}"
 # v0.13.0: legacy detection — refuse to run when .claude/ralph-desk/ is still
@@ -412,6 +434,34 @@ LOGS_DIR="$DESK/logs/$SLUG"
 RUNTIME_DIR="$LOGS_DIR/runtime"
 PRD_FILE="$DESK/plans/prd-$SLUG.md"
 TEST_SPEC_FILE="$DESK/plans/test-spec-$SLUG.md"
+
+# request-d ①-b: gate-receipt drift check. Recompute the live PRD content hash
+# and compare it to plans/gate-receipt-<slug>.json (written by `gate-receipt` at
+# brainstorm-completion). Surfaces on three channels: a durable log line
+# ($LOGS_DIR/gate-receipt.log), a loud startup banner (stderr), and the
+# status.json `gate_receipt` field (via the GATE_RECEIPT_STATUS global, emitted
+# by update_status). Backward-compat: missing receipt = WARN + proceed (a
+# pre-receipt or gate-bypassed campaign); mismatch = LOUD WARN + proceed (never a
+# hard block — that would break existing flows; the operator re-gates via revise).
+typeset -g GATE_RECEIPT_STATUS
+GATE_RECEIPT_STATUS=$(verify_gate_receipt "$DESK/plans" "$SLUG")
+if [[ "$GATE_RECEIPT_STATUS" == "mismatch" || "$GATE_RECEIPT_STATUS" == "missing" ]]; then
+  mkdir -p "$LOGS_DIR" 2>/dev/null
+  _gr_log="$LOGS_DIR/gate-receipt.log"
+  _gr_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [[ "$GATE_RECEIPT_STATUS" == "mismatch" ]]; then
+    print -u2 "========================================================================"
+    print -u2 "WARNING: PRD gate-receipt MISMATCH for $SLUG — this PRD changed after it was sealed."
+    print -u2 "  The Ambiguity / unattended-completion gate was NOT re-run on the current PRD."
+    print -u2 "  Re-gate: score the modified PRD, then re-run 'gate-receipt $SLUG' (see /rlp-desk revise)."
+    print -u2 "========================================================================"
+    print "[$_gr_now] gate_receipt=mismatch slug=$SLUG — PRD changed after sealing; re-gate via revise" >> "$_gr_log" 2>/dev/null
+  else
+    print -u2 "WARNING: no gate-receipt for $SLUG (ungated PRD: pre-receipt campaign or gate bypassed). Proceeding."
+    print "[$_gr_now] gate_receipt=missing slug=$SLUG — ungated PRD (pre-receipt or bypassed); proceeding" >> "$_gr_log" 2>/dev/null
+  fi
+fi
+
 # --- Analytics Directory (v5.7 §4.11.b: project-local) ---
 # Was previously $HOME/.claude/ralph-desk/analytics/<slug>--<hash> (cross-project
 # rollup). With v0.12.0 the canonical location is project-local; cross-project
@@ -524,9 +574,10 @@ CONSENSUS_PANE=""            # 4th pane, created lazily at the first parallel co
 DEBUG="${DEBUG:-0}"
 DEBUG_LOG="$ANALYTICS_DIR/debug.log"
 
-# Source shared business logic
-LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$LIB_DIR/lib_ralph_desk.zsh"
+# request-d ②: lib_ralph_desk.zsh is now sourced earlier (just before the Derived
+# Paths block) so setup_campaign_worktree is available BEFORE ROOT-dependent paths
+# are computed. LIB_DIR + source moved there; nothing between the two points used
+# a lib function, so the relocation is behavior-preserving.
 
 # A16: Warn if running in foreground (may conflict with Claude Code pane)
 if [[ -z "${RLP_BACKGROUND:-}" ]]; then
@@ -2410,6 +2461,23 @@ write_worker_trigger() {
     # US-002 AC2.6: authoritative campaign waivers (worker copy). Single source
     # of truth in _emit_waiver_contract; no-op when no waiver is honored.
     _emit_waiver_contract worker
+
+    # request-d ①-a: unattended-completion contract. Emitted UNCONDITIONALLY
+    # (not gated by AUTONOMOUS_MODE) so every worker session knows the closed set
+    # of legitimate blocked reasons. The PRD is authoritative; owner/user
+    # interaction during a campaign must be ZERO — any decision the loop meets
+    # was supposed to be delegated at plan time (PRD "위임 규칙" section).
+    echo ""
+    echo "---"
+    echo "## BLOCKED IS A LAST RESORT (unattended-completion contract)"
+    echo "The PRD is authoritative and self-sufficient. A campaign runs with ZERO owner/user interaction."
+    echo "You may ONLY signal blocked for one of these three reasons — nothing else qualifies:"
+    echo "  1. Irreversible destruction would be required (data loss, force-push over shared history, etc.)."
+    echo "  2. The contract itself must change (the PRD/test-spec is wrong or missing a decision you cannot derive)."
+    echo "  3. A protected path would be violated (a guard/policy forbids the only viable action)."
+    echo "\"An owner/user decision is needed\" is NOT a legitimate blocked reason — the PRD's delegation rules"
+    echo "(신규 표면/산출물 등록 관례, 원장·레지스트리 갱신 규칙, fixture·합성데이터 처분, baseline 처분) already decide these."
+    echo "If a decision truly is missing, that is reason #2 (contract gap) — say so explicitly; do not idle waiting for a human."
 
     # Autonomous mode: don't stop on ambiguity, PRD is authoritative
     if (( AUTONOMOUS_MODE )); then
@@ -4851,7 +4919,7 @@ main() {
           update_status "worker" "verify_partial_malformed_retry"
           if (( CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD )); then
             log_error "  verify_partial_malformed repeated $CONSECUTIVE_FAILURES times (>= $EFFECTIVE_CB_THRESHOLD) — blocking."
-            write_blocked_sentinel "verify_partial_malformed repeated $CONSECUTIVE_FAILURES times" "${vp_us_id:-${CURRENT_US:-ALL}}" "repeat_axis"
+            write_blocked_sentinel "verify_partial_malformed repeated $CONSECUTIVE_FAILURES times" "${vp_us_id:-${CURRENT_US:-ALL}}" "repeat_axis" "defect"
             update_status "blocked" "verify_partial_malformed_cb"
             # request-b incidental #2: was `break`, which fell through to the
             # post-loop "Max iterations reached" path — mislabeling this BLOCKED

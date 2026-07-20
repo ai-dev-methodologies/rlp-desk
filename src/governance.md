@@ -59,6 +59,13 @@ Calibration example:
 - Score 7 (WARN): "Given a registered user with email 'test@example.com' and valid password, When they submit the login form, Then they are redirected to the dashboard within 2 seconds"
   → single:2 (exactly one: login redirect), domain:1 ("submit" is slightly technical), stakeholder:1 (implied end user), portability:1 (web-specific "form"), concrete:2 (specific email, 2s threshold), independence:0 (requires registration) = 7
 
+**IL-2½: Unattended-Completion Mandate (request-d ①-a)**
+A campaign executes with ZERO owner/user interaction. A PRD that cannot guarantee unattended completion is NOT complete — it fails the gate exactly like an under-scored AC.
+1. **All decisions are exhausted at plan time.** Every decision class the loop could meet at runtime — 신규 표면/산출물 등록 관례 (new surfaces/artifacts registration), 원장·레지스트리 갱신 규칙 (ledger/registry updates), fixture·합성데이터 처분 (fixtures / synthetic data), 알려진 baseline 처분 (known baseline handling) — MUST be pre-decided in the PRD's REQUIRED **위임 규칙 (Delegated Decisions)** section. The init PRD scaffold ships this section commented; brainstorm fills it.
+2. **No interaction-inducing AC.** An AC or constraint of the shape "stop / pause / ask the owner when …" is forbidden. The ONLY legitimate blocked reasons are: ① irreversible destruction would be required, ② the contract itself must change (PRD/test-spec wrong or missing a non-derivable decision), ③ a protected path would be violated. This 3-reason closed set is injected into the Worker prompt unconditionally (paired with the `--autonomous` "PRD is authoritative" contract).
+3. **Unattended-completion check at the brainstorm gate.** Next to the Ambiguity Gate, brainstorm asks: "Can this PRD run to completion with no human in the loop? Does any AC/constraint induce a runtime interaction?" — if yes, **REJECT** and convert the offending AC into a delegation rule before proceeding.
+A repeated runtime owner-decision is a signal to fix the CONTRACT (add a delegation rule), never to add a human-in-the-loop channel — that would reverse the fresh-context autonomy the tool exists to provide.
+
 **IL-3: Layer Completeness**
 Verification layers:
 - L1: Unit Test — function-level, mocks allowed. Always required.

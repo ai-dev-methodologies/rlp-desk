@@ -269,6 +269,72 @@ else
 fi
 rm -rf "$TMP_WR_DIR"
 
+# ----------------------------------------------------------------------------
+# AC10: request-d ③ — BLOCKED cause field (infra|contract_gap|defect). A closed
+# 3-value operator-routing field, distinct from reason_category, emitted into the
+# JSON sidecar alongside failure_category. Optional 4th arg to
+# write_blocked_sentinel; default infra; unrecognized value degrades to infra.
+# ----------------------------------------------------------------------------
+assert_one "$LIB" 'local cause="\$\{4:-infra\}"' \
+  "AC10-a: zsh write_blocked_sentinel takes optional 4th cause arg (default infra)"
+assert_one "$LIB" 'infra|contract_gap|defect' \
+  "AC10-b: zsh enforces the closed cause set"
+assert_one "$LIB" 'cause: \$cause' \
+  "AC10-c: zsh JSON sidecar emits the cause field"
+assert_one "$LOOP" "\\['infra', 'contract_gap', 'defect'\\]" \
+  "AC10-d: Node writeSentinel enforces the closed cause set in the sidecar"
+assert_one "$LOOP" "cause = 'defect'" \
+  "AC10-e: Node _classifyBlock maps a malformed artifact to cause=defect"
+# The malformed-artifact zsh callsite is classified defect (conservative
+# classification per request-d ③; all other callsites default to infra).
+assert_one "$RUN" 'verify_partial_malformed.*"repeat_axis" "defect"' \
+  "AC10-f: zsh malformed-artifact callsite passes cause=defect"
+
+# Behavioural: default cause = infra when the 4th arg is omitted.
+TMP_C_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rlp-us015-cause-XXXX")
+TMP_C_SENT="$TMP_C_DIR/c-blocked.md"
+ITERATION=1 BLOCKED_SENTINEL="$TMP_C_SENT" SLUG="cause-test" CURRENT_US="US-001" \
+  zsh -c "
+source '$LIB' 2>/dev/null
+log() { :; }
+log_error() { :; }
+atomic_write() { cat > \"\$1\"; }
+write_blocked_sentinel 'infra-ish block' '' 'infra_failure'
+"
+got_cause=$(jq -r '.cause' "$TMP_C_DIR/c-blocked.json" 2>/dev/null)
+if [[ "$got_cause" == "infra" ]]; then
+  pass "AC10-g: default cause is infra when 4th arg omitted"
+else
+  fail "AC10-g: got '$got_cause'"
+fi
+
+# Behavioural: explicit cause=defect honored.
+TMP_C2="$TMP_C_DIR/c2-blocked.md"
+ITERATION=1 BLOCKED_SENTINEL="$TMP_C2" SLUG="cause-test" CURRENT_US="US-002" \
+  zsh -c "
+source '$LIB' 2>/dev/null
+log() { :; }
+log_error() { :; }
+atomic_write() { cat > \"\$1\"; }
+write_blocked_sentinel 'malformed artifact' '' 'repeat_axis' 'defect'
+"
+got_cause2=$(jq -r '.cause' "$TMP_C_DIR/c2-blocked.json" 2>/dev/null)
+[[ "$got_cause2" == "defect" ]] && pass "AC10-h: explicit cause=defect honored" || fail "AC10-h: got '$got_cause2'"
+
+# Behavioural: unrecognized cause degrades to infra (closed set).
+TMP_C3="$TMP_C_DIR/c3-blocked.md"
+ITERATION=1 BLOCKED_SENTINEL="$TMP_C3" SLUG="cause-test" CURRENT_US="US-003" \
+  zsh -c "
+source '$LIB' 2>/dev/null
+log() { :; }
+log_error() { :; }
+atomic_write() { cat > \"\$1\"; }
+write_blocked_sentinel 'bad cause value' '' 'metric_failure' 'nonsense'
+"
+got_cause3=$(jq -r '.cause' "$TMP_C_DIR/c3-blocked.json" 2>/dev/null)
+[[ "$got_cause3" == "infra" ]] && pass "AC10-i: unrecognized cause degrades to infra" || fail "AC10-i: got '$got_cause3'"
+rm -rf "$TMP_C_DIR"
+
 echo
 echo "=== RESULTS: $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

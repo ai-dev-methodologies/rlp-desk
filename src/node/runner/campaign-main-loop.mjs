@@ -922,6 +922,12 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
   let recoverable;
   let action;
   let failureCategory = null;
+  // request-d ③: operator-routing cause (infra|contract_gap|defect), distinct
+  // from reason_category. Default infra (transient/environment — dispatch, pane
+  // exit, timeout, git); defect for a malformed artifact; contract_gap is
+  // reserved for "the PRD must change" blocks (request-d ① prevents these
+  // upstream, so no current source emits it). Unclassified sources keep infra.
+  let cause = 'infra';
   switch (source) {
     case BLOCK_TAGS.FLYWHEEL_INCONCLUSIVE:
     case BLOCK_TAGS.FLYWHEEL_EXHAUSTED:
@@ -989,6 +995,7 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
       recoverable = true;
       action = 'retry_with_schema_feedback';
       failureCategory = 'malformed_artifact';
+      cause = 'defect'; // request-d ③: a malformed artifact is a defect, not infra
       break;
     // Backstop: run() exited without terminal sentinel.
     case BLOCK_TAGS.LEADER_EXITED_WITHOUT_TERMINAL_STATE:
@@ -1031,6 +1038,7 @@ function _classifyBlock(source, { verdict, state, slug } = {}) {
   return {
     reason_category: category,
     failure_category: failureCategory,
+    cause, // request-d ③: infra|contract_gap|defect operator-routing field
     recoverable,
     suggested_action: action,
     iteration: state?.iteration ?? 0,
@@ -1289,6 +1297,12 @@ async function writeSentinel(filePath, status, usId, reason, classification = nu
       reason_category: classification.reason_category,
       reason_detail: reason ?? null,
       failure_category: classification.failure_category ?? null,
+      // request-d ③: operator-routing cause. Closed set (infra|contract_gap|
+      // defect); default infra when a classification omits it (mirrors the zsh
+      // write_blocked_sentinel default).
+      cause: ['infra', 'contract_gap', 'defect'].includes(classification.cause)
+        ? classification.cause
+        : 'infra',
       recoverable: classification.recoverable ?? false,
       suggested_action: classification.suggested_action ?? 'terminal_alert',
       meta: { blocked_hygiene_violated: hygieneViolated },

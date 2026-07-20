@@ -14,6 +14,11 @@ import {
   resolveAnalyticsPointer,
 } from './runner/campaign-main-loop.mjs';
 import { isClaudeEngine } from './cli/command-builder.mjs';
+import {
+  writeGateReceipt,
+  verifyGateReceipt,
+  gateReceiptPath,
+} from './util/gate-receipt.mjs';
 
 // Exported for tests: tests/node/us008-cli-entrypoint.test.mjs pins the
 // consensus defaults so zsh/node default drift is caught.
@@ -51,6 +56,10 @@ export const RUN_DEFAULTS = {
   withSelfVerification: false,
   laneStrict: false,
   testDensityStrict: false,
+  // request-d ②: run the campaign inside a dedicated git worktree so a shared
+  // checkout's uncommitted edits cannot poison the campaign's whole-tree gates.
+  // DEFAULT OFF — the leader path is byte-identical when this is false.
+  worktree: false,
   flywheel: 'off',
   flywheelModel: 'opus',
   flywheelGuard: 'off',
@@ -70,9 +79,10 @@ function buildHelpText() {
     '  brainstorm <description>     Plan before init (not implemented in the Node rewrite yet)',
     '  init <slug> [objective]      Create project scaffold',
     '  run <slug> [options]         Run loop (tmux=zsh leader [production, default], agent=hard-errors per ADR-001, native=slash-only error)',
+    '  gate-receipt <slug>          Seal the brainstorm gate: write plans/gate-receipt-<slug>.json (PRD hash + scorecard)',
     '  status <slug>                Show loop status',
     '  logs <slug> [N]              Show iteration log (not implemented in the Node rewrite yet)',
-    '  clean <slug> [--kill-session] Reset for re-run (removes sentinels + runtime/; preserves PRD/prompts/memory)',
+    '  clean <slug> [--kill-session] [--remove-worktree]  Reset for re-run (removes sentinels + runtime/; preserves PRD/prompts/memory)',
     '  resume <slug>                Resume loop (not implemented in the Node rewrite yet)',
     '',
     'Run Options:',
@@ -96,6 +106,7 @@ function buildHelpText() {
     '  --autonomous',
     '  --lane-strict',
     '  --test-density-strict',
+    '  --worktree                      (isolate the campaign in a dedicated git worktree; default OFF)',
     '  --with-self-verification',
     '  --flywheel off|on-fail',
     '  --flywheel-model MODEL',
@@ -221,6 +232,11 @@ export function parseRunOptions(args, cwd) {
         // US-018 R6 P1-F test density enforcement opt-in. Default WARN. governance §7f.
         options.testDensityStrict = true;
         break;
+      case '--worktree':
+        // request-d ②: isolate the campaign in a dedicated git worktree.
+        // Forwarded to the zsh leader as RLP_CAMPAIGN_WORKTREE=1.
+        options.worktree = true;
+        break;
       case '--with-self-verification':
         options.withSelfVerification = true;
         break;
@@ -331,6 +347,40 @@ async function runInit(args, deps) {
   return await spawnInit(initPath, initArgs, { ...process.env, ROOT: deps.cwd }, deps.cwd);
 }
 
+// request-d ①-b: seal the brainstorm gate by binding it to the PRD artifact.
+// Writes .rlp-desk/plans/gate-receipt-<slug>.json = { prd_sha256, scorecard,
+// passed_at }. The slash brainstorm flow calls this after `init` has written the
+// PRD (documented as a REQUIRED brainstorm-completion step in rlp-desk.md).
+// Usage: gate-receipt <slug> [--scorecard "PASS:29 WARN:3 REJECT:0"]
+async function runGateReceiptCommand(args, deps) {
+  if (args.length === 0 || args[0] === '--help') {
+    write(deps.stdout, 'Usage: node src/node/run.mjs gate-receipt <slug> [--scorecard "PASS:N WARN:M REJECT:K"]');
+    return 0;
+  }
+  const slug = requireCanonicalSlug(args[0]); // IMP-08
+  let scorecard = '';
+  const rest = args.slice(1);
+  for (let i = 0; i < rest.length; i += 1) {
+    if (rest[i] === '--scorecard') {
+      scorecard = rest[i + 1] ?? '';
+      i += 1;
+    } else {
+      throw new Error(`unknown gate-receipt option: ${rest[i]}`);
+    }
+  }
+  const paths = buildPaths(deps.cwd, slug);
+  const { receipt, path: receiptPath } = writeGateReceipt(paths.plansDir, slug, { scorecard });
+  write(
+    deps.stdout,
+    `Gate sealed for ${slug}: wrote ${receiptPath}\n`
+      + `  prd_sha256: ${receipt.prd_sha256}\n`
+      + `  prd_files:  ${receipt.prd_files.join(', ')}\n`
+      + `  scorecard:  ${receipt.scorecard || '(none)'}\n`
+      + `  passed_at:  ${receipt.passed_at}`,
+  );
+  return 0;
+}
+
 async function runStatusCommand(args, deps) {
   if (args.length === 0 || args[0] === '--help') {
     write(deps.stdout, 'Usage: node src/node/run.mjs status <slug>');
@@ -349,11 +399,12 @@ async function runStatusCommand(args, deps) {
 // inputs (PRD, test-spec, prompts, context, memory) and the campaign report.
 async function runCleanCommand(args, deps) {
   if (args.length === 0 || args[0] === '--help') {
-    write(deps.stdout, 'Usage: node src/node/run.mjs clean <slug> [--kill-session]');
+    write(deps.stdout, 'Usage: node src/node/run.mjs clean <slug> [--kill-session] [--remove-worktree]');
     return 0;
   }
   const slug = requireCanonicalSlug(args[0]); // IMP-08
   const killSession = args.includes('--kill-session');
+  const removeWorktree = args.includes('--remove-worktree'); // request-d ②
   const paths = buildPaths(deps.cwd, slug);
 
   // IMP-08 defense-in-depth: even with the canonical-slug guard above, refuse
@@ -408,10 +459,31 @@ async function runCleanCommand(args, deps) {
     }
   } catch { /* best-effort */ }
 
+  // request-d ②: --remove-worktree tears down the dedicated campaign worktree
+  // (created by the zsh leader under <deskRoot>/worktrees/<slug> when --worktree
+  // was used). `git worktree remove` also prunes the admin metadata; a leftover
+  // directory is force-removed as a fallback. Best-effort — a missing worktree
+  // is a no-op, never an error.
+  let worktreeRemoved = false;
+  if (removeWorktree) {
+    const worktreePath = path.join(paths.deskRoot, 'worktrees', slug);
+    if (fs.existsSync(worktreePath)) {
+      try {
+        spawnSync('git', ['-C', deps.cwd, 'worktree', 'remove', worktreePath, '--force'], { stdio: 'ignore' });
+      } catch { /* best-effort */ }
+      try {
+        if (fs.existsSync(worktreePath)) fs.rmSync(worktreePath, { recursive: true, force: true });
+      } catch { /* best-effort */ }
+      worktreeRemoved = true;
+      removed += 1;
+    }
+  }
+
   write(
     deps.stdout,
     `Cleaned ${slug}: removed ${removed} transient artifact(s) (sentinels, signal/claim/verdict, runtime/`
-      + `${killSession ? ', tmux session' : ''}). Preserved PRD, test-spec, prompts, context, memory, reports.`,
+      + `${killSession ? ', tmux session' : ''}${worktreeRemoved ? ', campaign worktree' : ''}). `
+      + 'Preserved PRD, test-spec, prompts, context, memory, reports.',
   );
   return 0;
 }
@@ -473,6 +545,9 @@ function buildZshEnv(slug, options, parentEnv) {
     AUTONOMOUS_MODE: options.autonomous ? '1' : '0',
     LANE_MODE: options.laneStrict ? 'strict' : 'warn',
     TEST_DENSITY_MODE: options.testDensityStrict ? 'strict' : 'warn',
+    // request-d ②: 1 = create/switch to a dedicated campaign worktree before
+    // session creation; unset/0 = run in-place (byte-identical default path).
+    ...(options.worktree ? { RLP_CAMPAIGN_WORKTREE: '1' } : {}),
     // ARCH Wave C-SV: forwarded for traceability only. The zsh leader keeps its
     // $TMUX early-return (no in-pane `claude --print`); the SV report itself is
     // produced by the Node post-pass in runTmuxViaZsh after the zsh child exits.
@@ -655,6 +730,33 @@ async function runRunCommand(args, deps) {
     });
   } catch { /* best-effort — see comment above */ }
 
+  // request-d ①-b: gate-receipt drift check on the run path. Recompute the live
+  // PRD hash and compare to plans/gate-receipt-<slug>.json. Missing receipt →
+  // WARN and proceed (pre-receipt / ungated campaign, backward-compat). Hash
+  // mismatch → WARN LOUDLY (a PRD authored or edited outside the gate) and point
+  // at the formal re-gate path. Never a hard block — that would break existing
+  // flows; the durable status.json/baseline.log surfacing is done by the zsh
+  // leader, which recomputes the same hash independently.
+  try {
+    const paths = buildPaths(deps.cwd, slug);
+    const gate = verifyGateReceipt(paths.plansDir, slug);
+    if (gate.status === 'mismatch') {
+      write(deps.stderr, '========================================================================');
+      write(deps.stderr, `WARNING: PRD gate-receipt MISMATCH for ${slug} — this PRD changed after it was sealed.`);
+      write(deps.stderr, `  receipt hash: ${gate.receiptHash}`);
+      write(deps.stderr, `  live PRD hash: ${gate.liveHash}`);
+      write(deps.stderr, '  The Ambiguity / unattended-completion gate was NOT re-run on the current PRD.');
+      write(deps.stderr, `  Re-gate: score the modified PRD, then \`gate-receipt ${slug}\` (see /rlp-desk revise).`);
+      write(deps.stderr, '========================================================================');
+    } else if (gate.status === 'missing') {
+      write(
+        deps.stderr,
+        `WARNING: no gate-receipt for ${slug} (ungated PRD: pre-receipt campaign or gate bypassed). Proceeding; `
+          + `seal it with \`gate-receipt ${slug}\` after re-running the brainstorm gate.`,
+      );
+    }
+  } catch { /* best-effort — a receipt-check failure must never block the run */ }
+
   // v0.13.0: warn when Claude worker runs in tmux mode. Claude Code's
   // hardcoded sensitive policy used to hang sentinel writes inside
   // <project>/.claude/. After v0.13.0, sentinels live in
@@ -786,6 +888,8 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
         return await runInit(rest, deps);
       case 'run':
         return await runRunCommand(rest, deps);
+      case 'gate-receipt':
+        return await runGateReceiptCommand(rest, deps);
       case 'status':
         return await runStatusCommand(rest, deps);
       case 'clean':
