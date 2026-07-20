@@ -9,6 +9,35 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.8] — 2026-07-20
+
+### Fixed
+- **Resumed campaigns no longer pin to build mode on unrelated resident dirt.**
+  `derive_verification_mode`'s working-tree gate now fails only when
+  (tracked-dirty MINUS `CAMPAIGN_PREEXISTING_DIRTY`) is non-empty, and the
+  preexisting-dirty snapshot is captured BEFORE the resume-finalize mode
+  derivation. The SHA anchor is unchanged; new campaign-era edits still force
+  build mode. (Field case: codex strict-failed every resumed verification
+  while claude passed — the asymmetry was mode misclassification, not a
+  prompt-parity gap.)
+- **Bug #8 F-8 leader-recovery auto-commit survives gitignored campaign
+  artifacts.** Normal `git add`, then a `git add -f` retry strictly scoped to
+  the worker-file list (with `--literal-pathspecs` so glob-metachar filenames
+  cannot re-expand and sweep the tree), then warn+carryover+continue instead
+  of a hard BLOCK. The carryover list feeds the next worker fix contract.
+- **Unsubmitted prompts no longer amplify into timeout BLOCKs.** Multi-signal
+  submission detection (banner-tolerant; non-exhaustion quota warnings don't
+  suppress resubmission), and all polling paths (worker, sequential/final
+  verifier, parallel consensus) anchor `ITER_TIMEOUT` at the FIRST progress
+  signal. A deadline with no progress signal is classified as a SUBMISSION
+  failure with bounded Enter re-injection / re-dispatch
+  (`SUBMISSION_TIMEOUT`, default 90s; `SUBMISSION_MAX_REDISPATCH`, default 2).
+- Claude worker/verifier launchers gained the lingering-process guard (a
+  re-dispatch could previously paste the shell command into an idle claude
+  TUI as a chat message).
+- BLOCKED terminations now exit non-zero on every path (sentinel-based
+  authoritative exit at the entry point); COMPLETE exits 0.
+
 ## [0.22.7] — 2026-07-20
 
 ### Added
