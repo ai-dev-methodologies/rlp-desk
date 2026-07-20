@@ -1,0 +1,32 @@
+{
+  "verdict": "fail",
+  "us_id": "US-001",
+  "verified_at_utc": "2026-07-20T00:00:00Z",
+  "summary": "AC-1.2 failed: rate limiter not applied to /api/login.",
+  "per_us_results": { "US-001": "fail" },
+  "criteria_results": [
+    { "criterion": "AC-1.1", "met": true, "evidence": "npm test -- login.test.js: 4 passed" },
+    { "criterion": "AC-1.2", "met": false, "evidence": "curl loop: no 429 after 20 requests" }
+  ],
+  "missing_evidence": [],
+  "issues": [
+    {
+      "id": "AC-1.2",
+      "severity": "critical",
+      "description": "Rate limiter middleware not wired into /api/login route.",
+      "fix_hint": "Add rateLimiter middleware to the login route handler."
+    }
+  ],
+  "reasoning": [
+    { "check": "IL-1 Evidence Gate", "decision": "fail", "basis": "curl loop against /api/login showed no 429 after 20 rapid requests" },
+    { "check": "Layer Enforcement", "decision": "pass", "basis": "L1 unit + L3 e2e both executed" },
+    { "check": "Test Sufficiency", "decision": "pass", "basis": "5 test functions across happy/negative/boundary for AC-1.1 and AC-1.2" },
+    { "check": "Anti-Gaming", "decision": "pass", "basis": "no weakened assertions in git diff HEAD~1" },
+    { "check": "Worker Process Audit", "decision": "fail", "basis": "write_test precedes implement for AC-1.1 only; AC-1.2 has no RED evidence" }
+  ],
+  "layer_status": { "L1": "pass", "L2": "na", "L3": "fail", "L4": "na" },
+  "test_quality": { "test_count": 5, "ac_count": 2, "sufficiency": "pass", "anti_patterns_found": [] },
+  "recommended_state_transition": "continue",
+  "next_iteration_contract": "Wire the rate limiter middleware into /api/login and add RED evidence for AC-1.2.",
+  "evidence_paths": []
+}

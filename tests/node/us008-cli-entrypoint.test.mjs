@@ -175,6 +175,7 @@ test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env
       '--consensus-parallel',
       '--pre-gate-timeout', '120',
       '--pre-gate-cmd-timeout', '45',
+      '--waivers-sha256', 'abc123def456',
       '--lock-worker-model',
       '--autonomous',
       '--lane-strict',
@@ -211,6 +212,7 @@ test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env
   assert.equal(spawned.env.RLP_CONSENSUS_PARALLEL, '1', 'Feature 2: --consensus-parallel forwards RLP_CONSENSUS_PARALLEL=1');
   assert.equal(spawned.env.RLP_PREGATE_TIMEOUT, '120', 'Feature 1: --pre-gate-timeout forwards RLP_PREGATE_TIMEOUT');
   assert.equal(spawned.env.RLP_PREGATE_CMD_TIMEOUT, '45', 'Feature 1 L2: --pre-gate-cmd-timeout forwards RLP_PREGATE_CMD_TIMEOUT');
+  assert.equal(spawned.env.RLP_WAIVERS_SHA256, 'abc123def456', 'US-002: --waivers-sha256 forwards RLP_WAIVERS_SHA256');
   assert.equal(spawned.env.LOCK_WORKER_MODEL, '1');
   assert.equal(spawned.env.AUTONOMOUS_MODE, '1');
   assert.equal(spawned.env.LANE_MODE, 'strict');
@@ -280,6 +282,7 @@ test('US-008 AC8.2 boundary: bare `run <slug>` now defaults to --mode tmux and a
   assert.equal(spawned.env.RLP_CONSENSUS_PARALLEL, '0', 'Feature 2: parallel consensus OFF by default');
   assert.equal(spawned.env.RLP_PREGATE_TIMEOUT, '300', 'Feature 1: default pre-gate timeout 300s');
   assert.equal(spawned.env.RLP_PREGATE_CMD_TIMEOUT, '120', 'Feature 1 L2: default replay per-command timeout 120s');
+  assert.equal(spawned.env.RLP_WAIVERS_SHA256, '', 'US-002: no --waivers-sha256 → empty (a present waivers.json is then fully rejected fail-closed)');
 });
 
 test('US-008 AC8.2 negative: the run command rejects unknown flags instead of launching with a silent parse failure', async () => {
@@ -329,6 +332,7 @@ test('US-008 AC8.3 boundary: node src/node/run.mjs --help includes every run fla
     '--iter-timeout',
     '--pre-gate-timeout',
     '--pre-gate-cmd-timeout',
+    '--waivers-sha256',
     '--debug',
     '--autonomous',
     '--with-self-verification',

@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { resolveDeskRoot } from '../util/desk-root.mjs';
+import { normalizeVerdict } from '../shared/verdict-schema.mjs';
 
 const execFileAsync = promisify(execFile);
 const REQUIRED_ANALYTICS_FIELDS = [
@@ -283,19 +284,34 @@ function computeWorkerQuality(doneClaims) {
   };
 }
 
+// Maps the 5 required reasoning categories to a pattern matched against the
+// normalized reasoning array's `check` field. Matches both the human-phrased
+// verifier-template check names ("IL-1 Evidence Gate", "Worker Process
+// Audit", ...) and the legacy snake_case object keys ("il1_compliance",
+// "worker_process_audit", ...) so reasoning-completeness reflects real
+// categories regardless of which producer shape wrote the verdict.
+const REQUIRED_CATEGORY_PATTERNS = [
+  /il-?1|evidence/i,
+  /layer/i,
+  /sufficiency/i,
+  /anti[-_ ]?gaming/i,
+  /worker[-_ ]?process/i,
+];
+
 function computeVerifierQuality(verdicts) {
   if (verdicts.length === 0) {
     return { reasoningPercent: 0, independentPercent: 0, total: 0 };
   }
 
-  const REQUIRED_CATEGORIES = ['il1_compliance', 'layer_enforcement', 'test_sufficiency', 'anti_gaming', 'worker_process_audit'];
   let withComplete = 0;
   let withIndependent = 0;
 
   for (const v of verdicts) {
-    const reasoning = v.reasoning ?? {};
-    const present = REQUIRED_CATEGORIES.filter((cat) => reasoning[cat]);
-    if (present.length === REQUIRED_CATEGORIES.length) {
+    const reasoning = normalizeVerdict(v).reasoning;
+    const checks = reasoning.map((entry) => entry.check).filter(Boolean);
+    const present = REQUIRED_CATEGORY_PATTERNS.filter((pattern) =>
+      checks.some((check) => pattern.test(check)));
+    if (present.length === REQUIRED_CATEGORY_PATTERNS.length) {
       withComplete += 1;
     }
     if (present.length > 0) {
@@ -314,10 +330,17 @@ function computeVerifierQuality(verdicts) {
 
 function buildAcLifecycle(doneClaims, verdicts) {
   const lifecycle = {};
+  // The sequential-final-failure and Node-integration-failure verdict shapes
+  // carry no us_id (genuinely absent in source — see verdict-schema.mjs).
+  // Fall back to the done-claim's us_id for the SAME iteration so a verdict
+  // in either shape updates the AC bucket the worker already claimed instead
+  // of spawning a spurious "unknown" row.
+  const usIdByIteration = new Map();
 
   for (const claim of doneClaims) {
     const usId = claim.us_id ?? 'unknown';
     const iter = claim.iteration ?? 0;
+    usIdByIteration.set(iter, usId);
     if (!lifecycle[usId]) {
       lifecycle[usId] = { firstClaimed: iter, firstVerified: null, reopenCount: 0, finalStatus: 'pending' };
     }
@@ -327,15 +350,16 @@ function buildAcLifecycle(doneClaims, verdicts) {
   }
 
   for (const v of verdicts) {
-    const usId = v.us_id ?? 'unknown';
-    const iter = v.iteration ?? 0;
+    const normalized = normalizeVerdict(v);
+    const iter = normalized.iteration ?? 0;
+    const usId = normalized.us_id ?? usIdByIteration.get(iter) ?? 'unknown';
     if (!lifecycle[usId]) {
       lifecycle[usId] = { firstClaimed: iter, firstVerified: null, reopenCount: 0, finalStatus: 'pending' };
     }
-    if (v.verdict === 'pass' && lifecycle[usId].firstVerified === null) {
+    if (normalized.verdict === 'pass' && lifecycle[usId].firstVerified === null) {
       lifecycle[usId].firstVerified = iter;
       lifecycle[usId].finalStatus = 'verified';
-    } else if (v.verdict === 'fail' && lifecycle[usId].firstVerified !== null) {
+    } else if (normalized.verdict === 'fail' && lifecycle[usId].firstVerified !== null) {
       lifecycle[usId].reopenCount += 1;
       lifecycle[usId].finalStatus = 'pending';
     }
@@ -469,8 +493,9 @@ export async function generateSVReport({
   const failedVerdicts = verdicts.filter((v) => v.verdict === 'fail');
   const failureLines = failedVerdicts.length > 0
     ? failedVerdicts.map((v) => {
-      const issues = (v.issues ?? []).map((i) => `  - ${i.criterion_id ?? 'unknown'} [${i.severity ?? 'major'}]: ${i.summary ?? 'unspecified'}`).join('\n');
-      return `### Iteration ${v.iteration ?? '?'} — ${v.us_id ?? 'unknown'}\n${issues || '  - No structured issues.'}`;
+      const normalized = normalizeVerdict(v);
+      const issues = normalized.issues.map((i) => `  - ${i.label} [${i.severity}]: ${i.text}`).join('\n');
+      return `### Iteration ${v.iteration ?? '?'} — ${normalized.us_id ?? 'unknown'}\n${issues || '  - No structured issues.'}`;
     })
     : ['No failed iterations.'];
 

@@ -32,3 +32,4 @@ write
 
 # Generated drift-hazard scratch (assemble-base regenerates; never snapshot)
 src/scripts/.run_src_verify.zsh
+.rlp-desk/

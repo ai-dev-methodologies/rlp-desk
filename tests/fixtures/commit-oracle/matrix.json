@@ -1,0 +1,104 @@
+{
+  "_comment": "US-001 shared commit-integrity oracle parity matrix. Consumed by BOTH tests/node/test-done-claim-commit-oracle.test.mjs (pure predicate + git wrapper) AND tests/test_commit_oracle.sh (zsh _commit_oracle_check against real git). Each runtime translates the abstract recipe into either injected facts (Node pure) or a real temp git repo (zsh + Node wrapper). Fields: commitStep (is there a commit exec-step exit 0), commitSha (head|unreachable|bogus|absent), advance (this-iter|first-commit|prior-only-lie|none), dirty (clean|tracked|untracked|preexisting), expectAsserted, expectOk.",
+  "scenarios": [
+    {
+      "name": "real-sha-reachable-accept",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "this-iter",
+      "dirty": "clean",
+      "expectAsserted": true,
+      "expectOk": true
+    },
+    {
+      "name": "first-commit-accept",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "first-commit",
+      "dirty": "clean",
+      "expectAsserted": true,
+      "expectOk": true
+    },
+    {
+      "name": "sha-bogus-reject",
+      "commitStep": true,
+      "commitSha": "bogus",
+      "advance": "this-iter",
+      "dirty": "clean",
+      "expectAsserted": true,
+      "expectOk": false
+    },
+    {
+      "name": "sha-unreachable-reject",
+      "commitStep": true,
+      "commitSha": "unreachable",
+      "advance": "this-iter",
+      "dirty": "clean",
+      "expectAsserted": true,
+      "expectOk": false
+    },
+    {
+      "name": "prior-iter-advance-lie-reject",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "prior-only-lie",
+      "dirty": "clean",
+      "expectAsserted": true,
+      "expectOk": false
+    },
+    {
+      "name": "head-advanced-tracked-dirty-reject",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "this-iter",
+      "dirty": "tracked",
+      "expectAsserted": true,
+      "expectOk": false
+    },
+    {
+      "name": "untracked-only-accept",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "this-iter",
+      "dirty": "untracked",
+      "expectAsserted": true,
+      "expectOk": true
+    },
+    {
+      "name": "campaign-preexisting-dirty-only-accept",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "this-iter",
+      "dirty": "preexisting",
+      "expectAsserted": true,
+      "expectOk": true
+    },
+    {
+      "name": "no-sha-advanced-accept",
+      "commitStep": true,
+      "commitSha": "absent",
+      "advance": "this-iter",
+      "dirty": "clean",
+      "expectAsserted": true,
+      "expectOk": true
+    },
+    {
+      "name": "no-sha-no-advance-reject",
+      "commitStep": true,
+      "commitSha": "absent",
+      "advance": "none",
+      "dirty": "clean",
+      "expectAsserted": true,
+      "expectOk": false
+    },
+    {
+      "name": "no-commit-claim-noop",
+      "commitStep": false,
+      "commitSha": "absent",
+      "advance": "none",
+      "dirty": "clean",
+      "expectAsserted": false,
+      "expectOk": true
+    }
+  ]
+}

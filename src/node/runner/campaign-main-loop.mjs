@@ -17,6 +17,9 @@ import {
   unlockSentinelFile,
   writeSentinelExclusive,
 } from '../shared/fs.mjs';
+import { normalizeVerdict } from '../shared/verdict-schema.mjs';
+import { evaluateCommitOracle, findCommitClaim } from '../shared/commit-oracle.mjs';
+import { loadCampaignWaivers } from '../shared/waivers.mjs';
 import {
   TimeoutError,
   WorkerExitedError,
@@ -118,6 +121,9 @@ export function buildPaths(rootDir, slug, env = process.env) {
     contextFile: path.join(deskRoot, 'context', `${slug}-latest.md`),
     prdFile: path.join(deskRoot, 'plans', `prd-${slug}.md`),
     testSpecFile: path.join(deskRoot, 'plans', `test-spec-${slug}.md`),
+    // US-002: first-class campaign-scope waiver file (leader-validated,
+    // fail-closed, authorized out-of-band via RLP_WAIVERS_SHA256).
+    waiversFile: path.join(deskRoot, 'plans', 'waivers.json'),
     analyticsFile: path.join(campaignLogDir, 'campaign.jsonl'),
     // v5.7 §4.11.b: project-local analytics so Worker/Verifier prompts that
     // reference this path stay inside cwd-tree (no `--add-dir` whitelist needed
@@ -199,6 +205,99 @@ async function _defaultCheckWorkingTree(rootDir) {
   } catch (err) {
     return { ok: false, error: err?.message ?? String(err) };
   }
+}
+
+// US-001: git helpers for the commit-integrity oracle. These do the I/O; the
+// PURE predicate lives in ../shared/commit-oracle.mjs (Principle 6, kept I/O-free).
+async function _gitHeadSha(rootDir) {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', rootDir, 'rev-parse', 'HEAD']);
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+async function _gitObjectExists(rootDir, rev) {
+  try {
+    await execFileAsync('git', ['-C', rootDir, 'cat-file', '-e', rev]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function _gitIsAncestor(rootDir, ancestor, descendant) {
+  try {
+    await execFileAsync('git', ['-C', rootDir, 'merge-base', '--is-ancestor', ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Mirrors the zsh _git_dirty_base: HEAD when the repo has commits, else git's
+// empty-tree object so a staged-but-never-committed file is still listed.
+async function _gitDirtyBase(rootDir) {
+  try {
+    await execFileAsync('git', ['-C', rootDir, 'rev-parse', '--verify', 'HEAD']);
+    return 'HEAD';
+  } catch {
+    try {
+      const { stdout } = await execFileAsync('git', ['-C', rootDir, 'hash-object', '-t', 'tree', '/dev/null']);
+      return stdout.trim() || '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+    } catch {
+      return '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+    }
+  }
+}
+
+// TRACKED-only dirty files vs the dirty-base, minus the campaign-preexisting set.
+// This is the oracle's OWN tracked-delta predicate (AC1.2) — deliberately NOT
+// checkWorkingTree, which counts ALL `git status --porcelain` entries incl.
+// untracked and would false-fail. Mirrors zsh _commit_oracle_tracked_dirty.
+export async function _gitTrackedDirtyWorkerFiles(rootDir, preexistingDirty = []) {
+  const base = await _gitDirtyBase(rootDir);
+  let dirty = [];
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', rootDir, 'diff', '--name-only', base]);
+    dirty = stdout.split('\n').filter(Boolean);
+  } catch {
+    dirty = [];
+  }
+  const pre = new Set(preexistingDirty ?? []);
+  return dirty.filter((file) => !pre.has(file));
+}
+
+// US-001: default git-gathering wrapper around the pure commit-oracle predicate.
+// Kept SEPARATE from evaluateCommitOracle (I/O-free). Tests inject a stub via
+// run() option `checkCommitIntegrity`; the shared-fixture parity matrix drives the
+// pure predicate directly (commit-oracle.mjs), matching the zsh helper (AC1.6).
+export async function _defaultCheckCommitIntegrity(rootDir, { doneClaim, iterStartHead = '', preexistingDirty = [] } = {}) {
+  const claim = findCommitClaim(doneClaim);
+  if (!claim) {
+    // No commit asserted → no-op, no git needed.
+    return evaluateCommitOracle({ doneClaim });
+  }
+  const currentHead = await _gitHeadSha(rootDir);
+  const claimedSha = typeof claim.commit_sha === 'string' ? claim.commit_sha.trim() : '';
+  let claimedShaResolves = false;
+  let claimedShaReachable = false;
+  if (claimedSha) {
+    claimedShaResolves = await _gitObjectExists(rootDir, `${claimedSha}^{commit}`);
+    if (claimedShaResolves) {
+      claimedShaReachable = await _gitIsAncestor(rootDir, claimedSha, 'HEAD');
+    }
+  }
+  const trackedDirtyWorkerFiles = await _gitTrackedDirtyWorkerFiles(rootDir, preexistingDirty);
+  return evaluateCommitOracle({
+    doneClaim,
+    iterStartHead,
+    currentHead,
+    claimedShaResolves,
+    claimedShaReachable,
+    trackedDirtyWorkerFiles,
+  });
 }
 
 async function exists(targetPath) {
@@ -309,8 +408,11 @@ async function writePromptFile(targetPath, content) {
   await fs.writeFile(targetPath, content, 'utf8');
 }
 
-function buildFixContract(verdict) {
-  const issues = [...(verdict.issues ?? [])].sort((left, right) => {
+// Exported for direct unit testing (US-003: verdict-schema contract test
+// asserts buildFixContract absorbs all three producer shapes via the shared
+// normalizer — see tests/node/test-verdict-schema-contract.test.mjs).
+export function buildFixContract(verdict) {
+  const issues = normalizeVerdict(verdict).issues.sort((left, right) => {
     const rank = { critical: 0, major: 1, minor: 2 };
     return (rank[left.severity] ?? 3) - (rank[right.severity] ?? 3);
   });
@@ -321,7 +423,7 @@ function buildFixContract(verdict) {
   }
 
   for (const issue of issues) {
-    lines.push(`- ${issue.criterion_id ?? 'unknown'} [${issue.severity ?? 'major'}]: ${issue.summary ?? 'unspecified issue'}`);
+    lines.push(`- ${issue.label} [${issue.severity}]: ${issue.text}`);
     if (issue.fix_hint) {
       lines.push(`  fix_hint: ${issue.fix_hint}`);
     }
@@ -419,6 +521,9 @@ async function readCurrentState(paths, slug, options) {
     worker_pane_id: status.worker_pane_id ?? null,
     verifier_pane_id: status.verifier_pane_id ?? null,
     flywheel_guard_count: status.flywheel_guard_count ?? {},
+    // US-001 AC1.3: durable per-iteration HEAD snapshot. Restored so a relaunch
+    // that re-enters mid-iteration keeps the correct commit-oracle baseline.
+    iter_start_head: status.iter_start_head ?? '',
     started_at_utc: startedAt,
   };
 }
@@ -616,6 +721,7 @@ async function dispatchWorker({
   sendKeys,
   workerPaneId,
   fixContractPath,
+  honoredWaivers = [],
 }) {
   const perUsPrdPath = path.join(paths.plansDir, `prd-${slug}-${state.current_us}.md`);
   const perUsTestSpecPath = path.join(paths.plansDir, `test-spec-${slug}-${state.current_us}.md`);
@@ -631,6 +737,7 @@ async function dispatchWorker({
     fullTestSpecPath: paths.testSpecFile,
     perUsTestSpecPath,
     fixContractPath,
+    honoredWaivers,
   });
   const promptFile = path.join(paths.campaignLogDir, `iter-${String(iteration).padStart(3, '0')}.worker-prompt.md`);
 
@@ -647,6 +754,7 @@ async function dispatchVerifier({
   sendKeys,
   verifierPaneId,
   verifierModel,
+  honoredWaivers = [],
 }) {
   const prompt = await assembleVerifierPrompt({
     promptBase: paths.verifierPrompt,
@@ -655,6 +763,7 @@ async function dispatchVerifier({
     verifyMode: 'per-us',
     usId,
     verifiedUs: state.verified_us,
+    honoredWaivers,
     // v0.14.2 Fix-E: hand the absolute canonical verdict path to the
     // verifier prompt. assembleVerifierPrompt appends a "CRITICAL: write
     // verdict to <path>" footer so codex does not infer the legacy
@@ -1221,6 +1330,8 @@ async function runFinalSequentialVerify({
   // per-US verdict kills the verifier TUI before the next per-US dispatch
   // reuses the same pane. No-op when undefined (legacy/test callers).
   reapProducer,
+  // US-002: honored campaign waivers threaded from _runCampaignBody.
+  honoredWaivers = [],
 }) {
   const verifierModel = state.final_verifier_model;
 
@@ -1237,6 +1348,7 @@ async function runFinalSequentialVerify({
       sendKeys,
       verifierPaneId,
       verifierModel,
+      honoredWaivers,
     });
 
     const verdict = await pollForSignal(paths.verdictFile, {
@@ -1506,6 +1618,9 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   // Bug #8 PR-B: working-tree probe injected (or default execFile git).
   // Returns { ok: boolean, dirty?: boolean, dirtyFiles?: string[], error?: string }.
   const checkWorkingTree = options.checkWorkingTree ?? _defaultCheckWorkingTree;
+  // US-001: commit-integrity oracle probe (injected or default execFile git).
+  // Returns { asserted, ok, reason, detail, claimedSha }.
+  const checkCommitIntegrity = options.checkCommitIntegrity ?? _defaultCheckCommitIntegrity;
   const runIntegrationCheck = options.runIntegrationCheck ?? (async () => ({ exitCode: 0, summary: 'integration skipped' }));
   const maxIterations = options.maxIterations ?? 100;
   // v5.7 §4.19: campaign-level pollForSignal timeout (Node leader fix).
@@ -1550,6 +1665,28 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     state.current_us = getNextUs(usList, state.verified_us, null);
   }
 
+  // US-002 (AC2.5, AC2.6): load + validate campaign-scope waivers once at
+  // campaign entry. FAIL CLOSED — honored only with an immutable, sha256-pinned
+  // baseline artifact whose findings[] carries the finding_id, and only when the
+  // out-of-band RLP_WAIVERS_SHA256 authorizes the file. Rejections are surfaced
+  // loudly (symmetric with honored-id citation); only honored waivers are
+  // injected into both prompts. The zsh production leader mirrors this in
+  // load_campaign_waivers.
+  const waiverEnv = options.env ?? process.env;
+  const waiverResult = loadCampaignWaivers({
+    waiversPath: paths.waiversFile,
+    rootDir,
+    runningSlug: slug,
+    expectedSha256: waiverEnv.RLP_WAIVERS_SHA256 || null,
+  });
+  const honoredWaivers = waiverResult.honored;
+  for (const rej of waiverResult.rejected) {
+    console.error(`[waiver] REJECTED id=${rej.id ?? '(file)'} reason=${rej.reason} — ${rej.detail}`);
+  }
+  if (honoredWaivers.length > 0) {
+    console.error(`[waiver] honored ${honoredWaivers.length} waiver(s): ${honoredWaivers.map((w) => w.id).join(', ')}`);
+  }
+
   if (!state.session_name || !state.leader_pane_id) {
     const session = await createSession({
       sessionName: options.sessionName ?? `rlp-${slug}`,
@@ -1573,6 +1710,13 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
   }
 
   let fixContractPath = null;
+
+  // US-001: campaign-preexisting tracked-dirty snapshot, captured ONCE before the
+  // loop (mirrors zsh CAMPAIGN_PREEXISTING_DIRTY at run_ralph_desk.zsh). The
+  // commit oracle excludes these so an operator's pre-existing uncommitted work is
+  // never counted against a Worker's commit claim. Re-captured each process (not
+  // persisted) — same behavior + D-25 caveat as the zsh snapshot.
+  const campaignPreexistingDirty = await _gitTrackedDirtyWorkerFiles(rootDir, []);
 
   // PR-A (Bug #10): operator-recovery hygiene. If the operator hand-rolled a
   // `phase=verify` recovery (jq-patches status.json, writes manual artifacts,
@@ -1687,6 +1831,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
           runIntegrationCheck,
           iterTimeoutMs,
           reapProducer,
+          honoredWaivers,
         });
       } catch (error) {
         // v5.7 §4.25 — uniform poll-failure handling for final verifier.
@@ -1927,6 +2072,11 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       await writeStatus(paths, state, options.onStatusChange, options.now);
     } else {
       state.phase = 'worker';
+      // US-001 AC1.3: per-iteration HEAD snapshot, captured ONLY when a worker is
+      // dispatched (recovery/finalize iterations reuse the restored snapshot,
+      // mirroring the zsh leader). '' on a fresh repo — the oracle treats the
+      // first commit as an advance. Persisted by the writeStatus below.
+      state.iter_start_head = await _gitHeadSha(rootDir);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       await dispatchWorker({
         iteration: state.iteration,
@@ -1937,6 +2087,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         sendKeys,
         workerPaneId: state.worker_pane_id,
         fixContractPath,
+        honoredWaivers,
       });
     }
 
@@ -2038,6 +2189,66 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // event but is not currently instrumented (deferred — not B4 scope).
     await lockSentinel(paths.doneClaimFile, { log: (msg) => console.error(msg) });
 
+    // US-001: leader-side done-claim commit-integrity oracle. Runs on the shared
+    // post-done-claim-lock path (covers the normal, codex-fallback synth, and
+    // operator-recovery signals — all converge here) BEFORE any verifier dispatch.
+    // Fires ONLY when the done-claim asserts a successful commit; a no-commit
+    // claim (verify_existing/confirmation) or a corroborated claim is a silent
+    // no-op. On mismatch it routes to the fix loop (Principle 4) with a
+    // machine-generated fix contract via the US-003 normalizer — NOT a verifier
+    // finding. (zsh parity note: the zsh production leader uses a distinct ORACLE
+    // counter + force-verifier-at-cap because it has the two-layer pre-gate to
+    // defer to; the Node oracle has no pre-gate, so it drives the existing
+    // consecutive-failure CB directly — same predicate, same "CB owns terminal
+    // escalation" intent.)
+    {
+      const oracleDoneClaim = await readJsonIfExists(paths.doneClaimFile);
+      const oracleResult = await checkCommitIntegrity(rootDir, {
+        doneClaim: oracleDoneClaim,
+        iterStartHead: state.iter_start_head ?? '',
+        preexistingDirty: campaignPreexistingDirty,
+      });
+      if (oracleResult.asserted && !oracleResult.ok) {
+        const oracleUsId = signal.us_id ?? state.current_us;
+        console.error(
+          `[oracle] commit-integrity FAILED (${oracleResult.reason}) — skipping verification, redispatching Worker`,
+        );
+        const oracleVerdict = {
+          verdict: 'fail',
+          summary: `Leader commit-integrity oracle: ${oracleResult.reason}`,
+          issues: [{ id: 'COMMIT-INTEGRITY', severity: 'critical', description: oracleResult.detail }],
+        };
+        state.consecutive_failures += 1;
+        await appendIterationAnalytics(paths, state, oracleUsId, 'fail', options, lifecycleMetrics);
+        const oracleUpgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
+        if (oracleUpgradedModel === 'BLOCKED') {
+          state.phase = 'blocked';
+          const oracleBlockReason = `commit-integrity-oracle-exhausted (${oracleResult.reason}, consecutive_failures=${state.consecutive_failures})`;
+          await writeSentinel(paths.blockedSentinel, 'blocked', oracleUsId, oracleBlockReason, _classifyBlock('model_upgrade', { state, slug }), paths);
+          await writeStatus(paths, state, options.onStatusChange, options.now);
+          await generateCampaignReport({
+            slug,
+            reportFile: paths.reportFile,
+            prdFile: paths.prdFile,
+            statusFile: paths.statusFile,
+            analyticsFile: paths.analyticsFile,
+            now: resolveNow(options.now),
+            blockedReason: oracleBlockReason,
+            blockedCategory: 'repeat_axis',
+          });
+          return { status: 'blocked', usId: oracleUsId, reason: oracleBlockReason, category: 'repeat_axis', statusFile: paths.statusFile };
+        }
+        state.worker_model = oracleUpgradedModel;
+        state.current_us = oracleUsId;
+        fixContractPath = path.join(paths.campaignLogDir, `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`);
+        await writePromptFile(fixContractPath, buildFixContract(oracleVerdict));
+        state.phase = 'worker';
+        await writeStatus(paths, state, options.onStatusChange, options.now);
+        state.iteration += 1;
+        continue;
+      }
+    }
+
     // US-019 R7 P1-G: verify_partial malformed downgrade.
     // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier
     // has nothing to evaluate and we must treat the signal as broken contract → blocked.
@@ -2075,6 +2286,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       sendKeys,
       verifierPaneId: state.verifier_pane_id,
       verifierModel,
+      honoredWaivers,
     });
 
     let verdict;

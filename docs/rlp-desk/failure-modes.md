@@ -62,6 +62,15 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Recovery | Pre-resume validator returns 0 only when all 5 gates pass; sets `RECOVERY_FAIL_REASON` for caller logging on failure |
 | Reference | PR-A Bug #10; lib_ralph_desk.zsh L298-380 |
 
+### F1.7 — done-claim commit false-claim (US-001)
+| Field | Value |
+|---|---|
+| Symptom | done-claim asserts `commit exit_code 0`; `git log` shows no such commit; deliverables stay untracked/modified |
+| Root cause | Bug #8 git gate runs only on the codex-exit fallback path; the normal verify path dispatches the verifier without checking the commit assertion against git |
+| Detection | `tests/node/test-done-claim-commit-oracle.test.mjs` + `tests/test_commit_oracle.sh` (shared parity matrix); leader "COMMIT-INTEGRITY FAILURE" fix-contract line |
+| Recovery | Leader-side oracle verifies HEAD advance since the per-iteration-start snapshot + tree consistency, on the shared post-done-claim-lock path (covers synth); on mismatch → fix loop with machine-generated fix-contract; circuit breaker escalates on repeat |
+| Reference | v0.22.7 US-001; `_commit_oracle_check` (lib_ralph_desk.zsh) + `evaluateCommitOracle` (src/node/shared/commit-oracle.mjs); post-mortem `pa-live-audit-unblock` |
+
 ---
 
 ## §2 — Sentinel file contention
@@ -141,6 +150,24 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Detection | `tests/sv-real-llm/lib/b3-band-revalidation.mjs` runs 5-iter sandbox + compares |
 | Recovery | Refit `B3_BAND_*_MS` constants in `tests/sv-real-llm/lib/b3-lifecycle-assertions.sh`. See revalidation findings doc |
 | Reference | v0.15.4 audit H4; revalidation doc `docs/plans/v0.15-phase-b3-revalidation-findings.md` |
+
+### F3.5 — unwaiveable pre-existing baseline gate (US-002)
+| Field | Value |
+|---|---|
+| Symptom | Verifier gate fails on a finding predating the campaign; no in-loop N/A path; worker deadlocks; terminal BLOCKED, 0 US |
+| Root cause | No first-class waiver channel honored by worker + verifier; PO free-text in memory.md un-parseable/un-honored |
+| Detection | `tests/node/test-campaign-waivers.test.mjs` + `tests/test_campaign_waivers.sh` (shared fixture set); verdict citing waiver id |
+| Recovery | Leader-validated `.rlp-desk/plans/waivers.json`, **fail-closed** — the ONLY honored path is an immutable baseline artifact (sha256-pinned) + finding-identity match, injected into both prompts; any finding not so proven (incl. campaign regressions) is never waivable; operator authorization is out-of-band via `--waivers-sha256`; every rejection surfaces a loud diagnostic (enum `artifact_missing/sha256_mismatch/finding_not_in_artifact/slug_mismatch/malformed_schema/unauthorized_hash_change`) |
+| Reference | v0.22.7 US-002; `load_campaign_waivers` (lib_ralph_desk.zsh) + `validateWaivers` (src/node/shared/waivers.mjs); post-mortem `pa-live-audit-unblock` |
+
+### F3.6 — zero-artifact campaign abandonment (US-004)
+| Field | Value |
+|---|---|
+| Symptom | Campaign dies before iteration 1 with `--debug` off → empty logs dir, no status.json → post-mortem impossible |
+| Root cause | status.json first written only inside the loop on both leaders; no t0 breadcrumb; tmux SIGHUP skips the EXIT-only trap |
+| Detection | `tests/node/test-launch-breadcrumb.test.mjs` + `tests/test_launch_breadcrumb.sh` |
+| Recovery | Synchronous t0 `launch-record.json` (durable) + best-effort outcome trap incl. HUP, both leaders |
+| Reference | v0.22.7 US-004; post-mortem `authz-alignment` |
 
 ---
 

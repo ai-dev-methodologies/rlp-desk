@@ -1,0 +1,11 @@
+{
+  "verdict": "fail",
+  "recommended_state_transition": "continue",
+  "issues": [
+    {
+      "criterion_id": "AC-6.4",
+      "severity": "major",
+      "summary": "integration verification failed"
+    }
+  ]
+}

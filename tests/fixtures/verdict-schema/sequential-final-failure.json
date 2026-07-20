@@ -1,0 +1,11 @@
+{
+  "verdict": "fail",
+  "summary": "Sequential final verify failed at US-003",
+  "issues": [
+    {
+      "severity": "critical",
+      "criterion": "US-003",
+      "description": "Failed during sequential final verification"
+    }
+  ]
+}

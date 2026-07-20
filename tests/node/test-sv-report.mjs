@@ -263,3 +263,49 @@ test('T8: rlp-desk.md brainstorm step 0 has expanded SV feedback instructions', 
   assert.match(content, /No prior campaign data/i, 'should have fallback for no prior data');
   assert.match(content, /self-verification-report\.md/, 'should reference report filename');
 });
+
+// T9 (US-003): reasoning-completeness reflects the legacy object-keyed shape
+// instead of false-0% (v.reasoning[category] object-access-against-array bug
+// — see full producer-shape coverage in test-verdict-schema-contract.test.mjs).
+test('T9: reasoning completeness is non-zero for object-keyed reasoning with all 5 categories', async (t) => {
+  const { slug, logsDir, prdFile, testSpecFile, analyticsFile, outputDir } = await setupSVTest(t);
+  const { generateSVReport } = await import('../../src/node/reporting/campaign-reporting.mjs');
+
+  await writeDoneClaim(logsDir, 1, makeDoneClaim({
+    iteration: 1, usId: 'US-001',
+    steps: [{ step: 'implement', ac_id: 'AC-1.1', command: 'edit', exit_code: 0 }],
+  }));
+  await writeVerdict(logsDir, 1, makeVerdict({
+    iteration: 1,
+    usId: 'US-001',
+    verdict: 'fail',
+    reasoning: {
+      il1_compliance: 'Tests pass.',
+      layer_enforcement: 'L1 + L3 executed.',
+      test_sufficiency: 'Adequate coverage.',
+      anti_gaming: 'No signs.',
+      worker_process_audit: 'TDD followed.',
+    },
+  }));
+
+  const result = await generateSVReport({ slug, logsDir, prdFile, testSpecFile, analyticsFile, outputDir });
+  const report = await readText(result.reportPath);
+
+  assert.match(report, /Reasoning completeness: 100%/, 'all 5 categories present in the legacy object-keyed shape should compute 100%, not a false 0%');
+});
+
+// T10 (US-003): Failure Deep Dive resolves the real AC label + text from the
+// criterion_id/summary producer shape instead of "unknown [major]: unspecified".
+test('T10: Failure Deep Dive shows real label + text, not unknown/unspecified', async (t) => {
+  const { slug, logsDir, prdFile, testSpecFile, analyticsFile, outputDir } = await setupSVTest(t);
+  const { generateSVReport } = await import('../../src/node/reporting/campaign-reporting.mjs');
+
+  await writeDoneClaim(logsDir, 1, makeDoneClaim({ iteration: 1, usId: 'US-001', steps: [] }));
+  await writeVerdict(logsDir, 1, makeVerdict({ iteration: 1, usId: 'US-001', verdict: 'fail' }));
+
+  const result = await generateSVReport({ slug, logsDir, prdFile, testSpecFile, analyticsFile, outputDir });
+  const report = await readText(result.reportPath);
+
+  assert.match(report, /AC-1\.1 \[major\]: test failure/, 'should render the real criterion_id + summary from the fail-shape fixture');
+  assert.doesNotMatch(report, /unknown \[.*\]: unspecified/, 'must not render the unknown/unspecified placeholder');
+});

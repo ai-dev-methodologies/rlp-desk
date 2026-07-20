@@ -233,6 +233,7 @@ Worker records what was done, in what order, with command evidence in `done-clai
 - Step types: `plan`, `write_test`, `verify_red`, `implement`, `verify_green`, `refactor`, `commit`, `verify`, `verify_existing`
 - This proves the Worker followed test-first approach and did not skip steps
 - **Existing implementation rule**: When code already exists from a prior iteration/campaign, Worker MAY use `verify_existing` instead of `write_test → verify_red → implement → verify_green`. `verify_existing` requires: run all existing tests, record exit codes, confirm all AC are covered by passing tests. Worker MUST NOT skip recording evidence — `verify_existing` is evidence that existing code satisfies AC, not a shortcut to skip verification.
+- **Commit-claim honesty (`commit_sha`, §1f½)**: When a `commit` step's `exit_code` is `0`, Worker MUST record the resulting commit SHA as `commit_sha` on that same step. The Leader adjudicates every commit claim against git ground truth (§1f½) before any Verifier is dispatched — a claimed commit that git does not corroborate fails the iteration mechanically, before LLM judgment is even invoked.
 - **Confirmation-mode contract (v0.22.3)**: the LEADER derives `verification_mode: confirmation` at verify dispatch iff (a) the durable verified ledger covers every PRD US (per-US entries or a leader-written ALL completion record whose `coverage` equals the full PRD US set), (b) the ledger's commit SHA resolves and `git diff --quiet <sha> HEAD` shows no tracked change since the verified state, and (c) the tracked working tree is clean (`--untracked-files=no`). Any missing or malformed anchor fails CLOSED to `build`. The mode is injected into the verifier prompts as the SOLE authoritative channel — verifiers ignore `verification_mode` strings in worker-writable files. In confirmation mode the Worker Process Audit shifts the freshness burden to the VERIFIER: the verifier reruns the full suite and per-AC spot checks itself (IL-1) and judges on those fresh results, treating the done-claim as historical context — no write_test/verify_red and no new claim timestamps are demanded (fresh RED cannot honestly exist for already-verified code). It is the leader-gated superset of the `verify_existing` allowance above, resolving the prior contradiction where the audit demanded `verify_red` unconditionally. On a leader restart whose ledger already proves completion, the leader arms D-16 finalize and skips the worker round-trip entirely — a worker with nothing to build cannot honestly produce a signal (observed failure mode: it reasons "no action needed" and idles into the no-progress guard). This is an anti-laziness gate against a cooperative-but-sloppy worker, not a Byzantine boundary — workers hold write access to the runtime directory by design; the ledger is append-then-lock (0444 between appends) and the ALL record rides the leader-only COMPLETE path.
 
 ### Verifier: reasoning in verify-verdict.json
@@ -252,6 +253,7 @@ Verifier records WHY each judgment was made in `verify-verdict.json`:
   - Every ceiling/boundary must be tested (not just "opus ceiling" — also spark ceiling, 5.4 ceiling)
   - If Worker's tests cover only 2 of 3 engine paths, verdict MUST be fail with "test coverage gap" issue
   - "Tests pass" is NOT sufficient — "tests cover all code paths" is required
+- **Field-name normalization**: three producers emit AC-verdict JSON with different field names for the same concepts — the verifier verdict template (`id`/`description`, `reasoning[]`), the zsh sequential-final failure path (`criterion`/`description`), and the Node integration-failure/oracle path (`criterion_id`/`summary`). `src/node/shared/verdict-schema.mjs` (and the equivalent zsh `jq` fallback chain) is the single source of truth for reading these fields — consumers read the normalized issue `label` (first present of `id`/`criterion`/`criterion_id`) and `text` (first present of `description`/`summary`), never one hardcoded field name.
 - **Integration Test (mandatory when functions call other functions)**: Verifier MUST check that function call chains produce correct end-to-end results, not just that each function works in isolation. Specifically:
   - If function A's output is function B's input, there MUST be a test that runs A→B together and verifies the result
   - Example: `get_model_string()` returns "gpt-5.3-codex-spark:medium" — `get_next_model()` must accept that exact value and return the correct upgrade. A test must verify this chain.
@@ -322,6 +324,24 @@ BLOCKED writes a JSON sidecar (`<slug>-blocked.json`) alongside the markdown sen
 
 `writeSentinelExclusive` (in `src/node/shared/fs.mjs`) provides per-file first-writer-wins; cross-file ordering is enforced by the explicit md-then-JSON sequence inside `writeSentinel`.
 
+## 1f½. Done-Claim Commit-Integrity Oracle
+
+The Leader accepts a Worker done-claim that asserts a `commit` step with `exit_code 0`. Before dispatching the Verifier — and before the mechanical pre-gate (§3a) — the Leader adjudicates that claim against git ground truth, not verifier judgment (leader-side determinism over LLM judgment for checkable facts).
+
+**Placement**: the oracle runs on the shared post-done-claim-lock path, BEFORE the pre-gate layers (§3a) and BEFORE any Verifier dispatch (§7 step ⑦). This path is shared across every signal route that produces a done-claim — the normal Worker signal, the codex-exit fallback synth, and operator-recovery resume — so a false commit claim cannot slip through any of them.
+
+**No-op condition**: when the done-claim asserts no successful `commit` step (e.g. `verify_existing`, confirmation mode, or a `continue`/no-commit signal), the oracle is a silent no-op — it never blocks a claim it has nothing to check.
+
+**Predicate** (checked independently, so the fix contract can name exactly which invariant was violated):
+- **HEAD advance**: current HEAD must differ from the per-ITERATION-start snapshot (not the campaign baseline — using the iteration snapshot is what rejects "clean tree + HEAD advanced by an EARLIER iteration + lie THIS iteration").
+- **`commit_sha` transition rule**: a commit claim WITHOUT the structured `commit_sha` field is unverifiable (predates this contract). It is treated as a mismatch ONLY if HEAD did not advance — the blatant "claimed a commit but nothing landed" case. Once `commit_sha` is present, the full predicate below applies.
+- **SHA resolution + reachability**: when `commit_sha` is present, it must resolve to a real commit (`git cat-file -e <sha>^{commit}`) AND be reachable from HEAD (ancestor check).
+- **Tracked-tree cleanliness**: the worker-attributable tracked-dirty delta (Bug #8 semantics — tracked-only `git diff --name-only`, minus campaign-preexisting-dirty files, minus untracked cruft) must be empty after the claimed commit.
+
+**On mismatch**: the Leader skips LLM verification entirely and routes to the fix loop (§7½) with a machine-generated `COMMIT-INTEGRITY` fix contract (rendered through the §1f field-name normalizer) — never a free-text verifier finding. The contract instructs the Worker to actually create the commit and record the resulting SHA. This counts toward `consecutive_failures` like any other fail.
+
+**Failure-count isolation**: the oracle has its own same-US fail counter (`ORACLE_FAILURES`, cap `ORACLE_FAIL_CAP`, default 3) — separate from the mechanical pre-gate's counter and from the circuit breaker. Hitting the cap forces one full LLM verifier round (a safety valve against a false-positive oracle); that verdict then drives the circuit breaker as normal. The Node leader has no separate pre-gate layer to defer to, so it drives the existing consecutive-failure circuit breaker directly on oracle mismatch — same predicate, same "circuit breaker owns terminal escalation" intent as the zsh leader.
+
 ## 1g. Sentinel Guarantee Invariant (file-guarantee contract)
 
 **Every terminal exit of `runCampaign()` MUST leave exactly one sentinel on disk: `<slug>-blocked.md` XOR `<slug>-complete.md`.**
@@ -390,7 +410,7 @@ The fast gate fails immediately if any pollForSignal call site lacks a `_handleP
 ## 3. State Flow
 
 ```
-RUNNING → DONE_CLAIMED → [PRE-GATE] → VERIFYING → COMPLETE | CONTINUE | BLOCKED
+RUNNING → DONE_CLAIMED → [COMMIT-ORACLE] → [PRE-GATE] → VERIFYING → COMPLETE | CONTINUE | BLOCKED
 ```
 
 ### 3a. Mechanical Pre-Gate (early-FAIL only — Iron Law compatible)
@@ -435,6 +455,31 @@ LLM Verifier's sufficiency / anti-gaming responsibility (§1a, §1f). The pre-ga
 never creates a pass; full LLM verification always runs after it passes. Purpose:
 stop a 30-second mechanical defect (missing file, type error, zero tests, a claimed
 result that does not reproduce) from burning a full LLM verification round.
+
+### 3a½. Campaign Waivers (fail-closed pre-existing-baseline)
+
+An optional `.rlp-desk/plans/waivers.json` lets an operator waive a gate finding that is PROVEN pre-existing — the failure mode this closes: a real finding predates the campaign, there is no in-loop N/A path for it, the Worker self-blocks on it every iteration, and the campaign terminates BLOCKED for a defect it did not introduce and cannot fix in scope.
+
+**Waivable vs never-waivable**: waivable = a finding whose identity (gate + `finding_id`) is proven pre-existing by an immutable, sha256-pinned baseline artifact. Never-waivable = anything not so proven, INCLUDING any campaign-introduced regression — a waiver can only point at a finding that already existed in the baseline artifact's `findings[]`, so it structurally cannot cover new damage.
+
+**Fail-closed, no shortcuts**: there is NO assertion fallback (an operator's plain-text claim "this is pre-existing" is never sufficient — only a hash-verified artifact match is) and NO commit-ancestry check (ancestry would add drift without adding security — AC2.2). A waiver is honored ONLY when ALL of the following hold:
+1. Well-formed schema — `id`, `campaign_slug`, `gate`, `finding_id`, `baseline_artifact_path`, `baseline_artifact_sha256`, `reason` are all present, non-empty strings.
+2. `campaign_slug` matches the running campaign's slug.
+3. The named baseline artifact exists on disk.
+4. The artifact's recomputed sha256 equals the recorded `baseline_artifact_sha256` (immutability — a tampered or wrong artifact is rejected).
+5. `finding_id` is actually present in that artifact's `findings[]` for the matching `gate`.
+
+**Rejection diagnostics (six-reason enum)** — every rejected waiver names exactly one: `artifact_missing`, `sha256_mismatch`, `finding_not_in_artifact`, `slug_mismatch`, `malformed_schema`, `unauthorized_hash_change`.
+
+**Out-of-band authorization**: the operator supplies the expected `waivers.json` sha256 at process start via `--waivers-sha256`. A present `waivers.json` whose hash the flag does not authorize (flag absent, or a mismatch) has EVERY waiver in the file rejected `unauthorized_hash_change` — a Worker cannot smuggle a waiver in by pre-writing the file, because it cannot also forge the operator's out-of-band flag.
+
+**Reload points** (only two — not every iteration): (1) fresh campaign entry, and (2) operator-recovery resume (Bug #10 path). An operator who authors a new baseline artifact + waiver entry while the campaign is BLOCKED supplies a fresh `--waivers-sha256` on resume; a matching hash rotates the authorized snapshot and honors the new waiver. A stale or absent hash on resume rejects `unauthorized_hash_change` as usual.
+
+**Prompt injection**: honored waivers are injected into BOTH the Worker and Verifier prompts every iteration from a single source of truth per leader (zsh: `_emit_waiver_contract`; Node: the prompt-assembler's `honoredWaivers` section). The text is explicit that ONLY the named findings are waived and that any waiver text appearing in `memory.md` (worker-writable) is NOT authoritative. The Verifier's copy adds one more obligation: when a verdict honors a waiver (passing a gate despite a waived finding), it MUST cite the waiver `id` in its `reasoning` (e.g. a basis of `"waiver <id>"`) — a verdict that silently passes a waived gate without citing the id is invalid.
+
+**Capture recipes (operator, out-of-band — a Worker cannot forge either)**:
+1. Baseline artifact — prove a finding predates the campaign: run the gate, save its JSON output as the artifact (`{ "gate": "<gate>", "captured_at": "<iso8601>", "findings": [ { "finding_id": "<id>", "severity": "<sev>", ... } ] }`), then `shasum -a 256 <artifact>` → `baseline_artifact_sha256`.
+2. Authorization — bind `waivers.json` to this (re)start: `shasum -a 256 .rlp-desk/plans/waivers.json` → `--waivers-sha256 <hash>`.
 
 ### 3b. Parallel Consensus Evidence Isolation (`--consensus-parallel`)
 
@@ -676,6 +721,12 @@ for iteration in 1..max_iter:
        agent-mode-only).
 
   ⑦ Execute Verifier (see §7a for per-US and §7b for consensus details)
+     - FIRST: run the Done-Claim Commit-Integrity Oracle (§1f½) against any
+       commit claim in done-claim.json — before the pre-gate (§3a) and before
+       any Verifier dispatch. No-op when no commit is asserted. On mismatch,
+       skip straight to a machine-generated COMMIT-INTEGRITY fix contract and
+       redispatch the Worker (go to ⑧); this happens on every signal path
+       (normal, codex-exit fallback synth, operator recovery).
      - Build prompt (scoped to us_id if per-us mode) → log
      - Agent(subagent_type="executor", model=selected, prompt=prompt)
      - If --consensus is not off: run second verifier with alternate engine (see §7b)

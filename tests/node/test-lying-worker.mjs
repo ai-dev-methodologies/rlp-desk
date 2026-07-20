@@ -118,3 +118,47 @@ test('lying verifier (per-US verifier exits without verdict) → BLOCKED', async
   const jsonBody = JSON.parse(await fs.readFile(blockedJson, 'utf8'));
   assert.equal(jsonBody.failure_category, 'verifier_exited_without_artifacts');
 });
+
+// US-001 — lying COMMIT-claim: the Worker signals verify with a done-claim that
+// asserts a commit git contradicts. The leader-side commit-integrity oracle must
+// short-circuit BEFORE the verifier (no verifier poll), write a machine-generated
+// COMMIT-INTEGRITY fix contract, and redispatch — never dispatch the verifier on
+// a fabricated commit claim.
+test('lying commit-claim → oracle short-circuits before verifier, writes COMMIT-INTEGRITY fix contract', async () => {
+  const root = await tmpCampaign('worker-lies-commit');
+
+  let pollCalls = 0;
+  const result = await run('sum', {
+    rootDir: root,
+    mode: 'tmux',
+    maxIterations: 1,
+    iterTimeout: 5,
+    sendKeys: async () => {},
+    createPane: async () => '%fake',
+    createSession: async () => ({ sessionName: 'fake', leaderPaneId: '%fake' }),
+    // Injected oracle result: the claimed commit did not land.
+    checkCommitIntegrity: async () => ({
+      asserted: true,
+      ok: false,
+      reason: 'head_not_advanced+claimed_sha_absent',
+      detail: 'HEAD did not advance and the claimed commit does not resolve.',
+      claimedSha: 'deadbeef',
+    }),
+    pollForSignal: async (filePath) => {
+      pollCalls += 1;
+      if (filePath.includes('iter-signal')) {
+        return { status: 'verify', us_id: 'US-001', iteration: 1, slug: 'sum' };
+      }
+      throw new Error('verifier must NOT be polled when the oracle short-circuits');
+    },
+  });
+
+  // maxIterations:1 → oracle fails iter 1, iteration advances past the cap → loop ends.
+  assert.equal(pollCalls, 1, 'only the worker signal was polled — verifier was skipped');
+  assert.equal(result.status, 'continue');
+
+  const fixContract = path.join(root, '.rlp-desk/logs/sum/iter-001.fix-contract.md');
+  const body = await fs.readFile(fixContract, 'utf8');
+  assert.match(body, /COMMIT-INTEGRITY/);
+  assert.match(body, /HEAD did not advance/);
+});

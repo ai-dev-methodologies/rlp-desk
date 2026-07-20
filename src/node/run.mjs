@@ -38,6 +38,10 @@ export const RUN_DEFAULTS = {
   preGateTimeout: 300,
   // Feature 1 layer 2: per-command soft timeout (seconds) for execution_steps replay.
   preGateCmdTimeout: 120,
+  // US-002: out-of-band authorization hash for .rlp-desk/plans/waivers.json.
+  // Empty = no flag supplied (a present waivers.json is then fully rejected
+  // unauthorized_hash_change — fail-closed, AC2.4).
+  waiversSha256: '',
   cbThreshold: 6,
   maxIterations: 100,
   iterTimeout: 600,
@@ -87,6 +91,7 @@ function buildHelpText() {
     '  --iter-timeout N',
     '  --pre-gate-timeout N            (overall soft timeout in seconds for the pre-gate: layer1 script + layer2 replay; default 300)',
     '  --pre-gate-cmd-timeout N        (per-command soft timeout in seconds for execution_steps replay; default 120)',
+    '  --waivers-sha256 HASH           (out-of-band authorization for .rlp-desk/plans/waivers.json; must equal `shasum -a 256 waivers.json`)',
     '  --debug',
     '  --autonomous',
     '  --lane-strict',
@@ -177,6 +182,13 @@ export function parseRunOptions(args, cwd) {
       case '--pre-gate-cmd-timeout':
         // Feature 1 layer 2: per-command soft timeout for execution_steps replay.
         options.preGateCmdTimeout = parseInteger(consumeValue(args, index, token), token);
+        index += 1;
+        break;
+      case '--waivers-sha256':
+        // US-002: out-of-band authorization for .rlp-desk/plans/waivers.json.
+        // Forwarded to the zsh leader as RLP_WAIVERS_SHA256; a present file whose
+        // actual sha256 this hash does not match has ALL waivers rejected (AC2.4).
+        options.waiversSha256 = consumeValue(args, index, token);
         index += 1;
         break;
       case '--verify-mode':
@@ -453,6 +465,10 @@ function buildZshEnv(slug, options, parentEnv) {
     RLP_PREGATE_TIMEOUT: String(options.preGateTimeout),
     // Feature 1 layer 2: per-command replay soft timeout in seconds.
     RLP_PREGATE_CMD_TIMEOUT: String(options.preGateCmdTimeout),
+    // US-002: out-of-band waivers.json authorization hash ('' when --waivers-sha256
+    // was not supplied). The zsh leader loads waivers only when this matches the
+    // file's actual sha256 (AC2.4).
+    RLP_WAIVERS_SHA256: options.waiversSha256,
     LOCK_WORKER_MODEL: options.lockWorkerModel ? '1' : '0',
     AUTONOMOUS_MODE: options.autonomous ? '1' : '0',
     LANE_MODE: options.laneStrict ? 'strict' : 'warn',
@@ -578,6 +594,20 @@ async function runTmuxViaZsh(slug, options, deps) {
   return exitCode;
 }
 
+// US-004 (F3.6 zero-artifact campaign abandonment guardrail, failure-modes.md
+// §3): production launch breadcrumb. `logs/<slug>/launch-record.json` is the
+// same file the zsh leader (run_ralph_desk.zsh) enriches once it takes over —
+// this is the outermost --mode tmux frame's contribution.
+function launchRecordPath(rootDir, slug) {
+  return path.join(buildPaths(rootDir, slug).campaignLogDir, 'launch-record.json');
+}
+
+function writeLaunchRecord(rootDir, slug, record) {
+  const recordPath = launchRecordPath(rootDir, slug);
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  fs.writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+}
+
 async function runRunCommand(args, deps) {
   if (args.length === 0) {
     throw new Error('run requires a slug');
@@ -589,7 +619,36 @@ async function runRunCommand(args, deps) {
   }
 
   const slug = requireCanonicalSlug(args[0]); // IMP-08
+
+  // AC4.1: PROVISIONAL breadcrumb — written synchronously BEFORE
+  // parseRunOptions so a bad-flag parse throw still leaves a post-mortem
+  // record on disk (phase:"parsing"). Best-effort: a breadcrumb write
+  // failure must never block the run itself (additive, low blast radius).
+  try {
+    writeLaunchRecord(deps.cwd, slug, {
+      ts: new Date().toISOString(),
+      slug,
+      argv: args,
+      phase: 'parsing',
+    });
+  } catch { /* best-effort — see comment above */ }
+
   const options = parseRunOptions(args.slice(1), deps.cwd);
+
+  // AC4.1: enrich/overwrite the record now that options parsed successfully.
+  // This runs before the --mode dispatch below, so it precedes every
+  // pre-spawn return inside runTmuxViaZsh (legacy-desk / missing-runner).
+  try {
+    writeLaunchRecord(deps.cwd, slug, {
+      ts: new Date().toISOString(),
+      slug,
+      argv: args,
+      phase: 'launched',
+      pid: process.pid,
+      leader: options.mode,
+      options,
+    });
+  } catch { /* best-effort — see comment above */ }
 
   // v0.13.0: warn when Claude worker runs in tmux mode. Claude Code's
   // hardcoded sensitive policy used to hang sentinel writes inside

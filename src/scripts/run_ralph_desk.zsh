@@ -28,20 +28,9 @@ _validate_int_knob() {
   fi
 }
 
-# NEW-4 (audit round 2): the diff base for "uncommitted tracked files" detection.
-# `git diff --name-only HEAD` FAILS (fatal, empty output) in a repo with NO commits
-# (a brand-new `git init` project run before any commit) — so a Worker that STAGES
-# but does not COMMIT its deliverables goes undetected by the Bug #8 Gate 3 dirty
-# check, skipping the F-8 auto-commit recovery (the Verifier's F-18 committed-state
-# gate is then the only backstop). Echo HEAD when it exists, else git's empty-tree
-# object so `git diff --name-only <base>` lists staged-but-never-committed files.
-_git_dirty_base() {
-  if git -C "$ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
-    echo HEAD
-  else
-    git -C "$ROOT" hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904
-  fi
-}
+# _git_dirty_base(): moved to lib_ralph_desk.zsh (v0.22.7 US-001) so the Bug #8
+# gate, the campaign-preexisting-dirty snapshot, and the new commit-integrity
+# oracle share ONE definition. lib is sourced at L474 (before any call site).
 
 # =============================================================================
 # Ralph Desk Tmux Runner
@@ -162,6 +151,49 @@ _emit_final_cost_log() {
   if [[ -n "${ITERATION:-}" && -n "${LOGS_DIR:-}" ]]; then
     write_cost_log "${ITERATION:-0}" 2>/dev/null || true
   fi
+}
+
+# US-004 AC4.1/AC4.2 (F3.6 zero-artifact campaign abandonment guardrail,
+# failure-modes.md §3): synchronous t0 launch-breadcrumb writer. Called once,
+# at top level, immediately after LOGS_DIR/SLUG resolve (near STATUS_FILE
+# init — see call site below). `logs/<slug>/launch-record.json` is the same
+# file src/node/run.mjs already wrote (provisional-then-enriched, AC4.1) as
+# the outermost --mode tmux frame; this is the durable guarantee: called
+# BEFORE check_dependencies()/main() can exit early (e.g. missing
+# jq/tmux/claude), so a death before iteration 1 still leaves a post-mortem
+# trail. No jq dependency on purpose — jq itself is not confirmed present
+# until check_dependencies() runs inside main(), which is after this point.
+_write_launch_record_t0() {
+  LAUNCH_RECORD_FILE="$LOGS_DIR/launch-record.json"
+  mkdir -p "$LOGS_DIR" 2>/dev/null
+  printf '{"ts":"%s","slug":"%s","leader":"zsh","pid":%s,"phase":"launched"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SLUG" "$$" > "$LAUNCH_RECORD_FILE" 2>/dev/null
+}
+
+# US-004 AC4.2: best-effort outcome update to the t0 launch-record.json above
+# — THAT synchronous write is the durable guarantee this US provides, not
+# this function. Chained first into the EXIT/INT/TERM/HUP trap so `$?` still
+# reflects the status that triggered the trap. SIGKILL is untrappable, so a
+# campaign killed with -9 gets no outcome update — the t0 record alone still
+# proves the campaign launched.
+LAUNCH_RECORD_OUTCOME_WRITTEN=0
+_emit_launch_record_outcome() {
+  local exit_code="$?"
+  if [[ "${LAUNCH_RECORD_OUTCOME_WRITTEN:-0}" -ne 0 ]]; then
+    return 0
+  fi
+  LAUNCH_RECORD_OUTCOME_WRITTEN=1
+  if [[ -z "${LAUNCH_RECORD_FILE:-}" || ! -f "$LAUNCH_RECORD_FILE" ]]; then
+    return 0
+  fi
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq --arg ts "$ts" --argjson exit_code "$exit_code" \
+    '.phase = "exited" | .exited_at = $ts | .exit_code = $exit_code' \
+    "$LAUNCH_RECORD_FILE" > "${LAUNCH_RECORD_FILE}.tmp.$$" 2>/dev/null \
+    && mv "${LAUNCH_RECORD_FILE}.tmp.$$" "$LAUNCH_RECORD_FILE" 2>/dev/null
+  rm -f "${LAUNCH_RECORD_FILE}.tmp.$$" 2>/dev/null
+  return 0
 }
 
 # US-024 R12 P0: tmux pane/session lifecycle monitor.
@@ -415,6 +447,10 @@ CONSENSUS_HEARTBEAT="$RUNTIME_DIR/consensus-heartbeat.json"
 CONSENSUS_EVIDENCE_LOCK="$RUNTIME_DIR/evidence.lock"
 COST_LOG="$LOGS_DIR/cost-log.jsonl"
 
+# US-004 AC4.2: call site for the t0 launch-breadcrumb writer defined above
+# (near STATUS_FILE init, per AC4.2) — LOGS_DIR/SLUG have just resolved.
+_write_launch_record_t0
+
 # --- Session Naming ---
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 SESSION_NAME="rlp-desk-${SLUG}-${TIMESTAMP}"
@@ -457,6 +493,15 @@ _PREGATE_FAIL_US=""          # US the current PREGATE_FAILURES streak is accumul
 PREGATE_FAIL_CAP="${PREGATE_FAIL_CAP:-3}"  # same-US pre-gate fails at this count → force one
                              # full LLM verifier round instead of another short-circuit
 _validate_int_knob PREGATE_FAIL_CAP 3 1
+# --- US-001: leader-side done-claim commit-integrity oracle ---
+ORACLE_FAILURES=0            # same-US commit-oracle fail counter (SEPARATE from
+                             # CONSECUTIVE_FAILURES and PREGATE_FAILURES)
+_ORACLE_FAIL_US=""           # US the current ORACLE_FAILURES streak is accumulated for
+ORACLE_FAIL_CAP="${ORACLE_FAIL_CAP:-3}"  # same-US oracle fails at this count → force one
+                             # full LLM verifier round (safety valve for a false-positive oracle)
+_validate_int_knob ORACLE_FAIL_CAP 3 1
+typeset -g ITER_START_HEAD=""  # per-iteration HEAD snapshot (AC1.3); persisted in
+                             # status.json + restored on relaunch for the oracle baseline
 # --- Feature 2: parallel consensus verification (default OFF) ---
 CONSENSUS_PARALLEL="${RLP_CONSENSUS_PARALLEL:-0}"  # 1 = dispatch claude + codex verifiers
                              # concurrently (separate panes); 0 = sequential (unchanged)
@@ -2248,6 +2293,10 @@ write_worker_trigger() {
       fi
     fi
 
+    # US-002 AC2.6: authoritative campaign waivers (worker copy). Single source
+    # of truth in _emit_waiver_contract; no-op when no waiver is honored.
+    _emit_waiver_contract worker
+
     # Autonomous mode: don't stop on ambiguity, PRD is authoritative
     if (( AUTONOMOUS_MODE )); then
       echo ""
@@ -2381,6 +2430,11 @@ write_verifier_trigger() {
       fi
     fi
 
+    # US-002 AC2.6/AC2.7: authoritative campaign waivers (verifier copy). Single
+    # source of truth in _emit_waiver_contract; the "verifier" mode appends the
+    # verdict-MUST-cite-id instruction. No-op when no waiver is honored.
+    _emit_waiver_contract verifier
+
     # Autonomous mode: don't stop on ambiguity, PRD is authoritative
     if (( AUTONOMOUS_MODE )); then
       echo ""
@@ -2467,7 +2521,7 @@ TRIGGER_EOF
 # =============================================================================
 
 cleanup() {
-  # D-8: re-entrancy guard. The trap is armed on EXIT INT TERM, so a TERM (cleanup
+  # D-8: re-entrancy guard. The trap is armed on EXIT INT TERM HUP, so a TERM (cleanup
   # runs) immediately followed by process exit (EXIT fires cleanup AGAIN) would
   # double-run the non-idempotent steps — a double runner-lock release can rm a
   # relaunched leader's lock dir (ABA). Run the body at most once.
@@ -3434,13 +3488,13 @@ _consensus_finalize() {
     echo "## Claude Verdict: $CLAUDE_VERDICT"
     if [[ "$CLAUDE_VERDICT" = "fail" ]]; then
       echo "### Claude Issues"
-      jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$claude_verdict_file" 2>/dev/null || echo "- (no structured issues)"
+      jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.id // .criterion // .criterion_id // "?"): \(.description // .summary // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$claude_verdict_file" 2>/dev/null || echo "- (no structured issues)"
     fi
     echo ""
     echo "## Codex Verdict: $CODEX_VERDICT"
     if [[ "$CODEX_VERDICT" = "fail" ]]; then
       echo "### Codex Issues"
-      jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$codex_verdict_file" 2>/dev/null || echo "- (no structured issues)"
+      jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.id // .criterion // .criterion_id // "?"): \(.description // .summary // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$codex_verdict_file" 2>/dev/null || echo "- (no structured issues)"
     fi
     echo ""
     echo "## Traceability"
@@ -3777,7 +3831,12 @@ main() {
     exit 1
   fi
   # US-023 R11 P2-K: chain `_emit_final_cost_log` so cost-log.jsonl is never silently empty on exit.
-  trap '_emit_final_cost_log; cleanup' EXIT INT TERM
+  # US-004 AC4.2: chain `_emit_launch_record_outcome` FIRST (so `$?` still reflects the
+  # status that triggered the trap) for the best-effort launch-record.json outcome
+  # update; HUP is added because tmux teardown delivers SIGHUP, which otherwise skips
+  # this EXIT-only trap (SIGKILL remains untrappable — the t0 write above is the real
+  # durability guarantee, not this trap).
+  trap '_emit_launch_record_outcome; _emit_final_cost_log; cleanup' EXIT INT TERM HUP
   mkdir -p "$LOGS_DIR" "$RUNTIME_DIR" 2>/dev/null
 
   # --- Analytics directory: always create (campaign.jsonl + metadata.json are always-on) ---
@@ -3965,6 +4024,16 @@ main() {
       log "  Restored consecutive_failures from status.json: $CONSECUTIVE_FAILURES"
       log_debug "[FLOW] restored_consecutive_failures_from_status=$CONSECUTIVE_FAILURES"
     fi
+    # US-001 AC1.3: restore the per-iteration HEAD snapshot so a relaunch/recovery
+    # that re-enters mid-iteration (e.g. phase=verify operator recovery, where the
+    # worker-dispatch capture at L4246 is skipped) judges the commit-integrity
+    # oracle against the SAME baseline the crashed segment used.
+    local _status_ish
+    _status_ish=$(jq -r '.iter_start_head // ""' "$STATUS_FILE" 2>/dev/null)
+    if [[ -n "$_status_ish" ]]; then
+      ITER_START_HEAD="$_status_ish"
+      log_debug "[FLOW] restored_iter_start_head_from_status=${ITER_START_HEAD[1,10]}"
+    fi
     # D-5: also restore the consecutive-BLOCKS state so the now-live block CB
     # (F-22) survives a relaunch — otherwise a crash-loop resets it to 0 every
     # relaunch and the block breaker is evadable (the same durability hole F-13
@@ -4036,6 +4105,14 @@ main() {
   # exclusion in Gate 3 only works if both lists are computed against the same base).
   CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
 
+  # US-002 AC2.5 (reload point #1 — FRESH campaign entry): load + validate
+  # .rlp-desk/plans/waivers.json once, authorized out-of-band via
+  # RLP_WAIVERS_SHA256. Fail-closed; honored waivers persist in
+  # WAIVERS_HONORED_LINES and are injected into both prompts each iteration.
+  typeset -ga WAIVERS_HONORED_LINES; typeset -g WAIVER_REJECTION_SUMMARY=""
+  typeset -g WAIVERS_AUTHORIZED_SHA=""
+  load_campaign_waivers "$DESK/plans/waivers.json" "$SLUG" "${RLP_WAIVERS_SHA256:-}" "$ROOT"
+
   # Validate scaffold
   validate_scaffold
 
@@ -4045,7 +4122,7 @@ main() {
   # Create tmux session with pane IDs (governance.md s7 step 1)
   create_session
 
-  # D-22 batch: the EXIT cleanup trap is already armed (EXIT INT TERM) right after
+  # D-22 batch: the EXIT cleanup trap is already armed (EXIT INT TERM HUP) right after
   # lock acquisition above; a second `trap … EXIT` here was redundant (it re-armed
   # only EXIT with the identical handler — INT/TERM already persist — and cleanup()
   # is CLEANUP_DONE-idempotent anyway). Removed; the earlier arm covers this scope.
@@ -4119,6 +4196,13 @@ main() {
         log "[recovery] Resuming verify phase — operator manual recovery detected (iter=$ITERATION)"
         log_debug "[recovery] iter=$ITERATION skip_worker=true reason=manual_recovery_validated"
         SKIP_NEXT_WORKER=1
+        # US-002 AC2.5 (reload point #2 — Bug #10 operator-recovery resume):
+        # re-read + re-authorize waivers.json here. An operator who authored a
+        # new baseline artifact + waiver during the BLOCK supplies a fresh
+        # --waivers-sha256 on resume; a matching hash rotates the authorized
+        # snapshot (AC2.4b) and honors the new waiver. A stale/absent hash
+        # rejects unauthorized_hash_change — a worker cannot smuggle a waiver in.
+        load_campaign_waivers "$DESK/plans/waivers.json" "$SLUG" "${RLP_WAIVERS_SHA256:-}" "$ROOT"
         # v0.22.3 (early-review P1-1): the preserved done-claim's evidence was
         # produced under a PREVIOUS leader; anchor the freshness window to the
         # claim file's own mtime so PR-A-accepted evidence is judged against
@@ -4246,6 +4330,13 @@ main() {
       # produced in — resetting here would make every preserved done-claim's
       # timestamps predate the window and fail confirmation freshness forever.
       ITER_WINDOW_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      # US-001 AC1.3: per-iteration HEAD snapshot, captured ONLY when a worker is
+      # actually dispatched (recovery/finalize iterations reuse the restored
+      # snapshot, same rationale as ITER_WINDOW_START). '' when the repo has no
+      # commits yet — the oracle treats the first commit as an advance. Persisted
+      # to status.json by update_status below and restored on relaunch so a
+      # crash-and-relaunch into verify re-enters with the correct baseline.
+      ITER_START_HEAD=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "")
       # --- governance.md s7 step 4: Build worker prompt + trigger ---
       write_worker_trigger "$ITERATION"
       local worker_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-prompt.md"
@@ -4475,6 +4566,31 @@ main() {
         # fired during the verify poll (no-progress / stall / R12).
         [[ -n "$signal_us_id" ]] && CURRENT_US="$signal_us_id"
         log "  Worker claims done (us_id=${signal_us_id:-all}). Dispatching Verifier..."
+
+        # --- US-001: leader-side done-claim commit-integrity oracle ---
+        # Runs on the shared post-done-claim-lock path (normal, codex-synth, and
+        # operator-recovery signals all converge here after the done-claim lock at
+        # L4352), BEFORE the pre-gate layers below — the oracle is the cheapest
+        # leader-side check (pure git). Fires ONLY when the done-claim asserts a
+        # successful commit; a no-commit claim (verify_existing/confirmation) or a
+        # corroborated claim is a silent no-op → falls through to the pre-gate.
+        # On mismatch it takes the SAME short-circuit shape as the pre-gate (skip
+        # LLM verification, redispatch the Worker with a machine-generated fix
+        # contract, `continue`) via a DISTINCT ORACLE counter; at the cap it forces
+        # one full verifier round (whose verdict drives the CB — Principle 4).
+        local _oracle_rc=0
+        _commit_oracle_check "$DONE_CLAIM_FILE" "${ITER_START_HEAD:-}" || _oracle_rc=$?
+        if (( _oracle_rc == 1 )); then
+          if _oracle_register_fail "$ITERATION" "${signal_us_id:-ALL}"; then
+            log "  Commit-integrity oracle FAILED (${ORACLE_REASON}) — skipping LLM verification, redispatching Worker (oracle fail ${ORACLE_FAILURES}/${ORACLE_FAIL_CAP})."
+            log_debug "[DECIDE] iter=$ITERATION phase=oracle_fail trigger=oracle reason=${ORACLE_REASON} oracle_failures=$ORACLE_FAILURES fix_contract=$LOGS_DIR/iter-$(printf '%03d' $ITERATION).fix-contract.md"
+            update_status "verifier" "oracle_fail"
+            continue
+          else
+            log "  Commit-integrity oracle failed ${ORACLE_FAIL_CAP}× for ${signal_us_id:-ALL} — forcing full LLM verifier round."
+            log_debug "[GOV] iter=$ITERATION phase=oracle action=force_verifier reason=${ORACLE_REASON} us=${signal_us_id:-all}"
+          fi
+        fi
 
         # --- Feature 1: leader-side mechanical pre-gate ---
         # Deterministic campaign-defined checks ($DESK/plans/pregate-<slug>.sh) run
@@ -4962,7 +5078,7 @@ main() {
               echo "$verdict_summary_fail"
               echo ""
               echo "## Issues (from verify-verdict.json)"
-              jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.criterion // "?"): \(.description // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$VERDICT_FILE" 2>/dev/null || echo "- (no structured issues available)"
+              jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.id // .criterion // .criterion_id // "?"): \(.description // .summary // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$VERDICT_FILE" 2>/dev/null || echo "- (no structured issues available)"
               echo ""
               echo "## Next Iteration Contract"
               jq -r '.next_iteration_contract // "Fix the issues listed above."' "$VERDICT_FILE" 2>/dev/null

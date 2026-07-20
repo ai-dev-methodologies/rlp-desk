@@ -11,8 +11,11 @@ runner/campaign-main-loop.mjs
 runner/leader-registry.mjs
 runner/prompt-detector.mjs
 runner/prompt-dismisser.mjs
+shared/commit-oracle.mjs
 shared/fs.mjs
 shared/paths.mjs
+shared/verdict-schema.mjs
+shared/waivers.mjs
 tmux/pane-manager.mjs
 util/debug-log.mjs
 util/desk-root.mjs

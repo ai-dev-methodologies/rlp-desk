@@ -41,6 +41,24 @@ _file_mtime() {
   print -r -- "$mt"
 }
 
+# _git_dirty_base() — the diff base for "uncommitted tracked files" detection,
+# shared by the Bug #8 gate, the campaign-preexisting-dirty snapshot, and the
+# US-001 commit-integrity oracle (moved here from run_ralph_desk.zsh so all three
+# reuse ONE definition rather than reimplementing). Globals read: ROOT.
+#
+# NEW-4 (audit round 2): `git diff --name-only HEAD` FAILS (fatal, empty output)
+# in a repo with NO commits (a brand-new `git init` project run before any
+# commit) — so a Worker that STAGES but does not COMMIT its deliverables goes
+# undetected. Echo HEAD when it exists, else git's empty-tree object so
+# `git diff --name-only <base>` lists staged-but-never-committed files.
+_git_dirty_base() {
+  if git -C "$ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    echo HEAD
+  else
+    git -C "$ROOT" hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  fi
+}
+
 # build_claude_cmd() — centralized claude CLI command builder
 # Single source of truth for all claude invocation flags (--mcp-config, DISABLE_OMC, --effort, etc.)
 # Inspired by codex-plugin-cc companion pattern: CLI abstraction in one place.
@@ -1092,8 +1110,20 @@ update_status() {
 
   # D-5: jq-encode the free-text restore fields so a reason/model with special
   # chars can't corrupt the status JSON (the rest of this builder is echo-based).
+  # US-002 AC2.2a: on BLOCK, fold any waiver-rejection summary into the block
+  # reason so the operator sees WHY a waiver was not honored (symmetric with the
+  # honored-waiver id citation — a silent rejection would reincarnate the
+  # original deadlock).
+  local _eff_block_reason="${LAST_BLOCK_REASON:-}"
+  if [[ "$phase" == "blocked" && -n "${WAIVER_REJECTION_SUMMARY:-}" ]]; then
+    if [[ -n "$_eff_block_reason" ]]; then
+      _eff_block_reason="${_eff_block_reason} | waiver rejections: ${WAIVER_REJECTION_SUMMARY}"
+    else
+      _eff_block_reason="waiver rejections: ${WAIVER_REJECTION_SUMMARY}"
+    fi
+  fi
   local _lbr_json _owm_json
-  _lbr_json=$(printf '%s' "${LAST_BLOCK_REASON:-}" | jq -Rs . 2>/dev/null); [[ -z "$_lbr_json" ]] && _lbr_json='""'
+  _lbr_json=$(printf '%s' "$_eff_block_reason" | jq -Rs . 2>/dev/null); [[ -z "$_lbr_json" ]] && _lbr_json='""'
   _owm_json=$(printf '%s' "${_ORIGINAL_WORKER_MODEL:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owm_json" ]] && _owm_json='""'
 
   # Build consensus fields
@@ -1130,6 +1160,7 @@ update_status() {
   "same_us_fail_count": '"${_SAME_US_FAIL_COUNT:-0}"',
   "original_worker_model": '"$_owm_json"',
   "verified_us": '"$verified_us_json"''"$consensus_json"',
+  "iter_start_head": "'"${ITER_START_HEAD:-}"'",
   "updated_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
 }' | atomic_write "$STATUS_FILE"
 }
@@ -2078,6 +2109,175 @@ run_pregate_replay() {
 }
 
 # =============================================================================
+# US-001: leader-side done-claim commit-integrity oracle
+# =============================================================================
+# The leader accepts a Worker done-claim that asserts a `commit` step with
+# exit_code 0. Before dispatching the (probabilistic) verifier, the leader
+# adjudicates that ground truth with git (Principle 1). This is the zsh
+# production predicate; src/node/shared/commit-oracle.mjs is the pure-function
+# mirror (oracle) — a shared-fixture parity matrix drives both (AC1.6).
+
+# _commit_oracle_tracked_dirty(): worker-attributable tracked-dirty files.
+# Mirrors Bug #8 Gate 3 semantics EXACTLY (run_ralph_desk.zsh): `git diff
+# --name-only <_git_dirty_base>` of TRACKED files, MINUS the
+# CAMPAIGN_PREEXISTING_DIRTY set and MINUS untracked cruft. NOT `git status
+# --porcelain` (which counts untracked and would false-fail). Echoes one
+# worker-dirty file per line (empty when the tracked tree is clean).
+# Globals read: ROOT, CAMPAIGN_PREEXISTING_DIRTY.
+_commit_oracle_tracked_dirty() {
+  local dirty
+  dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)" 2>/dev/null)
+  [[ -n "$dirty" ]] || return 0
+  comm -23 \
+    <(printf '%s\n' "$dirty" | sort -u) \
+    <(printf '%s\n' "${CAMPAIGN_PREEXISTING_DIRTY:-}" | sort -u) \
+    | grep -v '^[[:space:]]*$'
+}
+
+# _commit_oracle_check(): the commit-integrity predicate (sourceable + invokable
+# with fixtures). Fires ONLY when the done-claim asserts a successful commit (an
+# execution_steps entry step=="commit" exit_code 0). See commit-oracle.mjs for
+# the full contract incl. the commit_sha transition rule.
+#
+# Args: $1=done_claim_file  $2=iter_start_head (HEAD sha at iteration start, ''
+#       when the repo had no commits then). Globals read: ROOT,
+#       CAMPAIGN_PREEXISTING_DIRTY. Sets ORACLE_ASSERTED (0|1), ORACLE_REASON,
+#       ORACLE_DETAIL, ORACLE_CLAIMED_SHA.
+# Returns: 0 (pass OR no-op → proceed) / 1 (mismatch → caller routes to fix loop).
+_commit_oracle_check() {
+  local dc_file="$1" iter_start_head="${2:-}"
+  ORACLE_ASSERTED=0; ORACLE_REASON=""; ORACLE_DETAIL=""; ORACLE_CLAIMED_SHA=""
+
+  [[ -f "$dc_file" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  # Locate the commit assertion: FIRST execution_steps entry step=="commit" with
+  # exit_code 0 (numeric 0 or "0" tolerated via tostring). Empty index → no-op.
+  local commit_idx
+  commit_idx=$(jq -r '
+    ((.execution_steps // []) | to_entries
+      | map(select(.value.step == "commit" and ((.value.exit_code|tostring) == "0")))
+      | .[0].key) // ""' "$dc_file" 2>/dev/null)
+  [[ -n "$commit_idx" ]] || return 0
+
+  ORACLE_ASSERTED=1
+  local claimed_sha
+  claimed_sha=$(jq -r ".execution_steps[$commit_idx].commit_sha // \"\"" "$dc_file" 2>/dev/null)
+  [[ "$claimed_sha" == "null" ]] && claimed_sha=""
+  ORACLE_CLAIMED_SHA="$claimed_sha"
+
+  local current_head
+  current_head=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "")
+  # HEAD advanced beyond the per-ITERATION start snapshot (not the campaign
+  # baseline — that false-accepts "clean tree + HEAD advanced by an earlier
+  # iteration + lie THIS iteration"). Non-empty current HEAD that differs from the
+  # snapshot proves this iteration committed, incl. the first-commit case.
+  local head_advanced=0
+  [[ -n "$current_head" && "$current_head" != "$iter_start_head" ]] && head_advanced=1
+
+  local -a dirty_files
+  dirty_files=("${(@f)$(_commit_oracle_tracked_dirty)}")
+  dirty_files=(${dirty_files:#})   # prune the lone empty element from empty output
+  local tracked_dirty=0
+  (( ${#dirty_files} > 0 )) && tracked_dirty=1
+
+  local _s_start="${iter_start_head[1,10]:-none}" _s_head="${current_head[1,10]:-none}"
+  local _s_sha="${claimed_sha[1,10]}"
+
+  if [[ -z "$claimed_sha" ]]; then
+    # Transition rule (AC1.1): commit-claim WITHOUT commit_sha is unverifiable →
+    # mismatch ONLY if HEAD did not advance (tracked-dirty deliberately NOT
+    # asserted with no SHA to anchor the claim — mirrors commit-oracle.mjs).
+    (( head_advanced )) && return 0
+    ORACLE_REASON="commit_claim_no_sha_no_advance"
+    ORACLE_DETAIL="done-claim asserts a successful commit but carries no commit_sha, and HEAD did not advance beyond the iteration-start snapshot (${_s_start:-none}). The claimed commit did not land."
+    return 1
+  fi
+
+  # Full predicate: A (advance + resolves + reachable) AND B (tracked clean),
+  # asserted INDEPENDENTLY so the fix contract names the exact violation.
+  local -a reasons details
+  if (( ! head_advanced )); then
+    reasons+=("head_not_advanced")
+    details+=("HEAD did not advance beyond the iteration-start snapshot (${_s_start:-none}); current HEAD ${_s_head:-none}.")
+  fi
+  if ! git -C "$ROOT" cat-file -e "${claimed_sha}^{commit}" 2>/dev/null; then
+    reasons+=("claimed_sha_absent")
+    details+=("claimed commit ${_s_sha} does not resolve (git cat-file -e failed).")
+  elif ! git -C "$ROOT" merge-base --is-ancestor "$claimed_sha" HEAD 2>/dev/null; then
+    reasons+=("claimed_sha_unreachable")
+    details+=("claimed commit ${_s_sha} is not reachable from HEAD.")
+  fi
+  if (( tracked_dirty )); then
+    local _first5
+    _first5=$(printf '%s\n' "${dirty_files[@]}" | head -n 5 | tr '\n' ',' | sed 's/,$//')
+    reasons+=("tracked_tree_dirty")
+    details+=("tracked files remain uncommitted after the claimed commit: ${_first5}.")
+  fi
+
+  (( ${#reasons} == 0 )) && return 0
+  ORACLE_REASON="${(j:+:)reasons}"
+  ORACLE_DETAIL="${(j: :)details}"
+  return 1
+}
+
+# _oracle_bump(): same-US commit-oracle fail counter (SEPARATE from the
+# consecutive-failure circuit breaker AND from PREGATE_FAILURES). Returns 0
+# (short-circuit + redispatch) while under ORACLE_FAIL_CAP; 1 (force one full LLM
+# verifier round) at the cap — the safety valve for a false-positive oracle,
+# whose verdict then drives the CB as normal.
+_oracle_bump() {
+  local us_id="${1:-ALL}"
+  if [[ "$us_id" != "$_ORACLE_FAIL_US" ]]; then
+    ORACLE_FAILURES=0
+    _ORACLE_FAIL_US="$us_id"
+  fi
+  (( ORACLE_FAILURES++ ))
+  if (( ORACLE_FAILURES >= ORACLE_FAIL_CAP )); then
+    ORACLE_FAILURES=0
+    _ORACLE_FAIL_US=""
+    return 1
+  fi
+  return 0
+}
+
+# _oracle_register_fail(): commit-oracle fail → machine-generated COMMIT-INTEGRITY
+# fix contract (AC1.4). Rendered through the SAME US-003 jq fallback chain the
+# verify-fail fix contract uses (.id // .criterion // .criterion_id // "?" +
+# .description // .summary // "no description"), fed a synthetic verdict naming
+# the specific mismatch — never a free-text verifier finding. Returns 0
+# (short-circuit) / 1 (force verifier round). Reads ORACLE_REASON / ORACLE_DETAIL
+# (set by _commit_oracle_check).
+_oracle_register_fail() {
+  local iter="$1" us_id="${2:-ALL}"
+  _oracle_bump "$us_id" || return 1
+  local oracle_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
+  local _verdict
+  _verdict=$(jq -n \
+    --arg detail "$ORACLE_DETAIL" \
+    --arg reason "$ORACLE_REASON" \
+    '{verdict:"fail",
+      summary:("Leader commit-integrity oracle: " + $reason),
+      issues:[{severity:"critical", id:"COMMIT-INTEGRITY", description:$detail}]}' 2>/dev/null)
+  {
+    echo "# Fix Contract (COMMIT-INTEGRITY FAILURE, iteration $iter)"
+    echo ""
+    echo "## COMMIT-INTEGRITY FAILURE (leader-adjudicated git ground truth)"
+    echo "Your done-claim asserted a successful \`commit\` step, but the leader"
+    echo "verified against git and the claim does not hold. A commit that did not"
+    echo "actually land (or that left tracked files uncommitted) is an IL-1"
+    echo "evidence breach — fix it before any verifier runs."
+    echo ""
+    echo "## Issues (leader commit-integrity oracle)"
+    printf '%s\n' "$_verdict" | jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.id // .criterion // .criterion_id // "?"): \(.description // .summary // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' 2>/dev/null || echo "- (no structured issues)"
+    echo ""
+    echo "## Next Iteration Contract"
+    echo "Actually create the commit (git add + git commit) so HEAD advances and the tracked tree is clean, and record the resulting commit SHA in your done-claim's commit step (commit_sha). Scope Lock: only changes that make the commit real are in scope."
+  } | atomic_write "$oracle_contract"
+  return 0
+}
+
+# =============================================================================
 # Parallel consensus evidence isolation (Feature 2)
 # =============================================================================
 # When two verifiers run concurrently, a DB-mutating or E2E rerun on one side
@@ -2135,6 +2335,179 @@ _emit_evidence_lock_contract() {
   echo "Static analysis, unit tests, file-existence and read-only checks do NOT"
   echo "need the lock — run those freely in parallel. Do not hold the lock longer"
   echo "than a single mutating step."
+}
+
+# =============================================================================
+# Campaign-scope waivers (US-002) — fail-closed pre-existing-baseline waiver
+# =============================================================================
+#
+# CAPTURE RECIPES (operator, out-of-band — a worker cannot forge either):
+#   1. Baseline artifact — PROVE a finding predates the campaign. Run the gate,
+#      save its output as the artifact, hash it, paste the hash into the waiver:
+#        <gate> --json > .rlp-desk/plans/baseline/<gate>.json
+#        # minimal schema: { "gate": "<gate>", "captured_at": "<iso8601>",
+#        #   "findings": [ { "finding_id": "<id>", "severity": "<sev>", ... } ] }
+#        shasum -a 256 .rlp-desk/plans/baseline/<gate>.json   # → baseline_artifact_sha256
+#   2. Authorization — bind waivers.json to THIS (re)start out-of-band:
+#        shasum -a 256 .rlp-desk/plans/waivers.json           # → --waivers-sha256 <hash>
+#
+# load_campaign_waivers(): parse + validate .rlp-desk/plans/waivers.json. FAIL
+# CLOSED — a waiver is honored ONLY with (a) a well-formed schema (all 7 fields
+# non-empty strings), (b) campaign_slug == the running slug, (c) an existing
+# baseline artifact whose recomputed sha256 equals baseline_artifact_sha256,
+# and (d) finding_id present in that artifact's findings[] for the gate. There
+# is NO assertion fallback and NO commit-ancestry check. Authorization is
+# out-of-band: RLP_WAIVERS_SHA256 must equal the file's actual sha256 or EVERY
+# waiver is rejected unauthorized_hash_change. Byte-for-byte the same decision
+# as src/node/shared/waivers.mjs (validateWaivers); a shared fixture set drives
+# both. Called at EXACTLY two points (AC2.5): fresh campaign entry and the Bug
+# #10 operator-recovery resume.
+#
+# Args: $1=waivers_path $2=running_slug $3=expected_sha ($RLP_WAIVERS_SHA256)
+#       $4=root_dir (baseline_artifact_path resolves against it when relative).
+# Sets: WAIVERS_HONORED_LINES (array "id|gate|finding_id|reason"),
+#       WAIVER_REJECTION_SUMMARY (string; folded into status.json block reason),
+#       WAIVERS_AUTHORIZED_SHA (rotated to actual on authorized match — AC2.4b).
+# Enum: artifact_missing sha256_mismatch finding_not_in_artifact slug_mismatch
+#       malformed_schema unauthorized_hash_change.
+load_campaign_waivers() {
+  local waivers_path="$1" running_slug="$2" expected_sha="${3:-}" root_dir="${4:-$ROOT}"
+  WAIVERS_HONORED_LINES=(); WAIVER_REJECTION_SUMMARY=""
+
+  # AC2.4a: absent file → zero waivers, --waivers-sha256 unnecessary.
+  [[ -f "$waivers_path" ]] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    log "  [waiver] jq unavailable — cannot validate waivers.json; proceeding fail-closed (zero waivers)."
+    return 0
+  fi
+
+  local actual_sha
+  actual_sha=$(shasum -a 256 "$waivers_path" 2>/dev/null | awk '{print $1}')
+
+  # Parse the array. Malformed JSON / non-array → one file-level rejection,
+  # zero honored (AC2.1 fail-closed). Mirrors validateWaivers' parse gate.
+  local count
+  count=$(jq 'if type=="array" then length else -1 end' "$waivers_path" 2>/dev/null)
+  if [[ -z "$count" || "$count" == "-1" ]]; then
+    _waiver_reject "(file)" "malformed_schema" "waivers.json is not a JSON array or is invalid JSON"
+    return 0
+  fi
+
+  # AC2.4 authorization gate (out-of-band hash). Present + (flag absent OR
+  # mismatch) → EVERY waiver rejected unauthorized_hash_change, per-id (loud).
+  if [[ -z "$expected_sha" || "$expected_sha" != "$actual_sha" ]]; then
+    local _detail
+    if [[ -z "$expected_sha" ]]; then
+      _detail="waivers.json present but no --waivers-sha256 authorization supplied (file sha256 ${actual_sha[1,12]})"
+    else
+      _detail="--waivers-sha256 ${expected_sha[1,12]} does not match waivers.json actual sha256 ${actual_sha[1,12]}"
+    fi
+    local i wid
+    for (( i=0; i<count; i++ )); do
+      wid=$(jq -r ".[$i].id // \"\"" "$waivers_path" 2>/dev/null)
+      [[ -n "$wid" && "$wid" != "null" ]] || wid="#$i"
+      _waiver_reject "$wid" "unauthorized_hash_change" "$_detail"
+    done
+    return 0
+  fi
+
+  # Authorized — rotate the authorized snapshot (AC2.4b).
+  WAIVERS_AUTHORIZED_SHA="$actual_sha"
+  log_debug "[GOV] phase=waivers action=authorized sha=${actual_sha[1,12]} count=$count"
+
+  local i wid slug gate fid apath asha reason _ok resolved art_sha _present rest
+  for (( i=0; i<count; i++ )); do
+    wid=$(jq -r ".[$i].id // \"\"" "$waivers_path" 2>/dev/null)
+    [[ -n "$wid" && "$wid" != "null" ]] || wid="#$i"
+
+    # Schema: all 7 required fields present as non-empty strings.
+    _ok=$(jq -r "
+      .[$i] as \$w
+      | ([\"id\",\"campaign_slug\",\"gate\",\"finding_id\",\"baseline_artifact_path\",\"baseline_artifact_sha256\",\"reason\"]
+         | map((\$w[.]? | type) == \"string\" and ((\$w[.]? | length) > 0)) | all)" "$waivers_path" 2>/dev/null)
+    if [[ "$_ok" != "true" ]]; then
+      _waiver_reject "$wid" "malformed_schema" "missing or non-string required field(s)"
+      continue
+    fi
+
+    slug=$(jq -r ".[$i].campaign_slug" "$waivers_path" 2>/dev/null)
+    gate=$(jq -r ".[$i].gate" "$waivers_path" 2>/dev/null)
+    fid=$(jq -r ".[$i].finding_id" "$waivers_path" 2>/dev/null)
+    apath=$(jq -r ".[$i].baseline_artifact_path" "$waivers_path" 2>/dev/null)
+    asha=$(jq -r ".[$i].baseline_artifact_sha256" "$waivers_path" 2>/dev/null)
+    reason=$(jq -r ".[$i].reason" "$waivers_path" 2>/dev/null)
+
+    # Slug binding (AC2.1).
+    if [[ "$slug" != "$running_slug" ]]; then
+      _waiver_reject "$wid" "slug_mismatch" "campaign_slug \"$slug\" does not match running slug \"$running_slug\""
+      continue
+    fi
+
+    # Artifact existence — resolve relative paths against root_dir.
+    resolved="$apath"
+    [[ "$apath" = /* ]] || resolved="$root_dir/$apath"
+    if [[ ! -f "$resolved" ]]; then
+      _waiver_reject "$wid" "artifact_missing" "baseline artifact not found: $apath"
+      continue
+    fi
+
+    # Immutability — recomputed sha256 must equal the recorded hash.
+    art_sha=$(shasum -a 256 "$resolved" 2>/dev/null | awk '{print $1}')
+    if [[ "$art_sha" != "$asha" ]]; then
+      _waiver_reject "$wid" "sha256_mismatch" "baseline artifact sha256 ${art_sha[1,12]} != recorded ${asha[1,12]} (tampered or wrong file)"
+      continue
+    fi
+
+    # Finding identity on gate + finding_id (AC2.2c). Artifact's own gate (when
+    # it records one) must match, AND finding_id must be in findings[].
+    _present=$(jq -r --arg g "$gate" --arg fid "$fid" '
+      ((.gate == null) or (.gate == $g)) and ((.findings // []) | any(.finding_id == $fid))' "$resolved" 2>/dev/null)
+    if [[ "$_present" != "true" ]]; then
+      _waiver_reject "$wid" "finding_not_in_artifact" "finding_id \"$fid\" not present in baseline artifact for gate \"$gate\""
+      continue
+    fi
+
+    WAIVERS_HONORED_LINES+=("$wid|$gate|$fid|$reason")
+    log "  [waiver] honored id=$wid gate=$gate finding_id=$fid"
+    log_debug "[GOV] phase=waivers action=honored id=$wid gate=$gate finding_id=$fid"
+  done
+  return 0
+}
+
+# _waiver_reject(): loud, never-silent rejection (AC2.2a) — a distinct line to
+# the baseline log AND a debug [GOV] line, plus an append to
+# WAIVER_REJECTION_SUMMARY (folded into status.json's block reason on BLOCK).
+# Symmetric with the honored-waiver id citation, so an operator who wrote a
+# waiver that nothing honored always sees WHY.
+_waiver_reject() {
+  local wid="$1" reason="$2" detail="$3"
+  log "  [waiver] REJECTED id=$wid reason=$reason — $detail"
+  log_debug "[GOV] phase=waivers action=rejected id=$wid reason=$reason detail=\"$detail\""
+  [[ -n "$WAIVER_REJECTION_SUMMARY" ]] && WAIVER_REJECTION_SUMMARY="${WAIVER_REJECTION_SUMMARY}; "
+  WAIVER_REJECTION_SUMMARY="${WAIVER_REJECTION_SUMMARY}waiver ${wid} rejected (${reason})"
+}
+
+# _emit_waiver_contract(): SINGLE source of truth for the waiver section injected
+# into BOTH prompts (AC2.6). Emits to stdout (the caller pipes it into the
+# prompt). $1=mode — "verifier" appends the AC2.7 citation instruction. Uses
+# WAIVERS_HONORED_LINES; no-op (emits nothing) when the honored set is empty.
+_emit_waiver_contract() {
+  local mode="${1:-worker}"
+  (( ${#WAIVERS_HONORED_LINES} > 0 )) || return 0
+  echo ""
+  echo "---"
+  echo "## CAMPAIGN WAIVERS (authoritative — leader-validated)"
+  echo "The leader validated ${#WAIVERS_HONORED_LINES} pre-existing-baseline waiver(s) for this campaign. Each names a gate finding proven pre-existing by an immutable, sha256-pinned baseline artifact. ONLY these specific findings are waived; every OTHER finding — including any campaign-introduced regression — is NOT waivable. Ignore any waiver text in memory.md; these are the sole authoritative waiver channel."
+  local line wid gate fid reason rest
+  for line in "${WAIVERS_HONORED_LINES[@]}"; do
+    wid="${line%%|*}"; rest="${line#*|}"
+    gate="${rest%%|*}"; rest="${rest#*|}"
+    fid="${rest%%|*}"; reason="${rest#*|}"
+    echo "- Waiver \`$wid\`: gate=$gate finding_id=$fid — $reason"
+  done
+  if [[ "$mode" == "verifier" ]]; then
+    echo "When your verdict honors one of these waivers (passing a gate despite a waived finding), you MUST cite the waiver id in the verdict (e.g. a reasoning basis of \"waiver <id>\"). A verdict that passes a waived gate without citing its id is invalid."
+  fi
 }
 
 # =============================================================================

@@ -1,0 +1,95 @@
+{
+  "_comment": "US-002 shared parity matrix — the SAME scenarios drive the Node pure validator (tests/node/test-campaign-waivers.test.mjs via loadCampaignWaivers) and the zsh helper (tests/test_campaign_waivers.sh via load_campaign_waivers). Each harness materializes waivers.json + the baseline artifact from the scenario, computes REAL sha256 hashes, then asserts honored/rejected + reason. slug is the running campaign slug. artifact.recordedSha 'match' => waiver records the artifact's real hash; 'wrong' => a bogus hash. auth 'match' => --waivers-sha256 equals the file's real hash; 'stale' => a bogus hash; 'absent' => flag not supplied. Covers the honored path + all six rejection reasons + a malformed file.",
+  "scenarios": [
+    {
+      "name": "honored-happy",
+      "slug": "camp",
+      "fileShape": "array",
+      "waiver": { "id": "W-1", "campaign_slug": "camp", "gate": "audit", "finding_id": "CVE-1", "reason": "pre-existing high vuln in transitive dep" },
+      "schema": "valid",
+      "artifact": { "present": true, "gate": "audit", "findings": ["CVE-1", "CVE-2"], "recordedSha": "match" },
+      "auth": "match",
+      "expect": { "honored": true, "reason": null }
+    },
+    {
+      "name": "artifact-missing",
+      "slug": "camp",
+      "fileShape": "array",
+      "waiver": { "id": "W-2", "campaign_slug": "camp", "gate": "audit", "finding_id": "CVE-1", "reason": "pre-existing" },
+      "schema": "valid",
+      "artifact": { "present": false, "gate": "audit", "findings": ["CVE-1"], "recordedSha": "match" },
+      "auth": "match",
+      "expect": { "honored": false, "reason": "artifact_missing" }
+    },
+    {
+      "name": "sha256-mismatch",
+      "slug": "camp",
+      "fileShape": "array",
+      "waiver": { "id": "W-3", "campaign_slug": "camp", "gate": "audit", "finding_id": "CVE-1", "reason": "pre-existing" },
+      "schema": "valid",
+      "artifact": { "present": true, "gate": "audit", "findings": ["CVE-1"], "recordedSha": "wrong" },
+      "auth": "match",
+      "expect": { "honored": false, "reason": "sha256_mismatch" }
+    },
+    {
+      "name": "finding-not-in-artifact",
+      "slug": "camp",
+      "fileShape": "array",
+      "waiver": { "id": "W-4", "campaign_slug": "camp", "gate": "audit", "finding_id": "CVE-99", "reason": "pre-existing" },
+      "schema": "valid",
+      "artifact": { "present": true, "gate": "audit", "findings": ["CVE-1", "CVE-2"], "recordedSha": "match" },
+      "auth": "match",
+      "expect": { "honored": false, "reason": "finding_not_in_artifact" }
+    },
+    {
+      "name": "slug-mismatch",
+      "slug": "camp",
+      "fileShape": "array",
+      "waiver": { "id": "W-5", "campaign_slug": "other-campaign", "gate": "audit", "finding_id": "CVE-1", "reason": "pre-existing" },
+      "schema": "valid",
+      "artifact": { "present": true, "gate": "audit", "findings": ["CVE-1"], "recordedSha": "match" },
+      "auth": "match",
+      "expect": { "honored": false, "reason": "slug_mismatch" }
+    },
+    {
+      "name": "malformed-schema-missing-field",
+      "slug": "camp",
+      "fileShape": "array",
+      "waiver": { "id": "W-6", "campaign_slug": "camp", "gate": "audit", "finding_id": "CVE-1", "reason": "pre-existing" },
+      "schema": "drop-reason",
+      "artifact": { "present": true, "gate": "audit", "findings": ["CVE-1"], "recordedSha": "match" },
+      "auth": "match",
+      "expect": { "honored": false, "reason": "malformed_schema" }
+    },
+    {
+      "name": "unauthorized-hash-change-stale",
+      "slug": "camp",
+      "fileShape": "array",
+      "waiver": { "id": "W-7", "campaign_slug": "camp", "gate": "audit", "finding_id": "CVE-1", "reason": "pre-existing" },
+      "schema": "valid",
+      "artifact": { "present": true, "gate": "audit", "findings": ["CVE-1"], "recordedSha": "match" },
+      "auth": "stale",
+      "expect": { "honored": false, "reason": "unauthorized_hash_change" }
+    },
+    {
+      "name": "unauthorized-hash-change-absent-flag",
+      "slug": "camp",
+      "fileShape": "array",
+      "waiver": { "id": "W-8", "campaign_slug": "camp", "gate": "audit", "finding_id": "CVE-1", "reason": "pre-existing" },
+      "schema": "valid",
+      "artifact": { "present": true, "gate": "audit", "findings": ["CVE-1"], "recordedSha": "match" },
+      "auth": "absent",
+      "expect": { "honored": false, "reason": "unauthorized_hash_change" }
+    },
+    {
+      "name": "malformed-file-not-array",
+      "slug": "camp",
+      "fileShape": "not-array",
+      "waiver": { "id": "W-9", "campaign_slug": "camp", "gate": "audit", "finding_id": "CVE-1", "reason": "pre-existing" },
+      "schema": "valid",
+      "artifact": { "present": true, "gate": "audit", "findings": ["CVE-1"], "recordedSha": "match" },
+      "auth": "match",
+      "expect": { "honored": false, "reason": "malformed_schema" }
+    }
+  ]
+}

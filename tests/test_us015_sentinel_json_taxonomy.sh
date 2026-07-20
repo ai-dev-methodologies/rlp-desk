@@ -159,20 +159,21 @@ fi
 # AC5: Node side — 4 BLOCKED branches all pass classification
 # ----------------------------------------------------------------------------
 node_callsites=$(grep -cE "writeSentinel\\(paths\\.blockedSentinel" "$LOOP")
-# Grew to 8 BLOCKED callsites. Each passes a classification argument that is
+# Grew to 9 BLOCKED callsites (v0.22.7 US-001 added the commit-integrity
+# oracle-exhaustion BLOCK). Each passes a classification argument that is
 # derived from _classifyBlock — either inline, or via a local classification
 # variable computed on the preceding line (lines that pass a bare
 # `, classification, paths` arg).
-if [[ "$node_callsites" -eq 8 ]]; then
-  pass "AC5-a: 8 Node writeSentinel(blockedSentinel) callsites"
+if [[ "$node_callsites" -eq 9 ]]; then
+  pass "AC5-a: 9 Node writeSentinel(blockedSentinel) callsites"
 else
-  fail "AC5-a: expected 8 callsites, got $node_callsites"
+  fail "AC5-a: expected 9 callsites, got $node_callsites"
 fi
 sites_with_classify=$(grep -cE "writeSentinel\\(paths\\.blockedSentinel.*_classifyBlock|writeSentinel\\(paths\\.blockedSentinel.*blockedClassification|writeSentinel\\(paths\\.blockedSentinel.*laneClassification|writeSentinel\\(paths\\.blockedSentinel.*malformedClassification|writeSentinel\\(paths\\.blockedSentinel.*, classification, paths" "$LOOP")
-if [[ "$sites_with_classify" -eq 8 ]]; then
-  pass "AC5-b: all 8 Node callsites pass classification"
+if [[ "$sites_with_classify" -eq 9 ]]; then
+  pass "AC5-b: all 9 Node callsites pass classification"
 else
-  fail "AC5-b: only $sites_with_classify of 8 Node callsites pass classification"
+  fail "AC5-b: only $sites_with_classify of 9 Node callsites pass classification"
 fi
 
 # ----------------------------------------------------------------------------
