@@ -592,8 +592,11 @@ typeset -ga LIFECYCLE_RECORDS=()
 # v0.15.4 full-wire: lock->unlock pair bookkeeping for sentinel_lock_to_unlock_ms,
 # keyed by sentinel basename (e.g. "myslug-iter-signal.json") — mirrors Node's
 # _sentinelLockTimes Map (src/node/util/lifecycle-metrics.mjs markLockStart/
-# markUnlock), including the H2 exclusion: done-claim is never unlocked in the
-# happy path (only SIGNAL_FILE/VERDICT_FILE are), so it is never keyed here.
+# markUnlock). IMP-10: the former H2 exclusion (done-claim never keyed here
+# because it was never unlocked in the happy path) is closed — done-claim is
+# now marked at lock time (see the DONE_CLAIM_FILE _lock_sentinel call sites)
+# and unlocked at its per-iteration archival site (archive_iter_artifacts),
+# tagged ctx=archival since that is a close-out, not a true unlock.
 typeset -gA LIFECYCLE_LOCK_TIMES=()
 
 # codex P2 sweep F5: parallel map storing the CURRENT iter at mark-time,
@@ -802,8 +805,12 @@ _lifecycle_mark_lock_start() {
 
 # Args: $1=sentinel_key  $2=iter (fallback only — used when no iter was
 # stamped at mark-time, e.g. an older/direct caller that didn't pass one).
+# $3=ctx_tag (optional, IMP-10) — free-text tag appended to the detail string
+# as "ctx=$ctx_tag" when non-empty (e.g. "archival" for the done-claim
+# lock->close-out series). Absent/empty $3 leaves 2-arg/1-arg callers'
+# output byte-identical to before this arg existed.
 _lifecycle_mark_unlock() {
-  local sentinel_key="$1" fallback_iter="${2:-}"
+  local sentinel_key="$1" fallback_iter="${2:-}" ctx_tag="${3:-}"
   [[ -n "$sentinel_key" ]] || return 0
   local start="${LIFECYCLE_LOCK_TIMES[$sentinel_key]:-}"
   [[ -n "$start" ]] || return 0
@@ -814,8 +821,10 @@ _lifecycle_mark_unlock() {
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
   local now_ms
   now_ms=$(_epoch_ms)
+  local detail="sentinel=$sentinel_key iter=$iter"
+  [[ -n "$ctx_tag" ]] && detail="$detail ctx=$ctx_tag"
   log_lifecycle_metric "sentinel_lock_to_unlock_ms" $(( now_ms - start )) \
-    "sentinel=$sentinel_key iter=$iter" "$iter" "" "$sentinel_key"
+    "$detail" "$iter" "" "$sentinel_key"
   unset "LIFECYCLE_LOCK_TIMES[$sentinel_key]"
   unset "LIFECYCLE_LOCK_ITERS[$sentinel_key]"
 }
@@ -1211,6 +1220,16 @@ archive_iter_artifacts() {
   iter_padded=$(printf '%03d' "$iter")
   if [[ -f "$DONE_CLAIM_FILE" ]]; then
     cp "$DONE_CLAIM_FILE" "$LOGS_DIR/iter-${iter_padded}-done-claim.json" 2>/dev/null
+    # IMP-10 (closes F3.3/H2): done-claim is locked at production time
+    # (_lock_sentinel "$DONE_CLAIM_FILE" call sites) but the happy path never
+    # calls _unlock_sentinel on it — this archival copy IS the per-iteration
+    # close-out event, so emit sentinel_lock_to_unlock_ms here instead. Key
+    # MUST match the mark-time key exactly: ${DONE_CLAIM_FILE:t}, same
+    # basename expression used at every done-claim _lock_sentinel call site.
+    # ctx=archival distinguishes this lock->close-out series from the true
+    # lock->unlock series (signal/verdict). No-ops when no lock is pending
+    # (e.g. this iteration never reached a done-claim lock site).
+    _lifecycle_mark_unlock "${DONE_CLAIM_FILE:t}" "$iter" "archival"
   fi
   if [[ -f "$VERDICT_FILE" ]]; then
     cp "$VERDICT_FILE" "$LOGS_DIR/iter-${iter_padded}-verify-verdict.json" 2>/dev/null

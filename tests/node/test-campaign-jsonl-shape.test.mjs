@@ -145,6 +145,65 @@ test('B4 AC4.3/4.6: lifecycle_metrics is populated grouped object when flag set'
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// IMP-10 (closes v0.15.4 audit H2) — done-claim's sentinel_lock_to_unlock_ms
+// now emits at its per-iteration close-out (tagged ctx=archival) instead of
+// never. Extends AC4.3/4.6 above: run a real campaign and assert the shape
+// distinguishes the done-claim (ctx=archival) entries from the true
+// lock->unlock series (signal/verdict, which carry no ctx field).
+// ────────────────────────────────────────────────────────────────────────────
+test('IMP-10: done-claim sentinel_lock_to_unlock_ms entries carry ctx=archival; signal/verdict entries do not', async (t) => {
+  const campaign = await setupCampaign(t);
+  const tmux = createTmuxFakes();
+  const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  const enabledCollector = new LifecycleMetricsCollector({
+    env: { RLP_LIFECYCLE_METRICS: '1' },
+  });
+
+  await run(campaign.slug, {
+    rootDir: campaign.rootDir,
+    mode: 'tmux',
+    workerModel: 'gpt-5.5:medium',
+    pollForSignal: createPoller([
+      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+      { verdict: 'pass', recommended_state_transition: 'continue' },
+      { verdict: 'pass', recommended_state_transition: 'complete' },
+    ]),
+    runIntegrationCheck: async () => ({ exitCode: 0 }),
+    lifecycleMetrics: enabledCollector,
+    ...tmux.deps,
+  });
+
+  const jsonlPath = deskPath(campaign.rootDir, 'logs', campaign.slug, 'campaign.jsonl');
+  const records = await readJsonl(jsonlPath);
+  const allLockPairs = records
+    .flatMap((r) => r.lifecycle_metrics?.sentinel_lock_to_unlock_ms ?? []);
+
+  const doneClaimBasename = `${campaign.slug}-done-claim.json`;
+  const doneClaimEntries = allLockPairs.filter((e) => e.sentinel_type === doneClaimBasename);
+  assert.ok(doneClaimEntries.length >= 1, 'at least one done-claim sentinel_lock_to_unlock_ms entry emitted (was: never, per F3.3/H2)');
+  for (const entry of doneClaimEntries) {
+    assert.equal(entry.ctx, 'archival', 'done-claim entries are tagged ctx=archival');
+    assert.equal(typeof entry.value_ms, 'number');
+    assert.ok(entry.value_ms >= 0);
+  }
+
+  // Contrast (best-effort, not required): IF a signal/verdict entry also
+  // made it into campaign.jsonl in this run, it must not carry a ctx field —
+  // that series stays the true lock->unlock contract. Not asserted as
+  // "must be present": in a single-iteration COMPLETING campaign, the
+  // loop-top defensive unlock for signal/verdict fires on a second pass
+  // that has no subsequent appendIterationAnalytics flush to catch it — a
+  // pre-existing flush-ordering gap unrelated to IMP-10 (out of scope here;
+  // see the ctx=archival unit coverage above for the mechanism this test
+  // pins instead: sentinel_type-based contrast, not "always present").
+  const nonDoneClaimEntries = allLockPairs.filter((e) => e.sentinel_type !== doneClaimBasename);
+  for (const entry of nonDoneClaimEntries) {
+    assert.equal('ctx' in entry, false, `non-done-claim entry (${entry.sentinel_type}) must not carry a ctx field`);
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // codex round 2 R2-4 — reapProducer (campaign-main-loop.mjs) computes ONE
 // reapMs per reap event and records() it under BOTH pane_eof_to_cleanup_ms
 // and pane_reap_latency_ms: same window, not two independent measurements

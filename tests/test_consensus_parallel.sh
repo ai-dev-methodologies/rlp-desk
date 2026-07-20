@@ -92,6 +92,8 @@ mocks='
   detect_quota_exhausted(){ return 1; }
   _kill_pane_process(){ :; }
   tmux(){ return 0; }
+  _verify_pane_alive(){ return 0; }   # IMP-02 C0: real helper reads tmux(){return 0} stdout="" → would look DEAD; stub alive so existing cases keep passing
+
   launch_verifier_claude(){ print "claude" >> "$DISPATCH"; [[ -n "$CLAUDE_TAG" ]] && print -r -- "{\"verdict\":\"$CLAUDE_TAG\"}" > "$claude_verdict_file"; return 0; }
   launch_verifier_codex(){ print "codex" >> "$DISPATCH"; [[ -n "$CODEX_TAG" ]] && print -r -- "{\"verdict\":\"$CODEX_TAG\"}" > "$codex_verdict_file"; return 0; }
   VERIFIER_PANE="%1"; CONSENSUS_PANE=""
@@ -162,6 +164,111 @@ out=$(zsh --no-rcs -c '
 ')
 [[ "$out" == *"RC=1"* ]] && ok "never-started codex → return 1 (caller → infra_failure)" || no "never-started rc wrong ($out)"
 [[ "$out" == *"submission failure"* ]] && ok "abort reason: bounded re-dispatch → submission failure (AC-C4b)" || no "submission-failure reason missing ($out)"
+
+# ---------------------------------------------------------------------------
+# IMP-02: scoped mid-round pane liveness. A pane that dies while its verdict is
+# unresolved is classified as a pane-death infra_failure within ~2 poll ticks —
+# NOT after the submit-anchored task budget / re-dispatch windows with a
+# misattributed reason. %99 = mocked consensus pane, %1 = mocked verifier pane.
+print -r -- "-- IMP-02 C1: mid-round consensus (codex) pane death → fast, correctly-attributed abort"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null
+  '"$finalize_body"'
+  '"$par_body"'
+  '"$mocks"'
+  _pane_shows_progress(){ return 0; }               # both sides "started"
+  _verify_pane_alive(){ [[ "$1" == "%99" ]] && return 1; return 0; }  # consensus pane dead
+  ITER_TIMEOUT=60; SUBMISSION_TIMEOUT=60; SUBMISSION_MAX_REDISPATCH=2
+  CLAUDE_TAG=pass; CODEX_TAG=                        # codex never writes a verdict
+  LOGS_DIR="'"$TMP"'/p_c1"; mkdir -p "$LOGS_DIR"
+  VERDICT_FILE="$LOGS_DIR/verdict.json"
+  run_consensus_verification_parallel 9 US-001; rc=$?
+  print "RC=$rc REASON=$VERIFIER_ABORT_REASON"
+')
+[[ "$out" == *"RC=1"* ]] && ok "consensus pane death → return 1 (caller → infra_failure)" || no "C1 rc wrong ($out)"
+[[ "$out" == *"consensus pane died mid-round"* ]] && ok "abort reason names the consensus pane death" || no "C1 reason wrong ($out)"
+[[ "$out" != *"after both started"* ]] && ok "beat the ITER_TIMEOUT budget (not a misattributed timeout)" || no "C1 misattributed as timeout ($out)"
+
+print -r -- "-- IMP-02 C2: mid-round claude verifier pane death (symmetry)"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null
+  '"$finalize_body"'
+  '"$par_body"'
+  '"$mocks"'
+  _pane_shows_progress(){ return 0; }
+  _verify_pane_alive(){ [[ "$1" == "%1" ]] && return 1; return 0; }  # verifier pane dead
+  ITER_TIMEOUT=60; SUBMISSION_TIMEOUT=60; SUBMISSION_MAX_REDISPATCH=2
+  CLAUDE_TAG=; CODEX_TAG=pass                        # claude never writes a verdict
+  LOGS_DIR="'"$TMP"'/p_c2"; mkdir -p "$LOGS_DIR"
+  VERDICT_FILE="$LOGS_DIR/verdict.json"
+  run_consensus_verification_parallel 10 US-001; rc=$?
+  print "RC=$rc REASON=$VERIFIER_ABORT_REASON"
+')
+[[ "$out" == *"RC=1"* ]] && ok "claude verifier pane death → return 1" || no "C2 rc wrong ($out)"
+[[ "$out" == *"claude verifier pane died"* ]] && ok "abort reason names the claude verifier pane death" || no "C2 reason wrong ($out)"
+
+print -r -- "-- IMP-02 C3: resolved-side immunity — a pane that dies AFTER its verdict landed never aborts"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null
+  '"$finalize_body"'
+  '"$par_body"'
+  '"$mocks"'
+  _pane_shows_progress(){ return 0; }
+  _verify_pane_alive(){ return 1; }                 # EVERYTHING looks dead
+  ITER_TIMEOUT=60; SUBMISSION_TIMEOUT=60; SUBMISSION_MAX_REDISPATCH=2
+  CLAUDE_TAG=pass; CODEX_TAG=pass                    # both verdicts land on tick 1
+  LOGS_DIR="'"$TMP"'/p_c3"; mkdir -p "$LOGS_DIR"
+  VERDICT_FILE="$LOGS_DIR/verdict.json"
+  run_consensus_verification_parallel 11 US-001; rc=$?
+  print "RC=$rc REASON=$VERIFIER_ABORT_REASON"
+')
+[[ "$out" == *"RC=0"* ]] && ok "both verdicts present → return 0 despite dead-looking panes (liveness scoped to unresolved side)" || no "C3 rc wrong ($out)"
+
+# IMP-02 cleanup() teardown of the 4th pane. Extract the real cleanup() body, run
+# it with a RECORDING tmux mock, and assert the consensus pane is reaped.
+print -r -- "-- IMP-02 C4: cleanup() reaps the 4th (consensus) pane"
+cleanup_body=$(sed -n '/^cleanup() {$/,/^}$/p' "$RUN")
+[[ -n "$cleanup_body" ]] && ok "cleanup() extractable" || no "could not extract cleanup()"
+C4LOG="$TMP/c4-tmux.log"; : > "$C4LOG"
+zsh --no-rcs -c '
+  log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  generate_campaign_report(){ :; }; generate_sv_report(){ :; }; sleep(){ :; }
+  tmux(){ print -r -- "$*" >> "'"$C4LOG"'"; }
+  '"$cleanup_body"'
+  CLEANUP_DONE=0; LOCKFILE_ACQUIRED=0
+  LOCKFILE_PATH="'"$TMP"'/nolock1"; RUNNER_LOCKFILE_PATH="'"$TMP"'/nolock2"
+  WORKER_PANE=%1; VERIFIER_PANE=%2; CONSENSUS_PANE=%99
+  LOGS_DIR="'"$TMP"'/c4"; MEMOS_DIR="'"$TMP"'/c4"; mkdir -p "$LOGS_DIR"
+  START_TIME=$(date +%s)
+  COMPLETE_SENTINEL="'"$TMP"'/ne-c"; BLOCKED_SENTINEL="'"$TMP"'/ne-b"; METADATA_FILE="'"$TMP"'/ne-m"
+  DEBUG=0; VERIFY_MODE=all; CONSENSUS_MODE=off; ITERATION=1
+  SESSION_NAME=t; SLUG=s; MAX_ITER=1
+  cleanup
+' >/dev/null 2>&1
+c4=$(cat "$C4LOG")
+[[ "$c4" == *"send-keys -t %99 C-c"* ]] && ok "cleanup C-c's the consensus pane %99" || no "C4 consensus C-c missing ($c4)"
+[[ "$c4" == *"kill-pane -t %99"* ]] && ok "cleanup kill-pane's the consensus pane %99" || no "C4 consensus kill-pane missing ($c4)"
+
+print -r -- "-- IMP-02 C5: cleanup() off-path — no consensus pane → byte-identical non-consensus teardown"
+C5LOG="$TMP/c5-tmux.log"; : > "$C5LOG"
+zsh --no-rcs -c '
+  log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  generate_campaign_report(){ :; }; generate_sv_report(){ :; }; sleep(){ :; }
+  tmux(){ print -r -- "$*" >> "'"$C5LOG"'"; }
+  '"$cleanup_body"'
+  CLEANUP_DONE=0; LOCKFILE_ACQUIRED=0
+  LOCKFILE_PATH="'"$TMP"'/nolock1"; RUNNER_LOCKFILE_PATH="'"$TMP"'/nolock2"
+  WORKER_PANE=%1; VERIFIER_PANE=%2; CONSENSUS_PANE=""
+  LOGS_DIR="'"$TMP"'/c5"; MEMOS_DIR="'"$TMP"'/c5"; mkdir -p "$LOGS_DIR"
+  START_TIME=$(date +%s)
+  COMPLETE_SENTINEL="'"$TMP"'/ne-c"; BLOCKED_SENTINEL="'"$TMP"'/ne-b"; METADATA_FILE="'"$TMP"'/ne-m"
+  DEBUG=0; VERIFY_MODE=all; CONSENSUS_MODE=off; ITERATION=1
+  SESSION_NAME=t; SLUG=s; MAX_ITER=1
+  cleanup
+' >/dev/null 2>&1
+c5=$(cat "$C5LOG")
+[[ "$c5" != *"%99"* ]] && ok "no consensus pane → no %99 teardown line" || no "C5 unexpected %99 line ($c5)"
+[[ "$c5" == *"kill-pane -t %2"* ]] && ok "verifier pane still reaped (kill-pane -t %2) — non-consensus path unchanged" || no "C5 verifier kill-pane missing ($c5)"
 
 # ---------------------------------------------------------------------------
 print -r -- "-- structural: flag gate + evidence-lock injected in BOTH parallel prompts, parallel-only"

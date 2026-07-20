@@ -222,3 +222,18 @@ this test provides is preserved even though it no longer lives in the
 default `tests/` run set). The other 12 named files are all BEHAVIORAL and
 were not moved. `tests/sv-gate-full.sh` does not reference any
 `tests/test_*.sh` file by path (verified via grep), so it needed no update.
+
+## Related archival (2026-07-20): non-`test_*`-prefixed legacy files
+
+This inventory's scope was always `tests/test_*.sh` (see the scope line
+above), so it never covered five other loose files that lived at the top of
+`tests/`: `sv-self-verify-0.14.sh`, `.14.1.sh`, `.14.2.sh`, `.14.5.sh`, and
+`verify-v2-protocol.sh`. None of them start with `test_`, so none of them
+were ever matched by the `test:zsh`/`test:full` glob at any point in this
+repo's history — a separate finding from, and not affected by, the
+STRUCTURAL/BEHAVIORAL classification above. Per `## SPEC: IMP-14`
+(`.omc/plans/improvement-backlog-2026-07-20.md`), they were archived on
+2026-07-20 into `tests/legacy-audit-archive/` (git-tracked, not deleted),
+following this file's own `tests/structural-archive/` precedent. Unlike
+that directory, `legacy-audit-archive/` has no revival criterion — see
+`tests/legacy-audit-archive/README.md` for the per-file rationale.

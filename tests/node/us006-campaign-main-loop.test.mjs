@@ -32,6 +32,71 @@ async function readText(filePath) {
   return fs.readFile(filePath, 'utf8');
 }
 
+// F6.1 (docs/rlp-desk/failure-modes.md): real-tmux tests must not depend on the
+// developer's personal interactive shell. Two distinct mechanisms killed panes
+// mid-test (4-pane assertion intermittently sees 3):
+//   1. send-keys racing rc startup — oh-my-zsh/p10k init can take >800ms under
+//      suite load; input typed before zle owns the tty replays corrupted.
+//   2. decorated-shell crash — rapid literal send-keys of a ~500-byte command
+//      line intermittently SIGBUS-crashes the plugin-loaded zsh even at a fully
+//      ready prompt (observed via remain-on-exit: pane_dead_signal=bus).
+// Fix: hermeticPane() respawns each freshly created pane onto a bare `zsh -f`
+// (no rc files, no plugins — closes 2), and waitForPaneReady() handshakes for
+// an interactive prompt before anything is typed (closes 1). Bounded condition
+// polls only; no blanket retries.
+async function hermeticPane(paneId, { pathPrefix } = {}) {
+  const args = ['respawn-pane', '-k'];
+  if (pathPrefix) {
+    args.push('-e', `PATH=${pathPrefix}:${process.env.PATH}`);
+  }
+  args.push('-t', paneId, 'zsh', '-f');
+  await execFileAsync('tmux', args);
+  return paneId;
+}
+
+// F6.1: on developer machines `claude`/`codex` are REAL binaries — a reaper
+// C-c that lands during their startup is occasionally ignored, leaving a live
+// TUI (and real API usage) behind the "parked at shell" assertion. Tests that
+// really type commands into panes shadow both with an inert long-sleep stub:
+// still a live foreground process for the reaper to kill, but deterministic
+// and side-effect-free.
+async function makeTuiStubs(t) {
+  const stubDir = await createTempDir(t);
+  for (const name of ['claude', 'codex']) {
+    const stubPath = path.join(stubDir, name);
+    await fs.writeFile(stubPath, '#!/bin/sh\nexec sleep 300\n');
+    await fs.chmod(stubPath, 0o755);
+  }
+  return stubDir;
+}
+
+let paneReadyTokenSeq = 0;
+async function waitForPaneReady(paneId, { timeoutMs = 20000, pollMs = 150, resendMs = 1000 } = {}) {
+  paneReadyTokenSeq += 1;
+  const token = `RDY${process.pid}X${paneReadyTokenSeq}`;
+  const deadline = Date.now() + timeoutMs;
+  let lastProbeAt = 0;
+  while (Date.now() < deadline) {
+    if (Date.now() - lastProbeAt >= resendMs) {
+      // Leading space + plain ASCII: a probe replayed through a half-ready
+      // shell degrades to junk/command-not-found, never to shell-killing bytes.
+      await execFileAsync('tmux', ['send-keys', '-t', paneId, '-l', '--', ` echo ${token}`]);
+      await execFileAsync('tmux', ['send-keys', '-t', paneId, 'Enter']);
+      lastProbeAt = Date.now();
+    }
+    const { stdout } = await execFileAsync('tmux', ['capture-pane', '-p', '-t', paneId]);
+    // Output line is the bare token; the echoed input line contains "echo <token>"
+    // and never trims to the token alone. Tokens are unique per call, so a prior
+    // handshake's output lingering on screen cannot satisfy this check.
+    if (stdout.split('\n').some((line) => line.trim() === token)) {
+      await execFileAsync('tmux', ['send-keys', '-t', paneId, 'C-u']);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  throw new Error(`pane ${paneId} shell not ready within ${timeoutMs}ms (F6.1 guard)`);
+}
+
 function createPoller(queue) {
   return async function pollForSignal(targetPath) {
     if (queue.length === 0) {
@@ -181,6 +246,7 @@ test('US-006 AC6.1 boundary: run can create a real tmux session with four panes 
   const sessionName = `us006-${Date.now()}`;
   const sendCommands = [];
   const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
+  const paneManager = await import('../../src/node/tmux/pane-manager.mjs');
 
   t.after(async () => {
     await execFileAsync('tmux', ['kill-session', '-t', sessionName]).catch(() => {});
@@ -202,7 +268,13 @@ test('US-006 AC6.1 boundary: run can create a real tmux session with four panes 
       { verdict: 'pass', recommended_state_transition: 'continue' },
       { verdict: 'pass', recommended_state_transition: 'complete' },
     ]),
+    // F6.1: real pane creation, then hermetic respawn (see helper above).
+    createPane: async (args) => hermeticPane(await paneManager.createPane(args)),
+    // F6.1 guard: recording fake, but gated on pane-shell readiness so the
+    // real reaper (default killPaneProcess) only ever sends C-c to a shell
+    // sitting at an interactive prompt.
     sendKeys: async (paneId, command) => {
+      await waitForPaneReady(paneId);
       sendCommands.push({ paneId, command });
     },
     runIntegrationCheck: async () => ({ exitCode: 0 }),
@@ -856,7 +928,14 @@ test('US-006 Bug-7-D: --mode agent live tmux reaper leaves all panes at idle she
   });
 
   // No `sendKeys`/`killPaneProcess`/`lockSentinelFile` injection — defaults
-  // are used so real tmux + real reaper run end-to-end.
+  // are used so real tmux + real reaper run end-to-end. NOTE (batch1 revert):
+  // an earlier IMP-11 pass wrapped this test in the hermetic-respawn +
+  // readiness-gate + TUI-stub rig; under full-suite load the readiness gate
+  // could delay send-keys past the reaper's C-c, leaving a stub `sleep`
+  // owning the pane forever (2/2 full-suite failures). The default dispatch
+  // types non-existent binaries that exit immediately, so panes settle at a
+  // shell on their own — the load-tolerant condition-poll below covers the
+  // residual sampling race instead.
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
@@ -871,27 +950,40 @@ test('US-006 Bug-7-D: --mode agent live tmux reaper leaves all panes at idle she
     runIntegrationCheck: async () => ({ exitCode: 0 }),
   });
 
-  const { stdout } = await execFileAsync('tmux', [
-    'list-panes',
-    '-t',
-    sessionName,
-    '-F',
-    '#{pane_id} #{pane_current_command}',
-  ]);
-  const lines = stdout.trim().split('\n').filter(Boolean);
+  // After Bug #7 reaper has fired against worker + verifier (interrupting the
+  // dispatched worker/verifier commands during startup — on dev machines with
+  // real claude/codex binaries the reaper C-c kills them before they do any
+  // work), every pane must be parked at a shell — not running claude/codex
+  // self-review. F6.1 determinism: the C-c → shell transition is asynchronous
+  // in the tmux server, so a single immediate sample races the dying process
+  // (observed flaking under full-suite load). Poll bounded on the CONDITION
+  // (all panes at a shell), never a fixed sleep.
+  const deadline = Date.now() + 10_000;
+  let lines = [];
+  let allAtShell = false;
+  while (Date.now() < deadline) {
+    const { stdout } = await execFileAsync('tmux', [
+      'list-panes',
+      '-t',
+      sessionName,
+      '-F',
+      '#{pane_id} #{pane_current_command}',
+    ]);
+    lines = stdout.trim().split('\n').filter(Boolean);
+    allAtShell =
+      lines.length === 4 &&
+      lines.every((line) =>
+        ['zsh', 'bash', 'sh'].includes(line.split(/\s+/, 2)[1] ?? ''),
+      );
+    if (allAtShell) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
   // 4 panes: leader + flywheel + worker + verifier
   assert.equal(lines.length, 4);
-  // After Bug #7 reaper has fired against worker + verifier (and the
-  // dispatched fake commands were non-existent binaries that immediately
-  // exit), every pane must be parked at a shell — not running claude/codex
-  // self-review.
-  for (const line of lines) {
-    const command = line.split(/\s+/, 2)[1] ?? '';
-    assert.ok(
-      ['zsh', 'bash', 'sh'].includes(command),
-      `pane ${line} is not at a shell — reaper failed to bring TUI back to idle`,
-    );
-  }
+  assert.ok(
+    allAtShell,
+    `panes not all at a shell after 10s — reaper failed to bring TUI back to idle: ${lines.join(' | ')}`,
+  );
 });
 
 // =============================================================================

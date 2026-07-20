@@ -2180,13 +2180,17 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // revise. Symmetric with the zsh lock-on-iter-signal contract at
     // run_ralph_desk.zsh:3197. Best-effort: missing-file is fail-open.
     //
-    // v0.15.4 audit H2 fix: NO markLockStart for done-claim. In production
-    // happy path done-claim is locked-but-never-unlocked (only signalFile +
-    // verdictFile receive iter-start unlockSentinelFile at L1552-1555), so
-    // markUnlock would never fire and the metric would silently never emit.
-    // done-claim is intentionally excluded from sentinel_lock_to_unlock_ms;
-    // the lib_ralph_desk.zsh:602 archival step is the practical lock-end
-    // event but is not currently instrumented (deferred — not B4 scope).
+    // IMP-10 (closes v0.15.4 audit H2): done-claim is still never
+    // unlockSentinelFile'd on the happy path (only signalFile + verdictFile
+    // receive iter-start unlockSentinelFile at L1552-1555), but its
+    // per-iteration close-out (immediately BEFORE appendIterationAnalytics,
+    // in both the 'pass' and 'fail' verdict branches below — MUST precede it
+    // since that call flushes the collector; a markUnlock placed after the
+    // flush is silently orphaned on a COMPLETE-exit iteration) now calls
+    // markUnlock with `{ ctx: 'archival' }` — mirroring the zsh leader's
+    // archive_iter_artifacts unlock site — so the metric emits a
+    // lock->close-out duration instead of never firing.
+    lifecycleMetrics.markLockStart(path.basename(paths.doneClaimFile));
     await lockSentinel(paths.doneClaimFile, { log: (msg) => console.error(msg) });
 
     // US-001: leader-side done-claim commit-integrity oracle. Runs on the shared
@@ -2344,6 +2348,14 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       }
       state.current_us = getNextUs(usList, state.verified_us, null);
       fixContractPath = null;
+      // IMP-10: per-iteration close-out for the done-claim lock marked above
+      // (mirrors zsh's unconditional archive_iter_artifacts call) — covers
+      // both the "more US remain" and "all US verified" continue paths. MUST
+      // fire BEFORE appendIterationAnalytics, which calls
+      // lifecycleMetrics.flush() internally — a markUnlock call placed after
+      // the flush is orphaned in the collector's buffer and silently lost on
+      // a COMPLETE-exit iteration (no later flush to catch it).
+      lifecycleMetrics.markUnlock(path.basename(paths.doneClaimFile), { ctx: 'archival', iter: state.iteration });
       await appendIterationAnalytics(paths, state, usId, 'pass', options, lifecycleMetrics);
       await writeStatus(paths, state, options.onStatusChange, options.now);
 
@@ -2399,6 +2411,12 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     }
 
     state.consecutive_failures += 1;
+    // IMP-10: per-iteration close-out for the done-claim lock marked above
+    // (mirrors zsh's unconditional archive_iter_artifacts call). MUST fire
+    // BEFORE appendIterationAnalytics — see the 'pass' branch comment above
+    // for why (flush-ordering; a post-flush markUnlock is silently lost on a
+    // terminal iteration).
+    lifecycleMetrics.markUnlock(path.basename(paths.doneClaimFile), { ctx: 'archival', iter: state.iteration });
     await appendIterationAnalytics(paths, state, usId, 'fail', options, lifecycleMetrics);
     const upgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
     if (upgradedModel === 'BLOCKED') {

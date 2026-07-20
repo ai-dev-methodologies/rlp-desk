@@ -77,6 +77,40 @@ test('AC4.1: markUnlock without prior markLockStart is a no-op', () => {
   assert.equal(flushed.sentinel_lock_to_unlock_ms, undefined);
 });
 
+// IMP-10 (closes v0.15.4 audit H2): done-claim's per-iteration close-out
+// (the archival copy on the zsh leader; the analogous iteration close-out on
+// the Node leader — see campaign-main-loop.mjs) calls markUnlock with a
+// `{ ctx: 'archival' }` ctx object. markUnlock already spreads its ctx
+// argument onto the record (no code change needed there) — this pins that
+// passthrough for the specific shape IMP-10 relies on, distinguishing this
+// lock->close-out series from the true lock->unlock series (signal/verdict,
+// which pass no `ctx` field).
+test("IMP-10: markUnlock('done-claim.json', { ctx: 'archival', iter }) tags the record ctx=archival", () => {
+  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
+  const t0 = 2_000_000;
+  c.markLockStart('done-claim.json', t0);
+  c.markUnlock('done-claim.json', { ctx: 'archival', iter: 4 }, t0 + 275);
+  const flushed = c.flush();
+  assert.ok(Array.isArray(flushed.sentinel_lock_to_unlock_ms));
+  const entry = flushed.sentinel_lock_to_unlock_ms[0];
+  assert.equal(entry.value_ms, 275);
+  assert.equal(entry.sentinel_type, 'done-claim.json');
+  assert.equal(entry.iter, 4);
+  assert.equal(entry.ctx, 'archival');
+});
+
+// True lock->unlock callers (signal/verdict) pass no ctx field — confirms
+// the two series are distinguishable by presence/absence of `ctx`.
+test('IMP-10: signal/verdict markUnlock calls (no ctx arg) carry no ctx field', () => {
+  const c = new LifecycleMetricsCollector({ env: { RLP_LIFECYCLE_METRICS: '1' } });
+  const t0 = 3_000_000;
+  c.markLockStart('iter-signal.json', t0);
+  c.markUnlock('iter-signal.json', { iter: 1 }, t0 + 100);
+  const flushed = c.flush();
+  const entry = flushed.sentinel_lock_to_unlock_ms[0];
+  assert.equal('ctx' in entry, false, 'signal/verdict series must not carry a ctx field');
+});
+
 // codex-r0 preempt (F7 parity): a negative or non-finite value_ms is now
 // DROPPED (not clamped to 0) — clamp-and-keep let a corrupted measurement
 // (clock skew, NaN) silently satisfy a "<= band" regression check as a

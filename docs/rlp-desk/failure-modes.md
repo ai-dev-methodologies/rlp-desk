@@ -133,15 +133,6 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Recovery | Pre-compute `entry_count` via flatten\|length; SKIP when 0; only run band check on non-empty data |
 | Reference | v0.15.4 audit C1 fix; commit `21e12ed` |
 
-### F3.3 — sentinel_lock_to_unlock_ms unmeasurable for done-claim
-| Field | Value |
-|---|---|
-| Symptom | Metric never emits for done-claim sentinel even though lock IS applied |
-| Root cause | Production happy-path never calls `unlockSentinelFile(doneClaimFile)`; only signalFile + verdictFile are unlocked at iter start |
-| Detection | Inspection: `lifecycle_metrics.sentinel_lock_to_unlock_ms` array contains iter-signal.json + verify-verdict.json entries but never done-claim.json |
-| Recovery | Documented in `lifecycle-metrics.mjs` markLockStart() — done-claim intentionally excluded from this metric. Future: emit at lib_ralph_desk.zsh:602 archival site if needed |
-| Reference | v0.15.4 audit H2; commit `feb1701` |
-
 ### F3.4 — Synthetic baseline drift from production
 | Field | Value |
 |---|---|
@@ -224,4 +215,14 @@ When a failure mode is permanently retired:
 
 ## §7 — Retired
 
-(none as of 2026-05-08)
+### F3.3 — sentinel_lock_to_unlock_ms unmeasurable for done-claim (RETIRED)
+| Field | Value |
+|---|---|
+| Symptom | Metric never emitted for the done-claim sentinel even though lock IS applied |
+| Root cause | Production happy-path never called `unlockSentinelFile(doneClaimFile)`; only signalFile + verdictFile were unlocked at iter start |
+| Detection | Inspection: `lifecycle_metrics.sentinel_lock_to_unlock_ms` array contained iter-signal.json + verify-verdict.json entries but never done-claim.json |
+| Recovery (historical) | Was documented in `lifecycle-metrics.mjs` markLockStart() as intentionally excluded (H2) |
+| Reference | v0.15.4 audit H2; commit `feb1701` |
+| **Retirement** | IMP-10 (2026-07-20): the metric now emits at done-claim's per-iteration close-out instead of a true unlock — zsh `archive_iter_artifacts` (`lib_ralph_desk.zsh:1177`, corrects the prior stale `:602` anchor) and the Node equivalent close-out sites in `campaign-main-loop.mjs`, tagged `ctx=archival` (NOTE leader difference: Node embeds `ctx` as a structured JSON field; the zsh leader carries it only in the debug-log detail text — machine consumers of a zsh-led campaign.jsonl must segregate the done-claim series by `sentinel_type`, not `ctx`). `_lifecycle_mark_lock_start`/`markLockStart` are now called at every done-claim lock site (the H2 exclusion is closed) so the pair actually records a duration. See `tests/test_lifecycle_doneclaim_archival.sh` and `test-campaign-jsonl-shape.test.mjs`. |
+
+(no other entries as of 2026-07-20)
