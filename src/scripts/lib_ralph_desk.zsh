@@ -2728,6 +2728,40 @@ derive_verification_mode() {
   if [[ -z "$rec_prd" || -z "$cur_prd" || "$rec_prd" != "$cur_prd" ]]; then
     print -r -- "build|ledger entry does not bind to the current PRD content"; return 0
   fi
+  # request-e ② (story-scoped confirmation): with an optional 4th arg <us_id>,
+  # confirmation is judged for THAT story alone — a multi-US campaign no longer
+  # pins every re-verification of an already-verified story to build just
+  # because later stories are incomplete (field: a fully-green first story
+  # could NEVER pass codex build-doctrine consensus → CB → BLOCKED).
+  # Fail-closed checks retained verbatim: malformed newest line (above), the
+  # story entry must bind to the CURRENT PRD hash, its commit must resolve AND
+  # be an ancestor of HEAD, and the ①b tree gate below still runs. The
+  # campaign-scope `diff --quiet <sha> HEAD` unchanged-since check is replaced
+  # by the ancestor check HERE ONLY — mid-campaign, later stories legitimately
+  # advance HEAD; the verifier's own fresh evidence re-run remains the safety
+  # net for cross-story regressions. Full-coverage (no 4th arg) semantics are
+  # byte-identical to before — resume-finalize and final-ALL use that path.
+  local scope_us="${4:-}"
+  if [[ -n "$scope_us" ]]; then
+    local story
+    story=$(jq -cR 'fromjson? // empty' "$ledger" 2>/dev/null \
+      | jq -c --arg u "$scope_us" --arg p "$cur_prd" \
+          'select((.us_id == $u and .prd == $p) or (.us_id == "ALL" and .prd == $p and ((.coverage // []) | index($u))))' 2>/dev/null \
+      | tail -1)
+    if [[ -z "$story" ]]; then
+      print -r -- "build|no PRD-bound verified ledger entry for $scope_us"; return 0
+    fi
+    local story_sha
+    story_sha=$(print -r -- "$story" | jq -r '.commit // empty' 2>/dev/null)
+    [[ -n "$story_sha" ]] || { print -r -- "build|$scope_us ledger entry has no commit anchor"; return 0; }
+    if ! git -C "$root" rev-parse --verify --quiet "${story_sha}^{commit}" >/dev/null 2>&1; then
+      print -r -- "build|$scope_us ledger commit SHA does not resolve"; return 0
+    fi
+    if ! git -C "$root" merge-base --is-ancestor "$story_sha" HEAD 2>/dev/null; then
+      print -r -- "build|$scope_us verified commit is not an ancestor of HEAD"; return 0
+    fi
+    sha="$story_sha"   # basis reporting below
+  else
   if [[ "$us" == "ALL" ]]; then
     covered=$(print -r -- "$newest" | jq -r '.coverage[]? // empty' 2>/dev/null | grep -E '^US-[0-9]+$' | sort -u)
   else
@@ -2744,6 +2778,7 @@ derive_verification_mode() {
   fi
   if ! git -C "$root" diff --quiet "$sha" HEAD 2>/dev/null; then
     print -r -- "build|tracked content changed since the verified commit"; return 0
+  fi
   fi
   # request-b ①b: unrelated RESIDENT user dirt must not pin build mode. Reuse the
   # PROVEN Bug#8 F-8 exclusion semantics: the working-tree-dirty gate fails only
@@ -2777,7 +2812,11 @@ derive_verification_mode() {
   if [[ -n "$_campaign_dirty" ]]; then
     print -r -- "build|tracked working tree has campaign-era changes since the verified commit"; return 0
   fi
-  print -r -- "confirmation|all PRD US verified at ${sha[1,10]} == HEAD, tree clean (resident preexisting dirt excluded)"
+  if [[ -n "$scope_us" ]]; then
+    print -r -- "confirmation|story-scoped: $scope_us verified at ${sha[1,10]} (ancestor of HEAD), PRD-bound, tree clean (resident preexisting dirt excluded)"
+  else
+    print -r -- "confirmation|all PRD US verified at ${sha[1,10]} == HEAD, tree clean (resident preexisting dirt excluded)"
+  fi
   return 0
 }
 

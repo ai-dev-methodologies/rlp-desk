@@ -2576,7 +2576,16 @@ write_verifier_trigger() {
   # leader-durable state (ledger + git); worker files never participate.
   # The [FLOW] line is a dogfood observable (PRD AC6).
   local _vderived
-  _vderived=$(derive_verification_mode "$VERIFIED_LEDGER" "$PRD_FILE" "$ROOT")
+  # request-e ②: story-scoped confirmation — a per-US dispatch judges the mode
+  # for THAT story (its own PRD-bound, HEAD-ancestor ledger anchor) so an
+  # already-verified story re-verifies honestly even while sibling stories are
+  # incomplete. Final/ALL dispatches (us_id empty or "ALL") keep the strict
+  # full-coverage campaign scope unchanged.
+  if [[ "$us_id" == US-<-> ]]; then
+    _vderived=$(derive_verification_mode "$VERIFIED_LEDGER" "$PRD_FILE" "$ROOT" "$us_id")
+  else
+    _vderived=$(derive_verification_mode "$VERIFIED_LEDGER" "$PRD_FILE" "$ROOT")
+  fi
   typeset -g _VMODE="${_vderived%%|*}"
   typeset -g _VMODE_BASIS="${_vderived#*|}"
   log "  [FLOW] verification_mode=$_VMODE basis=\"$_VMODE_BASIS\" iter=$iter"

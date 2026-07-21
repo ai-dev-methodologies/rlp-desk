@@ -40,12 +40,12 @@ print -r -- "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH
 print -r -- "{\"us_id\":\"US-002\",\"iter\":2,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" >> "$L"
 
 # Driver: derive_verification_mode with an explicit CAMPAIGN_PREEXISTING_DIRTY.
-derive() { # $1=ledger $2=prd $3=root $4=preexisting-newline-list
+derive() { # $1=ledger $2=prd $3=root $4=preexisting-newline-list [$5=scope_us]
   CAMPAIGN_PREEXISTING_DIRTY="$4" zsh --no-rcs -c '
     source "'"$LIB"'" 2>/dev/null
     log(){ :; }; log_debug(){ :; }; log_error(){ :; }
-    derive_verification_mode "$1" "$2" "$3"
-  ' _ "$1" "$2" "$3"
+    derive_verification_mode "$1" "$2" "$3" "${4:-}"
+  ' _ "$1" "$2" "$3" "${5:-}"
 }
 mode_of(){ derive "$1" "$2" "$3" "$4" | head -1 | cut -d'|' -f1; }
 
@@ -142,6 +142,32 @@ for fn in launch_verifier_claude launch_worker_claude; do
     && ok "seal#2: $fn has the lingering-process guard" \
     || no "seal#2: $fn missing the lingering-process guard"
 done
+
+# --- request-e ②: story-scoped confirmation ---
+# Partial ledger: only US-001 verified (of 2 PRD stories).
+Lpart="$TMP/ledger-partial.jsonl"
+print -r -- "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA2\",\"prd\":\"$PH\"}" > "$Lpart"
+[[ "$(derive "$Lpart" "$PRD" "$FIX" "" | cut -d"|" -f1)" == build ]] \
+  && ok "(e2-a) campaign scope on partial ledger stays build (unchanged semantics)" \
+  || no "(e2-a) full-coverage path must remain build on partial ledger"
+[[ "$(derive "$Lpart" "$PRD" "$FIX" "" US-001 | cut -d"|" -f1)" == confirmation ]] \
+  && ok "(e2-b) story scope: verified US-001 → confirmation despite incomplete siblings" \
+  || no "(e2-b) story-scoped confirmation failed: $(derive "$Lpart" "$PRD" "$FIX" "" US-001)"
+[[ "$(derive "$Lpart" "$PRD" "$FIX" "" US-002 | cut -d"|" -f1)" == build ]] \
+  && ok "(e2-c) story scope: unverified US-002 → build (fail-closed)" \
+  || no "(e2-c) unverified story must be build"
+# HEAD advanced past the entry commit (later sibling committed): ancestor OK.
+Lanc="$TMP/ledger-ancestor.jsonl"
+print -r -- "{\"us_id\":\"US-001\",\"iter\":1,\"commit\":\"$SHA1\",\"prd\":\"$PH\"}" > "$Lanc"
+[[ "$(derive "$Lanc" "$PRD" "$FIX" "" US-001 | cut -d"|" -f1)" == confirmation ]] \
+  && ok "(e2-d) story scope: entry SHA is HEAD-ancestor (mid-campaign advance) → confirmation" \
+  || no "(e2-d) ancestor anchor failed: $(derive "$Lanc" "$PRD" "$FIX" "" US-001)"
+# Campaign-era dirt still forces build even in story scope (①b gate retained).
+print -r -- dirty >> "$FIX/b.txt"
+[[ "$(derive "$Lpart" "$PRD" "$FIX" "" US-001 | cut -d"|" -f1)" == build ]] \
+  && ok "(e2-e) story scope: campaign-era tracked dirt → build (gate retained)" \
+  || no "(e2-e) dirt must force build in story scope"
+git -C "$FIX" checkout -q -- b.txt
 
 print ""
 print "PASS=$PASS FAIL=$FAIL"
