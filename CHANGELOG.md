@@ -9,6 +9,26 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.19] — 2026-07-21
+
+### Fixed
+- **P1 regression from 0.22.18: worker/verifier launch could fail on a freshly
+  created pane, blocking the campaign.** The launch echo-verification (added in
+  0.22.18) inspected only the bottom rows of the pane. A brand-new pane draws its
+  prompt at the TOP with blank rows below, so the check saw only blank lines,
+  concluded the launch command had not pasted, and — after retries — failed the
+  launch (observed as several consecutive restart deaths). The check now ignores
+  blank lines so it works regardless of where the prompt is drawn, and a short,
+  bounded wait for the shell to be ready was added before the first paste (tunable
+  via `RLP_SHELL_READY_TIMEOUT_S`, default 6s; proceeds anyway on timeout).
+- **P2: with several terminal windows attached, the campaign could attach its
+  panes to the wrong tmux session.** The leader identified its own pane using a
+  query that actually reports the *currently focused* pane, which — with multiple
+  attached clients — could be a different window in another session, causing
+  worker/verifier panes to be created there. The leader now uses its own shell's
+  pane identity (immune to which window is focused) and derives the session from
+  that pane, so panes are always created in the campaign's own session.
+
 ## [0.22.18] — 2026-07-21
 
 ### Fixed
