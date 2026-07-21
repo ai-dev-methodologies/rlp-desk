@@ -19,5 +19,6 @@ shared/waivers.mjs
 tmux/pane-manager.mjs
 util/debug-log.mjs
 util/desk-root.mjs
+util/gate-receipt.mjs
 util/lifecycle-metrics.mjs
 util/shell-quote.mjs
