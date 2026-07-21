@@ -606,6 +606,49 @@ check_dead_pane() {
   return 1  # alive
 }
 
+# ④ request-j: paste a launch command and VERIFY it echoed intact BEFORE the caller
+# presses Enter. An interactive rc prompt (oh-my-zsh "[Y/n]" update prompt) can eat
+# the FIRST pasted character — "/opt/homebrew/bin/codex …" becomes
+# "opt/homebrew/bin/codex …" (leading '/' gone) and the CLI never starts. A plain
+# substring check (as safe_send_keys does) is NOT enough: the corrupted line still
+# contains mid-command fragments like "codex -m …", so it false-passes. We anchor on
+# the command's LEADING prefix (first ~24 chars, which includes the vulnerable first
+# character): a swallowed first char removes it, so a fixed-string search for the
+# prefix fails and we recover — C-u (clear line), re-paste, up to 3 attempts. All
+# attempts exhausted → return 1 (caller's launch-failure path). grep -F keeps the
+# match glob-safe for bracketed model ids like 'claude-opus-4-7[1m]'.
+#   $1 pane_id   $2 command text (the caller sends Enter AFTER this returns 0)
+_paste_cmd_echo_verified() {
+  local pane_id="$1" cmd="$2"
+  local prefix="${cmd[1,24]}"
+  # Degenerate: no command / empty prefix → nothing to verify, single paste.
+  if [[ -z "$prefix" ]]; then
+    paste_to_pane "$pane_id" "$cmd"
+    return 0
+  fi
+  local attempt=0 _tail
+  while (( attempt < 3 )); do
+    paste_to_pane "$pane_id" "$cmd"
+    sleep 0.2
+    # tail -10 (not -6): a ~150-char launch line wraps to several rows on a narrow
+    # pane; too small a window can drop the prefix-bearing first row → false mismatch.
+    _tail=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -10)
+    # Fixed-string, prefix-anchored: the TRUE leading char is inside $prefix, so a
+    # swallowed first char makes this search miss. -- guards a prefix starting with '-'.
+    if print -r -- "$_tail" | grep -qF -- "$prefix" 2>/dev/null; then
+      (( attempt > 0 )) && log "  launch command echoed intact after $((attempt + 1)) paste attempt(s) (request-j ④)"
+      return 0
+    fi
+    (( attempt++ ))
+    log "  launch paste echo mismatch (attempt $attempt/3) — clearing line and re-pasting (rc prompt may have swallowed a char, request-j ④)"
+    log_debug "[GOV] iter=${ITERATION:-0} launch_paste_echo_mismatch=$attempt pane=$pane_id"
+    tmux send-keys -t "$pane_id" C-u 2>/dev/null || true
+    sleep 0.15
+  done
+  log_error "  launch command did not echo intact after 3 paste attempts (rc prompt swallow?) — pane=$pane_id"
+  return 1
+}
+
 # launch_worker_codex() — launch codex Worker TUI, send instruction, verify submission
 # Matches launch_worker_claude() pattern for consistent tmux-visible execution.
 # Args: $1=pane_id  $2=prompt_file  $3=iteration  $4=worker_launch_cmd
@@ -625,7 +668,11 @@ launch_worker_codex() {
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
   fi
-  paste_to_pane "$pane_id" "$worker_launch"
+  # ④ request-j: echo-verify the launch command before Enter (rc-prompt first-char swallow).
+  if ! _paste_cmd_echo_verified "$pane_id" "$worker_launch"; then
+    log_error "Worker codex launch command failed to echo intact after retries"
+    return 1
+  fi
   tmux send-keys -t "$pane_id" C-m
 
   # Wait for codex TUI prompt (› pre-0.144, ❯ from 0.144) instead of shell prompt
@@ -728,7 +775,11 @@ launch_worker_claude() {
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
   fi
-  paste_to_pane "$pane_id" "$worker_launch"
+  # ④ request-j: echo-verify the launch command before Enter (rc-prompt first-char swallow).
+  if ! _paste_cmd_echo_verified "$pane_id" "$worker_launch"; then
+    log_error "Worker claude launch command failed to echo intact after retries"
+    return 1
+  fi
   tmux send-keys -t "$pane_id" C-m
 
   # Wait for claude TUI to be ready
@@ -1229,6 +1280,43 @@ handle_worker_exit_claude() {
   fi
 }
 
+# ② request-j: pane-session pinning guards. A campaign pane must NEVER be created
+# outside the campaign session ($SESSION_NAME). The contamination vector is a
+# `tmux split-window -t ""` (empty target): tmux silently falls back to the
+# CURRENTLY ACTIVE session — an unrelated one when the leader was started detached.
+# Two guards close it: verify a split target is non-empty AND a live pane BEFORE
+# splitting, and assert the RESULTING pane's session equals $SESSION_NAME AFTER.
+_verify_split_target() {
+  local target="$1" ctx="${2:-split}"
+  if [[ -z "$target" ]]; then
+    log_error "[pane-pin:$ctx] split target is EMPTY — refusing to split (an empty -t falls back to the ambient tmux session)"
+    return 1
+  fi
+  if ! tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1; then
+    log_error "[pane-pin:$ctx] split target '$target' is not a live pane — refusing to split"
+    return 1
+  fi
+  return 0
+}
+# Assert a freshly-created pane lives in the campaign session; on mismatch KILL the
+# mis-placed pane (so it cannot be driven in a foreign session) and fail.
+_assert_pane_in_session() {
+  local pane="$1" ctx="${2:-pane}"
+  local sess
+  sess=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)
+  if [[ -z "$sess" ]]; then
+    log_error "[pane-pin:$ctx] created pane '$pane' has no resolvable session — treating as mis-placed"
+    return 1
+  fi
+  if [[ "$sess" != "$SESSION_NAME" ]]; then
+    log_error "[pane-pin:$ctx] created pane '$pane' landed in session '$sess', NOT campaign session '$SESSION_NAME' — killing mis-placed pane"
+    log_debug "[GOV] iter=${ITERATION:-0} pane_session_mismatch=1 pane=$pane got=$sess want=$SESSION_NAME ctx=$ctx"
+    tmux kill-pane -t "$pane" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
 # --- omc-teams pattern: Kill-and-replace dead/stuck worker panes ---
 replace_worker_pane() {
   local old_pane="$1"
@@ -1238,23 +1326,43 @@ replace_worker_pane() {
   tmux kill-pane -t "$old_pane" 2>/dev/null
 
   # Create fresh pane maintaining original layout: worker(top-right) / verifier(bottom-right)
+  # ② request-j: the LEADER_PANE fallback below used to split with NO empty/alive
+  # guard — an empty/dead LEADER_PANE made tmux split into the ambient session
+  # (cross-session contamination). Each fallback now verifies its target first, and
+  # a session-invariant check on the new pane refuses any pane that escaped the
+  # campaign session.
   local new_pane
   if [[ "$role" == "verifier" ]]; then
     # Verifier goes below worker: split vertically from worker pane
     if tmux display-message -t "$WORKER_PANE" -p '#{pane_id}' &>/dev/null; then
       new_pane=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
-    else
+    elif _verify_split_target "$LEADER_PANE" "replace-verifier-fallback"; then
       # Fallback: worker pane also dead, split horizontally from leader
       new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    else
+      log_error "  Cannot replace $role pane: no valid in-session split target (worker + leader both unusable) — refusing ambient-session fallback"
+      write_blocked_sentinel "replace_worker_pane: no valid in-session split target for $role (would contaminate the ambient tmux session)" "${CURRENT_US:-ALL}" "infra_failure"
+      return 1
     fi
   else
     # Worker goes above verifier: split vertically before verifier pane
     if tmux display-message -t "$VERIFIER_PANE" -p '#{pane_id}' &>/dev/null; then
       new_pane=$(tmux split-window -v -b -d -t "$VERIFIER_PANE" -P -F '#{pane_id}' -c "$ROOT")
-    else
+    elif _verify_split_target "$LEADER_PANE" "replace-worker-fallback"; then
       # Fallback: verifier pane also dead, split horizontally from leader
       new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    else
+      log_error "  Cannot replace $role pane: no valid in-session split target (verifier + leader both unusable) — refusing ambient-session fallback"
+      write_blocked_sentinel "replace_worker_pane: no valid in-session split target for $role (would contaminate the ambient tmux session)" "${CURRENT_US:-ALL}" "infra_failure"
+      return 1
     fi
+  fi
+
+  # ② request-j: session-invariant — a replacement pane that escaped the campaign
+  # session is killed and reported instead of being driven in a foreign session.
+  if ! _assert_pane_in_session "$new_pane" "replace-$role"; then
+    write_blocked_sentinel "replace_worker_pane: $role pane created outside campaign session $SESSION_NAME" "${CURRENT_US:-ALL}" "infra_failure"
+    return 1
   fi
 
   log "  New $role pane: $new_pane (replaced $old_pane)"
@@ -1357,10 +1465,20 @@ create_session() {
     SESSION_NAME=$(tmux display-message -p '#{session_name}')
     log "  Splitting current pane in session: $SESSION_NAME"
 
+    # ② request-j: pin every split to a verified in-session target; assert the
+    # resulting pane landed in $SESSION_NAME (startup → hard error on any escape).
+    _verify_split_target "$LEADER_PANE" "create-inside-worker" \
+      || { write_blocked_sentinel "create_session: leader pane not a valid split target (inside-tmux)" "ALL" "infra_failure"; exit 1; }
     # -h off current pane → right column (worker)
     WORKER_PANE=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    _assert_pane_in_session "$WORKER_PANE" "create-inside-worker" \
+      || { write_blocked_sentinel "create_session: worker pane created outside campaign session $SESSION_NAME (inside-tmux)" "ALL" "infra_failure"; exit 1; }
+    _verify_split_target "$WORKER_PANE" "create-inside-verifier" \
+      || { write_blocked_sentinel "create_session: worker pane not a valid split target for verifier (inside-tmux)" "ALL" "infra_failure"; exit 1; }
     # -v off worker → stacked below on right (verifier)
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    _assert_pane_in_session "$VERIFIER_PANE" "create-inside-verifier" \
+      || { write_blocked_sentinel "create_session: verifier pane created outside campaign session $SESSION_NAME (inside-tmux)" "ALL" "infra_failure"; exit 1; }
   else
     # Outside tmux: wrap current terminal into a new tmux session and attach
     # tmux pattern: user sees panes immediately, no separate attach needed
@@ -1393,8 +1511,19 @@ create_session() {
       tmux set-option -t "$SESSION_NAME" destroy-unattached off 2>/dev/null
     fi
     LEADER_PANE=$(tmux display-message -p -t "$SESSION_NAME" '#{pane_id}')
+    # ② request-j: leader started OUTSIDE tmux — this is exactly the case where a
+    # bad split escaped to the ambient active session. Pin the leader pane to the
+    # freshly-created campaign session, and assert both children landed in it.
+    _verify_split_target "$LEADER_PANE" "create-outside-worker" \
+      || { write_blocked_sentinel "create_session: leader pane not resolvable in new session $SESSION_NAME (outside-tmux)" "ALL" "infra_failure"; exit 1; }
     WORKER_PANE=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    _assert_pane_in_session "$WORKER_PANE" "create-outside-worker" \
+      || { write_blocked_sentinel "create_session: worker pane created outside campaign session $SESSION_NAME (outside-tmux)" "ALL" "infra_failure"; exit 1; }
+    _verify_split_target "$WORKER_PANE" "create-outside-verifier" \
+      || { write_blocked_sentinel "create_session: worker pane not a valid split target for verifier (outside-tmux)" "ALL" "infra_failure"; exit 1; }
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
+    _assert_pane_in_session "$VERIFIER_PANE" "create-outside-verifier" \
+      || { write_blocked_sentinel "create_session: verifier pane created outside campaign session $SESSION_NAME (outside-tmux)" "ALL" "infra_failure"; exit 1; }
 
   fi
 
@@ -2302,6 +2431,7 @@ restart_worker() {
 
   # Re-launch worker (tmux interactive pattern)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
+    _require_codex_effort "$WORKER_CODEX_REASONING" "worker-restart"
     safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
   else
     safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
@@ -2496,6 +2626,7 @@ write_worker_trigger() {
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
   # Engine-specific launch command (expanded at write time)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
+    _require_codex_effort "$WORKER_CODEX_REASONING" "worker-trigger"
     local engine_cmd="${CODEX_BIN:-codex} \\
   -m $WORKER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" \\
@@ -2606,6 +2737,12 @@ write_verifier_trigger() {
     if [[ "${_VMODE:-build}" == "confirmation" ]]; then
       echo "  - CONFIRMATION CONTRACT (Worker Process Audit): every PRD US is already verified and no tracked content changed since (SHA-anchored, PRD-hash-bound). In this mode the FRESH evidence is YOURS: rerun the full test suite and the per-AC spot commands yourself in THIS verification session (IL-1 Evidence Gate) and judge on those results, recording them in criteria_results. The done-claim may be the completed run's historical record — treat it as context; do NOT demand write_test/verify_red or new step timestamps from it (fresh RED cannot honestly exist for already-verified code). FAIL only on: your own fresh checks failing, missing/uncommitted deliverables, or forbidden-shortcut phrases in the claim."
     fi
+    # Layer 1.5 done-claim format lint outcome (governance §3a). Set by the
+    # pre-gate block before dispatch; PASS pins the per-AC TDD sequence/labels as
+    # machine-verified so the audit confines itself to substance.
+    if [[ -n "${_DONECLAIM_LINT_LINE:-}" ]]; then
+      echo "- $_DONECLAIM_LINT_LINE"
+    fi
     if [[ -n "$us_id" ]]; then
       if [[ "$us_id" = "ALL" ]]; then
         # v0.22.3 (early-review P1-4): FULL VERIFY means full — never pair the
@@ -2661,6 +2798,7 @@ write_verifier_trigger() {
   # Write trigger script (DO NOT use exec -- breaks heartbeat cleanup)
   # Engine-specific launch command (expanded at write time)
   if [[ "$verifier_engine" = "codex" ]]; then
+    _require_codex_effort "$VERIFIER_CODEX_REASONING" "verifier-trigger"
     local engine_cmd="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
@@ -2910,6 +3048,9 @@ poll_for_signal() {
   local role="$5"  # "worker" or "verifier"
   local nudge_count=0
   local api_retry_count=0
+  # ① request-j: model-capacity stall bookkeeping (a strike = one resume injection).
+  local capacity_strikes=0
+  local _last_capacity_reinject_ts=0
   local _prev_api_tail=""   # IMP-07: last pane tail, to reset backoff on progress
   local poll_start
   poll_start=$(date +%s)
@@ -3118,6 +3259,42 @@ poll_for_signal() {
       api_retry_count=0
     fi
 
+    # ① request-j: codex "Selected model is at capacity" MID-EXECUTION stall.
+    # Reuses the single pane capture above (pane_output_for_retry) — single-capture
+    # contract. Distinct from the API-transient block (outage phrases) and from
+    # request-g's PRE-submission banner: here the prompt IS submitted but the model
+    # froze on a capacity wall with no progress signal, on a course to burn the whole
+    # ITER_TIMEOUT. Auto-resume by injecting RLP_CAPACITY_RESUME_TEXT, bounded by a
+    # cooldown between injections and a strike cap. detect_quota_exhausted WINS — a
+    # usage wall is terminal and must never be resume-injected (check it first here).
+    if (( $+functions[_pane_capacity_stalled] )) \
+       && _pane_capacity_stalled "$pane_output_for_retry" \
+       && ! detect_quota_exhausted "$pane_output_for_retry"; then
+      if (( capacity_strikes >= ${RLP_CAPACITY_MAX_STRIKES:-3} )); then
+        log_error "  $role: model capacity stall persisted after ${capacity_strikes} resume injections — BLOCKED (request-j ①)"
+        log_debug "[GOV] iter=$ITERATION role=$role capacity_stall_blocked=1 strikes=$capacity_strikes"
+        write_blocked_sentinel "model capacity stall: resume text injected ${capacity_strikes}x without progress (Selected model is at capacity)" "" "infra_failure"
+        return 2
+      fi
+      local _cap_now
+      _cap_now=$(date +%s)
+      if (( _cap_now - _last_capacity_reinject_ts >= ${RLP_CAPACITY_REINJECT_COOLDOWN_S:-120} )); then
+        (( capacity_strikes++ ))
+        _last_capacity_reinject_ts=$_cap_now
+        log "  $role: model-capacity stall detected (banner + no progress) — injecting resume text (strike ${capacity_strikes}/${RLP_CAPACITY_MAX_STRIKES:-3}, request-j ①)"
+        log_debug "[GOV] iter=$ITERATION role=$role capacity_stall_reinject=$capacity_strikes cooldown=${RLP_CAPACITY_REINJECT_COOLDOWN_S:-120}s"
+        paste_to_pane "$pane_id" "${RLP_CAPACITY_RESUME_TEXT:-Continue.}"
+        tmux send-keys -t "$pane_id" C-m 2>/dev/null || true
+      fi
+    elif (( capacity_strikes > 0 )) && (( $+functions[_pane_shows_progress] )) \
+         && _pane_shows_progress "$pane_output_for_retry"; then
+      # Progress resumed after a resume injection — clear the strike count so a
+      # LATER, independent capacity stall gets its full budget again.
+      log "  $role: progress resumed after capacity-stall resume — clearing ${capacity_strikes} strike(s) (request-j ①)"
+      log_debug "[GOV] iter=$ITERATION role=$role capacity_stall_recovered=1 prior_strikes=$capacity_strikes"
+      capacity_strikes=0
+    fi
+
     # Check heartbeat freshness (tmux pattern)
     # D-7 (INERT BY DESIGN — do not "fix" as a bug): this entire heartbeat block is
     # gated on `[[ -f "$heartbeat_file" ]]`, which is effectively always FALSE in the
@@ -3293,7 +3470,14 @@ run_single_verifier() {
   if [[ -z "$verifier_cmd" ]]; then
     log "  Verifier pane $VERIFIER_PANE is gone — replacing..."
     log_debug "[GOV] iter=$iter pane_dead=true pane_id=$VERIFIER_PANE action=replace_pane"
-    replace_worker_pane "$VERIFIER_PANE" "verifier"
+    # ② request-j: replace_worker_pane can hard-fail (empty/dead LEADER_PANE, or a
+    # pane that escaped the campaign session) — it writes the BLOCKED sentinel and
+    # returns non-zero WITHOUT updating SESSION_CONFIG.panes. Do NOT re-read the
+    # stale/killed pane id and drive a dead pane; propagate the hard-fail.
+    if ! replace_worker_pane "$VERIFIER_PANE" "verifier"; then
+      log_error "  Verifier pane replacement hard-failed (BLOCKED written) — aborting verify"
+      return 1
+    fi
     VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
     log "  New verifier pane: $VERIFIER_PANE"
   elif [[ "$verifier_cmd" == "zsh" || "$verifier_cmd" == "bash" ]]; then
@@ -3352,6 +3536,7 @@ run_single_verifier() {
     elif [[ -n "$model" ]]; then
       _cx_model="$model"
     fi
+    _require_codex_effort "$_cx_reason" "verifier-dispatch"
     verifier_launch="${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
     launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
     log_debug "Verifier$suffix codex TUI dispatched (model=$_cx_model reasoning=$_cx_reason)"
@@ -3589,6 +3774,7 @@ _final_verify_one_us() {
     && _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
   local verifier_launch
   if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
+    _require_codex_effort "$FINAL_VERIFIER_CODEX_REASONING" "final-verifier-dispatch"
     verifier_launch="${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
     launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
   else
@@ -3614,7 +3800,12 @@ _final_verify_one_us() {
   fi
   if (( poll_rc == 1 )); then
     log "  Verifier-final transient poll fail for $us — replacing pane + retrying once (D-4)"
-    replace_worker_pane "$VERIFIER_PANE" "verifier"
+    # ② request-j: propagate a replace hard-fail (sentinel already written) as this
+    # function's terminal rc=2 instead of re-reading a stale/killed pane id.
+    if ! replace_worker_pane "$VERIFIER_PANE" "verifier"; then
+      log_error "  Verifier-final pane replacement hard-failed (BLOCKED written) for $us"
+      return 2
+    fi
     VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
     # codex round 1 P2-2: this retry's rm is clearing the SAME poll-rc==1
     # attempt that never locked (transient timeout, no verdict accepted) — no
@@ -3842,9 +4033,22 @@ _ensure_consensus_pane() {
     return 0
   fi
   # Split below the verifier pane (mirrors verifier = split below worker).
+  # ② request-j: pin the split target so an empty/dead VERIFIER_PANE cannot spawn
+  # the consensus pane in the ambient session.
+  if ! _verify_split_target "$VERIFIER_PANE" "consensus-split"; then
+    log_error "Cannot create consensus pane: verifier pane is not a valid in-session split target"
+    return 1
+  fi
   CONSENSUS_PANE=$(tmux split-window -v -d -t "$VERIFIER_PANE" -P -F '#{pane_id}' -c "$ROOT" 2>/dev/null)
   if [[ -z "$CONSENSUS_PANE" ]]; then
     log_error "Failed to create consensus pane for parallel consensus"
+    return 1
+  fi
+  # ② request-j: session-invariant — refuse a consensus pane that escaped the
+  # campaign session.
+  if ! _assert_pane_in_session "$CONSENSUS_PANE" "consensus-pane"; then
+    log_error "Consensus pane created outside campaign session $SESSION_NAME — aborting parallel consensus"
+    CONSENSUS_PANE=""
     return 1
   fi
   tmux select-layout -t "$SESSION_NAME" tiled 2>/dev/null || true
@@ -3931,6 +4135,7 @@ run_consensus_verification_parallel() {
     log_error "$VERIFIER_ABORT_REASON"
     return 1
   fi
+  _require_codex_effort "$_cx_reason" "consensus-codex-dispatch"
   codex_launch="${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
   launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter" "$codex_launch"
   log_debug "[GOV] iter=$iter phase=consensus_parallel dispatched=both claude_pane=$VERIFIER_PANE codex_pane=$CONSENSUS_PANE"
@@ -4485,12 +4690,17 @@ main() {
     local _status_mu
     _status_mu=$(jq -r '.model_upgraded // 0' "$STATUS_FILE" 2>/dev/null)
     if [[ "$_status_mu" == "1" ]]; then
-      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_sufc
+      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_owcr _s_sufc
       _s_wm=$(jq -r '.worker_model // empty' "$STATUS_FILE" 2>/dev/null)
       _s_we=$(jq -r '.worker_engine // empty' "$STATUS_FILE" 2>/dev/null)
       _s_wcm=$(jq -r '.worker_codex_model // empty' "$STATUS_FILE" 2>/dev/null)
       _s_wcr=$(jq -r '.worker_codex_reasoning // empty' "$STATUS_FILE" 2>/dev/null)
       _s_owm=$(jq -r '.original_worker_model // empty' "$STATUS_FILE" 2>/dev/null)
+      # request-j ③: restore the ORIGINAL codex reasoning effort next to _s_owm.
+      # Missing this was the root cause of the empty-effort BLOCKED: restore-on-pass
+      # (D-5b) copies _ORIGINAL_WORKER_CODEX_REASONING back into WORKER_CODEX_REASONING,
+      # so if it stays "" from init the next codex dispatch assembles an empty flag.
+      _s_owcr=$(jq -r '.original_worker_codex_reasoning // empty' "$STATUS_FILE" 2>/dev/null)
       _s_sufc=$(jq -r '.same_us_fail_count // 0' "$STATUS_FILE" 2>/dev/null)
       if [[ -n "$_s_wm" && -n "$_s_we" ]]; then
         _MODEL_UPGRADED=1
@@ -4498,8 +4708,9 @@ main() {
         [[ -n "$_s_wcm" ]] && WORKER_CODEX_MODEL="$_s_wcm"
         [[ -n "$_s_wcr" ]] && WORKER_CODEX_REASONING="$_s_wcr"
         [[ -n "$_s_owm" ]] && _ORIGINAL_WORKER_MODEL="$_s_owm"
+        [[ -n "$_s_owcr" ]] && _ORIGINAL_WORKER_CODEX_REASONING="$_s_owcr"
         [[ "$_s_sufc" == <-> ]] && _SAME_US_FAIL_COUNT="$_s_sufc"
-        log "  Restored auto-upgraded Worker model: $WORKER_MODEL ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}, same_us_fails=$_SAME_US_FAIL_COUNT (D-5b restore-priority)"
+        log "  Restored auto-upgraded Worker model: $WORKER_MODEL ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}, orig_effort=${_ORIGINAL_WORKER_CODEX_REASONING:-?}, same_us_fails=$_SAME_US_FAIL_COUNT (D-5b restore-priority)"
         log_debug "[FLOW] restored_model_upgrade=true worker_model=$WORKER_MODEL engine=$WORKER_ENGINE same_us_fail=$_SAME_US_FAIL_COUNT"
       fi
     fi
@@ -4766,11 +4977,18 @@ main() {
       # (send-keys before the pane's shell is ready). Replace the pane and retry
       # ONCE before BLOCKing, instead of terminating the campaign on a transient.
       if [[ "$WORKER_ENGINE" = "codex" ]]; then
+        _require_codex_effort "$WORKER_CODEX_REASONING" "worker-dispatch"
         worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
         if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
           log "  Worker codex failed to start — replacing pane and retrying once (F-11)."
           log_debug "[GOV] iter=$ITERATION worker_start_failed=true action=replace_retry engine=codex"
-          replace_worker_pane "$WORKER_PANE" "worker"
+          # ② request-j: a replace hard-fail already wrote the BLOCKED sentinel and
+          # did NOT update SESSION_CONFIG.panes — end the iteration instead of
+          # re-reading a stale/killed pane id and driving a dead worker pane.
+          if ! replace_worker_pane "$WORKER_PANE" "worker"; then
+            update_status "blocked" "pane_replace_failed"
+            return 1
+          fi
           WORKER_PANE=$(jq -r '.panes.worker' "$SESSION_CONFIG")
           if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
             write_blocked_sentinel "Worker codex failed to start in pane after replace+retry" "" "infra_failure"
@@ -4783,7 +5001,12 @@ main() {
         if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
           log "  Worker claude failed to start — replacing pane and retrying once (F-11)."
           log_debug "[GOV] iter=$ITERATION worker_start_failed=true action=replace_retry engine=claude"
-          replace_worker_pane "$WORKER_PANE" "worker"
+          # ② request-j: see codex branch above — propagate a replace hard-fail as a
+          # terminal BLOCKED instead of driving a stale/killed worker pane.
+          if ! replace_worker_pane "$WORKER_PANE" "worker"; then
+            update_status "blocked" "pane_replace_failed"
+            return 1
+          fi
           WORKER_PANE=$(jq -r '.panes.worker' "$SESSION_CONFIG")
           if ! launch_worker_claude "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
             write_blocked_sentinel "Worker claude failed to start in pane after replace+retry" "" "infra_failure"
@@ -5061,7 +5284,37 @@ main() {
           fi
         fi
 
-        # --- Layer 2: execution_steps replay (only if L1 did not already resolve) ---
+        # --- Layer 1.5: done-claim TDD-sequence lint (only if L1 did not resolve) ---
+        # Deterministic per-AC write_test→verify_red→implement→verify_green label/
+        # order check of the done-claim (governance §3a Layer 1.5). Runs even when
+        # the Layer 1 static gate is absent (PREGATE_RAN=0). SKIP/PASS proceed and
+        # their outcome is injected into the verifier prompt (below, in
+        # write_verifier_trigger) so the LLM Worker Process Audit does not
+        # re-litigate a format the leader already machine-verified; FAIL short-
+        # circuits under the shared PREGATE_FAIL_CAP, or forces one full verifier
+        # round at the cap (carrying the FAIL summary for injection).
+        typeset -g _DONECLAIM_LINT_LINE=""
+        if (( ! _pg_short && ! _pg_force )); then
+          run_pregate_doneclaim_lint
+          log_debug "[GOV] iter=$ITERATION phase=pregate layer=1.5 status=$PREGATE_LINT_STATUS reason=${PREGATE_LINT_REASON:-none} us=${signal_us_id:-all}"
+          if [[ "$PREGATE_LINT_STATUS" == "fail" ]]; then
+            if _pregate_register_fail_doneclaim_lint "$ITERATION" "${signal_us_id:-ALL}"; then
+              log "  Pre-gate L1.5 FAILED (done-claim format lint: ${PREGATE_LINT_VIOLATIONS}) — skipping LLM verification, redispatching Worker (pre-gate fail ${PREGATE_FAILURES}/${PREGATE_FAIL_CAP})."
+              _pg_short=1
+            else
+              log "  Pre-gate L1.5 failed ${PREGATE_FAIL_CAP}× for ${signal_us_id:-ALL} — forcing full LLM verifier round (lint FAIL passed to verifier)."
+              log_debug "[GOV] iter=$ITERATION phase=pregate action=force_verifier layer=1.5 us=${signal_us_id:-all}"
+              _pg_force=1
+              _DONECLAIM_LINT_LINE="Done-Claim Format Lint: FAIL (fail cap reached) — violations: ${PREGATE_LINT_VIOLATIONS}"
+            fi
+          elif [[ "$PREGATE_LINT_STATUS" == "pass" ]]; then
+            _DONECLAIM_LINT_LINE="Done-Claim Format Lint: PASS — the leader machine-verified the per-AC TDD step sequence/labels in execution_steps. Do NOT fail the Worker Process Audit on step sequence/label format grounds; audit substance only (evidence freshness, exit codes, timestamps, command truthfulness)."
+          else
+            _DONECLAIM_LINT_LINE="Done-Claim Format Lint: SKIPPED (${PREGATE_LINT_REASON:-unknown})"
+          fi
+        fi
+
+        # --- Layer 2: execution_steps replay (only if L1/L1.5 did not resolve) ---
         if (( ! _pg_short && ! _pg_force )); then
           run_pregate_replay "$ITERATION" "$_pg_deadline"
           if (( PREGATE_REPLAY_RAN )); then
@@ -5176,7 +5429,13 @@ main() {
           if [[ -z "$verifier_cmd" ]]; then
             log "  Verifier pane $VERIFIER_PANE is gone — replacing..."
             log_debug "[GOV] iter=$ITERATION pane_dead=true pane_id=$VERIFIER_PANE action=replace_pane"
-            replace_worker_pane "$VERIFIER_PANE" "verifier"
+            # ② request-j: propagate a replace hard-fail (BLOCKED sentinel already
+            # written, panes not updated) as a terminal BLOCKED rather than driving
+            # a stale/killed verifier pane.
+            if ! replace_worker_pane "$VERIFIER_PANE" "verifier"; then
+              update_status "blocked" "pane_replace_failed"
+              return 1
+            fi
             VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
             log "  New verifier pane: $VERIFIER_PANE"
           elif [[ "$verifier_cmd" == "zsh" || "$verifier_cmd" == "bash" ]]; then
@@ -5216,6 +5475,7 @@ main() {
 
           local verifier_launch
           if [[ "$_v_eng" = "codex" ]]; then
+            _require_codex_effort "$_v_cxr" "verifier-relaunch"
             verifier_launch="${CODEX_BIN:-codex} -m $_v_cxm -c model_reasoning_effort=\"$_v_cxr\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
           else
             verifier_launch="$(build_claude_cmd tui "$_v_model" "" "" "$_v_eff")"
@@ -5276,7 +5536,13 @@ main() {
             log_debug "[GOV] iter=$ITERATION verifier_monitor_failure=$_vpoll_strike/3"
             update_status "verifier" "poll_failed"
             (( _vpoll_strike >= 3 )) && break
-            replace_worker_pane "$VERIFIER_PANE" "verifier"
+            # ② request-j: propagate a replace hard-fail (BLOCKED sentinel already
+            # written, panes not updated) instead of re-dispatching into a
+            # stale/killed verifier pane.
+            if ! replace_worker_pane "$VERIFIER_PANE" "verifier"; then
+              update_status "blocked" "pane_replace_failed"
+              return 1
+            fi
             VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
             if [[ "$_v_eng" = "codex" ]]; then
               launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"
@@ -5353,7 +5619,16 @@ main() {
               WORKER_MODEL="$_ORIGINAL_WORKER_MODEL"
               if [[ "$WORKER_ENGINE" = "codex" ]]; then
                 WORKER_CODEX_MODEL="$WORKER_MODEL"
-                WORKER_CODEX_REASONING="$_ORIGINAL_WORKER_CODEX_REASONING"
+                # request-j ③ defense-in-depth: never assign an EMPTY effort back.
+                # If the persisted original effort is missing (older status.json, or
+                # a restore gap), keep the CURRENT effort — an empty value would make
+                # the next codex dispatch abort ("reasoning_effort must not be empty").
+                if [[ -n "$_ORIGINAL_WORKER_CODEX_REASONING" ]]; then
+                  WORKER_CODEX_REASONING="$_ORIGINAL_WORKER_CODEX_REASONING"
+                else
+                  log "  [WARN] original codex reasoning effort empty on pass-restore — keeping current effort '$WORKER_CODEX_REASONING' (request-j ③ guard)"
+                  log_debug "[DECIDE] iter=$ITERATION phase=model_select effort_restore_skipped_empty=1 kept=$WORKER_CODEX_REASONING"
+                fi
               fi
               _MODEL_UPGRADED=0
             fi

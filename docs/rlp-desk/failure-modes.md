@@ -80,6 +80,51 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Recovery | One early one-shot Enter re-inject at the first poll tick (~POLL_INTERVAL post-dispatch) on both leaders — codex-verifier poll loop (per-dispatch guard, reset on full re-dispatch) and generic `poll_for_signal` (per-poll-session guard). After the single shot the existing submit-anchored 90s path takes over unchanged; progress detection skips the nudge so normal immediate-submit cases get zero re-injects |
 | Reference | request-g (`docs/incoming-requests/tire-plletdata-request-2026-07-21-g.md`), v0.22.16; `tests/test_banner_early_reinject.sh` |
 
+### F1.9 — format-only done-claim defect burns an LLM cross-verify round (request-h)
+| Field | Value |
+|---|---|
+| Symptom | A build-mode done-claim whose deliverables are all green on fresh verification still FAILs the LLM cross-verifier's Worker Process Audit purely on a per-AC TDD step-label/order defect (e.g. an `implement` step labeled `ac_id:"all"` instead of `AC3`). Field case US-002 pa-foundation: 2 codex rounds ≈ 65min (iter-002 627s+964s, iter-004 1059s+1269s) with every AC green — a defect a JSON field-order check resolves in milliseconds |
+| Root cause | The pre-gate (Layer 1 static script, Layer 2 command replay) did not inspect the per-AC `write_test → verify_red → implement → verify_green` label/order of `execution_steps`, so a 100%-deterministic format fault flowed all the way to the 20-25min LLM cross-verification round before being caught |
+| Detection | `run_pregate_doneclaim_lint` (zsh) / `lintDoneClaimTddSequence` (Node); `tests/test_doneclaim_lint.sh` + `tests/node/test-done-claim-lint.test.mjs` drive shared fixtures under `tests/fixtures/done-claim-lint/` |
+| Recovery | Layer 1.5 done-claim TDD-sequence lint (governance §3a) runs before verifier dispatch on BOTH leaders; on fail it bounces the Worker with a `PRE-GATE FAILURE (done-claim format lint)` fix contract carrying per-AC `idx` coordinates (`-1` = phase missing, non-monotonic = out of order). Shared `PREGATE_FAIL_CAP`, never the circuit breaker; the canonical predicate is single-sourced with the worker-prompt format spec and the verifier's Worker Process Audit so a lint-PASS is not re-failed on format grounds. Opt out via `RLP_DONECLAIM_LINT=0` |
+| Reference | request-h (`docs/incoming-requests/tire-plletdata-request-2026-07-21-h.md`), v0.22.17; governance §3a Layer 1.5 |
+
+### F1.10 — model-capacity mid-execution stall (request-j ①)
+| Field | Value |
+|---|---|
+| Symptom | A codex worker/verifier pane prints "⚠ Selected model is at capacity. Please try a different model." AFTER the prompt was submitted, then freezes with no progress spinner. The leader keeps polling to ITER_TIMEOUT (1800s) — the operator manually typed "계속 해." to resume instantly. Leader log accreted 349 repeated captures of the same stall = the poller SAW but did not INTERPRET it. Field case US-005 terra:high, pa-foundation 33차 |
+| Root cause | Distinct from request-g's PRE-submission banner (F1.8) and from `detect_api_error`'s transient outage phrases: capacity is a POST-submission stall that no poll predicate matched, so the pane idled indefinitely with no auto-response |
+| Detection | `_pane_capacity_stalled` (lib_ralph_desk.zsh): a capacity banner matches `RLP_CAPACITY_BANNER_RE` (env-overridable) AND `_pane_shows_progress` is false, on the single reused pane capture in `poll_for_signal` |
+| Recovery | Inject `RLP_CAPACITY_RESUME_TEXT` (default "Continue.") via paste + Enter, bounded by `RLP_CAPACITY_REINJECT_COOLDOWN_S` (default 120s) between injections; each injection is a strike, and at `RLP_CAPACITY_MAX_STRIKES` (default 3) the leader writes `[infra_failure]` BLOCKED mentioning model capacity rather than stalling silently. `detect_quota_exhausted` WINS (a usage wall is terminal, never resume-injected). Strikes reset when progress resumes. Zero injection while a spinner/progress is present |
+| Reference | request-j ① (`docs/incoming-requests/tire-plletdata-request-2026-07-21-j.md`), v0.22.18; `tests/test_capacity_banner_stall.sh` |
+
+### F1.11 — campaign pane created outside the campaign session (request-j ②)
+| Field | Value |
+|---|---|
+| Symptom | Leader started detached (outside tmux); a worker/verifier `split-window` landed in the unrelated ACTIVE session (another project's review-inbox). Operator hand-moved the pane (join-pane), breaking the leader's pane ledger → `[infra_failure] tmux session/pane dead during iter_start` killed the campaign (32차) |
+| Root cause | `replace_worker_pane`'s LEADER_PANE fallback split with no empty/alive guard; an empty `-t` makes tmux silently fall back to the currently-active session (the contamination vector) |
+| Detection | `_verify_split_target` (non-empty + live pane before splitting) and `_assert_pane_in_session` (created pane's `#{session_name}` == `$SESSION_NAME` after splitting) |
+| Recovery | Every `split-window` (create_session both branches, replace_worker_pane fallbacks, consensus pane) verifies its target first — an empty/dead target is an explicit error (hard exit at startup / BLOCKED sentinel in-loop) instead of an ambient-session split. Any pane that escapes the campaign session is KILLED and reported |
+| Reference | request-j ② (`docs/incoming-requests/tire-plletdata-request-2026-07-21-j.md`), v0.22.18; `tests/test_pane_session_pinning.sh` |
+
+### F1.12 — restart path assembles empty model_reasoning_effort (request-j ③)
+| Field | Value |
+|---|---|
+| Symptom | In-campaign worker re-dispatch built `codex -m gpt-5.6-terra -c model_reasoning_effort="" …` → codex aborts "reasoning_effort must not be empty" → trigger text leaks to the shell → "worker not active" ×3 → BLOCKED. First launch parsed fine; only the RE-launch path lost the effort. Field case 31차 iter-006, US-003 dispatch |
+| Root cause | `check_model_upgrade` saved `_ORIGINAL_WORKER_CODEX_REASONING` in-memory only; `update_status` persisted `original_worker_model` but NOT the reasoning; the leader-relaunch restore rehydrated every upgrade field except the reasoning; restore-on-pass then assigned the empty string into `WORKER_CODEX_REASONING`, which the next dispatch interpolated as an empty flag |
+| Detection | `_require_codex_effort` assembly guard fires when the effort is empty at ANY of the 8 codex `-c model_reasoning_effort=` sites |
+| Recovery | Persist `original_worker_codex_reasoning` in `update_status`; restore it in the D-5b relaunch block; restore-on-pass keeps the current effort (never assigns empty) when the persisted original is missing; the assembly guard fail-fasts (BLOCKED `infra_failure`) rather than shipping an empty flag |
+| Reference | request-j ③ (`docs/incoming-requests/tire-plletdata-request-2026-07-21-j.md`), v0.22.18; `tests/test_effort_persistence_restore.sh` |
+
+### F1.13 — rc prompt swallows the launch command's first char (request-j ④)
+| Field | Value |
+|---|---|
+| Symptom | An oh-my-zsh update prompt (`[Y/n]`) on the pane consumes the FIRST pasted char, turning "/opt/homebrew/bin/codex…" into "opt/homebrew/bin/codex…" (leading `/` gone) → CLI never starts. Field case 29차 |
+| Root cause | The launch functions pasted then pressed Enter unconditionally; `safe_send_keys`'s substring check is not enough (a swallowed first char still substring-matches mid-command fragments) |
+| Detection | `_paste_cmd_echo_verified` (run_ralph_desk.zsh): after paste, require the command's leading ~24-char prefix (which includes the vulnerable first char) to appear intact via a glob-safe `grep -F`, before Enter |
+| Recovery | On mismatch: C-u (clear line), re-paste, up to 3 attempts; all exhausted → explicit launch failure (existing path). Wired into both `launch_worker_codex` and `launch_worker_claude` |
+| Reference | request-j ④ (`docs/incoming-requests/tire-plletdata-request-2026-07-21-j.md`), v0.22.18; `tests/test_launch_echo_verify.sh` |
+
 ---
 
 ## §2 — Sentinel file contention

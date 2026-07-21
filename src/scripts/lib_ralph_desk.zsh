@@ -286,6 +286,30 @@ _a4_pane_still_needs_reap() {
   esac
 }
 
+# request-j ③: assembly-time sanity guard for codex `-c model_reasoning_effort=`.
+# A codex launch command with an EMPTY reasoning effort is fatal — the CLI aborts
+# at startup ("Error loading config.toml: reasoning_effort must not be empty"), the
+# trigger instruction then leaks to the shell, and the leader BLOCKs on "worker not
+# active". This is never transient (it is a mapping/restore bug, not an outage), so
+# the correct response is a hard fail-fast rather than shipping the broken flag and
+# looping. Call this immediately before EVERY `-c model_reasoning_effort=` assembly
+# site with the effort value that will be interpolated and a short context label.
+#   $1 effort value about to be interpolated (empty = fatal)
+#   $2 context label (e.g. worker-relaunch / verifier / consensus-codex)
+# On empty: writes an infra_failure BLOCKED sentinel and exits 1 (definitive — an
+# empty effort means EVERY dispatch would fail identically). On non-empty: return 0.
+_require_codex_effort() {
+  local eff="$1"
+  local ctx="${2:-codex-launch}"
+  if [[ -z "$eff" ]]; then
+    log_error "[effort-guard] empty model_reasoning_effort for codex launch (ctx=$ctx) — refusing to assemble '-c model_reasoning_effort=\"\"' (codex would abort: 'reasoning_effort must not be empty')"
+    log_debug "[GOV] iter=${ITERATION:-0} effort_guard_empty=1 ctx=$ctx"
+    write_blocked_sentinel "empty codex model_reasoning_effort at $ctx (model:effort mapping/restore bug — cannot launch codex)" "${CURRENT_US:-ALL}" "infra_failure"
+    exit 1
+  fi
+  return 0
+}
+
 # check_model_upgrade() — evaluate and apply Worker model upgrade on repeated same-US failure
 # Called in the fail verdict path. Upgrades Worker model when same US fails >= 2 consecutive times.
 # Respects LOCK_WORKER_MODEL flag. Never modifies VERIFIER_MODEL.
@@ -1157,9 +1181,16 @@ update_status() {
       _eff_block_reason="waiver rejections: ${WAIVER_REJECTION_SUMMARY}"
     fi
   fi
-  local _lbr_json _owm_json
+  local _lbr_json _owm_json _owcr_json
   _lbr_json=$(printf '%s' "$_eff_block_reason" | jq -Rs . 2>/dev/null); [[ -z "$_lbr_json" ]] && _lbr_json='""'
   _owm_json=$(printf '%s' "${_ORIGINAL_WORKER_MODEL:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owm_json" ]] && _owm_json='""'
+  # request-j ③: persist the ORIGINAL worker codex reasoning effort alongside
+  # original_worker_model. Without it, a leader-relaunch restore (D-5b) rehydrates
+  # every upgrade field EXCEPT the reasoning, so restore-on-pass later assigns an
+  # empty string into WORKER_CODEX_REASONING → the next dispatch assembles
+  # `-c model_reasoning_effort=""` → codex refuses to start ("reasoning_effort must
+  # not be empty") → BLOCKED. jq-encoded like the other free-text restore fields.
+  _owcr_json=$(printf '%s' "${_ORIGINAL_WORKER_CODEX_REASONING:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owcr_json" ]] && _owcr_json='""'
 
   # Build consensus fields
   local consensus_json=""
@@ -1194,6 +1225,7 @@ update_status() {
   "model_upgraded": '"${_MODEL_UPGRADED:-0}"',
   "same_us_fail_count": '"${_SAME_US_FAIL_COUNT:-0}"',
   "original_worker_model": '"$_owm_json"',
+  "original_worker_codex_reasoning": '"$_owcr_json"',
   "verified_us": '"$verified_us_json"''"$consensus_json"',
   "iter_start_head": "'"${ITER_START_HEAD:-}"'",
   "gate_receipt": "'"${GATE_RECEIPT_STATUS:-none}"'",
@@ -2182,6 +2214,104 @@ run_pregate_replay() {
     log_debug "[GOV] iter=$iter phase=pregate_replay eligible=0 action=noop"
     PREGATE_REPLAY_RAN=0
   fi
+  return 0
+}
+
+# --- Layer 1.5: done-claim TDD-sequence lint (deterministic) ---
+# Runs BETWEEN Layer 1 (static gate) and Layer 2 (replay). For a BUILD-mode
+# done-claim (execution_steps contains a write_test step) it asserts that EACH
+# acceptance criterion that appears — in any step's ac_id OR a `claims[]` entry
+# ("AC3: ...") — has write_test → verify_red → implement → verify_green steps
+# labeled with that AC id, IN THAT ORDER. A comma list ("AC1,AC2") counts for
+# both; the bundle label "all" satisfies NONE of the four phases. This is the
+# SINGLE SOURCE OF TRUTH shared with the verifier's Worker Process Audit and the
+# worker-prompt format spec — a claim that passes here must not be re-failed by
+# the LLM on step-sequence/label format grounds (governance §3a Layer 1.5).
+#
+# The jq predicate is byte-identical in intent to src/node/runner/done-claim-
+# lint.mjs (shared-fixture parity: tests/test_doneclaim_lint.sh + the Node
+# test-done-claim-lint drive the SAME fixtures). The claims-derived AC union is
+# a DELIBERATE strengthening over the reference jq — it catches the degenerate
+# claim that labels every step `all`.
+#
+# SKIP (proceed, return 0) cases set PREGATE_LINT_REASON: env RLP_DONECLAIM_LINT==0
+# (disabled), jq absent (no-jq, fail-open like the sibling pre-gates), done-claim
+# missing/unparseable (unparseable), execution_steps missing/not-array/empty
+# (no-steps), no write_test step (not-build — confirmation/replay claims exempt).
+#
+# Sets: PREGATE_LINT_STATUS (skip|pass|fail), PREGATE_LINT_REASON (skip only),
+# PREGATE_LINT_VIOLATIONS (compact JSON array of {ac,idx}; "[]" unless fail).
+# Returns 0 (skip or pass → proceed) / 1 (fail → caller short-circuits).
+run_pregate_doneclaim_lint() {
+  PREGATE_LINT_STATUS="skip"; PREGATE_LINT_REASON=""; PREGATE_LINT_VIOLATIONS="[]"
+  if [[ "${RLP_DONECLAIM_LINT:-}" == "0" ]]; then
+    PREGATE_LINT_REASON="disabled"; return 0
+  fi
+  command -v jq >/dev/null 2>&1 || { PREGATE_LINT_REASON="no-jq"; return 0; }
+  [[ -f "$DONE_CLAIM_FILE" ]] || { PREGATE_LINT_REASON="unparseable"; return 0; }
+  # Unparseable JSON OR a top-level non-object (array/string/number) → skip
+  # unparseable (parity with the Node predicate, which requires a plain object).
+  jq -e 'type == "object"' "$DONE_CLAIM_FILE" >/dev/null 2>&1 || { PREGATE_LINT_REASON="unparseable"; return 0; }
+
+  local steps_len
+  steps_len=$(jq -r 'if (.execution_steps|type)=="array" then (.execution_steps|length) else -1 end' "$DONE_CLAIM_FILE" 2>/dev/null)
+  [[ "$steps_len" == <-> ]] || steps_len=-1
+  (( steps_len > 0 )) || { PREGATE_LINT_REASON="no-steps"; return 0; }
+
+  local has_wt
+  has_wt=$(jq -r 'any(.execution_steps[]; .step == "write_test")' "$DONE_CLAIM_FILE" 2>/dev/null)
+  [[ "$has_wt" == "true" ]] || { PREGATE_LINT_REASON="not-build"; return 0; }
+
+  local violations
+  violations=$(jq -c '
+    # Type-coercion guards (parity with the Node predicate): a non-string ac_id
+    # contributes NO ACs; claims is honored ONLY when an array, and only its
+    # string elements count. Keeping these INSIDE the program means a malformed
+    # sibling field can never error jq and silently mask real step violations.
+    def acs: ((.ac_id // "") | (if type == "string" then . else "" end) | split(",") | map(gsub("\\s+";"")) | map(select(. != "" and . != "all")));
+    [.execution_steps | to_entries[] | {i: .key, step: .value.step, a: (.value | acs)}] as $S
+    | (([$S[].a[]]
+        + [(.claims | if type == "array" then map(select(type == "string")) else [] end)[]
+            | select(test("^\\s*AC[0-9]+\\s*:"))
+            | (capture("^\\s*(?<ac>AC[0-9]+)\\s*:") | .ac)])
+       | unique) as $ACS
+    | [ $ACS[] as $ac
+        | (["write_test","verify_red","implement","verify_green"]
+           | map(. as $p | ([$S[] | select(.step == $p and (.a | index($ac)))] | (.[0].i // -1)))) as $idx
+        | select(($idx | min) < 0 or ($idx != ($idx | sort)))
+        | {ac: $ac, idx: $idx} ]
+  ' "$DONE_CLAIM_FILE" 2>/dev/null)
+  [[ -n "$violations" ]] || violations="[]"
+  PREGATE_LINT_VIOLATIONS="$violations"
+
+  if [[ "$violations" == "[]" ]]; then
+    PREGATE_LINT_STATUS="pass"; return 0
+  fi
+  PREGATE_LINT_STATUS="fail"; return 1
+}
+
+# Layer 1.5 fail: register + build the PRE-GATE FAILURE (done-claim format lint)
+# fix contract at iter-<N>.fix-contract.md. Mirrors _pregate_register_fail_replay's
+# shape and shares the SAME PREGATE_FAIL_CAP counter (never consecutive_failures).
+# Returns 0 (short-circuit) or 1 (force verifier round at cap). Reads
+# PREGATE_LINT_VIOLATIONS (set by run_pregate_doneclaim_lint).
+_pregate_register_fail_doneclaim_lint() {
+  local iter="$1" us_id="${2:-ALL}"
+  _pregate_bump "$us_id" || return 1
+  local pregate_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
+  {
+    echo "# Fix Contract (PRE-GATE FAILURE, iteration $iter)"
+    echo ""
+    echo "## PRE-GATE FAILURE (done-claim format lint)"
+    echo "- rule: build-mode done-claim must contain write_test → verify_red → implement → verify_green for EACH acceptance criterion, each step labeled with that AC id (comma lists OK; the bundle label \"all\" does NOT satisfy these 4 phases)"
+    echo "- idx column order: [write_test, verify_red, implement, verify_green]; -1 = step missing for that AC; non-increasing = steps out of order"
+    echo "- violations:"
+    echo "$PREGATE_LINT_VIOLATIONS" | jq -r '.[] | "  - \(.ac): idx=\(.idx | tojson)"' 2>/dev/null \
+      || echo "  $PREGATE_LINT_VIOLATIONS"
+    echo ""
+    echo "## Next Iteration Contract"
+    echo "Fix ONLY the done-claim execution_steps format for the ACs listed above (add the missing per-AC labeled steps / correct the order), then resubmit the done-claim. Do not re-implement the deliverable."
+  } | atomic_write "$pregate_contract"
   return 0
 }
 
@@ -3422,6 +3552,51 @@ _pane_submit_blocked_by_banner() {
   # blocked; only a clean match (exit 0) confirms the block. 2>/dev/null hides
   # the invalid-regex diagnostic so a bad env knob degrades quietly to "safe".
   print -r -- "$snap" | grep -qE "$RLP_SUBMIT_BANNER_RE" 2>/dev/null || return 1
+  return 0
+}
+
+# ① request-j (v0.22.18): codex "Selected model is at capacity" is a POST-submission
+# MID-EXECUTION stall — the model was selected and the prompt submitted, then the
+# pane freezes with the capacity banner and NO progress signal, waiting indefinitely
+# until ITER_TIMEOUT. This is DISTINCT from:
+#   - request-g's RLP_SUBMIT_BANNER_RE (a PRE-submission banner stealing the submit
+#     keystroke — there the trigger is still echoed unsubmitted), and
+#   - detect_api_error's transient outage phrases (overloaded / rate-limit).
+# Field-observed as pure transient: a manual "Continue." resumed it instantly. So the
+# remedy is to inject a resume line, bounded by a cooldown + strike cap (the caller
+# owns that bookkeeping), and to fail fast if the capacity wall persists. The banner
+# wording changes per codex version, so the pattern is env-overridable; kept
+# CONSERVATIVE (anchored on "model … at capacity") to avoid false positives on
+# ordinary output. Declared at source time so it survives set -u.
+RLP_CAPACITY_BANNER_RE="${RLP_CAPACITY_BANNER_RE:-Selected model is at capacity|model is at capacity}"
+RLP_CAPACITY_RESUME_TEXT="${RLP_CAPACITY_RESUME_TEXT:-Continue.}"
+RLP_CAPACITY_REINJECT_COOLDOWN_S="${RLP_CAPACITY_REINJECT_COOLDOWN_S:-120}"
+RLP_CAPACITY_MAX_STRIKES="${RLP_CAPACITY_MAX_STRIKES:-3}"
+# _validate_int_knob is defined by run_ralph_desk.zsh (sourced BEFORE this lib in
+# production); guard the call so standalone lib sourcing (test harnesses) does not
+# error on the missing function — the inline ${:-default} at the call sites keeps
+# the poll arithmetic safe regardless.
+if (( $+functions[_validate_int_knob] )); then
+  _validate_int_knob RLP_CAPACITY_REINJECT_COOLDOWN_S 120 0
+  _validate_int_knob RLP_CAPACITY_MAX_STRIKES 3 1
+fi
+# _pane_capacity_stalled <pane_text>
+# Returns 0 iff BOTH hold on the SAME captured text: (1) NO execution-start signal
+# (_pane_shows_progress false — never inject while a spinner/progress is live, so a
+# healthy run is never disturbed) AND (2) a known capacity banner matches
+# RLP_CAPACITY_BANNER_RE. Text-only input — the caller captures the pane ONCE and
+# passes it (single-capture contract). An INVALID user-supplied ERE fails SAFE to
+# "no match" (grep exit 2 → return 1). The caller must additionally let
+# detect_quota_exhausted WIN (a usage wall is terminal, never resume-injected).
+_pane_capacity_stalled() {
+  local snap="$1"
+  [[ -n "$snap" ]] || return 1
+  # (1) already running → not a stall (zero false injections on a live spinner).
+  _pane_shows_progress "$snap" && return 1
+  # (2) known capacity banner visible. grep exit 1 (no match) OR 2 (invalid ERE) →
+  # not stalled; only a clean match (exit 0) confirms. 2>/dev/null so a bad env
+  # knob degrades quietly to "safe" instead of emitting a regex diagnostic.
+  print -r -- "$snap" | grep -qiE "$RLP_CAPACITY_BANNER_RE" 2>/dev/null || return 1
   return 0
 }
 

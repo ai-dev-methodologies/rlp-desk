@@ -246,6 +246,7 @@ Worker records what was done, in what order, with command evidence in `done-clai
 - Each step includes: what action, which AC, command executed, exit code, summary; verification steps (verify_red/verify_green/verify_e2e/verify_existing/verify) also include `ts` (ISO-8601 UTC run time) as a forensic evidence-age record (confirmation-mode freshness is judged on the verifier's own reruns)
 - Step types: `plan`, `write_test`, `verify_red`, `implement`, `verify_green`, `refactor`, `commit`, `verify`, `verify_existing`
 - This proves the Worker followed test-first approach and did not skip steps
+- **Deterministic format gate (§3a Layer 1.5)**: for build-mode claims the Leader machine-lints the per-AC `write_test → verify_red → implement → verify_green` label/order of `execution_steps` BEFORE dispatching the Verifier; a malformed claim is bounced back with per-AC coordinates, and a claim that passes is not re-litigated on format grounds by the LLM audit
 - **Existing implementation rule**: When code already exists from a prior iteration/campaign, Worker MAY use `verify_existing` instead of `write_test → verify_red → implement → verify_green`. `verify_existing` requires: run all existing tests, record exit codes, confirm all AC are covered by passing tests. Worker MUST NOT skip recording evidence — `verify_existing` is evidence that existing code satisfies AC, not a shortcut to skip verification.
 - **Commit-claim honesty (`commit_sha`, §1f½)**: When a `commit` step's `exit_code` is `0`, Worker MUST record the resulting commit SHA as `commit_sha` on that same step. The Leader adjudicates every commit claim against git ground truth (§1f½) before any Verifier is dispatched — a claimed commit that git does not corroborate fails the iteration mechanically, before LLM judgment is even invoked.
 - **Confirmation-mode contract (v0.22.3)**: the LEADER derives `verification_mode: confirmation` at verify dispatch iff (a) the durable verified ledger covers every PRD US (per-US entries or a leader-written ALL completion record whose `coverage` equals the full PRD US set), (b) the ledger's commit SHA resolves and `git diff --quiet <sha> HEAD` shows no tracked change since the verified state, and (c) the tracked working tree is clean (`--untracked-files=no`). Any missing or malformed anchor fails CLOSED to `build`. The mode is injected into the verifier prompts as the SOLE authoritative channel — verifiers ignore `verification_mode` strings in worker-writable files. In confirmation mode the Worker Process Audit shifts the freshness burden to the VERIFIER: the verifier reruns the full suite and per-AC spot checks itself (IL-1) and judges on those fresh results, treating the done-claim as historical context — no write_test/verify_red and no new claim timestamps are demanded (fresh RED cannot honestly exist for already-verified code). It is the leader-gated superset of the `verify_existing` allowance above, resolving the prior contradiction where the audit demanded `verify_red` unconditionally. On a leader restart whose ledger already proves completion, the leader arms D-16 finalize and skips the worker round-trip entirely — a worker with nothing to build cannot honestly produce a signal (observed failure mode: it reasons "no action needed" and idles into the no-progress guard). This is an anti-laziness gate against a cooperative-but-sloppy worker, not a Byzantine boundary — workers hold write access to the runtime directory by design; the ledger is append-then-lock (0444 between appends) and the ALL record rides the leader-only COMPLETE path.
@@ -356,7 +357,7 @@ The Leader accepts a Worker done-claim that asserts a `commit` step with `exit_c
 
 **On mismatch**: the Leader skips LLM verification entirely and routes to the fix loop (§7½) with a machine-generated `COMMIT-INTEGRITY` fix contract (rendered through the §1f field-name normalizer) — never a free-text verifier finding. The contract instructs the Worker to actually create the commit and record the resulting SHA. This counts toward `consecutive_failures` like any other fail.
 
-**Failure-count isolation**: the oracle has its own same-US fail counter (`ORACLE_FAILURES`, cap `ORACLE_FAIL_CAP`, default 3) — separate from the mechanical pre-gate's counter and from the circuit breaker. Hitting the cap forces one full LLM verifier round (a safety valve against a false-positive oracle); that verdict then drives the circuit breaker as normal. The Node leader has no separate pre-gate layer to defer to, so it drives the existing consecutive-failure circuit breaker directly on oracle mismatch — same predicate, same "circuit breaker owns terminal escalation" intent as the zsh leader.
+**Failure-count isolation**: the oracle has its own same-US fail counter (`ORACLE_FAILURES`, cap `ORACLE_FAIL_CAP`, default 3) — separate from the mechanical pre-gate's counter and from the circuit breaker. Hitting the cap forces one full LLM verifier round (a safety valve against a false-positive oracle); that verdict then drives the circuit breaker as normal. The Node leader now runs the Layer 1.5 done-claim format lint (§3a) as a pre-gate, which keeps its OWN per-US counter (shared `PREGATE_FAIL_CAP` semantics, never the circuit breaker); the commit-integrity oracle itself, however, has no pre-gate counter to defer to, so it drives the existing consecutive-failure circuit breaker directly on oracle mismatch — same predicate, same "circuit breaker owns terminal escalation" intent as the zsh leader.
 
 ## 1g. Sentinel Guarantee Invariant (file-guarantee contract)
 
@@ -426,17 +427,20 @@ The fast gate fails immediately if any pollForSignal call site lacks a `_handleP
 ## 3. State Flow
 
 ```
-RUNNING → DONE_CLAIMED → [COMMIT-ORACLE] → [PRE-GATE] → VERIFYING → COMPLETE | CONTINUE | BLOCKED
+RUNNING → DONE_CLAIMED → [COMMIT-ORACLE] → [PRE-GATE: L1 → L1.5 → L2] → VERIFYING → COMPLETE | CONTINUE | BLOCKED
 ```
 
 ### 3a. Mechanical Pre-Gate (early-FAIL only — Iron Law compatible)
 
 An optional leader-side mechanical pre-gate runs AFTER the Worker claims done and
-BEFORE any LLM Verifier is dispatched. It has **two layers**, both at that same
+BEFORE any LLM Verifier is dispatched. It has **three layers**, all at that same
 insertion point, in order:
 
 - **Layer 1 — static gate script** (`.rlp-desk/plans/pregate-<slug>.sh`): campaign
   deterministic checks only (compile / lint / file existence / test count).
+- **Layer 1.5 — done-claim TDD-sequence lint** (always-on, no per-campaign script;
+  detailed below): deterministic per-AC `write_test → verify_red → implement →
+  verify_green` label/order check of the done-claim itself.
 - **Layer 2 — execution_steps replay**: after Layer 1 passes, the Leader re-runs
   the verification commands the Worker itself recorded in `done-claim.json`
   `execution_steps[]` (existing §1f `step`/`ac_id`/`command`/`exit_code` schema — no
@@ -471,6 +475,64 @@ LLM Verifier's sufficiency / anti-gaming responsibility (§1a, §1f). The pre-ga
 never creates a pass; full LLM verification always runs after it passes. Purpose:
 stop a 30-second mechanical defect (missing file, type error, zero tests, a claimed
 result that does not reproduce) from burning a full LLM verification round.
+
+#### Layer 1.5 — done-claim TDD-sequence lint (deterministic)
+
+A pure-format defect in a build-mode done-claim — an acceptance criterion whose
+per-AC `write_test → verify_red → implement → verify_green` steps are mislabeled
+(e.g. an `implement` step labeled with the bundle token `all` instead of the AC id)
+or recorded out of order — is 100% deterministically detectable by inspecting the
+`execution_steps` field order. Layer 1.5 catches it BEFORE the verifier is dispatched
+so a format-only fault never burns a 20-25min LLM cross-verification round (the
+failure mode is a claim whose deliverables are all green on fresh checks yet fails
+the LLM Worker Process Audit purely on step-label form). It runs on BOTH leaders
+(zsh `run_pregate_doneclaim_lint`, Node `lintDoneClaimTddSequence` — shared fixtures
+enforce parity) and even when no per-campaign Layer 1 script exists.
+
+**Canonical predicate (SINGLE SOURCE OF TRUTH).** This definition is shared,
+verbatim in intent, by (a) this pre-gate, (b) the worker-prompt done-claim format
+spec, and (c) the verifier's Worker Process Audit (governed by §1f; verifier-prompt
+item 10½). A claim that
+PASSES this lint MUST NOT be re-failed by the LLM verifier on step-sequence or
+label-format grounds — the leader already machine-verified that surface, so the
+audit confines itself to substance (fresh evidence, exit codes, timestamps, command
+truthfulness). Input is the parsed done-claim (`us_id`, `claims[]`, `execution_steps[]`).
+
+- **SKIP** (proceed to Layer 2 / verifier, with reason): env `RLP_DONECLAIM_LINT=0`
+  (`disabled`); done-claim missing/unparseable OR a top-level non-object
+  (array/string/number) (`unparseable`, fail-open);
+  `execution_steps` missing/not-an-array/empty (`no-steps`); no `write_test` step
+  (`not-build` — confirmation/replay claims such as `verify_existing` are exempt, so
+  resume/confirmation claims never false-positive); zsh only: `jq` absent (`no-jq`,
+  fail-open like the sibling pre-gates).
+- **Type coercion (both leaders, byte-identical)**: a non-string `ac_id`
+  (number/object/null/absent) is coerced to `""` and contributes NO ACs — never a
+  label like `"3"`; `claims` is honored ONLY when it is an array, and only its
+  string elements are scanned (any other shape contributes nothing). These guards
+  live INSIDE the jq program too, so a malformed sibling field can never error the
+  predicate and silently mask a real `execution_steps` violation.
+- **Evaluate** otherwise: `acs(step)` = `ac_id` split on `,`, whitespace-trimmed,
+  dropping empty tokens and the exact bundle token `all`. `ACS` = the unique union
+  of `acs(step)` over all steps PLUS every AC captured from a `claims[]` entry
+  matching `^\s*(AC[0-9]+)\s*:` (the claims-derived union is a deliberate
+  strengthening — it catches the degenerate claim that labels EVERY step `all`,
+  which would otherwise yield an empty AC set and vacuously pass). For each AC, `idx`
+  = the four 0-based first-match indices of `[write_test, verify_red, implement,
+  verify_green]` steps carrying that AC (`-1` when the phase's step is absent). The
+  AC is a **violation** iff `min(idx) < 0` (a phase missing) OR `idx` is not sorted
+  ascending (steps out of order). Result: `fail` with `violations:[{ac, idx}]` (else
+  `pass`).
+
+**Fail routing.** On `fail`, the Leader skips LLM verification and redispatches the
+Worker with a `PRE-GATE FAILURE (done-claim format lint)` fix contract carrying the
+per-AC `idx` coordinates (so the Worker fixes ONLY the execution_steps format, not
+the deliverable). Like the other pre-gate layers it uses the shared per-US
+`PREGATE_FAIL_CAP` counter (default 3) and NEVER touches the consecutive-failure
+circuit breaker; at the cap the Leader forces one full LLM verifier round (its verdict
+then drives the CB), passing the FAIL summary into the verifier prompt for awareness.
+On `pass`/`skip` the outcome is injected into the verifier prompt as a
+`Done-Claim Format Lint: PASS|SKIPPED|FAIL …` line. Opt out entirely with
+`RLP_DONECLAIM_LINT=0`.
 
 ### 3a½. Campaign Waivers (fail-closed pre-existing-baseline)
 

@@ -1,0 +1,8 @@
+{
+  "us_id": "US-001",
+  "claims": ["AC1: confirmed", "AC2: confirmed"],
+  "execution_steps": [
+    {"step": "verify_existing", "ac_id": "AC1", "command": "pytest", "exit_code": 0, "ts": "2026-01-01T00:00:00Z", "summary": "existing tests pass"},
+    {"step": "verify", "ac_id": "AC2", "command": "pytest", "exit_code": 0, "ts": "2026-01-01T00:00:01Z", "summary": "existing tests pass"}
+  ]
+}

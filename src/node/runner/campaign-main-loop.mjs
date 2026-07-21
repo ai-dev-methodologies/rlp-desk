@@ -19,6 +19,7 @@ import {
 } from '../shared/fs.mjs';
 import { normalizeVerdict } from '../shared/verdict-schema.mjs';
 import { evaluateCommitOracle, findCommitClaim } from '../shared/commit-oracle.mjs';
+import { lintDoneClaimTddSequence } from './done-claim-lint.mjs';
 import { loadCampaignWaivers } from '../shared/waivers.mjs';
 import {
   TimeoutError,
@@ -447,6 +448,30 @@ export function buildFixContract(verdict) {
   return `${lines.join('\n')}\n`;
 }
 
+// Layer 1.5 done-claim TDD-sequence lint fix contract (request-h). Mirrors the
+// zsh `_pregate_register_fail_doneclaim_lint` shape: per-AC idx coordinates so
+// the Worker fixes ONLY the done-claim execution_steps format, not the
+// deliverable. Exported for direct unit testing (parity with the zsh writer).
+export function buildDoneClaimLintFixContract(iteration, violations) {
+  const lines = [
+    `# Fix Contract (PRE-GATE FAILURE, iteration ${iteration})`,
+    '',
+    '## PRE-GATE FAILURE (done-claim format lint)',
+    '- rule: build-mode done-claim must contain write_test → verify_red → implement → verify_green for EACH acceptance criterion, each step labeled with that AC id (comma lists OK; the bundle label "all" does NOT satisfy these 4 phases)',
+    '- idx column order: [write_test, verify_red, implement, verify_green]; -1 = step missing for that AC; non-increasing = steps out of order',
+    '- violations:',
+  ];
+  for (const violation of violations ?? []) {
+    lines.push(`  - ${violation.ac}: idx=${JSON.stringify(violation.idx)}`);
+  }
+  lines.push('');
+  lines.push('## Next Iteration Contract');
+  lines.push(
+    'Fix ONLY the done-claim execution_steps format for the ACs listed above (add the missing per-AC labeled steps / correct the order), then resubmit the done-claim. Do not re-implement the deliverable.',
+  );
+  return `${lines.join('\n')}\n`;
+}
+
 // Exported for direct unit testing (US-001: tests/node/models-ladder.test.mjs
 // exercises the ""->'BLOCKED' ceiling normalization and the :low->:medium
 // alignment against the real shipped MODEL_UPGRADES map).
@@ -539,6 +564,12 @@ async function readCurrentState(paths, slug, options) {
     // US-001 AC1.3: durable per-iteration HEAD snapshot. Restored so a relaunch
     // that re-enters mid-iteration keeps the correct commit-oracle baseline.
     iter_start_head: status.iter_start_head ?? '',
+    // Layer 1.5 done-claim format lint: per-US fail counter (governance §3a).
+    // Mirrors the zsh leader's _pregate_bump semantics — keyed to the US, reset
+    // on US change or a pass; NEVER drives the consecutive-failure circuit
+    // breaker. Persisted like the sibling oracle-adjacent state above.
+    pregate_lint_failures: status.pregate_lint_failures ?? 0,
+    pregate_lint_us: status.pregate_lint_us ?? null,
     started_at_utc: startedAt,
   };
 }
@@ -770,6 +801,8 @@ async function dispatchVerifier({
   verifierPaneId,
   verifierModel,
   honoredWaivers = [],
+  // Layer 1.5 done-claim format lint outcome line (governance §3a). No-op when empty.
+  doneClaimLint = '',
 }) {
   const prompt = await assembleVerifierPrompt({
     promptBase: paths.verifierPrompt,
@@ -779,6 +812,7 @@ async function dispatchVerifier({
     usId,
     verifiedUs: state.verified_us,
     honoredWaivers,
+    doneClaimLint,
     // v0.14.2 Fix-E: hand the absolute canonical verdict path to the
     // verifier prompt. assembleVerifierPrompt appends a "CRITICAL: write
     // verdict to <path>" footer so codex does not infer the legacy
@@ -2294,6 +2328,74 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       }
     }
 
+    // Layer 1.5 (request-h): done-claim TDD-sequence lint. Deterministic per-AC
+    // write_test→verify_red→implement→verify_green label/order check of the
+    // done-claim, AFTER the commit-integrity oracle and BEFORE the LLM verifier
+    // is dispatched (governance §3a Layer 1.5). A pure-format defect is bounced
+    // back to the Worker with per-AC idx coordinates instead of burning a full
+    // LLM cross-verification round. Node parity with the zsh leader's
+    // run_pregate_doneclaim_lint. The lint has its OWN per-US fail counter
+    // (shared PREGATE_FAIL_CAP semantics, default 3) and NEVER touches
+    // consecutive_failures — pre-gates do not drive the circuit breaker
+    // (governance §1f / the zsh _pregate_bump design). The outcome line is
+    // injected into the verifier prompt so the Worker Process Audit does not
+    // re-litigate a format the leader already machine-verified.
+    let pregateLintLine = '';
+    {
+      const lintUsId = signal.us_id ?? state.current_us;
+      const lintEnv = options.env ?? process.env;
+      const capParsed = Number.parseInt(lintEnv.PREGATE_FAIL_CAP, 10);
+      const lintCap = capParsed > 0 ? capParsed : 3;
+      const lintDoneClaim = await readJsonIfExists(paths.doneClaimFile);
+      const lintResult = lintDoneClaimTddSequence(lintDoneClaim, { env: lintEnv });
+      if (lintResult.status === 'fail') {
+        // Reset the per-US streak when the in-flight US changes (mirror _pregate_bump).
+        if (state.pregate_lint_us !== lintUsId) {
+          state.pregate_lint_failures = 0;
+          state.pregate_lint_us = lintUsId;
+        }
+        state.pregate_lint_failures += 1;
+        if (state.pregate_lint_failures < lintCap) {
+          // Under cap: short-circuit — skip verification, redispatch the Worker
+          // with a coordinate-bearing fix contract. Does NOT bump consecutive_failures.
+          const violationsJson = JSON.stringify(lintResult.violations);
+          console.error(
+            `[pregate] done-claim format lint FAILED (${violationsJson}) — skipping verification, redispatching Worker (pregate lint fail ${state.pregate_lint_failures}/${lintCap})`,
+          );
+          fixContractPath = path.join(
+            paths.campaignLogDir,
+            `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`,
+          );
+          await writePromptFile(
+            fixContractPath,
+            buildDoneClaimLintFixContract(state.iteration, lintResult.violations),
+          );
+          state.current_us = lintUsId;
+          state.phase = 'worker';
+          await writeStatus(paths, state, options.onStatusChange, options.now);
+          state.iteration += 1;
+          continue;
+        }
+        // At/over cap: do NOT short-circuit. Force one full LLM verifier round,
+        // carrying the FAIL summary for prompt injection. Reset the streak.
+        state.pregate_lint_failures = 0;
+        state.pregate_lint_us = null;
+        console.error(
+          `[pregate] done-claim format lint failed ${lintCap}× for ${lintUsId ?? 'ALL'} — forcing full LLM verifier round (lint FAIL passed to verifier)`,
+        );
+        pregateLintLine = `Done-Claim Format Lint: FAIL (fail cap reached) — violations: ${JSON.stringify(lintResult.violations)}`;
+      } else {
+        // pass/skip → proceed; reset the streak and inject the outcome.
+        state.pregate_lint_failures = 0;
+        state.pregate_lint_us = null;
+        if (lintResult.status === 'pass') {
+          pregateLintLine = 'Done-Claim Format Lint: PASS — the leader machine-verified the per-AC TDD step sequence/labels in execution_steps. Do NOT fail the Worker Process Audit on step sequence/label format grounds; audit substance only (evidence freshness, exit codes, timestamps, command truthfulness).';
+        } else {
+          pregateLintLine = `Done-Claim Format Lint: SKIPPED (${lintResult.reason ?? 'unknown'})`;
+        }
+      }
+    }
+
     // US-019 R7 P1-G: verify_partial malformed downgrade.
     // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier
     // has nothing to evaluate and we must treat the signal as broken contract → blocked.
@@ -2332,6 +2434,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       verifierPaneId: state.verifier_pane_id,
       verifierModel,
       honoredWaivers,
+      doneClaimLint: pregateLintLine,
     });
 
     let verdict;

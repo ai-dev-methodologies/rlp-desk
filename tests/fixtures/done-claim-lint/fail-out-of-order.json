@@ -1,0 +1,10 @@
+{
+  "us_id": "US-030",
+  "claims": ["AC1: done"],
+  "execution_steps": [
+    {"step": "write_test", "ac_id": "AC1", "command": null, "summary": "AC1 tests"},
+    {"step": "verify_red", "ac_id": "AC1", "command": "pytest", "exit_code": 1, "summary": "RED"},
+    {"step": "verify_green", "ac_id": "AC1", "command": "pytest", "exit_code": 0, "summary": "GREEN before implement"},
+    {"step": "implement", "ac_id": "AC1", "command": null, "summary": "AC1 impl (recorded out of order)"}
+  ]
+}

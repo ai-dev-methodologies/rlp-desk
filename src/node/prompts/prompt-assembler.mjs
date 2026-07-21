@@ -210,6 +210,11 @@ export async function assembleVerifierPrompt({
   // codex (which sometimes infers the legacy .claude/ralph-desk path
   // from CWD) lands the verdict where the leader is polling.
   verdictWritePath = '',
+  // Layer 1.5 done-claim format lint outcome line (governance §3a). Built by
+  // the leader before dispatch (`Done-Claim Format Lint: PASS|SKIPPED|FAIL …`).
+  // PASS pins the per-AC TDD sequence/labels as machine-verified so the Worker
+  // Process Audit confines itself to substance. Empty → not emitted.
+  doneClaimLint = '',
 } = {}) {
   const basePrompt = await readRequiredFile(promptBase, 'Verifier prompt base file');
   const promptLines = [
@@ -221,6 +226,11 @@ export async function assembleVerifierPrompt({
     `- **Done Claim**: ${doneClaimFile}`,
     `- **Verify Mode**: ${verifyMode}`,
   ];
+
+  // Layer 1.5 done-claim format lint outcome (governance §3a Layer 1.5).
+  if (doneClaimLint) {
+    promptLines.push(`- ${doneClaimLint}`);
+  }
 
   if (usId) {
     if (usId === 'ALL') {

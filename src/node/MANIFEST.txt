@@ -8,6 +8,7 @@ prompts/prompt-assembler.mjs
 reporting/campaign-reporting.mjs
 run.mjs
 runner/campaign-main-loop.mjs
+runner/done-claim-lint.mjs
 runner/leader-registry.mjs
 runner/prompt-detector.mjs
 runner/prompt-dismisser.mjs

@@ -136,16 +136,18 @@ rm -rf "$TMP_DIR"
 # request-b ②: the Bug #8 F-8 auto-commit hard-BLOCK was downgraded to
 # warn+carryover+CONTINUE (a gitignored evidence artifact is now recoverable via
 # a scoped `git add -f`, and a genuinely unrecoverable git state must not kill an
-# otherwise-complete campaign — the Verifier remains the completeness gate). The
-# invariant is unchanged: total callsites == categorized callsites (no implicit
-# default). Category is passed either inline (single-line calls) or on the last
-# continuation line (multi-line calls with `write_blocked_sentinel \`).
+# otherwise-complete campaign — the Verifier remains the completeness gate).
+# request-j: grew 27 → 39 as fail-fast infra_failure BLOCKs were added for
+# pane-session pinning (② create_session + replace_worker_pane guards) and the
+# model-capacity stall cap (①). The invariant is unchanged: total callsites ==
+# categorized callsites (no implicit default). Category is passed either inline
+# (single-line calls) or on the last continuation line (multi-line calls).
 # ----------------------------------------------------------------------------
 zsh_callsites=$(grep -cE 'write_blocked_sentinel ' "$RUN")
-if [[ "$zsh_callsites" -eq 27 ]]; then
-  pass "AC4-a: 27 zsh write_blocked_sentinel callsites (25 post-request-b② + 2 IMP-09 fail-closed git-snapshot BLOCKs)"
+if [[ "$zsh_callsites" -eq 39 ]]; then
+  pass "AC4-a: 39 zsh write_blocked_sentinel callsites (27 pre-request-j + 12 request-j pane-pinning/capacity fail-fast BLOCKs)"
 else
-  fail "AC4-a: expected 27 callsites, got $zsh_callsites"
+  fail "AC4-a: expected 39 callsites, got $zsh_callsites"
 fi
 # All callsites must pass one of the 6 known categories. Inline calls carry it
 # on the call line; multi-line calls carry it on a standalone continuation line.
@@ -153,10 +155,10 @@ sites_with_category=$(grep -cE 'write_blocked_sentinel.*"(metric_failure|cross_u
 sites_with_dynamic=$(grep -cE 'write_blocked_sentinel.*"\$_(verdict|signal)_cat"' "$RUN")
 sites_with_continuation=$(grep -cE '^[[:space:]]*"(metric_failure|cross_us_dep|context_limit|infra_failure|repeat_axis|mission_abort)"[[:space:]]*$' "$RUN")
 total_categorized=$(( sites_with_category + sites_with_dynamic + sites_with_continuation ))
-if [[ "$total_categorized" -eq 27 ]]; then
-  pass "AC4-b: all 27 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
+if [[ "$total_categorized" -eq 39 ]]; then
+  pass "AC4-b: all 39 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
 else
-  fail "AC4-b: only $total_categorized of 25 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
+  fail "AC4-b: only $total_categorized of 39 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
 fi
 
 # ----------------------------------------------------------------------------

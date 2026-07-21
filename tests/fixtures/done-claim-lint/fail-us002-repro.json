@@ -1,0 +1,22 @@
+{
+  "us_id": "US-002",
+  "claims": ["AC1: done", "AC2: done", "AC3: done", "AC4: done"],
+  "execution_steps": [
+    {"step": "write_test", "ac_id": "AC1", "command": null, "summary": "AC1 tests"},
+    {"step": "verify_red", "ac_id": "AC1", "command": "pytest", "exit_code": 1, "summary": "RED"},
+    {"step": "implement", "ac_id": "AC1", "command": null, "summary": "AC1 impl"},
+    {"step": "verify_green", "ac_id": "AC1", "command": "pytest", "exit_code": 0, "summary": "GREEN"},
+    {"step": "write_test", "ac_id": "AC3", "command": null, "summary": "AC3 tests"},
+    {"step": "verify_red", "ac_id": "AC3", "command": "pytest", "exit_code": 1, "summary": "RED"},
+    {"step": "verify_green", "ac_id": "AC3", "command": "pytest", "exit_code": 0, "summary": "GREEN"},
+    {"step": "implement", "ac_id": "all", "command": null, "summary": "bundled implement covering the rest"},
+    {"step": "write_test", "ac_id": "AC2", "command": null, "summary": "AC2 tests"},
+    {"step": "verify_red", "ac_id": "AC2", "command": "pytest", "exit_code": 1, "summary": "RED"},
+    {"step": "implement", "ac_id": "AC2", "command": null, "summary": "AC2 impl"},
+    {"step": "verify_green", "ac_id": "AC2", "command": "pytest", "exit_code": 0, "summary": "GREEN"},
+    {"step": "write_test", "ac_id": "AC4", "command": null, "summary": "AC4 tests"},
+    {"step": "verify_red", "ac_id": "AC4", "command": "pytest", "exit_code": 1, "summary": "RED"},
+    {"step": "implement", "ac_id": "AC4", "command": null, "summary": "AC4 impl"},
+    {"step": "verify_green", "ac_id": "AC4", "command": "pytest", "exit_code": 0, "summary": "GREEN"}
+  ]
+}

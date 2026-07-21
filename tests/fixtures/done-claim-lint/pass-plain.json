@@ -1,0 +1,12 @@
+{
+  "us_id": "US-040",
+  "claims": ["AC1: done"],
+  "execution_steps": [
+    {"step": "plan", "ac_id": "all", "command": null, "summary": "plan"},
+    {"step": "write_test", "ac_id": "AC1", "command": null, "summary": "AC1 tests"},
+    {"step": "verify_red", "ac_id": "AC1", "command": "pytest", "exit_code": 1, "summary": "RED"},
+    {"step": "implement", "ac_id": "AC1", "command": null, "summary": "AC1 impl"},
+    {"step": "verify_green", "ac_id": "AC1", "command": "pytest", "exit_code": 0, "summary": "GREEN"},
+    {"step": "commit", "ac_id": "AC1", "command": "git commit", "exit_code": 0, "summary": "committed"}
+  ]
+}

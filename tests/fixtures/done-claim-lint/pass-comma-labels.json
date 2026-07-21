@@ -1,0 +1,10 @@
+{
+  "us_id": "US-010",
+  "claims": ["AC1: done", "AC2: done"],
+  "execution_steps": [
+    {"step": "write_test", "ac_id": "AC1,AC2", "command": null, "summary": "tests for AC1 and AC2"},
+    {"step": "verify_red", "ac_id": "AC1, AC2", "command": "pytest", "exit_code": 1, "summary": "RED"},
+    {"step": "implement", "ac_id": "AC1,AC2", "command": null, "summary": "impl for both"},
+    {"step": "verify_green", "ac_id": "AC1,AC2", "command": "pytest", "exit_code": 0, "summary": "GREEN"}
+  ]
+}
