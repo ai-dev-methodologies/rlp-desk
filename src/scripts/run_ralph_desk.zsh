@@ -617,10 +617,33 @@ check_dead_pane() {
 # prefix fails and we recover — C-u (clear line), re-paste, up to 3 attempts. All
 # attempts exhausted → return 1 (caller's launch-failure path). grep -F keeps the
 # match glob-safe for bracketed model ids like 'claude-opus-4-7[1m]'.
+# request-k companion (P1): wait for the pane's shell to render before the FIRST
+# paste, so a paste cannot race rc loading (the original cold-rc scenario where the
+# prompt appears mid-paste and eats the first char). Readiness = any visible NON-blank
+# text in the pane (the shell prompt has drawn). Bounded by RLP_SHELL_READY_TIMEOUT_S
+# (default 6s); on timeout it returns 1 and the caller proceeds anyway (fail-open —
+# the echo-verify still guards). Epoch-deadline loop so the wall-clock budget is exact.
+_wait_pane_shell_ready() {
+  local pane_id="$1"
+  local timeout="${RLP_SHELL_READY_TIMEOUT_S:-6}"
+  local deadline=$(( $(date +%s) + timeout ))
+  while (( $(date +%s) < deadline )); do
+    # grep -qv '^[[:space:]]*$' → exit 0 as soon as ANY non-blank line exists.
+    if tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -qvE '^[[:space:]]*$'; then
+      return 0
+    fi
+    sleep 0.3
+  done
+  return 1
+}
+
 #   $1 pane_id   $2 command text (the caller sends Enter AFTER this returns 0)
 _paste_cmd_echo_verified() {
   local pane_id="$1" cmd="$2"
   local prefix="${cmd[1,24]}"
+  # request-k companion: let the shell render before the first paste (fail-open).
+  _wait_pane_shell_ready "$pane_id" \
+    || log "  pane shell-ready wait timed out (${RLP_SHELL_READY_TIMEOUT_S:-6}s) — proceeding, echo-verify guards (request-k)"
   # Degenerate: no command / empty prefix → nothing to verify, single paste.
   if [[ -z "$prefix" ]]; then
     paste_to_pane "$pane_id" "$cmd"
@@ -630,9 +653,14 @@ _paste_cmd_echo_verified() {
   while (( attempt < 3 )); do
     paste_to_pane "$pane_id" "$cmd"
     sleep 0.2
-    # tail -10 (not -6): a ~150-char launch line wraps to several rows on a narrow
-    # pane; too small a window can drop the prefix-bearing first row → false mismatch.
-    _tail=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -10)
+    # request-k ① (P1 regression fix): STRIP BLANK LINES before tail. A freshly split
+    # pane draws its first prompt at the TOP of the viewport with ~30 trailing blank
+    # rows; a raw `tail -10` then captures only blank lines (the command echo is at the
+    # top, outside the window) → $() strips them → _tail="" → the prefix grep never
+    # matches → 3 spurious re-pastes → false launch failure (field: 4 consecutive
+    # restart deaths). Filtering blanks makes the window viewport-position-independent;
+    # tail -10 is kept for the wrapped-line case (a ~150-char line spans several rows).
+    _tail=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -10)
     # Fixed-string, prefix-anchored: the TRUE leading char is inside $prefix, so a
     # swallowed first char makes this search miss. -- guards a prefix starting with '-'.
     if print -r -- "$_tail" | grep -qF -- "$prefix" 2>/dev/null; then
@@ -1435,9 +1463,31 @@ check_dependencies() {
 # =============================================================================
 
 # --- governance.md s7 step 1: Check for existing sessions ---
+# ③ request-k (P2): return THIS leader shell's OWN pane id. `tmux display-message -p
+# '#{pane_id}'` reports the attached CLIENT'S ACTIVE pane — with multiple clients
+# attached that can be the operator's pane, in a different session, causing the leader
+# to adopt a foreign pane/session and scatter worker/verifier panes there (field: 6+
+# clients → panes in unrelated sessions). $TMUX_PANE is set by tmux to the INVOKING
+# process's own pane and is immune to active-pane drift; fall back to display-message
+# only when it is unset. Empty when not inside tmux.
+_leader_own_pane() {
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    print -r -- "$TMUX_PANE"
+  else
+    tmux display-message -p '#{pane_id}' 2>/dev/null
+  fi
+}
+
 check_existing_sessions() {
-  local current_session
-  current_session=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
+  local current_session _own_pane
+  # ③ request-k: derive "my session" from the leader's OWN pane, not the active
+  # client, so a multi-client environment can't misidentify the current session.
+  _own_pane=$(_leader_own_pane)
+  if [[ -n "$_own_pane" ]]; then
+    current_session=$(tmux display-message -p -t "$_own_pane" '#{session_name}' 2>/dev/null || echo "")
+  else
+    current_session=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
+  fi
   local existing
   existing=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^rlp-desk-${SLUG}-" | grep -v "^${current_session}$" || true)
   if [[ -n "$existing" ]]; then
@@ -1461,9 +1511,15 @@ create_session() {
     # Inside tmux: split CURRENT pane in place
     # Current pane stays as-is (leader/user stays here)
     # Worker/Verifier appear on the RIGHT, user sees them immediately
-    LEADER_PANE=$(tmux display-message -p '#{pane_id}')
-    SESSION_NAME=$(tmux display-message -p '#{session_name}')
-    log "  Splitting current pane in session: $SESSION_NAME"
+    # ③ request-k (P2): use THIS shell's own pane ($TMUX_PANE), not the active
+    # client's pane, and derive the session FROM the leader pane — so with multiple
+    # attached clients the leader can't adopt the operator's pane/session and scatter
+    # worker/verifier splits into a foreign session (the prior code took both LEADER_PANE
+    # and SESSION_NAME from the active client, making them self-consistent but wrong,
+    # which is why the ② session-invariant did not catch the scatter).
+    LEADER_PANE=$(_leader_own_pane)
+    SESSION_NAME=$(tmux display-message -p -t "$LEADER_PANE" '#{session_name}')
+    log "  Splitting current pane in session: $SESSION_NAME (leader pane $LEADER_PANE)"
 
     # ② request-j: pin every split to a verified in-session target; assert the
     # resulting pane landed in $SESSION_NAME (startup → hard error on any escape).

@@ -61,3 +61,10 @@ Lessons from failures. Format: Symptom / Root cause / Recovery / Prevention (one
 - Rule: in any shell that sources user rc files, never assume core utilities are unshadowed. `command tr` (or avoiding tr) is mandatory in diagnostic pipelines, and `type <util>` is the first probe whenever output looks impossible.
 
 - **tests/의 bash/zsh 혼재 — 수동 실행 시 shebang 필수 확인 (동일 세션 2회 재발, 2026-07-20).** `npm run test:zsh` 러너는 head -1의 shebang을 보고 bash/zsh를 디스패치하지만, 수동으로 `zsh tests/test_X.sh`를 치면 bash 테스트의 `${BASH_SOURCE[0]}`가 미해석 → `REPO_ROOT` 붕괴 → 모든 grep 단언이 "expected 1 got 0"으로 **조용히 전멸**(테스트 자체는 돌아가는 것처럼 보임). 증상: 무관한 AC까지 전부 FAIL. 복구: `head -1`로 shebang 확인 후 맞는 인터프리터로 재실행. 재발 방지: 수동 실행은 `bash tests/...` 기본, zsh 전용(`#!/bin/zsh`)만 zsh로. (us009 오진단 1회 + "좀비 테스트 6종" 오탐 4건이 같은 원인)
+
+## 2026-07-21 — pane-content 검증은 viewport 위치에 의존하면 안 된다 (④ 에코검증 P1 회귀)
+- Symptom: v0.22.18 launch echo-verify가 갓 split된 pane에서 100% 오탐 → `launch paste echo mismatch` 3연발 → `[infra_failure]` BLOCKED, 재기동 4연속 즉사 (34~37차).
+- Root cause: `capture-pane -p | tail -10`은 "내용이 하단에 있다"(사용된 쉘 레이아웃)를 가정한다. 그러나 **갓 만든 pane은 첫 프롬프트를 viewport 최상단에 그리고 그 아래 ~30행이 빈 줄** → tail -10은 빈 줄만 취함 → `$()`가 후행 개행 제거 → `_tail=""` → prefix grep 영구 실패. 명령 에코 자체는 온전했다(상단에). 즉 랩 대응(-10)만으로는 프롬프트-상단 케이스를 못 덮는다.
+- Recovery: tail 전에 빈 줄 제거 — `capture-pane -p | grep -v '^[[:space:]]*$' | tail -10`. 위치 무관해지고 -10(랩 대응) 유지. 보조로 첫 paste 전 쉘-준비 대기(가시 non-blank 텍스트 등장까지 bounded poll, fail-open).
+- Prevention: **pane/터미널 내용 단언은 viewport 위치 독립적으로 작성한다** — tail -N을 raw capture에 쓰기 전 blank 제거. 테스트는 반드시 "프롬프트 상단 + 후행 빈 줄" 픽스처를 포함(사용된-쉘 레이아웃만 테스트하면 이 케이스가 새어나간다).
+- 관련(같은 보고서 ②): `tmux display-message -p '#{pane_id/session_name}'`는 **호출한 쉘의 pane이 아니라 attached 클라이언트의 활성 pane**을 보고한다(다중 클라이언트 시 오퍼레이터 pane/타 세션 채택 → pane 흩어짐). "내 pane/세션"이 필요하면 **`$TMUX_PANE`(호출 프로세스 고유 pane, 활성-pane drift 무관)**를 우선하고 세션은 그 pane에서 파생(`display-message -p -t "$LEADER_PANE"`). LEADER_PANE·SESSION_NAME을 둘 다 활성 클라이언트에서 잡으면 self-consistent-but-wrong이라 세션 불변식(pane session == SESSION_NAME)도 못 잡는다.

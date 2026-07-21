@@ -207,6 +207,32 @@ _out_ok=$(_drive_caller 0)
   && ok "behavioral: replace success → proceeds and re-reads the new pane ($_out_ok)" \
   || no "caller did not proceed on replace success ($_out_ok)"
 
+# =============================================================================
+# request-k P2: LEADER_PANE must come from $TMUX_PANE (this shell's OWN pane),
+# NOT `display-message -p '#{pane_id}'` (which follows the attached client's ACTIVE
+# pane — with multiple clients that can be the operator's pane in a foreign session,
+# scattering worker/verifier splits there).
+# =============================================================================
+eval "$(_extract_fn _leader_own_pane "$RUN")"
+[[ "$(whence -w _leader_own_pane 2>/dev/null)" == *function* ]] \
+  && ok "extracted _leader_own_pane" || no "could not extract _leader_own_pane"
+# display-message would report the ACTIVE client's pane; TMUX_PANE is the leader's own.
+tmux() { case "$1" in display-message) print -r -- "%ACTIVE_CLIENT_PANE";; esac; return 0; }
+_lp_own=$( TMUX_PANE="%2175" _leader_own_pane )
+[[ "$_lp_own" == "%2175" ]] \
+  && ok "LEADER pane: prefers \$TMUX_PANE (%2175), ignores active-client pane" || no "did not prefer TMUX_PANE (got $_lp_own)"
+_lp_fallback=$( TMUX_PANE="" _leader_own_pane )
+[[ "$_lp_fallback" == "%ACTIVE_CLIENT_PANE" ]] \
+  && ok "LEADER pane: falls back to display-message when TMUX_PANE unset" || no "fallback wrong (got $_lp_fallback)"
+unfunction tmux
+# structural: create_session inside-tmux derives BOTH pane and session from the leader
+# pane (not the active client) — the fix that lets ② session-invariant catch scatter.
+_cs2=$(_extract_fn create_session "$RUN")
+print -r -- "$_cs2" | grep -q 'LEADER_PANE=$(_leader_own_pane)' \
+  && ok "structural: create_session uses _leader_own_pane for LEADER_PANE" || no "create_session still uses active-client pane"
+print -r -- "$_cs2" | grep -q "display-message -p -t \"\$LEADER_PANE\" '#{session_name}'" \
+  && ok "structural: SESSION_NAME derived FROM the leader pane (not active client)" || no "SESSION_NAME still from active client"
+
 print ""
 print "PASS=$PASS FAIL=$FAIL"
 (( FAIL == 0 )) || exit 1

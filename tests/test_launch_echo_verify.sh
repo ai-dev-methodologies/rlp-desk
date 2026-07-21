@@ -33,6 +33,9 @@ _extract_fn() {
 eval "$(_extract_fn _paste_cmd_echo_verified "$RUN")"
 [[ "$(whence -w _paste_cmd_echo_verified 2>/dev/null)" == *function* ]] \
   && ok "extracted _paste_cmd_echo_verified" || no "could not extract _paste_cmd_echo_verified"
+# The helper now calls _wait_pane_shell_ready first — stub it no-op for the echo drives
+# (it consumes no capture counter and adds no sleep); the REAL one is tested below.
+_wait_pane_shell_ready() { return 0; }
 
 TMPDIR_T=$(mktemp -d)
 REC="$TMPDIR_T/rec"
@@ -93,6 +96,45 @@ BINTACT='shell$ [1m]/opt/bin/tool run --now here-we-go extra'
 _p=$(grep -c 'PASTE' "$REC")
 { [[ "$_p" == 1 && "$out" == "RC=0" ]] } \
   && ok "bracketed-model-id prefix matches literally (grep -F, glob-safe) ($out)" || no "bracket prefix not matched literally (paste=$_p $out)"
+
+# 5) request-k ① REGRESSION: fresh pane draws the echo at the TOP with trailing blank
+#    rows. A raw `tail -10` would see only blanks → _tail="" → false mismatch → launch
+#    failure (the shipped-0.22.18 bug). The blank-line filter must recover the echo.
+#    Fixture: intact echo on row 1 + 14 trailing blank rows (models a 34-row pane).
+REGR=$'user@host ~ % /opt/homebrew/bin/codex -m gpt-5.6-terra -c model_reasoning_effort="high"\n\n\n\n\n\n\n\n\n\n\n\n\n\n'
+: > "$REC"; out=$(_drive "$CMD" "$REGR")
+_p=$(grep -c 'PASTE' "$REC"); _cu=$(grep -c 'send-keys.*C-u' "$REC")
+{ [[ "$_p" == 1 && "$_cu" == 0 && "$out" == "RC=0" ]] } \
+  && ok "REGRESSION(k①): echo-at-top + 10+ trailing blank rows → verified on attempt 1 ($out)" \
+  || no "blank-tail regression NOT fixed (paste=$_p cu=$_cu $out) — raw tail -10 saw only blanks"
+# guard the fix is present in source (blank-line filter before tail)
+grep -q "grep -v '\^\[\[:space:\]\]\*\$' | tail -10" "$RUN" \
+  && ok "REGRESSION(k①): source strips blank lines before tail -10" || no "blank-line filter missing from source"
+
+# --- request-k companion: _wait_pane_shell_ready (real) -----------------------
+eval "$(_extract_fn _wait_pane_shell_ready "$RUN")"
+[[ "$(whence -w _wait_pane_shell_ready 2>/dev/null)" == *function* ]] \
+  && ok "extracted real _wait_pane_shell_ready" || no "could not extract _wait_pane_shell_ready"
+# ready: pane already has non-blank text → returns 0 fast, no long wait.
+_ready_out=$( RLP_SHELL_READY_TIMEOUT_S=2
+  tmux() { case "$1" in capture-pane) print -r -- "user@host ~ %";; esac; return 0; }
+  _wait_pane_shell_ready "%9"; print "rc=$?"; unfunction tmux )
+[[ "$_ready_out" == "rc=0" ]] \
+  && ok "shell-ready: non-blank pane text → ready (rc=0)" || no "shell-ready did not detect ready pane ($_ready_out)"
+# not-ready: pane all-blank → times out and FAILS OPEN (rc=1), bounded by the env timeout.
+_to_out=$( RLP_SHELL_READY_TIMEOUT_S=1
+  tmux() { case "$1" in capture-pane) print -r -- "   ";; esac; return 0; }   # only blank
+  _t0=$(date +%s); _wait_pane_shell_ready "%9"; _rc=$?; _t1=$(date +%s)
+  unfunction tmux; print "rc=$_rc dt=$(( _t1 - _t0 ))" )
+{ [[ "$_to_out" == "rc=1"* ]] && [[ "${_to_out##*dt=}" -le 3 ]] } \
+  && ok "shell-ready: all-blank pane → fail-open rc=1, bounded by RLP_SHELL_READY_TIMEOUT_S ($_to_out)" \
+  || no "shell-ready timeout not bounded/fail-open ($_to_out)"
+# structural: the helper is called before the first paste, and is env-tunable.
+_pv=$(_extract_fn _paste_cmd_echo_verified "$RUN")
+print -r -- "$_pv" | grep -q '_wait_pane_shell_ready' \
+  && ok "structural: echo-verify calls _wait_pane_shell_ready before pasting" || no "shell-ready wait not wired into echo-verify"
+grep -q 'RLP_SHELL_READY_TIMEOUT_S' "$RUN" \
+  && ok "structural: shell-ready wait is env-tunable (RLP_SHELL_READY_TIMEOUT_S)" || no "shell-ready timeout not env-tunable"
 
 # --- structural: both launch functions call the helper before Enter ------------
 _lwc=$(_extract_fn launch_worker_codex "$RUN")
