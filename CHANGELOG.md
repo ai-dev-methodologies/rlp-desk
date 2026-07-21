@@ -9,6 +9,33 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.15] — 2026-07-21
+
+### Added
+- **Work-type classification at the brainstorm gate (명세형/발굴형).** The
+  unattended-completion check now also classifies every US as
+  specification-type (contract can be written up-front → loop-eligible) vs
+  discovery-type (debt cleanup, unknown-cause investigation, exhaustive
+  enumeration — the contract only emerges by digging). Discovery-type US are
+  REJECTED at the gate: run prior reconnaissance outside the loop, then
+  convert the outcome into a specification-type US and re-inject. Includes
+  AC-verb judgment hints and a mid-campaign rule for discovery fragments
+  (split to a parallel supervisor investigation; re-inject only confirmed
+  contracts). Governance side: new IL-2¾.
+- **`ledger-seed` operator command — formal recovery path for stories that
+  could never earn a consensus ledger entry** (e.g. an old-version defect
+  blocked the pass that story-scoped confirmation needs).
+  `node run.mjs ledger-seed <slug> <us_id> --evidence <claude-pass-verdict.json>
+  --note "<operator note>" [--commit <sha>]` appends a PRD-hash-bound ledger
+  entry after fail-closed validation: evidence must exist, parse as a single
+  JSON object, carry a normalized `pass` verdict for exactly that `us_id`;
+  the PRD must exist and contain the US; the commit anchor (default HEAD)
+  must resolve and be an ancestor of HEAD. Every seed records `seeded:true`
+  plus a mandatory `operator_note` for auditability. A seed never grants a
+  pass — it routes verification mode only; both verifier legs still run
+  their own fresh re-verification. Operator-only; run with the campaign
+  stopped.
+
 ## [0.22.14] — 2026-07-21
 
 ### Fixed
