@@ -7,6 +7,7 @@ RLP Desk runs long-horizon Claude Code campaigns as a Worker/Verifier loop, and 
 - **Durable file-based state** — campaign status is written atomically (write-then-rename), the verified ledger is an append-only JSONL record, and handoff artifacts (done-claims, verify-verdicts) are write-locked sentinels a finished pane cannot revise — all resumable and `jq`-inspectable. Kill the session, the terminal, the pane — the campaign resumes from where the files left off.
 - **Independent verifier governance** — a separate fresh-context agent checks the Worker's claims against real evidence, governed by Iron Laws (no completion claims without fresh evidence) and an Evidence Gate protocol (IDENTIFY → RUN → READ → VERIFY → only then claim), with anti-rubber-stamp guidance against reflexive passes.
 - **Cross-family consensus** — Worker and Verifier can run on different model families (Claude × Codex/GPT); in consensus mode, both must independently PASS before a campaign completes.
+- **Deterministic pre-gates** — before any LLM verifier is dispatched, a mechanical layer (campaign gate script + built-in done-claim lint + execution-step replay) bounces machine-checkable failures straight back to the Worker in seconds. Machines catch what machines can catch; LLM verification rounds are spent on real defects only.
 
 This rides on a **fresh-context loop**: each Worker/Verifier iteration starts with no prior conversation, reading only the PRD and the on-disk campaign state. That statelessness is the mechanism — durable state and independent verification are what it buys you, not the headline.
 
@@ -21,6 +22,46 @@ Below: the native-mode dispatch (`--mode native`, via `Agent()`). `--mode tmux` 
   Agent()└──▶ [Verifier (fresh context)]
               └── reads done-claim → runs checks → writes verdict
 ```
+
+## Deterministic Pre-Gates
+
+Most Ralph-loop and autonomous-agent stacks verify an LLM's work with more LLM calls — every verification round pays the full model cost, and a large share of that cost re-checks things a script could have decided. RLP Desk puts a deterministic layer in front of the verifier: machine-checkable claims are settled by machines, in seconds, at zero token cost, and only what survives reaches an LLM. **Machines catch what machines can — LLM rounds are for real defects only.**
+
+```
+Worker done-claim
+        │
+        ▼
+  Mechanical pre-gate  ── seconds, zero tokens
+   ├─ L1    campaign gate script (typecheck / registry / anything you script)
+   ├─ L1.5  built-in done-claim TDD-sequence lint (v0.22.17)
+   └─ L2    execution_steps replay (claimed vs actual exit codes)
+        │   any failure → bounce to Worker with a fix contract, no LLM dispatched
+        ▼
+  per-US LLM verification (fresh context)   ── real-defect judgment
+        ▼
+  cross-engine consensus (Claude × Codex)   ── optional, other-engine rebuttal
+        ▼
+  final verification                        ── once per campaign, last line of defense
+```
+
+When the Worker submits a done-claim, the mechanical pre-gate runs before any verifier is dispatched:
+
+- **L1 — campaign gate script.** Anything you can script: typecheck, registry/lockfile checks, format lint. A non-zero exit rejects the claim without an LLM.
+- **L1.5 — built-in done-claim TDD-sequence lint (v0.22.17).** A canonical predicate — `jq` on the zsh leader, a pure Node module on the Node leader, one governed spec (§3a) — checks that every acceptance criterion carries its own labeled `write_test → verify_red → implement → verify_green` steps, in order. Comma-separated lists count; the bundle label `all` does not. On failure the claim bounces back with per-AC step-index coordinates as a fix contract — zero tokens, no LLM round. The verifier is told the lint already passed, so it never re-litigates format. Opt out with `RLP_DONECLAIM_LINT=0`.
+- **L2 — execution_steps replay.** The leader re-runs the commands the Worker claimed it ran and compares the actual exit codes against the claimed ones. A claim that does not reproduce is rejected before it can cost a verification round.
+
+Any pre-gate failure returns a fix contract to the Worker and redispatches — no verifier is spawned, so the ~20-minute LLM round is never spent on a claim a script could reject.
+
+### Field results
+
+From a production analytics campaign:
+
+- **A false RED claim, caught in seconds.** A Worker claimed `verify_red` exited 1 (test failing before implementation); L2 replay got exit 0. The leader skipped the ~20-25 min LLM round entirely and redispatched with a fix contract:
+  `Pre-gate L2 FAILED (replay mismatch: verify_red claimed=1 actual=0) — skipping LLM verification, redispatching Worker`
+- **Format defects no longer burn LLM rounds.** A cross-engine verifier once failed the same story for two rounds (~65 minutes) purely on done-claim TDD label format — while all four acceptance criteria were verified green. That entire defect class is now settled in seconds by the built-in L1.5 lint.
+- **Before / after.** Before the mechanical routing, the cross-engine leg sat at pass 0 / fail 15 — rounds of 20-25 minutes each, format and routing noise dominating. After the machine checks moved to machines, the very next story produced the campaign's first both-engines pass. **Cross-verification wasn't the waste — making an LLM do a machine's job was.**
+
+This is the same provability story the rest of RLP Desk tells — the Evidence Gate, the append-only verified ledger, write-locked handoff artifacts — extended with a ratchet: every recurring failure class gets pushed down into the deterministic layer, where its recurrence cost trends to zero.
 
 ## Quick Start
 
