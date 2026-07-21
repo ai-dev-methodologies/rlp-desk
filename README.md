@@ -98,7 +98,7 @@ You'll be asked to confirm each item:
 
 ```bash
 # Recommended (cross-engine + final consensus):
-/rlp-desk run <slug> --mode tmux --worker-model spark:high --consensus final-only --debug
+/rlp-desk run <slug> --mode tmux --worker-model gpt-5.6-terra:medium --consensus final-only --debug
 
 # Claude-only:
 /rlp-desk run <slug> --debug
@@ -148,7 +148,7 @@ for iteration in 1..max_iter:
 
   1. Check sentinels (complete? blocked?)
   2. Read campaign memory → get next iteration contract
-  3. Select model (haiku/sonnet/opus based on complexity)
+  3. Select model (haiku/sonnet/opus — or full claude-* ids with effort — by complexity)
   4. Build worker prompt → dispatch via Agent()
   5. Worker executes one bounded action, updates memory
   6. If worker claims done → dispatch Verifier via Agent()
@@ -213,51 +213,46 @@ RLP Desk enforces a comprehensive verification policy defined in `governance.md`
 - Per-US: lightweight verification after each user story (catches issues early)
 - Final: top-tier consensus gate before COMPLETE (quality guarantee)
 - Progressive upgrade: auto-upgrade models on consecutive failure (2-attempt windows)
-- Verifier minimum: claude sonnet (haiku cannot verify)
+- Verifier minimum: claude sonnet (haiku cannot verify). Recommended per-US verifier `claude-opus-4-8:high` and final verifier `claude-fable-5:max` — version-pinned ids so the tier does not drift when aliases remap
+
+Tables below show the **recommended** config that `brainstorm` proposes per risk level (you can override any flag). Worker cells are the campaign-starting model; the Worker auto-upgrades on repeated failure per `src/model-upgrade-table.md`. Verifier cells are version-pinned ids so the tier does not drift when aliases remap. Unspecified flags fall back to their plain defaults (`--verifier-model sonnet`, `--final-verifier-model opus`).
 
 #### 1. Claude-only (codex not installed)
 
-Verifier is always +1 tier above Worker. Same-engine shares blind spots — install codex for improved detection.
+Same-engine Worker and Verifier share blind spots — install codex for cross-engine detection.
 
-| Risk | Worker | Per-US Verifier | Worker upgrade path | Verifier upgrade path |
-|------|--------|-----------------|--------------------|-----------------------|
-| LOW | haiku | sonnet | sonnet → opus | sonnet → opus |
-| MEDIUM | sonnet | sonnet | opus | sonnet → opus |
-| HIGH | sonnet | opus | opus | opus (ceiling) |
-| CRITICAL | opus | opus ⚠ | (ceiling) | (ceiling) |
+| Risk | Worker | Per-US Verifier | Final Verifier | Consensus |
+|------|--------|-----------------|----------------|-----------|
+| LOW | haiku | claude-opus-4-8:high | claude-fable-5:max | off |
+| MEDIUM | sonnet | claude-opus-4-8:high | claude-fable-5:max | off |
+| HIGH | opus | claude-opus-4-8:high | claude-fable-5:max | off |
+| CRITICAL | opus | claude-opus-4-8:high | claude-fable-5:max + human | off |
 
-Final: **opus solo** ⚠ same-engine warning displayed
+Worker auto-upgrade ladder: haiku → sonnet → opus (ceiling). Final: **claude-fable-5:max solo** ⚠ same-engine warning displayed.
 
-#### 2. Cross-engine: GPT Pro (spark + 5.4)
+#### 2. Cross-engine: GPT-5.6 (codex installed, recommended)
 
-Spark is speed-optimized for coding. Use as Worker for LOW-HIGH; 5.4 for CRITICAL.
+Codex worker + claude verifier — different engines catch each other's blind spots. Worker by risk from the GPT-5.6 catalog (codex-cli 0.144); the verifier legs stay on claude.
 
-| Risk | Worker (codex) | Per-US Verifier (claude) | Worker upgrade path | Verifier upgrade path |
-|------|---------------|--------------------------|--------------------|-----------------------|
-| LOW | spark medium | sonnet | spark high → xhigh | sonnet → opus |
-| MEDIUM | spark high | sonnet | spark xhigh → 5.4 medium | sonnet → opus |
-| HIGH | spark xhigh | opus | 5.4 high → 5.4 xhigh | opus (ceiling) |
-| CRITICAL | 5.4 high | opus | 5.4 xhigh | opus (ceiling) |
+| Risk | Worker (codex) | Per-US Verifier (claude) | Final Verifier (claude) | Consensus |
+|------|----------------|--------------------------|-------------------------|-----------|
+| LOW | gpt-5.6-luna:medium | claude-opus-4-8:high | claude-fable-5:max | final-only |
+| MEDIUM | gpt-5.6-terra:medium | claude-opus-4-8:high | claude-fable-5:max | final-only |
+| HIGH | gpt-5.6-sol:medium | claude-opus-4-8:high | claude-fable-5:max | all |
+| CRITICAL | gpt-5.6-sol:high | claude-opus-4-8:high | claude-fable-5:max + human | all |
 
-Final: **opus + 5.4 high** (both must PASS)
+Final consensus (codex leg): **gpt-5.6-sol:high**. Both engines must PASS → COMPLETE. Worker auto-upgrade climbs effort to `:xhigh`, then jumps model (luna → terra → sol, entering at `:high`) — ceiling `gpt-5.6-sol:xhigh`.
 
-#### 3. Cross-engine: Non-Pro (5.4 only)
-
-| Risk | Worker (codex) | Per-US Verifier (claude) | Worker upgrade path | Verifier upgrade path |
-|------|---------------|--------------------------|--------------------|-----------------------|
-| LOW | 5.4 low | sonnet | 5.4 medium → high | sonnet → opus |
-| MEDIUM | 5.4 medium | sonnet | 5.4 high → xhigh | sonnet → opus |
-| HIGH | 5.4 high | opus | 5.4 xhigh | opus (ceiling) |
-| CRITICAL | 5.4 xhigh | opus | (ceiling) | opus (ceiling) |
-
-Final: **opus + 5.4 high** (both must PASS)
+> **Alternatives (still supported, not headline presets):** previous-generation codex models `gpt-5.5` and `gpt-5.4` / `gpt-5.4-mini` (low..xhigh ladders) if the account lacks GPT-5.6 access; and `spark` (`gpt-5.3-codex-spark`) — ultra-fast, but only for small tasks that fit its 100k context window (single-file, AC ≤ 4). See `src/model-upgrade-table.md` for the full catalog.
 
 #### Final Verify
 
-| Environment | Engine 1 | Engine 2 | Rule |
-|-------------|----------|----------|------|
-| Claude-only | opus | — | Solo ⚠ |
-| Cross-engine | opus | 5.4 high | Both must PASS → COMPLETE |
+Recommended values shown; if the flags are left unset the final verifier defaults to `opus` and the final codex consensus leg to `gpt-5.6-sol:high`.
+
+| Environment | Engine 1 (claude) | Engine 2 (codex) | Rule |
+|-------------|-------------------|------------------|------|
+| Claude-only | claude-fable-5:max | — | Solo ⚠ |
+| Cross-engine | claude-fable-5:max | gpt-5.6-sol:high | Both must PASS → COMPLETE |
 
 #### Progressive Upgrade (Worker Only)
 
@@ -295,10 +290,10 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--mode tmux\|native\|agent` | tmux | tmux=zsh Leader (production default); native=slash-command-only; agent=hard-errors (ADR-001) |
-| `--worker-model MODEL` | haiku | Worker model. `name`=claude, `name:reasoning`=codex |
+| `--worker-model MODEL` | haiku | Worker model. Plain name or claude id incl. `:effort` = claude; any other `model:reasoning` = codex. A colon alone does NOT mean codex. E.g. `opus:max`, `claude-fable-5:max`, `spark:high` |
 | `--lock-worker-model` | off | Disable auto model upgrade on failure |
-| `--verifier-model MODEL` | sonnet | per-US verification model (lighter) |
-| `--final-verifier-model MODEL` | opus | final ALL verification model (stricter) |
+| `--verifier-model MODEL` | sonnet | per-US verification model (lighter; recommended `claude-opus-4-8:high`) |
+| `--final-verifier-model MODEL` | opus | final ALL verification model (stricter; recommended `claude-fable-5:max`) |
 | `--consensus off\|all\|final-only` | off | Cross-engine consensus scope |
 | `--consensus-model MODEL` | gpt-5.6-terra:medium | per-US cross-verifier (lighter) |
 | `--final-consensus-model MODEL` | gpt-5.6-sol:high | final cross-verifier (stricter) |
@@ -419,7 +414,7 @@ RLP Desk supports two execution engines for Worker and Verifier. **Claude is the
 /rlp-desk run calculator
 ```
 
-Uses Claude Code's `Agent()` tool (agent mode) or `claude -p` CLI (tmux mode). Supports dynamic model routing (haiku/sonnet/opus).
+Uses Claude Code's `Agent()` tool (agent mode) or `claude -p` CLI (tmux mode). Supports dynamic model routing (haiku/sonnet/opus, or full `claude-*` ids with an effort suffix such as `claude-opus-4-8:high`).
 
 ### Codex (opt-in)
 
@@ -427,21 +422,24 @@ Uses Claude Code's `Agent()` tool (agent mode) or `claude -p` CLI (tmux mode). S
 # Install codex CLI first
 npm install -g @openai/codex
 
-# Run with codex worker (spark requires GPT Pro)
-/rlp-desk run calculator --worker-model spark:high
+# Run with codex worker (recommended balanced model)
+/rlp-desk run calculator --worker-model gpt-5.6-terra:medium
 
-# Customize model and reasoning effort
+# Frontier model + reasoning effort (HIGH/CRITICAL work)
 /rlp-desk run calculator --worker-model gpt-5.6-sol:high
 
+# spark — ultra-fast, small tasks only (100k context: single-file, AC <= 4)
+/rlp-desk run calculator --worker-model spark:high
+
 # Cross-engine: codex worker, claude verifier (recommended)
-/rlp-desk run calculator --worker-model spark:high --consensus final-only --debug
+/rlp-desk run calculator --worker-model gpt-5.6-terra:medium --consensus final-only --debug
 ```
 
-The engine is inferred automatically from the `--worker-model` value: a plain model name (e.g. `haiku`) routes to Claude, while `name:reasoning` format (e.g. `spark:high`) routes to Codex. The `codex` binary is only required when a codex model is specified.
+The engine is inferred automatically from the `--worker-model` value: a plain model name (`haiku`) OR any claude id — short alias or full `claude-*`, with or without an effort suffix (`opus:max`, `claude-opus-4-8:high`) — routes to Claude; any other `model:reasoning` (`spark:high`, `gpt-5.6-terra:medium`) routes to Codex. A colon does NOT imply Codex. The `codex` binary is only required when a codex model is specified.
 
 | Engine | Agent Mode | Tmux Mode | Dynamic Routing |
 |--------|-----------|-----------|-----------------|
-| claude | `Agent()` tool | `claude -p` TUI | Yes (haiku/sonnet/opus) |
+| claude | `Agent()` tool | `claude -p` TUI | Yes (haiku/sonnet/opus, + `claude-*` ids) |
 | codex  | `Bash("codex ...")` | `codex` TUI | No (static model) |
 
 ## Verification Modes
@@ -454,7 +452,7 @@ Each user story is verified independently, then a final full verification runs:
 Worker: US-001 → Verifier(per-US): US-001 only → pass
 Worker: US-002 → Verifier(per-US): US-002 only → pass
 ...
-Final Verify: opus + 5.4 high → both pass → COMPLETE
+Final Verify: claude-fable-5:max + gpt-5.6-sol:high → both pass → COMPLETE
 ```
 
 Per-US catches issues early before later stories build on broken foundations.
