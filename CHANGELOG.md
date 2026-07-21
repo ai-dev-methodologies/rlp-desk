@@ -9,6 +9,66 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.18] — 2026-07-21
+
+### Fixed
+- **P1: a codex "Selected model is at capacity" message could stall a running
+  worker or verifier indefinitely.** When the model was already selected and the
+  prompt submitted, a capacity notice would freeze the pane with no progress —
+  the leader kept polling with no response until the whole iteration budget
+  (30 min) ran out. The leader now recognises the capacity stall (banner visible
+  and no progress) and automatically injects a resume line to continue, waiting a
+  cooldown between attempts; if the capacity wall persists after several resume
+  attempts it fails fast with an explicit `model capacity` BLOCKED status instead
+  of stalling silently. A true usage-limit (quota) wall still stops immediately —
+  it is never resume-injected. The resume text, capacity pattern, cooldown, and
+  strike cap are all environment-overridable (`RLP_CAPACITY_RESUME_TEXT`,
+  `RLP_CAPACITY_BANNER_RE`, `RLP_CAPACITY_REINJECT_COOLDOWN_S`,
+  `RLP_CAPACITY_MAX_STRIKES`).
+- **P2: campaign panes could be created in an unrelated tmux session.** When the
+  leader was started detached (outside tmux), a worker/verifier pane split could
+  land in whatever tmux session happened to be active — contaminating an
+  unrelated project's session and later crashing the campaign when its pane
+  bookkeeping broke. Every pane split is now pinned to the campaign session: the
+  split target is verified before use, and any pane that ends up outside the
+  campaign session is removed and reported instead of being used silently.
+- **P2: a worker restart could fail to launch with an empty reasoning-effort
+  setting.** After an automatic model upgrade, a leader restart could rebuild the
+  codex launch command with an empty `model_reasoning_effort`, which codex
+  rejects ("reasoning_effort must not be empty") — leaving the worker unable to
+  start and the campaign BLOCKED. The original reasoning effort is now preserved
+  and restored across restarts, and every codex launch is checked so an empty
+  effort fails fast with a clear reason instead of a confusing start-up error.
+- **P3: an interactive shell prompt could swallow the first character of a launch
+  command.** If a pane's shell showed an interactive prompt (e.g. an oh-my-zsh
+  `[Y/n]` update prompt) when the CLI launch command was pasted, the first
+  character could be consumed — corrupting the command so the CLI never started.
+  Launch commands are now echo-verified before submission: if the command did not
+  paste intact, the line is cleared and re-pasted (up to three attempts) before
+  giving up with an explicit launch failure.
+
+## [0.22.17] — 2026-07-21
+
+### Added
+- **"Layer 1.5" done-claim format lint — a deterministic pre-gate that runs
+  before the LLM verifier.** When a build-mode done-claim is submitted, the
+  leader now machine-checks that every acceptance criterion it touches has its
+  own labeled `write_test → verify_red → implement → verify_green` steps, in
+  that order, in `execution_steps`. A comma list (`"AC1,AC2"`) counts for both
+  ACs; the bundle label `"all"` does NOT satisfy any AC's four phases. A
+  malformed claim is bounced straight back to the worker — with no LLM round
+  spent — carrying per-AC coordinates (`idx=[write_test, verify_red, implement,
+  verify_green]`, `-1` = a missing phase, non-monotonic = steps out of order) so
+  the worker fixes only the claim format, not the deliverable. Confirmation and
+  replay claims (no `write_test` step) are exempt, so already-verified work is
+  never false-flagged. This closes a structural waste in consensus/cross-verify
+  campaigns where a pure format defect on an otherwise all-green claim could
+  burn a full 20-25min LLM cross-verification round. The same single definition
+  is now stated in the worker prompt (so claims are written correctly up front)
+  and honored by the verifier's Worker Process Audit (a claim that passes the
+  lint is not re-failed on step-sequence/label-format grounds). Runs on both the
+  zsh and Node leaders. Opt out with `RLP_DONECLAIM_LINT=0`.
+
 ## [0.22.16] — 2026-07-21
 
 ### Fixed
