@@ -9,6 +9,17 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.13] — 2026-07-21
+
+### Fixed
+- **P1: healthy running verifiers were killed by the submission guard.** The
+  progress predicate received tmux pane IDs from every polling call site but
+  expected snapshot text, so no pane ever registered progress — the guard
+  re-injected Enter into running TUIs and declared SUBMISSION failure at the
+  timeout (4x field-reproduced claude-verifier kills). The predicate now
+  captures %-prefixed pane ids itself; the newly observed "Osmosing"
+  spinner verb is recognized.
+
 ## [0.22.12] — 2026-07-21
 
 ### Added — plan gates (field post-mortem: 6 BLOCKED / 9 manual restarts from an ungated PRD)
