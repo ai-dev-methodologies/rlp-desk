@@ -9,6 +9,19 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.14] — 2026-07-21
+
+### Fixed
+- **P1: multi-US campaigns could never re-verify an already-verified story.**
+  Confirmation mode required FULL PRD ledger coverage, so mid-campaign
+  re-verification of a green story always ran under the strict build
+  contract and failed codex consensus (CB → BLOCKED) even when the work was
+  perfect. Per-US dispatches now derive a story-scoped mode: the story's own
+  PRD-hash-bound ledger entry with a HEAD-ancestor commit grants
+  confirmation for that story alone; every fail-closed check (PRD drift,
+  unresolved commit, campaign-era dirt) is retained, and final/ALL
+  verification keeps the strict full-coverage semantics unchanged.
+
 ## [0.22.13] — 2026-07-21
 
 ### Fixed
