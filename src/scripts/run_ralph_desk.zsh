@@ -57,6 +57,14 @@ _validate_int_knob() {
 #   MAX_RESTARTS              - max restart attempts per worker (default: 3)
 #   IDLE_NUDGE_THRESHOLD      - seconds of idle before nudge (default: 30)
 #   MAX_NUDGES                - max nudges per pane per iteration (default: 3)
+#   RLP_LEADER_MIN_WIDTH      - readable min width the Leader pane is kept at (default: 30)
+#   RLP_LEADER_SPLIT_WIDTH    - width the Leader is widened to before any -h split (default: 110)
+#
+# Canonical layout (--mode tmux): run INSIDE a tmux session (outside → fail-fast,
+# "start tmux first"). The Leader anchors on its own $TMUX_PANE and stays visible at
+# a readable width; Worker/Verifier/(Consensus) form ONE right column stacked
+# top-down. The runner enforces this width + geometry on every create/recreate path
+# and blocks (never auto-repairs) on drift.
 #
 # Per-role codex config:
 #   WORKER_CODEX_MODEL            - codex model for Worker (default: gpt-5.5)
@@ -143,6 +151,36 @@ BLOCK_CB_THRESHOLD="${BLOCK_CB_THRESHOLD:-3}"
 _validate_int_knob BLOCK_CB_THRESHOLD 3 1   # D-19
 CONSECUTIVE_BLOCKS=0
 LAST_BLOCK_REASON=""
+# request-l (SV-gate): detailed width/geometry failure diagnostics, set by
+# _ensure_leader_pane_width / _assert_pane_geometry and threaded into the PERSISTED
+# BLOCKED sentinel reason. Initialized here so a reference is never unset under `set -u`.
+_WIDTH_FAIL_REASON=""
+_GEO_FAIL_REASON=""
+
+# request-l §2: leader pane width knobs (D-19 validated). The leader pane is a
+# pane-creation ANCHOR, not a log viewer — but it must stay visible at a readable
+# width (owner mandate: never collapsed) AND be wide enough to split.
+#   RLP_LEADER_MIN_WIDTH  (30) — readable minimum kept at startup + each iteration
+#                                top; a resize failure here WARNS only (cosmetic,
+#                                never blocks a healthy campaign).
+#   RLP_LEADER_SPLIT_WIDTH (110) — COMFORT width the leader is widened to immediately
+#                                before any `-h` split (worker/verifier creation) so
+#                                the resulting panes are readable. It is NOT the tmux
+#                                hard minimum (a split can succeed on far fewer cols);
+#                                it is the contract's minimum. Still too narrow after
+#                                the resize attempt is an ERROR (startup → hard exit;
+#                                in-loop → BLOCKED infra_failure). On a genuinely narrow
+#                                terminal, lower RLP_LEADER_SPLIT_WIDTH.
+RLP_LEADER_MIN_WIDTH="${RLP_LEADER_MIN_WIDTH:-30}"
+_validate_int_knob RLP_LEADER_MIN_WIDTH 30 1
+RLP_LEADER_SPLIT_WIDTH="${RLP_LEADER_SPLIT_WIDTH:-110}"
+_validate_int_knob RLP_LEADER_SPLIT_WIDTH 110 1
+# request-l: retrofit the request-k shell-ready wait through the same D-19 guard
+# (a non-integer previously fell through to the inline :-6 default unvalidated —
+# clears the accepted request-k review LOW). Assigned once here so the inline
+# ${RLP_SHELL_READY_TIMEOUT_S:-6} sites downstream see a validated value.
+RLP_SHELL_READY_TIMEOUT_S="${RLP_SHELL_READY_TIMEOUT_S:-6}"
+_validate_int_knob RLP_SHELL_READY_TIMEOUT_S 6 1
 
 # US-021 R9 P2-I: track repeated same-reason blocks. infra_failure category and
 # the very first iteration are exempt (mission setup blocks shouldn't trip
@@ -227,6 +265,14 @@ _r12_check_lifecycle() {
     fi
     sleep 1
   done
+  # request-l §2: keep the leader pane at a readable minimum width so the owner can
+  # always see it (mandate: never collapsed). ONLY at startup (create_session) and
+  # each iteration top (iter_start) — not on every post_send. Warn-only: a resize
+  # failure here is cosmetic and must never block a healthy campaign.
+  if [[ "$site" == "create_session" || "$site" == "iter_start" ]]; then
+    _ensure_leader_pane_width "$RLP_LEADER_MIN_WIDTH" "r12:$site" \
+      || log "  WARNING: leader pane $LEADER_PANE below min width ${RLP_LEADER_MIN_WIDTH} cols and resize failed (knob RLP_LEADER_MIN_WIDTH) — cosmetic, continuing"
+  fi
   return 0
 }
 
@@ -1345,6 +1391,121 @@ _assert_pane_in_session() {
   return 0
 }
 
+# request-l §2: guarantee the leader pane is at least <cols> wide. Reads the live
+# #{pane_width}; if below target, `tmux resize-pane -x <cols>` and re-reads. Returns
+# 0 when the pane is (or becomes) >= <cols>, 1 when still too narrow (or width
+# unreadable). Callers pick severity: MIN_WIDTH failures warn (cosmetic), SPLIT_WIDTH
+# failures error (SPLIT_WIDTH is a readability comfort width, not the tmux hard
+# minimum). Extends the 0.22.18 pane-pin family (LEADER_PANE-scoped, display-message driven).
+_ensure_leader_pane_width() {
+  local want="$1" ctx="${2:-width}"
+  # request-l (SV-gate): expose the detailed failure diagnostic in a global so callers
+  # can thread it into the PERSISTED BLOCKED-sentinel reason (the durable artifact an
+  # operator/audit reads post-mortem), not just the ephemeral log. Reset per call.
+  typeset -g _WIDTH_FAIL_REASON=""
+  local cur
+  cur=$(tmux display-message -p -t "$LEADER_PANE" '#{pane_width}' 2>/dev/null)
+  if ! [[ "$cur" == <-> ]]; then
+    _WIDTH_FAIL_REASON="leader pane $LEADER_PANE pane_width unreadable (got '${cur}'), need >= ${want} cols (ctx=$ctx, knob RLP_LEADER_SPLIT_WIDTH; lower RLP_LEADER_SPLIT_WIDTH for narrow terminals)"
+    log_error "[leader-width:$ctx] $_WIDTH_FAIL_REASON"
+    return 1
+  fi
+  if (( cur >= want )); then
+    return 0
+  fi
+  log "  leader pane $LEADER_PANE width ${cur} < ${want} (${ctx}) — resizing to ${want}"
+  tmux resize-pane -t "$LEADER_PANE" -x "$want" 2>/dev/null
+  cur=$(tmux display-message -p -t "$LEADER_PANE" '#{pane_width}' 2>/dev/null)
+  if [[ "$cur" == <-> ]] && (( cur >= want )); then
+    return 0
+  fi
+  _WIDTH_FAIL_REASON="leader pane $LEADER_PANE still ${cur:-unreadable} cols after resize to ${want} (ctx=$ctx, knob RLP_LEADER_SPLIT_WIDTH; lower RLP_LEADER_SPLIT_WIDTH for narrow terminals)"
+  log_error "[leader-width:$ctx] $_WIDTH_FAIL_REASON"
+  return 1
+}
+
+# request-l §3: assert the canonical layout geometry. The leader owns the LEFT
+# column; worker/verifier/(consensus) form ONE right column, stacked top→down. This
+# is the deterministic predicate — NO auto-repair (a move-pane here is the campaign-32
+# ledger-corruption class risk the owner rejected by design); a mismatch logs an
+# expected-vs-actual diagnostic and returns 1 so the caller can hard-error (startup)
+# or write a BLOCKED sentinel (in-loop). The human-operator 3-pane form (leader is the
+# operator's own shell) satisfies the SAME predicate — consensus is just an optional
+# 3rd stack pane, so there is no special-casing.
+#   $1 ctx   $2 leader_pane   $3.. stack panes top→bottom (worker verifier [consensus])
+# Predicate (all via display-message -p -t):
+#   - every stack pane shares the leader's #{session_name} AND #{window_id}
+#   - all stack panes share one #{pane_left} (single column), and that left > leader's
+#   - #{pane_top} strictly increases down the stack (worker above verifier above consensus)
+_assert_pane_geometry() {
+  local ctx="$1" leader="$2"; shift 2
+  local -a stack=( "$@" )
+  # request-l (SV-gate): expose the specific failed predicate + pane id + actual values
+  # in a global so callers thread it into the PERSISTED sentinel reason (the durable
+  # BLOCKED artifact), not just the ephemeral log. Reset per call.
+  typeset -g _GEO_FAIL_REASON=""
+  # request-l (review MEDIUM): a ZOOMED pane reports pane_left=0/pane_top=0, so a
+  # zoomed stack pane would trip the predicate and false-BLOCK a healthy campaign.
+  # When the leader's window is zoomed, skip the check (drift detection defers to the
+  # next event) — never auto-unzoom the operator's view.
+  local _zoom
+  _zoom=$(tmux display-message -p -t "$leader" '#{window_zoomed_flag}' 2>/dev/null)
+  if [[ "$_zoom" == "1" ]]; then
+    log "  geometry check skipped: window zoomed [geometry:$ctx] — will re-check at the next event"
+    return 0
+  fi
+  local lsess lwin lleft
+  lsess=$(tmux display-message -p -t "$leader" '#{session_name}' 2>/dev/null)
+  lwin=$(tmux display-message -p -t "$leader" '#{window_id}' 2>/dev/null)
+  lleft=$(tmux display-message -p -t "$leader" '#{pane_left}' 2>/dev/null)
+  if ! [[ "$lleft" == <-> ]]; then
+    _GEO_FAIL_REASON="cannot read leader pane_left (leader=$leader)"
+    log_error "[geometry:$ctx] $_GEO_FAIL_REASON — refusing to assert geometry"
+    return 1
+  fi
+  local col_left="" prev_top="-1" p psess pwin pleft ptop
+  for p in "${stack[@]}"; do
+    psess=$(tmux display-message -p -t "$p" '#{session_name}' 2>/dev/null)
+    pwin=$(tmux display-message -p -t "$p" '#{window_id}' 2>/dev/null)
+    pleft=$(tmux display-message -p -t "$p" '#{pane_left}' 2>/dev/null)
+    ptop=$(tmux display-message -p -t "$p" '#{pane_top}' 2>/dev/null)
+    if [[ "$psess" != "$lsess" ]]; then
+      _GEO_FAIL_REASON="pane $p session '$psess' != leader session '$lsess' (expected all campaign panes in the leader's session)"
+      log_error "[geometry:$ctx] $_GEO_FAIL_REASON"
+      return 1
+    fi
+    if [[ "$pwin" != "$lwin" ]]; then
+      _GEO_FAIL_REASON="pane $p window '$pwin' != leader window '$lwin' (expected one window; a new window is drift)"
+      log_error "[geometry:$ctx] $_GEO_FAIL_REASON"
+      return 1
+    fi
+    if ! [[ "$pleft" == <-> && "$ptop" == <-> ]]; then
+      _GEO_FAIL_REASON="pane $p has unreadable geometry (pane_left='$pleft' pane_top='$ptop')"
+      log_error "[geometry:$ctx] $_GEO_FAIL_REASON"
+      return 1
+    fi
+    if (( pleft <= lleft )); then
+      _GEO_FAIL_REASON="pane $p pane_left=$pleft not right of leader pane_left=$lleft (expected the right column)"
+      log_error "[geometry:$ctx] $_GEO_FAIL_REASON"
+      return 1
+    fi
+    if [[ -z "$col_left" ]]; then
+      col_left="$pleft"
+    elif (( pleft != col_left )); then
+      _GEO_FAIL_REASON="pane $p pane_left=$pleft != column left=$col_left (expected ONE right column; a second column is drift)"
+      log_error "[geometry:$ctx] $_GEO_FAIL_REASON"
+      return 1
+    fi
+    if (( ptop <= prev_top )); then
+      _GEO_FAIL_REASON="pane $p pane_top=$ptop not below previous ($prev_top) — expected top-down stack (worker < verifier < consensus)"
+      log_error "[geometry:$ctx] $_GEO_FAIL_REASON"
+      return 1
+    fi
+    prev_top="$ptop"
+  done
+  return 0
+}
+
 # --- omc-teams pattern: Kill-and-replace dead/stuck worker panes ---
 replace_worker_pane() {
   local old_pane="$1"
@@ -1366,6 +1527,13 @@ replace_worker_pane() {
       new_pane=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     elif _verify_split_target "$LEADER_PANE" "replace-verifier-fallback"; then
       # Fallback: worker pane also dead, split horizontally from leader
+      # request-l §2: widen the leader to the split width first (a readability COMFORT
+      # width, not the tmux hard minimum). In-loop → BLOCKED infra_failure (not a hard exit).
+      if ! _ensure_leader_pane_width "$RLP_LEADER_SPLIT_WIDTH" "replace-verifier-fallback"; then
+        log_error "  Cannot replace $role pane: leader pane $LEADER_PANE too narrow for -h split (need >= $RLP_LEADER_SPLIT_WIDTH cols, knob RLP_LEADER_SPLIT_WIDTH; lower RLP_LEADER_SPLIT_WIDTH for narrow terminals)"
+        write_blocked_sentinel "replace_worker_pane: $role -h split blocked — $_WIDTH_FAIL_REASON" "${CURRENT_US:-ALL}" "infra_failure"
+        return 1
+      fi
       new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     else
       log_error "  Cannot replace $role pane: no valid in-session split target (worker + leader both unusable) — refusing ambient-session fallback"
@@ -1378,6 +1546,12 @@ replace_worker_pane() {
       new_pane=$(tmux split-window -v -b -d -t "$VERIFIER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     elif _verify_split_target "$LEADER_PANE" "replace-worker-fallback"; then
       # Fallback: verifier pane also dead, split horizontally from leader
+      # request-l §2: widen the leader to the split width first (see verifier branch).
+      if ! _ensure_leader_pane_width "$RLP_LEADER_SPLIT_WIDTH" "replace-worker-fallback"; then
+        log_error "  Cannot replace $role pane: leader pane $LEADER_PANE too narrow for -h split (need >= $RLP_LEADER_SPLIT_WIDTH cols, knob RLP_LEADER_SPLIT_WIDTH; lower RLP_LEADER_SPLIT_WIDTH for narrow terminals)"
+        write_blocked_sentinel "replace_worker_pane: $role -h split blocked — $_WIDTH_FAIL_REASON" "${CURRENT_US:-ALL}" "infra_failure"
+        return 1
+      fi
       new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     else
       log_error "  Cannot replace $role pane: no valid in-session split target (verifier + leader both unusable) — refusing ambient-session fallback"
@@ -1390,6 +1564,33 @@ replace_worker_pane() {
   # session is killed and reported instead of being driven in a foreign session.
   if ! _assert_pane_in_session "$new_pane" "replace-$role"; then
     write_blocked_sentinel "replace_worker_pane: $role pane created outside campaign session $SESSION_NAME" "${CURRENT_US:-ALL}" "infra_failure"
+    return 1
+  fi
+
+  # request-l §3: the replaced pane must keep the canonical single right-column
+  # top-down stack. Build the stack from ONLY the ALIVE panes, top→bottom: the new
+  # pane plus a surviving sibling IF it is still alive. The `-h`-off-leader fallback
+  # above is taken precisely when the sibling is DEAD; including a dead sibling here
+  # would make display-message return empty → a false "session mismatch" BLOCK that
+  # neutralizes the double-death recovery. A lone new_pane is a valid 1-element stack
+  # (the predicate still asserts same window/session + right of leader). NO move-pane
+  # auto-repair (campaign-32 class risk) — a genuine mismatch BLOCKs (in-loop) with
+  # the helper's real per-predicate reason.
+  local -a _geo_stack
+  if [[ "$role" == "verifier" ]]; then
+    _geo_stack=( )
+    tmux display-message -t "$WORKER_PANE" -p '#{pane_id}' &>/dev/null && _geo_stack+=( "$WORKER_PANE" )
+    _geo_stack+=( "$new_pane" )
+  else
+    _geo_stack=( "$new_pane" )
+    tmux display-message -t "$VERIFIER_PANE" -p '#{pane_id}' &>/dev/null && _geo_stack+=( "$VERIFIER_PANE" )
+  fi
+  if [[ -n "${CONSENSUS_PANE:-}" ]] \
+     && tmux display-message -p -t "$CONSENSUS_PANE" '#{pane_id}' >/dev/null 2>&1; then
+    _geo_stack+=( "$CONSENSUS_PANE" )
+  fi
+  if ! _assert_pane_geometry "replace-$role" "$LEADER_PANE" "${_geo_stack[@]}"; then
+    write_blocked_sentinel "pane geometry violation after replacing $role pane — $_GEO_FAIL_REASON" "${CURRENT_US:-ALL}" "infra_failure"
     return 1
   fi
 
@@ -1525,6 +1726,11 @@ create_session() {
     # resulting pane landed in $SESSION_NAME (startup → hard error on any escape).
     _verify_split_target "$LEADER_PANE" "create-inside-worker" \
       || { write_blocked_sentinel "create_session: leader pane not a valid split target (inside-tmux)" "ALL" "infra_failure"; exit 1; }
+    # request-l §2: widen the leader to the split width (a readability COMFORT width,
+    # not the tmux hard minimum) BEFORE the -h split, so the Worker/Verifier panes are
+    # readable. Still too narrow after resize → hard exit (startup). Names pane/widths/knob.
+    _ensure_leader_pane_width "$RLP_LEADER_SPLIT_WIDTH" "create-inside-worker" \
+      || { write_blocked_sentinel "create_session: worker -h split blocked (inside-tmux) — $_WIDTH_FAIL_REASON" "ALL" "infra_failure"; exit 1; }
     # -h off current pane → right column (worker)
     WORKER_PANE=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     _assert_pane_in_session "$WORKER_PANE" "create-inside-worker" \
@@ -1535,6 +1741,11 @@ create_session() {
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     _assert_pane_in_session "$VERIFIER_PANE" "create-inside-verifier" \
       || { write_blocked_sentinel "create_session: verifier pane created outside campaign session $SESSION_NAME (inside-tmux)" "ALL" "infra_failure"; exit 1; }
+    # request-l §3: verify the canonical geometry (leader left column; worker/verifier
+    # one right column, top-down). Startup mismatch → hard exit with the helper's
+    # expected-vs-actual diagnostic. NO move-pane auto-repair.
+    _assert_pane_geometry "create-inside" "$LEADER_PANE" "$WORKER_PANE" "$VERIFIER_PANE" \
+      || { write_blocked_sentinel "create_session: pane geometry violation (inside-tmux) — $_GEO_FAIL_REASON" "ALL" "infra_failure"; exit 1; }
   else
     # Outside tmux: wrap current terminal into a new tmux session and attach
     # tmux pattern: user sees panes immediately, no separate attach needed
@@ -1572,6 +1783,11 @@ create_session() {
     # freshly-created campaign session, and assert both children landed in it.
     _verify_split_target "$LEADER_PANE" "create-outside-worker" \
       || { write_blocked_sentinel "create_session: leader pane not resolvable in new session $SESSION_NAME (outside-tmux)" "ALL" "infra_failure"; exit 1; }
+    # request-l §2: widen the leader to the split width BEFORE the -h split (parity
+    # with the inside-tmux branch). New sessions start at -x 200 so this is normally
+    # a no-op, but the guard keeps the invariant defensive.
+    _ensure_leader_pane_width "$RLP_LEADER_SPLIT_WIDTH" "create-outside-worker" \
+      || { write_blocked_sentinel "create_session: worker -h split blocked (outside-tmux) — $_WIDTH_FAIL_REASON" "ALL" "infra_failure"; exit 1; }
     WORKER_PANE=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     _assert_pane_in_session "$WORKER_PANE" "create-outside-worker" \
       || { write_blocked_sentinel "create_session: worker pane created outside campaign session $SESSION_NAME (outside-tmux)" "ALL" "infra_failure"; exit 1; }
@@ -1580,6 +1796,9 @@ create_session() {
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     _assert_pane_in_session "$VERIFIER_PANE" "create-outside-verifier" \
       || { write_blocked_sentinel "create_session: verifier pane created outside campaign session $SESSION_NAME (outside-tmux)" "ALL" "infra_failure"; exit 1; }
+    # request-l §3: verify the canonical geometry (parity with inside-tmux branch).
+    _assert_pane_geometry "create-outside" "$LEADER_PANE" "$WORKER_PANE" "$VERIFIER_PANE" \
+      || { write_blocked_sentinel "create_session: pane geometry violation (outside-tmux) — $_GEO_FAIL_REASON" "ALL" "infra_failure"; exit 1; }
 
   fi
 
@@ -4107,7 +4326,18 @@ _ensure_consensus_pane() {
     CONSENSUS_PANE=""
     return 1
   fi
-  tmux select-layout -t "$SESSION_NAME" tiled 2>/dev/null || true
+  # request-l §3: the consensus pane extends the SAME right-column top-down stack
+  # (worker above verifier above consensus). The prior `select-layout tiled` here
+  # rearranged ALL panes into a grid, which violated the canonical layout contract;
+  # the `-v` split off the verifier already lands the consensus pane at the bottom of
+  # the right column, so NO relayout is needed. A geometry mismatch is drift the owner
+  # requires caught, not silently continued (manual join-pane on drift killed campaign
+  # 32) → BLOCKED. NO move-pane auto-repair.
+  if ! _assert_pane_geometry "consensus-pane" "$LEADER_PANE" "$WORKER_PANE" "$VERIFIER_PANE" "$CONSENSUS_PANE"; then
+    write_blocked_sentinel "pane geometry violation after consensus pane creation — $_GEO_FAIL_REASON" "${CURRENT_US:-ALL}" "infra_failure"
+    CONSENSUS_PANE=""
+    return 1
+  fi
   log "  Consensus pane created: $CONSENSUS_PANE"
   if [[ -f "$SESSION_CONFIG" ]] && command -v jq >/dev/null 2>&1; then
     jq --arg p "$CONSENSUS_PANE" '.panes.consensus = $p' "$SESSION_CONFIG" \

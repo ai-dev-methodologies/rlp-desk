@@ -61,12 +61,25 @@ case "$cmd" in
     # US-024 R12 P0 _r12_check_lifecycle polls #{pane_dead}/#{session_name} via
     # `tmux display-message -p -t <target> '<format>'` — the format is always the
     # LAST argument, not a fixed position, so match on that instead of $2.
+    # request-l: also answer the width + geometry probes so create_session's
+    # _ensure_leader_pane_width and _assert_pane_geometry pass. Panes: leader=%0
+    # (left col), worker=%1 / verifier=%2 (one right column, stacked top-down).
     last="${@: -1}"
+    tgt=""; prev=""
+    for a in "$@"; do [[ "$prev" == "-t" ]] && tgt="$a"; prev="$a"; done
     case "$last" in
       '#{session_name}') echo "rlp-desk-${LOOP_NAME}-stub" ;;
       '#{pane_dead}') echo "0" ;;
+      '#{window_id}') echo "@0" ;;
+      '#{pane_width}') echo "200" ;;
+      '#{pane_left}') case "$tgt" in %1|%2) echo "100" ;; *) echo "0" ;; esac ;;
+      '#{pane_top}')  case "$tgt" in %2) echo "25" ;; *) echo "0" ;; esac ;;
       *) echo "%0" ;;
     esac
+    exit 0
+    ;;
+
+  resize-pane)
     exit 0
     ;;
 

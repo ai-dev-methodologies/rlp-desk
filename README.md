@@ -377,19 +377,39 @@ The current Claude Code session acts as the Leader, dispatching Workers and Veri
 /rlp-desk run calculator --mode tmux
 ```
 
-**Requires running inside a tmux session.** A shell script takes over as Leader, splitting your current window into three panes. Workers run interactive `claude` sessions — you can watch them work in real-time.
+**Requires running inside a tmux session.** A shell script takes over as Leader, splitting your current window into panes. Workers run interactive `claude` sessions — you can watch them work in real-time.
+
+**Launch paths (both canonical).** Started *inside* a tmux session, the Leader anchors on its own pane via `$TMUX_PANE` (v0.22.19+) and splits Worker/Verifier off it — even with several tmux clients attached, it can never adopt another client's active pane. Started *outside* any tmux session, the runner fails fast (`start tmux first`) rather than guessing a target. Either way, every campaign pane is created inside the tmux session the Leader owns and never lands in an unrelated session.
+
+**Canonical layout — two forms.** The Leader pane is a pane-creation *anchor*, not a log viewer, but it stays visible at a readable width (never collapsed) so you can always see what is running — the runner enforces this and the single-right-column geometry on every create/recreate path (a mismatch stops the campaign rather than drifting silently).
+
+When your own shell is the Leader (human operator), it is a 3-pane layout:
 
 ```
 +---------------------+---------------------+
-| Your pane (Leader)  | Worker pane         |
+| Your pane (Leader)  | Worker pane         |  ← -h split off Leader
 | shell loop running  | claude TUI running  |
 | polls signal files  | you see it working  |
 |                     +---------------------+
-|                     | Verifier pane       |
+|                     | Verifier pane       |  ← -v split off Worker
 |                     | claude TUI running  |
 |                     | (only when needed)  |
 +---------------------+---------------------+
 ```
+
+When the operator pane is an AI CLI (e.g. a Claude Code session) it cannot host the shell Leader, so the operator creates a dedicated pane and launches the runner in it (the runner anchors on that pane via `$TMUX_PANE`) — a 4-pane layout (owner mandate: the Leader stays visible at a readable width, never hidden):
+
+```
++-------------+--------+---------------------+
+| Operator    | Leader | Worker pane         |  ← -h split off Leader
+| pane        | pane   |---------------------|
+| (AI CLI —   | (shell | Verifier pane       |  ← -v split off Worker
+|  not the    |  loop, |---------------------|
+|  Leader)    |  shown)| (Consensus pane)    |  ← -v split off Verifier
++-------------+--------+---------------------+
+```
+
+The operator pane is outside the runner's control (it only assumes it exists). Worker, Verifier, and the optional Consensus pane always form ONE right column stacked top-down; a new pane appearing in a second column, another window, or another session is drift the runner blocks. The split width (`RLP_LEADER_SPLIT_WIDTH`, default 110) is a readability comfort width, not a tmux hard minimum — on a genuinely narrow terminal, lower it to avoid a startup width error.
 
 - Real-time visibility — watch Worker/Verifier execute live
 - Zero-token orchestration — shell loop, not LLM

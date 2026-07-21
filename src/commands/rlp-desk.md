@@ -217,6 +217,7 @@ Tell the user:
 
    # Full options reference:
    #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
+   #                                          tmux: run inside a tmux session; the Leader anchors on its own pane and keeps the canonical layout (Leader visible at a readable width; Worker/Verifier/Consensus in one right column). Started outside tmux it fails fast ("start tmux first").
    #   --worker-model MODEL                   claude (haiku|sonnet|opus|claude-opus-4-8:high, effort optional) or codex (gpt-5.6-sol:high|terra:medium|spark:high) (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
    #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended claude-opus-4-8:high — version-pinned + explicit effort)
@@ -255,6 +256,7 @@ Tell the user:
 
    # Full options reference:
    #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
+   #                                          tmux: run inside a tmux session; the Leader anchors on its own pane and keeps the canonical layout (Leader visible at a readable width; Worker/Verifier/Consensus in one right column). Started outside tmux it fails fast ("start tmux first").
    #   --worker-model MODEL                   haiku|sonnet|opus, or full claude id with effort (claude-opus-4-8:high) (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
    #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended claude-opus-4-8:high — version-pinned + explicit effort)

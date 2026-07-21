@@ -659,6 +659,22 @@ The tmux runner (`run_ralph_desk.zsh`) creates a tmux session with three panes:
 - **Worker pane** — receives `claude -p` invocations via trigger scripts
 - **Verifier pane** — receives `claude -p` invocations via trigger scripts
 
+### Canonical layout contract (v0.22.20)
+
+The pane geometry is a **contract**, not a suggestion. Two forms are canonical:
+
+```
+Human operator (3-pane) — the operator's own shell IS the Leader:
+  [ operator/Leader pane | Worker (top) / Verifier (below) — one right column ]
+
+AI operator (4-pane) — the operator pane is an AI CLI that cannot host the shell Leader:
+  [ operator pane | Leader pane (always visible) | Worker / Verifier / (Consensus) — one right column ]
+```
+
+- **Launch paths.** Inside a tmux session the Leader anchors on its own `$TMUX_PANE` (v0.22.19+); outside any tmux session the runner fails fast (`start tmux first`). Campaign panes are only ever created inside the session the Leader owns — never an ambient/foreign session (v0.22.18 session invariant).
+- **Leader is a pane-creation anchor, not a log viewer**, but it is kept at a readable minimum width (`RLP_LEADER_MIN_WIDTH`, default 30) at startup and each iteration — never collapsed. Before any `-h` split it is widened to `RLP_LEADER_SPLIT_WIDTH` (default 110); still-too-narrow is an explicit error (a too-narrow pane makes the split fail).
+- **Geometry enforcement.** After every create/recreate path (`create_session`, `replace_worker_pane`, consensus-pane creation) the runner asserts: Worker/Verifier/Consensus share the Leader's window and session; one common `pane_left` (a single right column) that is right of the Leader; and `pane_top` strictly increasing top-down. A mismatch is **blocked**, not auto-repaired — a move-pane on drift is the campaign-32 ledger-corruption risk. Silent drift is forbidden.
+
 By default, `claude` CLI calls use `--dangerously-skip-permissions`:
 ```bash
 # claude engine (default)
