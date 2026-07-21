@@ -2926,6 +2926,11 @@ poll_for_signal() {
   # amplification that turned an unsubmitted prompt into a timeout BLOCK).
   local _pfs_first_progress_ts=0
   local _pfs_resubmits=0
+  # request-g (v0.22.16): per-poll-session one-shot guard for the early Enter
+  # re-inject when a known non-exhaustion usage banner blocks submission. Fires
+  # once, well before the 90s submit window; after it the existing window path
+  # takes over unchanged.
+  local _pfs_banner_reinject_done=0
 
   # Initialize idle tracking for this pane
   LAST_PANE_CONTENT[$pane_id]=""
@@ -2949,6 +2954,16 @@ poll_for_signal() {
         log_error "$role timed out after ${ITER_TIMEOUT}s of task time (submit-anchored) for iteration $ITERATION"
         return 1  # timeout
       fi
+    elif (( _pfs_banner_reinject_done == 0 )) && (( $+functions[_pane_submit_blocked_by_banner] )) \
+         && _pane_submit_blocked_by_banner "$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)"; then
+      # request-g: known non-exhaustion usage banner is holding the prompt
+      # unsubmitted — fire ONE early Enter re-inject (~POLL_INTERVAL post-dispatch,
+      # well inside the 90s window) rather than waiting it out. If it still
+      # doesn't start, the 90s window path below runs next as before.
+      (( _pfs_banner_reinject_done = 1 ))
+      log "  $role: known submit-blocking banner detected — early Enter re-inject (request-g)"
+      log_debug "[GOV] iter=$ITERATION role=$role banner_early_reinject=1 elapsed=${elapsed}s"
+      tmux send-keys -t "$pane_id" C-m 2>/dev/null || true
     elif (( now - poll_start >= ${SUBMISSION_TIMEOUT:-90} * (_pfs_resubmits + 1) )); then
       if (( _pfs_resubmits < ${SUBMISSION_MAX_REDISPATCH:-2} )); then
         (( _pfs_resubmits += 1 ))
@@ -3360,6 +3375,11 @@ run_single_verifier() {
     # task deadline at the first execution-start signal (not dispatch); the
     # re-dispatch counter bounds banner-delayed "submission failure" retries.
     local _first_progress_ts=0 _redispatch_count=0
+    # request-g (v0.22.16): per-dispatch one-shot guard for the early Enter
+    # re-inject when a known non-exhaustion usage banner blocks submission. Reset
+    # to 0 wherever codex_poll_start is (re)set (declaration here + the
+    # submission_failure full re-dispatch below) so each fresh dispatch gets one.
+    local _banner_reinject_done=0
     VERIFIER_ABORT_REASON=""
     while true; do
       # Wait for verdict file with valid JSON. D-26 (codex review, MEDIUM):
@@ -3409,6 +3429,18 @@ run_single_verifier() {
           _first_progress_ts=$(date +%s)
           log_debug "[FLOW] iter=$iter codex verifier$suffix first_progress_ts=$_first_progress_ts (timeout re-based to first progress)"
         fi
+        # request-g (v0.22.16): known non-exhaustion usage banner steals the
+        # submit keystroke — the trigger sits echoed-but-unsubmitted. Fire ONE
+        # early Enter re-inject (this poll tick, ~POLL_INTERVAL post-dispatch)
+        # instead of waiting out the 90s submit window; if it still doesn't
+        # start, the existing submit-anchored 90s path below takes over
+        # unchanged. One-shot per dispatch. Skipped once progress is seen.
+        if (( _first_progress_ts == 0 )) && (( _banner_reinject_done == 0 )) \
+           && _pane_submit_blocked_by_banner "$_vq_pane"; then
+          log "  Codex verifier$suffix: known submit-blocking banner detected — early Enter re-inject (request-g)"
+          tmux send-keys -t "$VERIFIER_PANE" C-m 2>/dev/null || true
+          _banner_reinject_done=1
+        fi
       fi
       # ④ submit-anchored deadline. ITER_TIMEOUT counts from first progress, not
       # dispatch; a no-first-progress submit window classifies a SUBMISSION
@@ -3429,6 +3461,7 @@ run_single_verifier() {
               log_debug "[FLOW] iter=$iter codex verifier$suffix submission_failure redispatch=$_redispatch_count"
               launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
               codex_poll_start=$(date +%s)   # reset the submit window for the re-dispatch
+              _banner_reinject_done=0        # request-g: fresh dispatch → allow one more early re-inject
             else
               VERIFIER_ABORT_REASON="Codex verifier$suffix never started (no execution-start signal after ${SUBMISSION_MAX_REDISPATCH} re-dispatches) — submission failure"
               log_error "$VERIFIER_ABORT_REASON"

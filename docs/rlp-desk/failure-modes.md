@@ -71,6 +71,15 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Recovery | Leader-side oracle verifies HEAD advance since the per-iteration-start snapshot + tree consistency, on the shared post-done-claim-lock path (covers synth); on mismatch → fix loop with machine-generated fix-contract; circuit breaker escalates on repeat |
 | Reference | v0.22.7 US-001; `_commit_oracle_check` (lib_ralph_desk.zsh) + `evaluateCommitOracle` (src/node/shared/commit-oracle.mjs); post-mortem `pa-live-audit-unblock` |
 
+### F1.8 — non-exhaustion usage banner blocks TUI submission (request-g)
+| Field | Value |
+|---|---|
+| Symptom | Trigger prompt is echoed into the codex pane's input box but sits unsubmitted; a non-exhaustion usage banner is visible on the pane ("• You have 1 usage limit reset available. Run /usage…", "increased plan usage", weekly-limit); a single Enter resolves it in 6-9s. Field-reproduced twice on the verifier leg (v0.22.15 pa-foundation resume) |
+| Root cause | The banner steals the submit keystroke, so the dispatched Enter never submits the prompt. It is NOT quota exhaustion, so the strict `detect_quota_exhausted` correctly does not fast-fail it — but without an early nudge the prompt idles until the 90s submit window re-injects, adding up to 90s of latency per dispatch |
+| Detection | `_pane_submit_blocked_by_banner` (lib_ralph_desk.zsh): trigger echoed + no `_pane_shows_progress` + matches `RLP_SUBMIT_BANNER_RE` (env-overridable) |
+| Recovery | One early one-shot Enter re-inject at the first poll tick (~POLL_INTERVAL post-dispatch) on both leaders — codex-verifier poll loop (per-dispatch guard, reset on full re-dispatch) and generic `poll_for_signal` (per-poll-session guard). After the single shot the existing submit-anchored 90s path takes over unchanged; progress detection skips the nudge so normal immediate-submit cases get zero re-injects |
+| Reference | request-g (`docs/incoming-requests/tire-plletdata-request-2026-07-21-g.md`), v0.22.16; `tests/test_banner_early_reinject.sh` |
+
 ---
 
 ## §2 — Sentinel file contention

@@ -3391,6 +3391,40 @@ _pane_shows_progress() {
   return 1
 }
 
+# request-g (v0.22.16): a known NON-exhaustion usage banner can steal the submit
+# keystroke, leaving the trigger prompt echoed-but-unsubmitted in the input box
+# while the model never starts. Field-observed twice on the codex verifier leg
+# ("• You have 1 usage limit reset available. Run /usage…", plus "increased plan
+# usage") — case 1 a manual Enter, case 2 a 20s watchdog Enter, each resolving
+# in 6-9s. This is a pure submit-delay, NOT quota exhaustion (detect_quota_exhausted
+# deliberately does not match these "resets available" / weekly banners), so the
+# remedy is one early Enter re-inject instead of burning the 90s submit window.
+# Config knob: env-overridable because the codex CLI banner wording changes per
+# version. Declared at source time (no knob section in lib) so it survives set -u.
+RLP_SUBMIT_BANNER_RE="${RLP_SUBMIT_BANNER_RE:-usage limit reset(s)? available|increased plan usage|weekly limit}"
+# _pane_submit_blocked_by_banner <pane_text> [trigger_needle]
+# Returns 0 iff ALL THREE hold: (1) the trigger instruction is echoed in the
+# input box (the needle — default the literal dispatched instruction), so the
+# prompt is sitting there unsubmitted; (2) NO execution-start signal
+# (_pane_shows_progress is false); (3) a known submit-blocking banner matches
+# RLP_SUBMIT_BANNER_RE. Text-only input — callers capture the pane. An INVALID
+# user-supplied ERE fails SAFE to "no match" (grep exit 2 → return 1), never a
+# crash or a false positive.
+_pane_submit_blocked_by_banner() {
+  local snap="$1"
+  local needle="${2:-Read and execute the instructions in}"
+  [[ -n "$snap" ]] || return 1
+  # (1) trigger echoed → prompt unsubmitted in the input box.
+  [[ "$snap" == *"$needle"* ]] || return 1
+  # (2) already running → not blocked (normal case gets zero re-injects).
+  _pane_shows_progress "$snap" && return 1
+  # (3) known banner visible. grep exit 1 (no match) OR 2 (invalid ERE) → not
+  # blocked; only a clean match (exit 0) confirms the block. 2>/dev/null hides
+  # the invalid-regex diagnostic so a bad env knob degrades quietly to "safe".
+  print -r -- "$snap" | grep -qE "$RLP_SUBMIT_BANNER_RE" 2>/dev/null || return 1
+  return 0
+}
+
 # ③/④ request-b: submit-anchored deadline classifier (the root fix). The task
 # timeout (ITER_TIMEOUT) MUST count from the FIRST progress signal, not from
 # dispatch — a banner that delays submission must never burn the task budget and
