@@ -9,6 +9,24 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.20] — 2026-07-22
+
+### Added
+- **Leader pane stays visible at a readable width (tmux mode).** The Leader pane is
+  a pane-creation anchor, but it is now kept at a readable minimum width
+  (`RLP_LEADER_MIN_WIDTH`, default 30) at startup and each iteration, and widened to
+  the split width (`RLP_LEADER_SPLIT_WIDTH`, default 110) before creating a Worker or
+  Verifier pane. This removes the manual resize-before-relaunch step operators used to
+  perform; a too-narrow pane that cannot be widened now reports a clear error instead
+  of a raw tmux split failure.
+- **Canonical layout is now enforced (tmux mode).** After every pane create/recreate,
+  the runner verifies the canonical geometry — Worker/Verifier/Consensus in one right
+  column, stacked top-down, in the Leader's own window and session. Layout drift (a new
+  pane in a second column, another window, or another session) stops the campaign with
+  a clear diagnostic instead of continuing silently. Both canonical forms — the 3-pane
+  human-operator layout and the 4-pane AI-operator layout — are documented in the README
+  and governance with diagrams.
+
 ## [0.22.19] — 2026-07-21
 
 ### Fixed
