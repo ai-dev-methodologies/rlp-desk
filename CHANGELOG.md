@@ -9,6 +9,24 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.16] — 2026-07-21
+
+### Fixed
+- **P2: a known non-exhaustion codex usage banner could hold a trigger prompt
+  unsubmitted for up to 90 seconds per dispatch.** Banners like
+  "You have 1 usage limit reset available" / "increased plan usage" /
+  weekly-limit steal the submit keystroke: the trigger sits echoed in the
+  input box and nothing runs until the 90s submission window re-injects.
+  Both poll loops (codex verifier + generic) now detect the blocked state at
+  the first poll tick (~5s) — trigger echoed AND no execution-start signal
+  AND a known banner visible — and fire ONE early Enter re-inject; if the
+  prompt still doesn't start, the existing 90s submit-anchored path takes
+  over unchanged. Normal immediate-submit dispatches see zero re-injects
+  (progress detection skips the nudge), and true quota exhaustion still
+  fast-fails before any nudge. The banner pattern list is env-configurable
+  via `RLP_SUBMIT_BANNER_RE` (codex CLI wording changes across versions).
+  New failure-modes atlas entry F1.8.
+
 ## [0.22.15] — 2026-07-21
 
 ### Added
