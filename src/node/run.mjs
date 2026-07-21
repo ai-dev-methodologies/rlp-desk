@@ -19,6 +19,7 @@ import {
   verifyGateReceipt,
   gateReceiptPath,
 } from './util/gate-receipt.mjs';
+import { seedLedger } from './util/ledger-seed.mjs';
 
 // Exported for tests: tests/node/us008-cli-entrypoint.test.mjs pins the
 // consensus defaults so zsh/node default drift is caught.
@@ -80,6 +81,7 @@ function buildHelpText() {
     '  init <slug> [objective]      Create project scaffold',
     '  run <slug> [options]         Run loop (tmux=zsh leader [production, default], agent=hard-errors per ADR-001, native=slash-only error)',
     '  gate-receipt <slug>          Seal the brainstorm gate: write plans/gate-receipt-<slug>.json (PRD hash + scorecard)',
+    '  ledger-seed <slug> <us_id>   Operator: seed a PRD-bound verified-ledger entry (routes verification MODE only; never grants a pass). Run with the campaign STOPPED.',
     '  status <slug>                Show loop status',
     '  logs <slug> [N]              Show iteration log (not implemented in the Node rewrite yet)',
     '  clean <slug> [--kill-session] [--remove-worktree]  Reset for re-run (removes sentinels + runtime/; preserves PRD/prompts/memory)',
@@ -377,6 +379,65 @@ async function runGateReceiptCommand(args, deps) {
       + `  prd_files:  ${receipt.prd_files.join(', ')}\n`
       + `  scorecard:  ${receipt.scorecard || '(none)'}\n`
       + `  passed_at:  ${receipt.passed_at}`,
+  );
+  return 0;
+}
+
+// request-f §3: operator ledger-seed. Thin glue over util/ledger-seed.mjs
+// (mirrors runGateReceiptCommand's pure-logic-in-util pattern). Seeds a
+// PRD-bound verified-ledger entry so a story that could never earn a consensus
+// pass (an old-version defect) can still route to confirmation dispatch.
+//
+// A SEED NEVER GRANTS A PASS — it only routes verification MODE; both verifier
+// legs still run their own fresh re-verification. `seeded:true` + operator_note
+// keep it audit-visible. Operator-only, documented to run while STOPPED (no
+// runtime enforcement — see util/ledger-seed.mjs).
+// Usage: ledger-seed <slug> <us_id> --evidence <path> --note "<note>" [--commit <sha>]
+async function runLedgerSeedCommand(args, deps) {
+  if (args.length === 0 || args[0] === '--help') {
+    write(
+      deps.stdout,
+      'Usage: node src/node/run.mjs ledger-seed <slug> <us_id> --evidence <path-to-claude-pass-verdict.json> --note "<operator note>" [--commit <sha>]',
+    );
+    return 0;
+  }
+  const slug = requireCanonicalSlug(args[0]); // IMP-08
+  const usId = args[1];
+  if (!usId || usId.startsWith('--')) {
+    throw new Error('ledger-seed requires <slug> <us_id> (us_id missing)');
+  }
+  let evidence = '';
+  let note;
+  let commit = '';
+  const rest = args.slice(2);
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i];
+    if (token === '--evidence') { evidence = consumeValue(rest, i, token); i += 1; }
+    else if (token === '--note') { note = consumeValue(rest, i, token); i += 1; }
+    else if (token === '--commit') { commit = consumeValue(rest, i, token); i += 1; }
+    else throw new Error(`unknown ledger-seed option: ${token}`);
+  }
+  const paths = buildPaths(deps.cwd, slug);
+  const { entry, ledgerFile, prdHash, commit: anchor } = seedLedger({
+    root: deps.cwd,
+    plansDir: paths.plansDir,
+    memosDir: paths.memosDir,
+    slug,
+    usId,
+    evidencePath: evidence ? path.resolve(deps.cwd, evidence) : '',
+    note,
+    commit,
+  });
+  write(
+    deps.stdout,
+    `Ledger seed appended for ${slug} / ${usId}:\n`
+      + `  ledger:        ${ledgerFile}\n`
+      + `  commit:        ${anchor.slice(0, 10)}\n`
+      + `  prd:           ${prdHash.slice(0, 10)}\n`
+      + '  seeded:        true\n'
+      + `  operator_note: ${entry.operator_note}\n`
+      + '  NOTE: a seed does NOT grant a pass — it only routes verification mode; both\n'
+      + '  verifier legs still run their own fresh re-verification. Run with the campaign STOPPED.',
   );
   return 0;
 }
@@ -890,6 +951,8 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
         return await runRunCommand(rest, deps);
       case 'gate-receipt':
         return await runGateReceiptCommand(rest, deps);
+      case 'ledger-seed':
+        return await runLedgerSeedCommand(rest, deps);
       case 'status':
         return await runStatusCommand(rest, deps);
       case 'clean':
