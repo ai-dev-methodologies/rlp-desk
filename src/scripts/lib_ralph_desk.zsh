@@ -3331,10 +3331,20 @@ detect_quota_exhausted() {
 # instructions in <path>", so matching `exec`/`Read` would false-fire on the mere
 # echo of the prompt and defeat the submit-anchored timeout (the very case this
 # guards). Returns 0 = progress seen, 1 = no start signal.
-_RLP_PROGRESS_RE='esc to interrupt|background terminal running|thinking|working|kneading|crunching|clauding|billowing|brewing|tinkering|burrowing|saut|Exploring|Prestidigitating|Undulating|razzle|bunning|zesting|fermenting|actualizing|composing|evaporating|churning'
+_RLP_PROGRESS_RE='esc to interrupt|background terminal running|thinking|working|kneading|crunching|clauding|billowing|brewing|tinkering|burrowing|saut|Exploring|Prestidigitating|Undulating|razzle|bunning|zesting|fermenting|actualizing|composing|evaporating|churning|Osmosing'
 _pane_shows_progress() {
   local snap="$1"
   [[ -n "$snap" ]] || return 1
+  # request-e P1 fix (2026-07-21): the leader's polling call sites pass a tmux
+  # PANE ID (e.g. %2065), not snapshot text — grepping the literal id string
+  # meant NO pane ever showed progress, so the submit-anchored guard killed
+  # healthy running verifiers at SUBMISSION_TIMEOUT (4x field-reproduced).
+  # Accept BOTH: a %-prefixed pane id is captured here; anything else is
+  # treated as snapshot text (test harnesses pass text directly).
+  if [[ "$snap" == %<-> ]]; then
+    snap=$(tmux capture-pane -t "$snap" -p 2>/dev/null) || return 1
+    [[ -n "$snap" ]] || return 1
+  fi
   print -r -- "$snap" | grep -qiE "$_RLP_PROGRESS_RE" && return 0
   # nonzero input-token counter (codex/claude "N in · M out" footer). "0 in" is
   # idle; any nonzero count is proof the model consumed the prompt.

@@ -146,6 +146,30 @@ _knob_rc=$(zsh -c "
   && ok "knobs behavioral: bogus SUBMISSION_* env → validated back to defaults, arithmetic safe" \
   || no "knob validation failed (got '$_knob_rc')"
 
+
+# --- request-e P1 regression: _pane_shows_progress accepts a PANE ID and
+# captures it (the leader call sites pass %IDs; the literal-id grep killed
+# healthy verifiers at SUBMISSION_TIMEOUT — 4x field-reproduced).
+tmux() {  # mock: capture-pane -t %N -p → canned snapshot per pane id
+  if [[ "$1" == "capture-pane" ]]; then
+    case "$3" in
+      %77) print -r -- "✻ Osmosing… thinking with high effort (esc to interrupt)";;
+      %88) print -r -- "› Read and execute the instructions in /tmp/p.md
+0 in · 0 out";;
+      *) return 1;;
+    esac
+  fi
+}
+_pane_shows_progress "%77" && ok "pane-id arg: running pane captured → progress" \
+  || no "pane-id arg with running snapshot must show progress (request-e regression)"
+! _pane_shows_progress "%88" && ok "pane-id arg: idle echoed-prompt pane → no progress" \
+  || no "idle pane must not show progress"
+! _pane_shows_progress "%99" && ok "pane-id arg: dead pane (capture fails) → no progress" \
+  || no "dead pane must not show progress"
+_pane_shows_progress "✻ Osmosing… (esc to interrupt)" && ok "new spinner verb Osmosing recognized (text arg)" \
+  || no "Osmosing not recognized"
+unfunction tmux
+
 print ""
 print "PASS=$PASS FAIL=$FAIL"
 (( FAIL == 0 )) || exit 1
