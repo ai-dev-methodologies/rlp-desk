@@ -202,11 +202,22 @@ _validate_int_knob RLP_LEADER_MIN_WIDTH 30 1
 RLP_LEADER_SPLIT_WIDTH="${RLP_LEADER_SPLIT_WIDTH:-110}"
 _validate_int_knob RLP_LEADER_SPLIT_WIDTH 110 1
 # request-l: retrofit the request-k shell-ready wait through the same D-19 guard
-# (a non-integer previously fell through to the inline :-6 default unvalidated —
+# (a non-integer previously fell through to the inline default unvalidated —
 # clears the accepted request-k review LOW). Assigned once here so the inline
-# ${RLP_SHELL_READY_TIMEOUT_S:-6} sites downstream see a validated value.
-RLP_SHELL_READY_TIMEOUT_S="${RLP_SHELL_READY_TIMEOUT_S:-6}"
-_validate_int_knob RLP_SHELL_READY_TIMEOUT_S 6 1
+# ${RLP_SHELL_READY_TIMEOUT_S:-8} sites downstream see a validated value.
+# request-m ①: default raised 6→8s (reused panes need longer for the previous
+# process to return to the shell). THIS is the canonical default — the inline
+# ${...:-8} fallbacks downstream only apply when the function is sourced in
+# isolation (unit tests) without this knob block having run.
+RLP_SHELL_READY_TIMEOUT_S="${RLP_SHELL_READY_TIMEOUT_S:-8}"
+_validate_int_knob RLP_SHELL_READY_TIMEOUT_S 8 1
+# request-m ① (MEDIUM): accepted `#{pane_current_command}` values for shell-ready.
+# Default zsh|bash; a bash-login-shell host can override (plain regex, no int
+# validation). NOTE: codex launches pass `zsh` explicitly regardless (a reused
+# codex pane's RUNNING trigger process is `bash` on a zsh host — accepting bash
+# would false-ready onto the dying codex process), so on a bash-login host codex
+# launches fail-open after the timeout (the echo-verify still guards).
+RLP_SHELL_READY_CMDS="${RLP_SHELL_READY_CMDS:-zsh|bash}"
 
 # US-021 R9 P2-I: track repeated same-reason blocks. infra_failure category and
 # the very first iteration are exempt (mission setup blocks shouldn't trip
@@ -604,6 +615,11 @@ _write_launch_record_t0
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 SESSION_NAME="rlp-desk-${SLUG}-${TIMESTAMP}"
 
+# request-m ②: preserve a prior run's iter-* evidence before THIS run can clobber
+# same-numbered files (a bare leader restart resets ITERATION=1). Runs once at
+# leader startup, before the main loop writes any new iter-* artifact.
+archive_superseded_run_artifacts "$LOGS_DIR" "$TIMESTAMP"
+
 # --- State Tracking ---
 typeset -A LAST_PANE_CONTENT
 typeset -A PANE_IDLE_SINCE
@@ -706,19 +722,39 @@ check_dead_pane() {
 # prefix fails and we recover — C-u (clear line), re-paste, up to 3 attempts. All
 # attempts exhausted → return 1 (caller's launch-failure path). grep -F keeps the
 # match glob-safe for bracketed model ids like 'claude-opus-4-7[1m]'.
-# request-k companion (P1): wait for the pane's shell to render before the FIRST
-# paste, so a paste cannot race rc loading (the original cold-rc scenario where the
-# prompt appears mid-paste and eats the first char). Readiness = any visible NON-blank
-# text in the pane (the shell prompt has drawn). Bounded by RLP_SHELL_READY_TIMEOUT_S
-# (default 6s); on timeout it returns 1 and the caller proceeds anyway (fail-open —
-# the echo-verify still guards). Epoch-deadline loop so the wall-clock budget is exact.
+# request-k companion (P1) + request-m ① (reused-pane variant): wait for the
+# pane's shell to reclaim the foreground BEFORE the FIRST paste, so a paste cannot
+# race either rc loading (fresh-pane cold-rc scenario) OR a still-running previous
+# process (reused-pane scenario). Readiness is PROCESS-based AND content-based:
+#   (a) `#{pane_current_command}` matches the accept-set (default zsh|bash) — the
+#       shell (not the prior worker/verifier codex/node process) owns the pane's
+#       foreground. This is what a content-only check missed: a reused pane is
+#       full of the previous run's output, so a non-blank test passes INSTANTLY
+#       while the old process is still exiting — the paste is then lost (field
+#       incident: 3/3 echo mismatch within 1 second on a reused pane).
+#   (b) non-blank visible content — keeps the fresh-pane case where the shell is
+#       already the current command while rc is still loading and no prompt has
+#       drawn yet.
+# $2 (accept_re) is a `|`-alternation of acceptable current-commands; default
+# ${RLP_SHELL_READY_CMDS:-zsh|bash}. Codex launches pass `zsh` ONLY — on a zsh
+# host a reused codex pane's RUNNING trigger process is `bash`, so accepting bash
+# would false-ready onto the dying codex (see check_dead_pane: bash = alive for
+# codex). Matched anchored so `bash` never matches a `bashfoo` command.
+# Bounded by RLP_SHELL_READY_TIMEOUT_S (canonical default 8s, set + D-19-validated
+# at the knob block); on timeout it returns 1 and the caller proceeds anyway
+# (fail-open — the echo-verify still guards). Epoch-deadline loop so the wall-clock
+# budget is exact.
 _wait_pane_shell_ready() {
   local pane_id="$1"
-  local timeout="${RLP_SHELL_READY_TIMEOUT_S:-6}"
+  local accept_re="${2:-${RLP_SHELL_READY_CMDS:-zsh|bash}}"
+  local timeout="${RLP_SHELL_READY_TIMEOUT_S:-8}"
   local deadline=$(( $(date +%s) + timeout ))
+  local cur
   while (( $(date +%s) < deadline )); do
-    # grep -qv '^[[:space:]]*$' → exit 0 as soon as ANY non-blank line exists.
-    if tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -qvE '^[[:space:]]*$'; then
+    cur=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null)
+    # Process reclaimed by an accepted shell AND at least one non-blank line rendered.
+    if [[ "$cur" =~ ^(${accept_re})$ ]] \
+       && tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -qvE '^[[:space:]]*$'; then
       return 0
     fi
     sleep 0.3
@@ -727,12 +763,15 @@ _wait_pane_shell_ready() {
 }
 
 #   $1 pane_id   $2 command text (the caller sends Enter AFTER this returns 0)
+#   $3 accept_re (optional) — shell-ready accept-set forwarded to
+#      _wait_pane_shell_ready; codex launches pass `zsh` (see that helper).
 _paste_cmd_echo_verified() {
-  local pane_id="$1" cmd="$2"
+  local pane_id="$1" cmd="$2" accept_re="${3:-}"
   local prefix="${cmd[1,24]}"
-  # request-k companion: let the shell render before the first paste (fail-open).
-  _wait_pane_shell_ready "$pane_id" \
-    || log "  pane shell-ready wait timed out (${RLP_SHELL_READY_TIMEOUT_S:-6}s) — proceeding, echo-verify guards (request-k)"
+  # request-k/-m companion: let the shell reclaim the pane before the first paste
+  # (fail-open — process+content readiness, covers fresh AND reused panes).
+  _wait_pane_shell_ready "$pane_id" "$accept_re" \
+    || log "  pane shell-ready wait timed out (${RLP_SHELL_READY_TIMEOUT_S:-8}s) — proceeding, echo-verify guards (request-k/-m)"
   # Degenerate: no command / empty prefix → nothing to verify, single paste.
   if [[ -z "$prefix" ]]; then
     paste_to_pane "$pane_id" "$cmd"
@@ -760,7 +799,11 @@ _paste_cmd_echo_verified() {
     log "  launch paste echo mismatch (attempt $attempt/3) — clearing line and re-pasting (rc prompt may have swallowed a char, request-j ④)"
     log_debug "[GOV] iter=${ITERATION:-0} launch_paste_echo_mismatch=$attempt pane=$pane_id"
     tmux send-keys -t "$pane_id" C-u 2>/dev/null || true
-    sleep 0.15
+    # request-m ①: 0.15→0.8s. A 0.15s interval let every retry burn inside one
+    # second (on a reused pane the previous process had not even returned to the
+    # shell), so the retries were meaningless; 0.8s gives the shell time to settle
+    # between paste attempts.
+    sleep 0.8
   done
   log_error "  launch command did not echo intact after 3 paste attempts (rc prompt swallow?) — pane=$pane_id"
   return 1
@@ -813,7 +856,10 @@ launch_worker_codex() {
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
   fi
   # ④ request-j: echo-verify the launch command before Enter (rc-prompt first-char swallow).
-  if ! _paste_cmd_echo_verified "$pane_id" "$worker_launch"; then
+  # request-m ① (MEDIUM): codex passes `zsh` ONLY — a reused codex pane's running
+  # trigger process is `bash` (check_dead_pane: bash=alive for codex), which the
+  # default zsh|bash accept-set would misread as shell-ready.
+  if ! _paste_cmd_echo_verified "$pane_id" "$worker_launch" zsh; then
     log_error "Worker codex launch command failed to echo intact after retries"
     return 1
   fi

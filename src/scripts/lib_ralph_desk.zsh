@@ -1293,6 +1293,60 @@ archive_iter_artifacts() {
   if [[ -f "$VERDICT_FILE" ]]; then
     cp "$VERDICT_FILE" "$LOGS_DIR/iter-${iter_padded}-verify-verdict.json" 2>/dev/null
   fi
+  # request-m ②: also archive the iter-signal — it is the third per-iteration
+  # evidence artifact (the verdict's companion; a re-seed sometimes needs the
+  # signal that produced a verdict, not only the verdict). ${SIGNAL_FILE:-} so an
+  # unset global (unit tests that only wire DONE_CLAIM_FILE/VERDICT_FILE) is a
+  # clean no-op under nounset.
+  if [[ -n "${SIGNAL_FILE:-}" && -f "${SIGNAL_FILE:-}" ]]; then
+    cp "$SIGNAL_FILE" "$LOGS_DIR/iter-${iter_padded}-iter-signal.json" 2>/dev/null
+  fi
+}
+
+# request-m ②: run-scoped artifact archive (evidence preservation). A bare leader
+# restart resets ITERATION to 1 (no cross-run counter), so a new run's iter-1,2,3…
+# would silently CLOBBER the same-numbered iter-* files from a PRIOR run — the
+# field failure: pass-verdict receipts for US-001/002/003 were overwritten and a
+# later PRD-revision re-seed (`ledger-seed --evidence`) became impossible. This
+# moves any iter-* left in $logs_dir into $logs_dir/runs/superseded-<label>/
+# BEFORE the new run can write. Evidence is RELOCATED, never deleted. <label> is
+# the superseding run's startup timestamp so the batch is self-describing. Loud
+# one-line log. Best-effort: any failure returns 0 (never blocks the campaign).
+archive_superseded_run_artifacts() {
+  local logs_dir="$1" label="$2"
+  [[ -n "$logs_dir" && -d "$logs_dir" ]] || return 0
+  local -a stale
+  stale=("$logs_dir"/iter-*(N))
+  (( ${#stale} )) || return 0
+  local dest
+  dest=$(_collision_free_archive_dir "$logs_dir/runs" "$label")
+  mkdir -p "$dest" 2>/dev/null || return 0
+  local f moved=0
+  for f in "${stale[@]}"; do
+    [[ -e "$f" ]] || continue
+    mv "$f" "$dest/" 2>/dev/null && (( moved++ ))
+  done
+  (( moved > 0 )) && log "[archive] moved $moved superseded iter-* artifact(s) from a prior run → $dest (evidence preserved, never deleted)"
+  return 0
+}
+
+# request-m ② (collision-proof): pick a `runs/superseded-<label>` dir that does not
+# clobber an existing archive. The label is a wall-clock second
+# (date +%Y%m%d-%H%M%S), so two leader/init starts in the SAME second would share
+# it — silently overwriting the first archive is the exact evidence-loss class ②
+# prevents. If the base dir already holds a prior archive (exists AND non-empty),
+# disambiguate deterministically (-2, -3, …, detect_next_version-style) instead of
+# reusing it. Echoes the chosen absolute dir path (never merges/overwrites).
+_collision_free_archive_dir() {
+  local runs_dir="$1" label="$2"
+  local base="$runs_dir/superseded-$label"
+  if [[ -d "$base" && -n "$(ls -A "$base" 2>/dev/null)" ]]; then
+    local n=2
+    while [[ -e "$runs_dir/superseded-$label-$n" ]]; do (( n++ )); done
+    printf '%s' "$runs_dir/superseded-$label-$n"
+  else
+    printf '%s' "$base"
+  fi
 }
 
 # --- US-024 (R12 P0): tmux pane / session lifecycle verification ---

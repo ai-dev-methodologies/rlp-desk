@@ -741,22 +741,25 @@ Characteristics:
 │   └── <slug>-latest.md             # Current frontier; Worker updates (reset to template on re-execution)
 ├── memos/
 │   ├── <slug>-memory.md             # Campaign memory; Worker updates (reset to template on re-execution)
-│   ├── <slug>-done-claim.json       # Worker's completion claim (runtime; deleted on re-execution)
-│   ├── <slug>-iter-signal.json      # Worker's iteration signal (runtime; deleted on re-execution)
-│   ├── <slug>-verify-verdict.json   # Verifier's verdict (runtime; deleted on re-execution)
+│   ├── <slug>-done-claim.json       # Worker's completion claim (runtime; archived to runs/ on re-execution)
+│   ├── <slug>-iter-signal.json      # Worker's iteration signal (runtime; archived to runs/ on re-execution)
+│   ├── <slug>-verify-verdict.json   # Verifier's verdict (runtime; archived to runs/ on re-execution)
 │   ├── <slug>-escalation.md         # Architecture escalation report (tmux mode, §7¾; deleted on re-execution)
-│   ├── <slug>-complete.md           # SENTINEL (Leader only; deleted on re-execution)
-│   └── <slug>-blocked.md            # SENTINEL (Leader only; deleted on re-execution)
+│   ├── <slug>-complete.md           # SENTINEL (Leader only; archived to runs/ on re-execution)
+│   └── <slug>-blocked.md            # SENTINEL (Leader only; archived to runs/ on re-execution)
 ├── plans/
 │   ├── prd-<slug>.md                # PRD (in-place: --mode improve | fresh preserves AUTHORED plans, template-only deleted; --reset-plans wipes with versioned backup)
 │   └── test-spec-<slug>.md          # Verification criteria (regenerated on re-execution)
 └── logs/<slug>/                          # Project-level operational data
     ├── campaign-report.md           # Campaign summary (versioned: campaign-report-v{N}.md on re-execution)
-    ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy (deleted on re-execution)
-    ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy (deleted on re-execution)
-    ├── iter-NNN.result.md           # Iteration result (deleted on re-execution)
-    ├── iter-NNN-done-claim.json     # Archived done-claim per iteration (deleted on re-execution)
-    ├── iter-NNN-verify-verdict.json # Archived verdict per iteration (deleted on re-execution)
+    ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy (archived to runs/ on re-execution)
+    ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy (archived to runs/ on re-execution)
+    ├── iter-NNN.result.md           # Iteration result (archived to runs/ on re-execution)
+    ├── iter-NNN-done-claim.json     # Archived done-claim per iteration (archived to runs/ on re-execution)
+    ├── iter-NNN-verify-verdict.json # Archived verdict per iteration (archived to runs/ on re-execution)
+    ├── iter-NNN-iter-signal.json    # Archived iter-signal per iteration (request-m ②; archived to runs/ on re-execution)
+    ├── runs/                        # request-m ②: run-scoped evidence archive (NEVER deleted — see below)
+    │   └── superseded-<ts>/         #   a prior run's iter-* + relocated memos/verified.jsonl, batched by superseding run's startup ts
     ├── status.json                  # Leader's loop state (deleted on re-execution)
     ├── baseline.log                 # Baseline capture (deleted on re-execution)
     └── cost-log.jsonl               # Per-iteration cost log (deleted on re-execution)
@@ -768,6 +771,34 @@ Characteristics:
     ├── self-verification-data.json  # Cumulative SV data (agent-mode only, --with-self-verification)
     └── self-verification-report-NNN.md  # Versioned SV report (--with-self-verification; NNN auto-increment)
 ```
+
+### Run-scoped evidence archive — `logs/<slug>/runs/` (request-m ②)
+
+A bare leader restart resets `ITERATION` to 1 (there is no cross-run counter), so a
+new run's `iter-1,2,3…` artifacts would otherwise CLOBBER the same-numbered files
+from a prior run — and a `--mode fresh|improve` re-execution used to `rm` them
+outright. Both cases destroyed the only durable *receipt* of a past verdict (the
+`verified.jsonl` ledger is the progress record; each verdict is its receipt), which
+made a later PRD-revision `ledger-seed` re-bind impossible.
+
+Evidence is now **relocated, never deleted**:
+
+- **Leader startup** (every run): any `iter-*` left in `logs/<slug>/` from a prior
+  run is moved into `logs/<slug>/runs/superseded-<ts>/` BEFORE the new run writes,
+  where `<ts>` is the superseding run's startup timestamp (`YYYYMMDD-HHMMSS`). Two
+  starts in the SAME wall-clock second would share `<ts>`, so a non-empty
+  collision is disambiguated deterministically (`superseded-<ts>-2`, `-3`, …) —
+  an existing archive is NEVER overwritten or merged.
+- **`init --mode fresh|improve`**: the `iter-*` artifacts, the runtime memos
+  (`done-claim` / `iter-signal` / `verify-verdict` / `complete` / `blocked` /
+  `flywheel-*`), AND `verified.jsonl` are moved into the same
+  `runs/superseded-<ts>/` scheme instead of deleted. The LIVE paths are still
+  emptied (a fresh campaign starts clean and cannot inherit stale credit), but the
+  bytes survive under `runs/`.
+
+`ledger-seed --evidence` accepts ANY path (its contract is unchanged), so an
+archived verdict at `logs/<slug>/runs/superseded-<ts>/iter-NNN-verify-verdict.json`
+is a valid `--evidence` argument for re-binding a past pass to a revised PRD hash.
 
 ## 7. Leader Loop Protocol
 

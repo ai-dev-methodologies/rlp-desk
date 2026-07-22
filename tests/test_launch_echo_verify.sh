@@ -111,23 +111,48 @@ _p=$(grep -c 'PASTE' "$REC"); _cu=$(grep -c 'send-keys.*C-u' "$REC")
 grep -q "grep -v '\^\[\[:space:\]\]\*\$' | tail -10" "$RUN" \
   && ok "REGRESSION(k①): source strips blank lines before tail -10" || no "blank-line filter missing from source"
 
-# --- request-k companion: _wait_pane_shell_ready (real) -----------------------
+# --- request-k/-m companion: _wait_pane_shell_ready (real) --------------------
+# request-m ①: readiness is now PROCESS-based (#{pane_current_command} ∈ zsh/bash)
+# AND content-based (non-blank). The tmux stubs must answer BOTH display-message
+# and capture-pane.
 eval "$(_extract_fn _wait_pane_shell_ready "$RUN")"
 [[ "$(whence -w _wait_pane_shell_ready 2>/dev/null)" == *function* ]] \
   && ok "extracted real _wait_pane_shell_ready" || no "could not extract _wait_pane_shell_ready"
-# ready: pane already has non-blank text → returns 0 fast, no long wait.
+# ready: shell owns the pane (current_command=zsh) AND non-blank text → rc=0 fast.
 _ready_out=$( RLP_SHELL_READY_TIMEOUT_S=2
-  tmux() { case "$1" in capture-pane) print -r -- "user@host ~ %";; esac; return 0; }
+  tmux() { case "$1" in
+    display-message) print -r -- "zsh";;
+    capture-pane) print -r -- "user@host ~ %";; esac; return 0; }
   _wait_pane_shell_ready "%9"; print "rc=$?"; unfunction tmux )
 [[ "$_ready_out" == "rc=0" ]] \
-  && ok "shell-ready: non-blank pane text → ready (rc=0)" || no "shell-ready did not detect ready pane ($_ready_out)"
-# not-ready: pane all-blank → times out and FAILS OPEN (rc=1), bounded by the env timeout.
+  && ok "shell-ready: shell current_command + non-blank text → ready (rc=0)" || no "shell-ready did not detect ready pane ($_ready_out)"
+# request-m ① REUSED-PANE: the pane is full of the previous process's output
+# (capture-pane always non-blank), but the previous process (codex/node) still
+# owns the foreground for a few ticks before the shell reclaims it. The wait MUST
+# HOLD until current_command becomes zsh — NOT return early on the stale content.
+_DMCNT="$TMPDIR_T/dmcnt"; print -r -- 0 > "$_DMCNT"
+_reuse_out=$( RLP_SHELL_READY_TIMEOUT_S=5
+  tmux() { case "$1" in
+    display-message)
+      local n; n=$(cat "$_DMCNT" 2>/dev/null || print 0); n=$((n + 1)); print -r -- "$n" > "$_DMCNT"
+      # first 3 polls: previous worker process still owns the pane; then shell.
+      (( n <= 3 )) && print -r -- "node" || print -r -- "zsh";;
+    capture-pane) print -r -- "STALE OUTPUT from previous run";;   # always non-blank
+    esac; return 0; }
+  _wait_pane_shell_ready "%9"; print "rc=$?"; unfunction tmux )
+_dmpolls=$(cat "$_DMCNT")
+{ [[ "$_reuse_out" == "rc=0" ]] && (( _dmpolls >= 4 )) } \
+  && ok "shell-ready(m①): reused pane w/ stale output HOLDS until shell reclaims it (rc=0 after $_dmpolls polls, no premature ready)" \
+  || no "shell-ready(m①): reused-pane hold wrong (out=$_reuse_out polls=$_dmpolls)"
+# not-ready: process never returns to the shell → times out, FAILS OPEN (rc=1).
 _to_out=$( RLP_SHELL_READY_TIMEOUT_S=1
-  tmux() { case "$1" in capture-pane) print -r -- "   ";; esac; return 0; }   # only blank
+  tmux() { case "$1" in
+    display-message) print -r -- "codex";;                        # never the shell
+    capture-pane) print -r -- "busy output";; esac; return 0; }
   _t0=$(date +%s); _wait_pane_shell_ready "%9"; _rc=$?; _t1=$(date +%s)
   unfunction tmux; print "rc=$_rc dt=$(( _t1 - _t0 ))" )
 { [[ "$_to_out" == "rc=1"* ]] && [[ "${_to_out##*dt=}" -le 3 ]] } \
-  && ok "shell-ready: all-blank pane → fail-open rc=1, bounded by RLP_SHELL_READY_TIMEOUT_S ($_to_out)" \
+  && ok "shell-ready: non-shell current_command → fail-open rc=1, bounded by RLP_SHELL_READY_TIMEOUT_S ($_to_out)" \
   || no "shell-ready timeout not bounded/fail-open ($_to_out)"
 # structural: the helper is called before the first paste, and is env-tunable.
 _pv=$(_extract_fn _paste_cmd_echo_verified "$RUN")
@@ -135,6 +160,58 @@ print -r -- "$_pv" | grep -q '_wait_pane_shell_ready' \
   && ok "structural: echo-verify calls _wait_pane_shell_ready before pasting" || no "shell-ready wait not wired into echo-verify"
 grep -q 'RLP_SHELL_READY_TIMEOUT_S' "$RUN" \
   && ok "structural: shell-ready wait is env-tunable (RLP_SHELL_READY_TIMEOUT_S)" || no "shell-ready timeout not env-tunable"
+# request-m ①: process-based readiness predicate present in source.
+grep -q "pane_current_command" "$RUN" \
+  && ok "structural(m①): readiness predicate uses #{pane_current_command}" || no "process-based readiness missing from source"
+# request-m ①: retry interval raised 0.15→0.8s (3 retries no longer burn inside 1s).
+print -r -- "$_pv" | grep -qE 'sleep 0\.8' \
+  && ok "structural(m①): paste retry interval is 0.8s (was 0.15s)" || no "retry interval not raised to 0.8s"
+
+# --- request-m ① (HIGH): the DEFAULT timeout knob is 8, not dead 6 --------------
+# Every case above passes RLP_SHELL_READY_TIMEOUT_S explicitly; this exercises the
+# UNSET default the way production does — sourcing the canonical knob block. Guards
+# the HIGH: the 8s raise was dead code while the knob at the top still pinned 6.
+eval "$(_extract_fn _validate_int_knob "$RUN")"
+_knob_lines=$(grep -E 'RLP_SHELL_READY_TIMEOUT_S="\$\{RLP_SHELL_READY_TIMEOUT_S:-[0-9]+\}"|_validate_int_knob RLP_SHELL_READY_TIMEOUT_S' "$RUN")
+_def_to=$(
+  unset RLP_SHELL_READY_TIMEOUT_S
+  eval "$_knob_lines"
+  print -r -- "$RLP_SHELL_READY_TIMEOUT_S" )
+[[ "$_def_to" == "8" ]] \
+  && ok "request-m①(HIGH): unset RLP_SHELL_READY_TIMEOUT_S → canonical knob yields 8 (not dead 6)" \
+  || no "default timeout is $_def_to, expected 8 (dead-code raise regression)"
+# structural: no stale 6-default for this knob remains anywhere in source.
+if grep -qE 'RLP_SHELL_READY_TIMEOUT_S:-6|_validate_int_knob RLP_SHELL_READY_TIMEOUT_S 6' "$RUN"; then
+  no "request-m①(HIGH): a stale ':-6' / 'knob 6' default for RLP_SHELL_READY_TIMEOUT_S still present"
+else
+  ok "request-m①(HIGH): no stale 6-default remains for RLP_SHELL_READY_TIMEOUT_S"
+fi
+
+# --- request-m ① (MEDIUM): codex launch passes a zsh-only accept-set -----------
+_lwc_src=$(_extract_fn launch_worker_codex "$RUN")
+print -r -- "$_lwc_src" | grep -qE '_paste_cmd_echo_verified "\$pane_id" "\$worker_launch" zsh' \
+  && ok "request-m①(MED): codex worker launch passes zsh-only accept (excludes the bash trigger)" \
+  || no "codex launch does not pass a zsh-only accept-set"
+# claude keeps the default (no explicit accept arg → zsh|bash).
+_lwcl_src=$(_extract_fn launch_worker_claude "$RUN")
+print -r -- "$_lwcl_src" | grep -qE '_paste_cmd_echo_verified "\$pane_id" "\$worker_launch"( zsh)?; then' \
+  && print -r -- "$_lwcl_src" | grep -qvE '_paste_cmd_echo_verified "\$pane_id" "\$worker_launch" zsh' \
+  && ok "request-m①(MED): claude worker launch keeps the default accept-set (zsh|bash)" \
+  || no "claude launch accept-set wrong"
+# behavioral: with accept=zsh, a pane whose current_command is `bash` is NOT ready
+# (the codex trigger case); with the default zsh|bash it IS ready.
+_zex=$( RLP_SHELL_READY_TIMEOUT_S=1
+  tmux() { case "$1" in display-message) print -r -- "bash";; capture-pane) print -r -- "x";; esac; return 0; }
+  _wait_pane_shell_ready "%9" "zsh"; print "rc=$?"; unfunction tmux )
+[[ "$_zex" == "rc=1" ]] \
+  && ok "request-m①(MED): accept=zsh HOLDS on a bash current_command (codex trigger not misread as ready)" \
+  || no "accept=zsh wrongly accepted bash ($_zex)"
+_bok=$( RLP_SHELL_READY_TIMEOUT_S=2
+  tmux() { case "$1" in display-message) print -r -- "bash";; capture-pane) print -r -- "x";; esac; return 0; }
+  _wait_pane_shell_ready "%9"; print "rc=$?"; unfunction tmux )
+[[ "$_bok" == "rc=0" ]] \
+  && ok "request-m①(MED): default accept-set (zsh|bash) accepts bash (claude idle-shell case)" \
+  || no "default accept-set rejected bash ($_bok)"
 
 # --- structural: both launch functions call the helper before Enter ------------
 _lwc=$(_extract_fn launch_worker_codex "$RUN")

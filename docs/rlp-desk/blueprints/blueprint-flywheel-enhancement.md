@@ -319,7 +319,7 @@ Placement: Added to Step 0E (Scope Decision) as a judgment criterion.
 ```
 .claude/ralph-desk/
 ├── memos/
-│   ├── <slug>-flywheel-guard-verdict.json   (runtime; deleted on re-execution)
+│   ├── <slug>-flywheel-guard-verdict.json   (runtime; archived to runs/ on re-execution — request-m ②)
 ```
 
 ## Verification

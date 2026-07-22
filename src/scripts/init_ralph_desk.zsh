@@ -547,14 +547,38 @@ if [[ -n "$MODE" ]]; then
   echo ""
 
   DELETED_COUNT=0
+  ARCHIVED_COUNT=0
+
+  # request-m ②: on a fresh/improve re-execution, EVIDENCE artifacts (per-iteration
+  # iter-* snapshots, the runtime memos, and the verified ledger) are RELOCATED
+  # into logs/<slug>/runs/superseded-<ts>/ instead of deleted — a later PRD-revision
+  # `ledger-seed --evidence` must be able to recover a past pass verdict. Live paths
+  # are still emptied ("fresh campaign starts clean"), but the bytes survive in runs/.
+  local _arch_ts _arch_dir
+  _arch_ts=$(date +%Y%m%d-%H%M%S)
+  _arch_dir="$LOGS_DIR/runs/superseded-$_arch_ts"
+  # request-m ② (collision-proof): a same-second prior archive (another leader/init
+  # start in this wall-clock second) must NOT be overwritten — disambiguate
+  # deterministically (-2, -3, …) instead of reusing/merging its dir.
+  if [[ -d "$_arch_dir" && -n "$(ls -A "$_arch_dir" 2>/dev/null)" ]]; then
+    local _an=2
+    while [[ -e "$LOGS_DIR/runs/superseded-$_arch_ts-$_an" ]]; do (( _an++ )); done
+    _arch_dir="$LOGS_DIR/runs/superseded-$_arch_ts-$_an"
+  fi
+  _arch_mv() {  # relocate one file into the archive dir (never deletes); dynamic scope reads $_arch_dir
+    [[ -f "$1" ]] || return 1
+    mkdir -p "$_arch_dir" 2>/dev/null || return 1
+    mv -f "$1" "$_arch_dir/" 2>/dev/null
+  }
 
   # Version debug.log and campaign-report.md (NOT self-verification-report — uses -NNN)
   version_file "$LOGS_DIR/debug.log"
   version_file "$LOGS_DIR/campaign-report.md"
 
-  # Delete iter-* artifacts (archived done-claims, verdicts, prompt logs, results)
+  # Archive iter-* artifacts (per-iteration done-claims, verdicts, iter-signals,
+  # prompt logs, results) — relocated, never deleted (request-m ②).
   for f in "$LOGS_DIR"/iter-*(N); do
-    [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
+    _arch_mv "$f" && (( ++ARCHIVED_COUNT ))
   done
 
   # US-022 R10 P2-J: quarantine cross-mission stale iter-signal.json before
@@ -567,11 +591,15 @@ if [[ -n "$MODE" ]]; then
     _quarantine_stale_signal "$_r10_signal" "$_r10_prd" "$DESK" 2>/dev/null || true
   fi
 
-  # Delete runtime memos. The verified ledger is RUNTIME state (v0.22.3
-  # early-review P1-2): leaving it across a fresh re-execution would let the
-  # new campaign inherit the old one's credit and derive confirmation mode
-  # without doing any work. It is 0444 between appends, hence rm -f.
-  rm -f "$DESK/memos/$SLUG-verified.jsonl" 2>/dev/null && (( ++DELETED_COUNT ))
+  # Archive the runtime memos + the verified ledger (request-m ②: relocate, don't
+  # delete). The verified ledger is RUNTIME state (v0.22.3 early-review P1-2):
+  # leaving it LIVE across a fresh re-execution would let the new campaign inherit
+  # the old one's credit and derive confirmation mode without doing any work — so
+  # the LIVE path must be emptied. But the ledger is the campaign's progress record
+  # and each verdict is its receipt, so the bytes are preserved in runs/ rather
+  # than destroyed. It is 0444 between appends; `mv` renames the inode (needs only
+  # parent-dir write), so the lock does not block relocation.
+  _arch_mv "$DESK/memos/$SLUG-verified.jsonl" && (( ++ARCHIVED_COUNT ))
   for f in \
     "$DESK/memos/$SLUG-done-claim.json" \
     "$DESK/memos/$SLUG-iter-signal.json" \
@@ -581,7 +609,7 @@ if [[ -n "$MODE" ]]; then
     "$DESK/memos/$SLUG-flywheel-signal.json" \
     "$DESK/memos/$SLUG-flywheel-review.md" \
     "$DESK/memos/$SLUG-flywheel-guard-verdict.json"; do
-    [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
+    _arch_mv "$f" && (( ++ARCHIVED_COUNT ))
   done
 
   # Delete status.json, baseline.log, cost-log.jsonl
@@ -646,6 +674,7 @@ if [[ -n "$MODE" ]]; then
     echo "  Preserved: prd-$SLUG.md (--mode improve: PRD kept in-place)"
   fi
   echo "  Deleted:   $DELETED_COUNT runtime artifacts"
+  (( ARCHIVED_COUNT > 0 )) && echo "  Archived:  $ARCHIVED_COUNT evidence artifact(s) → runs/${_arch_dir:t}/ (preserved, never deleted)"
   echo "  Reset:     memory.md + context.md (regenerating from templates)"
   echo ""
 fi
