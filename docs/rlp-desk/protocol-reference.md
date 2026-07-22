@@ -555,6 +555,23 @@ Unlike Agent() mode where the LLM Leader dynamically selects models, tmux mode u
 | `WORKER_MODEL` | `sonnet` | Model for Worker invocations |
 | `VERIFIER_MODEL` | `opus` | Model for Verifier invocations |
 
+### Reliability Environment Overrides (v0.22.18+)
+
+The tmux leader's pane and stall-recovery behavior is tunable via environment variables (all optional; defaults shown):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RLP_LEADER_MIN_WIDTH` | `30` | Readable min width the Leader pane is kept at, at startup and each iteration (v0.22.20) |
+| `RLP_LEADER_SPLIT_WIDTH` | `110` | Width the Leader is widened to before any `-h` split; still-too-narrow is an explicit error (v0.22.20) |
+| `RLP_SHELL_READY_TIMEOUT_S` | `8` | Bounded wait for a (reused) pane's shell to reclaim the foreground before the launch command is pasted; proceeds anyway on timeout (v0.22.19/v0.22.23) |
+| `RLP_CAPACITY_MAX_STRIKES` | `3` | Resume attempts on a "model at capacity" stall before failing fast with `model capacity` BLOCKED (v0.22.18) |
+| `RLP_CAPACITY_REINJECT_COOLDOWN_S` | `120` | Cooldown between capacity-resume injections (v0.22.18) |
+| `RLP_CAPACITY_RESUME_TEXT` | `Continue.` | Text injected to resume a capacity-stalled pane (v0.22.18) |
+| `RLP_CAPACITY_BANNER_RE` | `Selected model is at capacity\|model is at capacity` | Regex that detects the capacity banner (v0.22.18) |
+| `RLP_CODEX_UPDATE_CHECK` | `0` | `1` restores codex's startup update check; the default suppresses the "Update available!" dialog that can freeze a codex pane (v0.22.21) |
+
+`RLP_DONECLAIM_LINT` (default on; `0` skips) governs the deterministic done-claim TDD-sequence pre-gate and applies to both leaders, not just tmux — see governance §3a.
+
 ### Session Config
 
 Session metadata is stored in `logs/<slug>/session-config.json`:

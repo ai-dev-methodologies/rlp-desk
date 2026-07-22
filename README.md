@@ -52,6 +52,8 @@ When the Worker submits a done-claim, the mechanical pre-gate runs before any ve
 
 Any pre-gate failure returns a fix contract to the Worker and redispatches — no verifier is spawned, so the ~20-minute LLM round is never spent on a claim a script could reject.
 
+The same mechanical discipline now guards the **contract side**, not just the Worker's claim (v0.22.22). Sealing a campaign with `gate-receipt` content-hashes the PRD *and* the test-spec, so a post-seal edit to either surfaces as drift at run start; a deterministic 3-doc consistency lint (PRD ↔ test-spec ↔ per-US split) hard-rejects structural drift at `init`; and every post-seal contract edit is appended to a `contract-revisions.jsonl` audit chain. Both the input contract and the output claim are held to machine checks before an LLM round is spent.
+
 ### Field results
 
 From a production analytics campaign:
@@ -92,6 +94,7 @@ You'll be asked to confirm each item:
 - **Iteration Unit** — one story per iteration (incremental) or all at once (fast)
 - **Verification Commands** — how to check the work
 - **Ambiguity Gate** — AC quality scoring (IL-2, 0-12 scale, blocks init if < 6)
+- **Work-Type Classification** — each US sorted into 명세형/발굴형/검증형 (specification / discovery / verification, IL-2¾): specification-type enters the loop, discovery-type is rejected to prior reconnaissance, and verification-type stays but is routed to the `verify_existing` gate so the TDD-RED mandate doesn't false-fail confirm-existing-behavior work
 - **Models** — which Claude model for Worker/Verifier
 
 ### 3. Run
@@ -414,6 +417,7 @@ The operator pane is outside the runner's control (it only assumes it exists). W
 - Real-time visibility — watch Worker/Verifier execute live
 - Zero-token orchestration — shell loop, not LLM
 - Automatic cleanup — panes removed on completion
+- Self-healing stalls — a codex "model at capacity" freeze is auto-resumed with bounded retries (`RLP_CAPACITY_*` knobs) before failing fast with an explicit `model capacity` BLOCKED, so a transient capacity wall doesn't silently burn the iteration budget (v0.22.18)
 - Best for long campaigns and observability
 
 Prerequisites: `tmux` and `jq` must be installed.
@@ -456,6 +460,8 @@ npm install -g @openai/codex
 ```
 
 The engine is inferred automatically from the `--worker-model` value: a plain model name (`haiku`) OR any claude id — short alias or full `claude-*`, with or without an effort suffix (`opus:max`, `claude-opus-4-8:high`) — routes to Claude; any other `model:reasoning` (`spark:high`, `gpt-5.6-terra:medium`) routes to Codex. A colon does NOT imply Codex. The `codex` binary is only required when a codex model is specified.
+
+Every codex launch injects `-c check_for_update_on_startup=false` (v0.22.21) to suppress the startup "Update available!" dialog, which can otherwise freeze a TUI pane since its key handling shifts between codex releases; set `RLP_CODEX_UPDATE_CHECK=1` to restore codex's default update check.
 
 | Engine | Agent Mode | Tmux Mode | Dynamic Routing |
 |--------|-----------|-----------|-----------------|
@@ -563,8 +569,15 @@ your-project/
     │   ├── prd-<slug>.md
     │   └── test-spec-<slug>.md
     └── logs/<slug>/
-        └── status.json
+        ├── status.json
+        └── runs/superseded-<ts>/         # prior-run evidence, relocated never deleted (v0.22.23)
 ```
+
+A bare restart or `init --mode fresh|improve` no longer overwrites or deletes a prior
+run's per-iteration evidence (done-claim, verify-verdict, iter-signal) or `verified.jsonl` —
+those receipts are **relocated** into `logs/<slug>/runs/superseded-<ts>/` so the live paths
+start clean while past verdicts survive. `ledger-seed --evidence` accepts the archived
+paths, so a past pass verdict can be re-bound to a revised PRD (v0.22.23).
 
 ### Local Settings
 

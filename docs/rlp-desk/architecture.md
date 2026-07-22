@@ -143,7 +143,7 @@ Each Verifier:
 ## Filesystem as Memory
 
 ```
-.claude/ralph-desk/
+.rlp-desk/          # project-local scaffold (v0.13.0+; was .claude/ralph-desk/)
 ├── plans/          # Contracts (PRD, test spec) — written once, rarely modified
 ├── prompts/        # Base prompts — templates for Worker/Verifier
 ├── context/        # Current frontier — Worker updates each iteration
