@@ -116,6 +116,25 @@ _validate_int_knob HEARTBEAT_STALE_THRESHOLD 120 1
 _validate_int_knob MAX_RESTARTS 3 0
 _validate_int_knob IDLE_NUDGE_THRESHOLD 30 1
 _validate_int_knob MAX_NUDGES 3 0
+# F-1 hardening (v0.22.21): codex startup update-check dialog suppression.
+# codex 0.145.0's "✨ Update available! … 1. Update now / 2. Skip" dialog changed
+# its key handling and broke the Skip handler, masquerading as a verifier
+# submission failure (incident 2026-07-22). Injecting
+# `-c check_for_update_on_startup=false` at every codex launch removes the dialog
+# surface entirely — the durable defense, since a Skip handler is whack-a-mole
+# across CLI releases. Escape hatch: RLP_CODEX_UPDATE_CHECK=1 restores codex's
+# default startup update check (and re-arms the shared dismisser below).
+if [[ "${RLP_CODEX_UPDATE_CHECK:-0}" == "1" ]]; then
+  _CODEX_NO_UPDATE_FLAG=""
+else
+  _CODEX_NO_UPDATE_FLAG=" -c check_for_update_on_startup=false"
+fi
+# Single canonical detector for the codex update dialog, shared by
+# _dismiss_codex_update_prompt and the durable-reason checks (belt-and-suspenders
+# if the dialog still appears — RLP_CODEX_UPDATE_CHECK=1 or a future CLI). 0.145.0
+# shows a TWO-option menu; 0.140/0.141 showed THREE. "1\. Update now" is stable
+# across both.
+_RLP_CODEX_UPDATE_RE='Update available|1\. Update now'
 WITH_SELF_VERIFICATION="${WITH_SELF_VERIFICATION:-0}"
 WITH_SELF_VERIFICATION_REQUESTED="$WITH_SELF_VERIFICATION"  # preserves original user intent for traceability (governance §1f)
 SV_SKIPPED_REASON=""                                         # set when SV is disabled despite user request
@@ -156,6 +175,13 @@ LAST_BLOCK_REASON=""
 # BLOCKED sentinel reason. Initialized here so a reference is never unset under `set -u`.
 _WIDTH_FAIL_REASON=""
 _GEO_FAIL_REASON=""
+# F-1 (v0.22.21): durable launch-failure reason set by launch_worker_codex /
+# launch_verifier_codex when a codex TUI fails to reach ready within 30s because
+# the update dialog could not be dismissed. Threaded into VERIFIER_ABORT_REASON at
+# the dispatch guard so the persisted BLOCKED reason names the true cause + remedy
+# instead of the generic "never started" text (durable-reason convention, cf.
+# _GEO_FAIL_REASON, v0.22.20).
+_CODEX_LAUNCH_FAIL_REASON=""
 
 # request-l §2: leader pane width knobs (D-19 validated). The leader pane is a
 # pane-creation ANCHOR, not a log viewer — but it must stay visible at a readable
@@ -723,6 +749,32 @@ _paste_cmd_echo_verified() {
   return 1
 }
 
+# _dismiss_codex_update_prompt <pane_id> <attempt_no> — F-1 shared dismisser for
+# codex's startup update dialog. Captures the pane and, if the update banner is
+# present, sends a dismissal keystroke; returns 0 when it fired, 1 when no dialog
+# was present (caller proceeds to its ready/other checks). Key strategy: attempts
+# 1-2 move the highlight DOWN to "Skip" and confirm (Down + Enter — correct for
+# both the 0.145 TWO-option menu and the 0.140/141 THREE-option menu, whose
+# default highlight is "1. Update now"); attempt 3+ falls back to the literal "2"
+# hotkey + Enter. The root fix (`-c check_for_update_on_startup=false`, see
+# _CODEX_NO_UPDATE_FLAG) normally removes the dialog before this ever fires — this
+# is the belt-and-suspenders handler for RLP_CODEX_UPDATE_CHECK=1 or a future CLI
+# that reintroduces the surface. Canonical detect regex: _RLP_CODEX_UPDATE_RE.
+_dismiss_codex_update_prompt() {
+  local pane_id="$1" attempt="${2:-1}"
+  local _txt
+  _txt=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+  print -r -- "$_txt" | grep -qiE "$_RLP_CODEX_UPDATE_RE" 2>/dev/null || return 1
+  if (( attempt >= 3 )); then
+    tmux send-keys -t "$pane_id" "2" 2>/dev/null; sleep 0.3
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+  else
+    tmux send-keys -t "$pane_id" Down 2>/dev/null; sleep 0.3
+    tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+  fi
+  return 0
+}
+
 # launch_worker_codex() — launch codex Worker TUI, send instruction, verify submission
 # Matches launch_worker_claude() pattern for consistent tmux-visible execution.
 # Args: $1=pane_id  $2=prompt_file  $3=iteration  $4=worker_launch_cmd
@@ -734,6 +786,7 @@ launch_worker_codex() {
   local worker_launch="$4"
 
   log "  Launching Worker codex TUI in pane $pane_id..."
+  _CODEX_LAUNCH_FAIL_REASON=""   # F-1: fresh per launch (durable-reason convention)
   # Clean pane before launch: kill any lingering process, ensure fresh shell
   local _pre_cmd
   _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
@@ -752,23 +805,22 @@ launch_worker_codex() {
   # Wait for codex TUI prompt (› pre-0.144, ❯ from 0.144) instead of shell prompt
   local _codex_ready=0
   local _codex_wait=0
+  local _codex_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   while (( _codex_wait < 30 )); do
     sleep 1
     local _pane_text
     _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
-    # F-1: on launch codex may show "✨ Update available!" — an arrow-menu whose
-    # DEFAULT highlighted option is "1. Update now" (runs `npm install -g
-    # @openai/codex`) with "Press enter to continue". Our subsequent Enter would
-    # confirm option 1 and the update REPLACES the Worker session (hijack). This
-    # check MUST precede the '›' ready check below because the update menu also
-    # renders '›'. Move the selection to "2. Skip" (Down) then confirm (Enter).
-    # (Guarded: only fires when the update banner is present, so it is harmless
-    # in any normal pane state. Key sequence pending live-codex confirmation.)
-    if echo "$_pane_text" | grep -qiE 'Update available|1\. Update now' 2>/dev/null; then
-      log "  Worker codex: update prompt detected — selecting '2. Skip' (F-1)."
-      log_debug "[GOV] iter=$iter codex_update_prompt=skipped role=worker"
-      tmux send-keys -t "$pane_id" Down 2>/dev/null; sleep 0.3
-      tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+    # F-1 (v0.22.21): dismiss codex's "✨ Update available!" launch dialog via the
+    # shared dismisser BEFORE the '›' ready check — the update menu also renders
+    # '›' (on "› 1. Update now"), and confirming its default option runs
+    # `npm install -g @openai/codex`, REPLACING the Worker session (hijack). The
+    # root fix injects check_for_update_on_startup=false so this rarely fires; it
+    # remains for RLP_CODEX_UPDATE_CHECK=1 / a future CLI regression. Canonical
+    # regex + Down→"2" key strategy live in _dismiss_codex_update_prompt.
+    if _dismiss_codex_update_prompt "$pane_id" "$(( _codex_update_attempts + 1 ))"; then
+      (( _codex_update_attempts++ ))
+      log "  Worker codex: update prompt detected — dismissing (attempt $_codex_update_attempts, F-1)."
+      log_debug "[GOV] iter=$iter codex_update_prompt=dismissed attempt=$_codex_update_attempts role=worker"
       (( _codex_wait++ )); continue
     fi
     # F-16: codex 0.141 shows a "Do you trust the contents of this directory?
@@ -791,7 +843,17 @@ launch_worker_codex() {
     (( _codex_wait++ ))
   done
   if (( ! _codex_ready )); then
-    log_error "Worker codex TUI not ready after 30s"
+    # F-1 (v0.22.21): if the update dialog is STILL on screen after the 30s ready
+    # window, persist the true cause + remedy into the durable reason so the
+    # caller's BLOCKED sentinel names it (not a generic "not ready" text).
+    local _final_pane
+    _final_pane=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    if print -r -- "$_final_pane" | grep -qiE "$_RLP_CODEX_UPDATE_RE" 2>/dev/null; then
+      _CODEX_LAUNCH_FAIL_REASON="Worker codex update dialog could not be dismissed within 30s (attempted ${_codex_update_attempts}x) — run 'codex update' to clear it, or keep the check_for_update_on_startup=false injection enabled (do not set RLP_CODEX_UPDATE_CHECK=1)"
+      log_error "$_CODEX_LAUNCH_FAIL_REASON"
+    else
+      log_error "Worker codex TUI not ready after 30s"
+    fi
     return 1
   fi
 
@@ -933,6 +995,7 @@ launch_verifier_codex() {
   local verifier_launch="$4"
 
   log "  Launching Verifier codex TUI in pane $pane_id..."
+  _CODEX_LAUNCH_FAIL_REASON=""   # F-1: fresh per launch (durable-reason convention)
   # Clean pane before launch: kill any lingering process, ensure fresh shell
   local _pre_cmd
   _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
@@ -947,17 +1010,18 @@ launch_verifier_codex() {
   # Wait for codex TUI prompt (› pre-0.144, ❯ from 0.144) instead of shell prompt
   local _codex_ready=0
   local _codex_wait=0
+  local _codex_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   while (( _codex_wait < 30 )); do
     sleep 1
     local _pane_text
     _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
-    # F-1: dismiss codex's "✨ Update available!" launch menu before it hijacks the
-    # pane (default option is "1. Update now"). See launch_worker_codex for detail.
-    if echo "$_pane_text" | grep -qiE 'Update available|1\. Update now' 2>/dev/null; then
-      log "  Verifier codex: update prompt detected — selecting '2. Skip' (F-1)."
-      log_debug "[GOV] iter=$iter codex_update_prompt=skipped role=verifier"
-      tmux send-keys -t "$pane_id" Down 2>/dev/null; sleep 0.3
-      tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+    # F-1 (v0.22.21): dismiss codex's "✨ Update available!" launch dialog via the
+    # shared dismisser before it hijacks the pane (default option is "1. Update
+    # now"). See launch_worker_codex / _dismiss_codex_update_prompt for detail.
+    if _dismiss_codex_update_prompt "$pane_id" "$(( _codex_update_attempts + 1 ))"; then
+      (( _codex_update_attempts++ ))
+      log "  Verifier codex: update prompt detected — dismissing (attempt $_codex_update_attempts, F-1)."
+      log_debug "[GOV] iter=$iter codex_update_prompt=dismissed attempt=$_codex_update_attempts role=verifier"
       (( _codex_wait++ )); continue
     fi
     # F-16: accept codex 0.141's "Do you trust this directory?" startup prompt
@@ -978,7 +1042,17 @@ launch_verifier_codex() {
     (( _codex_wait++ ))
   done
   if (( ! _codex_ready )); then
-    log_error "Verifier codex TUI not ready after 30s"
+    # F-1 (v0.22.21): if the update dialog is STILL on screen after the 30s ready
+    # window, persist the true cause + remedy into the durable reason so the
+    # dispatch guard threads it into VERIFIER_ABORT_REASON (not "not ready").
+    local _final_pane
+    _final_pane=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    if print -r -- "$_final_pane" | grep -qiE "$_RLP_CODEX_UPDATE_RE" 2>/dev/null; then
+      _CODEX_LAUNCH_FAIL_REASON="Verifier codex update dialog could not be dismissed within 30s (attempted ${_codex_update_attempts}x) — run 'codex update' to clear it, or keep the check_for_update_on_startup=false injection enabled (do not set RLP_CODEX_UPDATE_CHECK=1)"
+      log_error "$_CODEX_LAUNCH_FAIL_REASON"
+    else
+      log_error "Verifier codex TUI not ready after 30s"
+    fi
     return 1
   fi
 
@@ -1986,11 +2060,11 @@ safe_send_keys() {
     tmux send-keys -t "$pane_id" C-m
     sleep 0.3
   fi
-  # Auto-dismiss codex update prompt (select Skip)
-  if echo "$initial_capture" | grep -qi "new version\|update.*codex\|codex.*update" 2>/dev/null; then
-    log_debug " Codex update prompt detected, selecting Skip"
-    tmux send-keys -t "$pane_id" "2" C-m
-    sleep 0.2
+  # F-1 (v0.22.21): auto-dismiss codex update dialog via the shared dismisser
+  # (canonical _RLP_CODEX_UPDATE_RE — the previous substring pattern here never
+  # matched the real "✨ Update available!" banner, so it was dead code).
+  if _dismiss_codex_update_prompt "$pane_id" 1; then
+    log_debug " Codex update prompt detected — dismissed (F-1)"
   fi
   # Send text via buffer paste (reliable for long strings)
   log_debug " Pasting text to pane $pane_id (${#text} chars)"
@@ -2073,6 +2147,7 @@ wait_for_pane_ready() {
   local pane_id="$1"
   local timeout="${2:-10}"  # tmux default: 10s
   local start=$(date +%s)
+  local _wfpr_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   log "  Waiting for pane $pane_id ready..."
   while (( $(date +%s) - start < timeout )); do
     local captured
@@ -2096,11 +2171,12 @@ wait_for_pane_ready() {
       continue
     fi
 
-    # Auto-dismiss codex update prompt (select Skip = option 2)
-    if echo "$captured" | grep -qi "new version\|update.*codex\|codex.*update" 2>/dev/null; then
-      log "  Codex update prompt detected, selecting Skip..."
-      tmux send-keys -t "$pane_id" "2" C-m
-      sleep 0.5
+    # F-1 (v0.22.21): auto-dismiss codex update dialog via the shared dismisser
+    # (canonical _RLP_CODEX_UPDATE_RE — the previous substring pattern here never
+    # matched the real "✨ Update available!" banner, so it was dead code).
+    if _dismiss_codex_update_prompt "$pane_id" "$(( _wfpr_update_attempts + 1 ))"; then
+      (( _wfpr_update_attempts++ ))
+      log "  Codex update prompt detected — dismissing (attempt $_wfpr_update_attempts, F-1)..."
       continue
     fi
 
@@ -2707,7 +2783,7 @@ restart_worker() {
   # Re-launch worker (tmux interactive pattern)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
     _require_codex_effort "$WORKER_CODEX_REASONING" "worker-restart"
-    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    safe_send_keys "$pane_id" "${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
   else
     safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
   fi
@@ -2904,7 +2980,7 @@ write_worker_trigger() {
     _require_codex_effort "$WORKER_CODEX_REASONING" "worker-trigger"
     local engine_cmd="${CODEX_BIN:-codex} \\
   -m $WORKER_CODEX_MODEL \\
-  -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" \\
+  -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\"${_CODEX_NO_UPDATE_FLAG} \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\""
     local engine_comment="# Run codex with fresh context (fallback trigger — TUI primary launch via launch_worker_codex)"
@@ -3075,7 +3151,7 @@ write_verifier_trigger() {
   if [[ "$verifier_engine" = "codex" ]]; then
     _require_codex_effort "$VERIFIER_CODEX_REASONING" "verifier-trigger"
     local engine_cmd="${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
-  -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" \\
+  -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\"${_CODEX_NO_UPDATE_FLAG} \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\" \\
   > >(tee $output_log) 2>&1"
@@ -3812,8 +3888,18 @@ run_single_verifier() {
       _cx_model="$model"
     fi
     _require_codex_effort "$_cx_reason" "verifier-dispatch"
-    verifier_launch="${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
-    launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
+    verifier_launch="${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    # F-1 (v0.22.21): guard the codex launch return exactly like the claude branch
+    # below. Previously an unchecked call let a stuck update dialog (launch never
+    # reached ready) fall through to verdict polling — burning the 90s submit
+    # window + 2 re-dispatches before dying with a misleading "never started"
+    # (incident 2026-07-22). Thread the durable launch reason so the persisted
+    # BLOCKED names the true cause + remedy.
+    if ! launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"; then
+      VERIFIER_ABORT_REASON="${_CODEX_LAUNCH_FAIL_REASON:-Verifier$suffix codex failed to start}"
+      log_error "$VERIFIER_ABORT_REASON"
+      return 1
+    fi
     log_debug "Verifier$suffix codex TUI dispatched (model=$_cx_model reasoning=$_cx_reason)"
   else
     verifier_launch="$(build_claude_cmd tui "$model" "" "" "$effort")"
@@ -3923,7 +4009,17 @@ run_single_verifier() {
               codex_poll_start=$(date +%s)   # reset the submit window for the re-dispatch
               _banner_reinject_done=0        # request-g: fresh dispatch → allow one more early re-inject
             else
-              VERIFIER_ABORT_REASON="Codex verifier$suffix never started (no execution-start signal after ${SUBMISSION_MAX_REDISPATCH} re-dispatches) — submission failure"
+              # F-1 (v0.22.21): before persisting the generic "never started"
+              # reason, capture the pane once — if the codex update dialog is
+              # STILL on screen, name the true cause + remedy instead of the
+              # misleading submission-failure text (incident 2026-07-22).
+              local _sf_pane
+              _sf_pane=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null || true)
+              if print -r -- "$_sf_pane" | grep -qiE "$_RLP_CODEX_UPDATE_RE" 2>/dev/null; then
+                VERIFIER_ABORT_REASON="Codex verifier$suffix never started: codex update dialog could not be dismissed — run 'codex update' to clear it, or keep the check_for_update_on_startup=false injection enabled (do not set RLP_CODEX_UPDATE_CHECK=1)"
+              else
+                VERIFIER_ABORT_REASON="Codex verifier$suffix never started (no execution-start signal after ${SUBMISSION_MAX_REDISPATCH} re-dispatches) — submission failure"
+              fi
               log_error "$VERIFIER_ABORT_REASON"
               return 1
             fi
@@ -4050,8 +4146,14 @@ _final_verify_one_us() {
   local verifier_launch
   if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
     _require_codex_effort "$FINAL_VERIFIER_CODEX_REASONING" "final-verifier-dispatch"
-    verifier_launch="${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
-    launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
+    verifier_launch="${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    # F-1 (v0.22.21): guard the return like the claude branch below (return 2 hard-
+    # fail) — an unchecked launch let a stuck update dialog fall through to verdict
+    # polling. Thread the durable launch reason (cf. :3898).
+    launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
+      log_error "${_CODEX_LAUNCH_FAIL_REASON:-Failed to launch final verifier for $us}"
+      return 2
+    }
   else
     verifier_launch="$(build_claude_cmd tui "$FINAL_VERIFIER_MODEL" "" "" "$FINAL_VERIFIER_EFFORT")"
     launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
@@ -4090,7 +4192,13 @@ _final_verify_one_us() {
     rm -f "$VERDICT_FILE" "$LEGACY_VERDICT_FILE" \
       && _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"   # D-26: clear BEFORE relaunch (canonical + legacy)
     if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
-      launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch"
+      # F-1 (v0.22.21): mirror the claude branch's `|| return 2` on this D-4 retry
+      # relaunch — same claude-guarded / codex-unguarded asymmetry as the initial
+      # dispatch above; an unchecked relaunch would re-mask a stuck update dialog.
+      launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
+        log_error "${_CODEX_LAUNCH_FAIL_REASON:-Failed to relaunch final verifier for $us (D-4 retry)}"
+        return 2
+      }
     else
       launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || return 2
     fi
@@ -4422,8 +4530,15 @@ run_consensus_verification_parallel() {
     return 1
   fi
   _require_codex_effort "$_cx_reason" "consensus-codex-dispatch"
-  codex_launch="${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
-  launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter" "$codex_launch"
+  codex_launch="${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+  # F-1 (v0.22.21): guard the return like the claude branch above (return 1) — an
+  # unchecked launch let a stuck update dialog fall through to the both-verdict
+  # poll. Thread the durable launch reason (cf. :3898).
+  if ! launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter" "$codex_launch"; then
+    VERIFIER_ABORT_REASON="${_CODEX_LAUNCH_FAIL_REASON:-Parallel consensus: codex verifier failed to start}"
+    log_error "$VERIFIER_ABORT_REASON"
+    return 1
+  fi
   log_debug "[GOV] iter=$iter phase=consensus_parallel dispatched=both claude_pane=$VERIFIER_PANE codex_pane=$CONSENSUS_PANE"
 
   # --- Poll BOTH verdict files until both present+valid, or the submit-anchored
@@ -5264,7 +5379,7 @@ main() {
       # ONCE before BLOCKing, instead of terminating the campaign on a transient.
       if [[ "$WORKER_ENGINE" = "codex" ]]; then
         _require_codex_effort "$WORKER_CODEX_REASONING" "worker-dispatch"
-        worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+        worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
         if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
           log "  Worker codex failed to start — replacing pane and retrying once (F-11)."
           log_debug "[GOV] iter=$ITERATION worker_start_failed=true action=replace_retry engine=codex"
@@ -5762,7 +5877,7 @@ main() {
           local verifier_launch
           if [[ "$_v_eng" = "codex" ]]; then
             _require_codex_effort "$_v_cxr" "verifier-relaunch"
-            verifier_launch="${CODEX_BIN:-codex} -m $_v_cxm -c model_reasoning_effort=\"$_v_cxr\" -c mcp_servers='{}' --disable plugins --dangerously-bypass-approvals-and-sandbox"
+            verifier_launch="${CODEX_BIN:-codex} -m $_v_cxm -c model_reasoning_effort=\"$_v_cxr\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
           else
             verifier_launch="$(build_claude_cmd tui "$_v_model" "" "" "$_v_eff")"
           fi
@@ -5786,7 +5901,14 @@ main() {
             && _lifecycle_clear_lock_mark "${VERDICT_FILE:t}"
 
           if [[ "$_v_eng" = "codex" ]]; then
-            launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"
+            # F-1 (v0.22.21): guard the return like the claude branch (update_status
+            # + continue) — an unchecked launch let a stuck update dialog fall
+            # through to the strike poll loop. Thread the durable reason (cf. :3898).
+            if ! launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"; then
+              log_error "${_CODEX_LAUNCH_FAIL_REASON:-Verifier codex failed to start}"
+              update_status "verifier" "start_failed"
+              continue
+            fi
           else
             if ! launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"; then
               update_status "verifier" "start_failed"
