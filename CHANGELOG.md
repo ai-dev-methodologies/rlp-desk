@@ -9,6 +9,29 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.23] — 2026-07-22
+
+### Added
+- **Run-scoped evidence archive — past verdicts are never lost.** A campaign's
+  per-iteration evidence (done-claim, verify-verdict, and now the iter-signal) used
+  to be overwritten by a later run (a bare restart resets the iteration counter) or
+  deleted outright by `init --mode fresh|improve`. Those artifacts — the durable
+  receipts behind the verified ledger — are now **relocated, never deleted**, into
+  `logs/<slug>/runs/superseded-<timestamp>/`: the leader moves a prior run's
+  `iter-*` aside at startup before writing, and a fresh/improve re-execution moves
+  the `iter-*` artifacts, the runtime memos, and `verified.jsonl` there too (the
+  live paths still start clean). `ledger-seed --evidence` accepts the archived
+  paths, so a past pass verdict can always be re-bound to a revised PRD.
+
+### Fixed
+- **Reused-pane redispatch no longer fails to launch the worker.** When a worker
+  is redispatched onto a reused tmux pane, rlp-desk now waits for the pane's shell
+  to actually reclaim the foreground (process-based readiness) before pasting the
+  launch command — instead of treating the previous run's leftover output as
+  "ready" and pasting into a process that had not yet exited (which lost the paste
+  and produced a spurious "worker failed to start" after three sub-second retries).
+  The shell-ready timeout is raised to 8s and the retry interval to 0.8s.
+
 ## [0.22.22] — 2026-07-22
 
 ### Added
