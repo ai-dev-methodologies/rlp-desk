@@ -9,6 +9,42 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.22] — 2026-07-22
+
+### Added
+- **The gate-receipt now seals the test-spec too, not just the PRD.** When you seal a
+  campaign with `gate-receipt <slug>`, the content hash now covers the test-spec files
+  (`test-spec-<slug>.md` and any per-US split) alongside the PRD. Editing a test-spec
+  outside the formal re-gate path is surfaced as drift at run start, exactly like a PRD
+  edit — so the verification contract can no longer drift silently after sealing.
+- **Contract-revision audit chain.** When a sealed PRD or test-spec is found changed at
+  run start, rlp-desk appends the change (which file, old→new hash) to an append-only
+  `.rlp-desk/logs/<slug>/contract-revisions.jsonl`, giving you a durable history of every
+  post-seal contract edit.
+- **3-doc consistency lint (PRD ↔ test-spec ↔ per-US split).** A deterministic structural
+  check catches an orphaned per-US split file, a test-spec that references an AC id the PRD
+  doesn't declare, and per-US AC-count drift. It runs as a hard REJECT at `init` (the
+  campaign hasn't started) and as a loud warning at run start.
+- **`init` records the codex/claude CLI versions** to `.rlp-desk/logs/<slug>/init-env.json`
+  as a diagnostic breadcrumb for CLI-release incidents (best-effort, never blocking; an
+  absent tool is recorded as "not installed"). No version pinning or enforcement.
+- **New `external_fact` blocked reason.** A campaign that halts because it needs an
+  owner-supplied fact from outside the repo is now classified `external_fact`
+  (recoverable=false, suggested action: update the contract and relaunch) instead of a
+  generic block — making the halt machine-legible. Halt behavior is unchanged.
+- **`verification-type` (검증형) work classification.** A user story whose deliverable is
+  *confirming existing behavior* (where a failing-test-first / TDD RED phase is
+  structurally impossible) is now recognized at brainstorm/init and automatically routed to
+  the doctrine-based `verify_existing` gate, instead of being failed by the TDD-RED mandate.
+
+### Changed
+- **Infrastructure blocks now fail fast.** A block caused by an infrastructure failure
+  (dead pane, verifier/worker exit, timeout, unverifiable git state) is now marked
+  non-recoverable so a supervising wrapper investigates rather than blindly retrying. The
+  genuinely-transient cases (API backoff exhaustion, model-capacity stall, tmux lifecycle
+  restart) remain auto-recoverable. This aligns the tmux and Node leaders on one
+  conservative recovery taxonomy.
+
 ## [0.22.21] — 2026-07-22
 
 ### Fixed
