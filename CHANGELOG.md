@@ -9,6 +9,21 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.22.21] — 2026-07-22
+
+### Fixed
+- **codex update dialog no longer stalls or falsely BLOCKs a campaign.** When a new
+  codex-cli release shows its startup "✨ Update available!" dialog, rlp-desk now
+  launches codex with the update check turned off (`-c
+  check_for_update_on_startup=false`) so the dialog never appears — the durable fix,
+  since the dialog's key handling changes between CLI releases. If the dialog does
+  appear anyway, a single shared handler dismisses it (selecting Skip), and if it
+  still cannot be dismissed the campaign now reports the true cause and remedy
+  (**"codex update dialog could not be dismissed — run `codex update`"**) instead of a
+  misleading "verifier never started" error.
+- **Escape hatch.** Set `RLP_CODEX_UPDATE_CHECK=1` to restore codex's default startup
+  update check (the dialog will appear and be dismissed by the shared handler).
+
 ## [0.22.20] — 2026-07-22
 
 ### Added
