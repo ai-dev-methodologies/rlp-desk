@@ -18,6 +18,7 @@ import {
   writeGateReceipt,
   verifyGateReceipt,
   gateReceiptPath,
+  appendContractRevisions,
 } from './util/gate-receipt.mjs';
 import { seedLedger } from './util/ledger-seed.mjs';
 
@@ -809,6 +810,13 @@ async function runRunCommand(args, deps) {
       write(deps.stderr, '  The Ambiguity / unattended-completion gate was NOT re-run on the current PRD.');
       write(deps.stderr, `  Re-gate: score the modified PRD, then \`gate-receipt ${slug}\` (see /rlp-desk revise).`);
       write(deps.stderr, '========================================================================');
+      // vision-adopt §1c: record the drift in the append-only revision-audit
+      // chain (which file changed, old→new hash — never the author).
+      const revisionsLog = path.join(paths.campaignLogDir, 'contract-revisions.jsonl');
+      const appended = appendContractRevisions(paths.plansDir, slug, revisionsLog);
+      if (appended.length > 0) {
+        write(deps.stderr, `  Recorded ${appended.length} contract revision(s) → ${revisionsLog}`);
+      }
     } else if (gate.status === 'missing') {
       write(
         deps.stderr,

@@ -1480,6 +1480,124 @@ _lint_test_density() {
   return 0
 }
 
+# --- vision-adopt §1b: 3-doc consistency lint (PRD ↔ test-spec ↔ per-US split) ---
+# Deterministic structural cross-check, precedent _lint_test_density. Three
+# checks:
+#   (i)   every US in the per-US PRD split (prd-<slug>-US-*.md) exists as a
+#         `### US-NNN` heading in the main PRD (no orphan split after a US was
+#         dropped from the PRD).
+#   (ii)  every AC id referenced by the test-spec (an `ACN` token under a
+#         `## US-NNN` section) exists as a `- ACN` line in that US's PRD block.
+#   (iii) per-US AC count is consistent between the main PRD block and the
+#         per-US split file (a stale split file drifts the worker's per-US view).
+# Mode: 'warn' (default) emits to stderr, returns 0. 'strict' returns 1 on any
+# violation so init can REJECT (campaign not started). Reference: governance §1b.
+#
+# Args: <prd_file> <test_spec_file> <plans_dir> <slug> [warn|strict]
+_prd_us_ac_ids() {
+  # <prd_file> <us_id> → sorted-unique ACN ids declared in that US's PRD block.
+  [[ -f "$1" ]] || return 0
+  awk -v us="$2" '
+    $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+    in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
+    in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ {
+      if (match($0, /AC[0-9]+/)) print substr($0, RSTART, RLENGTH)
+    }
+  ' "$1" | sort -u
+}
+_prd_us_ac_count() {
+  # <prd_file> <us_id> → count of `- ACN` lines in that US's block.
+  [[ -f "$1" ]] || { printf 0; return 0; }
+  awk -v us="$2" '
+    $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+    in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
+    in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ { c++ }
+    END { print c+0 }
+  ' "$1"
+}
+_lint_3doc_consistency() {
+  local prd_file="$1" spec_file="$2" plans_dir="$3" slug="$4" mode="${5:-warn}"
+  local fail=0
+  # NOTE: all loop-body locals are declared ONCE here, not inside the loops.
+  # zsh re-`local` of an already-set scoped var inside a loop echoes its value
+  # (`n_prd=2`) to stdout — a nasty gotcha that would corrupt the WARN capture.
+  local u f base sus split_file n_prd n_split pairs pair ts_us ts_ac
+  typeset -A prd_us_seen
+
+  [[ -f "$prd_file" ]] || { echo "[lint-3doc] PRD missing: $prd_file" >&2; return 0; }
+
+  local -a prd_us
+  prd_us=(${(f)"$(_extract_prd_us_list "$prd_file")"})
+  # No US structure → nothing structural to cross-check.
+  (( ${#prd_us} )) || return 0
+  for u in $prd_us; do prd_us_seen[$u]=1; done
+
+  # (i) orphan per-US split PRD files.
+  for f in "$plans_dir"/prd-"$slug"-US-*.md(N); do
+    base="${f:t}"
+    sus="${${base#prd-${slug}-}%.md}"   # e.g. US-003
+    if [[ -z "${prd_us_seen[$sus]:-}" ]]; then
+      fail=1
+      echo "[lint-3doc] orphan split: $base has no matching '### $sus' in $prd_file:t" >&2
+    fi
+  done
+
+  # (iii) per-US AC count consistency PRD monolithic vs per-US split file.
+  for u in $prd_us; do
+    split_file="$plans_dir/prd-$slug-$u.md"
+    [[ -f "$split_file" ]] || continue
+    n_prd=$(_prd_us_ac_count "$prd_file" "$u")
+    n_split=$(_prd_us_ac_count "$split_file" "$u")
+    if [[ "$n_prd" != "$n_split" ]]; then
+      fail=1
+      echo "[lint-3doc] AC-count drift for $u: PRD=$n_prd split=$n_split (re-split the PRD)" >&2
+    fi
+  done
+
+  # (ii) AC ids referenced by the test-spec should exist in the PRD's US block.
+  # ADVISORY ONLY (never sets `fail`) — unlike (i)/(iii), which diff tool-generated
+  # split files deterministically, this parses human-authored test-spec text, and
+  # no pattern is provably false-positive-free across the open test-spec formats
+  # the project allows. A false hard-REJECT at init would block a legitimate
+  # campaign, so (ii) only WARNs (at init AND run). To keep the WARN low-noise we
+  # scope extraction to STRUCTURED AC-reference lines — list items (`- `, `* `,
+  # `N. `) and table rows (`| … |`) — so an AC id mentioned in free prose (e.g.
+  # "unlike US-2's AC5 approach") never triggers it.
+  if [[ -f "$spec_file" ]]; then
+    pairs=$(awk '
+      /^##[[:space:]]+US-[0-9]+/ { if (match($0,/US-[0-9]+/)) cur=substr($0,RSTART,RLENGTH); next }
+      cur != "" && $0 ~ /^[[:space:]]*([-*|]|[0-9]+\.)/ {
+        line=$0
+        while (match(line,/AC[0-9]+/)) {
+          print cur" "substr(line,RSTART,RLENGTH)
+          line=substr(line,RSTART+RLENGTH)
+        }
+      }
+    ' "$spec_file" | sort -u)
+    for pair in ${(f)pairs}; do
+      [[ -n "$pair" ]] || continue
+      ts_us="${pair%% *}"; ts_ac="${pair##* }"
+      # Test-spec references a US the PRD does not declare.
+      if [[ -z "${prd_us_seen[$ts_us]:-}" ]]; then
+        echo "[lint-3doc] ADVISORY: test-spec references $ts_us/$ts_ac but PRD has no $ts_us" >&2
+        continue
+      fi
+      if ! _prd_us_ac_ids "$prd_file" "$ts_us" | grep -qx "$ts_ac"; then
+        echo "[lint-3doc] ADVISORY: test-spec references $ts_us/$ts_ac but PRD $ts_us has no '- $ts_ac'" >&2
+      fi
+    done
+  fi
+
+  if (( fail == 1 )); then
+    if [[ "$mode" == "strict" ]]; then
+      echo "[lint-3doc] STRICT — PRD/test-spec/split inconsistency (fix before init completes)" >&2
+      return 1
+    fi
+    echo "[lint-3doc] WARN — PRD/test-spec/split inconsistency (re-gate via revise)" >&2
+  fi
+  return 0
+}
+
 # --- US-017 (R5 P0-D): Append A4 fallback audit entry ---
 # Worker forgot to write iter-signal.json after done-claim → A4 fallback auto-generated a verify signal.
 # This helper records the event for debugging context loss tracking.
@@ -3006,21 +3124,33 @@ _classify_cross_us_or_metric() {
 }
 
 # P1-D Failure Taxonomy: derive (recoverable, suggested_action) from
-# reason_category. governance.md §1f defines the 6 reason_category values
-# (metric_failure, cross_us_dep, context_limit, infra_failure, repeat_axis,
-# mission_abort). wrapper MUST branch on reason_category; failure_category
-# is diagnostic only.
+# reason_category. governance.md §1f defines the reason_category values
+# (metric_failure, cross_us_dep, contract_violation, context_limit,
+# infra_failure, repeat_axis, mission_abort, external_fact). wrapper MUST branch
+# on reason_category; failure_category is diagnostic only.
+#
+# vision-adopt §2 (recoverable reconciliation — fail-fast wins): infra_failure is
+# NOT blanket-recoverable. Node's _classifyBlock classifies EVERY infra_failure
+# SOURCE recoverable=false (pane exit / timeout / prompt-block / git-unverifiable
+# → a human must investigate, not a blind auto-retry). This category default now
+# matches that conservative taxonomy. The genuinely-transient infra callsites
+# (API backoff exhaustion, model-capacity stall, lifecycle restart) opt back in
+# to recoverable=true + restart via write_blocked_sentinel's per-callsite
+# override args — see the parity fixture tests/fixtures/recoverable-parity/.
+# vision-adopt §3: external_fact (owner-supplied out-of-repo fact needed) is
+# recoverable=false with action retry_after_fix (update the contract, relaunch).
 _blocked_recoverable_for_category() {
   case "$1" in
-    metric_failure|cross_us_dep|infra_failure) echo "true" ;;
-    context_limit|repeat_axis|mission_abort)   echo "false" ;;
+    metric_failure|cross_us_dep|contract_violation) echo "true" ;;
+    infra_failure|context_limit|repeat_axis|mission_abort|external_fact) echo "false" ;;
     *)                                          echo "false" ;;
   esac
 }
 _blocked_action_for_category() {
   case "$1" in
-    metric_failure|cross_us_dep) echo "retry_after_fix" ;;
-    infra_failure)               echo "restart" ;;
+    metric_failure|cross_us_dep|contract_violation) echo "retry_after_fix" ;;
+    external_fact)               echo "retry_after_fix" ;;
+    infra_failure)               echo "investigate" ;;
     context_limit|repeat_axis)   echo "next_mission_chain" ;;
     mission_abort)               echo "terminal_alert" ;;
     *)                           echo "terminal_alert" ;;
@@ -3046,9 +3176,21 @@ write_blocked_sentinel() {
   # classifications over time.
   local cause="${4:-infra}"
   case "$cause" in infra|contract_gap|defect) ;; *) cause="infra" ;; esac
+  # vision-adopt §2: optional per-callsite overrides. 5th arg = recoverable
+  # override ("true"|"false"), 6th = suggested_action override. Used only where a
+  # callsite must diverge from the reason_category default — specifically the
+  # genuinely-transient infra_failure callsites (API backoff, capacity stall,
+  # lifecycle restart) that stay recoverable=true + restart while the category
+  # default is the conservative fail-fast (recoverable=false + investigate). Empty
+  # (default) → category-derived value. An out-of-set recoverable override is
+  # ignored (falls back to the category default).
+  local recoverable_override="${5:-}"
+  local action_override="${6:-}"
   local recoverable suggested_action json_path
   recoverable=$(_blocked_recoverable_for_category "$category")
   suggested_action=$(_blocked_action_for_category "$category")
+  case "$recoverable_override" in true|false) recoverable="$recoverable_override" ;; esac
+  [[ -n "$action_override" ]] && suggested_action="$action_override"
   json_path="${BLOCKED_SENTINEL%.md}.json"
   local now_iso
   now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -3183,22 +3325,56 @@ _rlp_sha256_stdin() {
   fi
 }
 
-# Content hash over ALL PRD files for a slug, byte-for-byte reproducible by
-# src/node/util/gate-receipt.mjs computePrdContentHash(). Order: main PRD first,
-# then per-US files (prd-<slug>-US-*.md) sorted by basename in C locale. Each
-# file contributes a line "<basename>:<sha256(file)>\n"; the digest is sha256 of
-# those lines concatenated (trailing newline included). No main PRD → empty.
-compute_prd_content_hash() {
+# Enumerate the full sealed contract set for a slug in the deterministic byte
+# order the content hash is computed over: main PRD, per-US PRD (C-sorted), main
+# test-spec, per-US test-spec (C-sorted). Echoes one basename per line. No main
+# PRD → empty (the PRD is the anchor; a test-spec with no PRD is not sealable).
+# vision-adopt §1a: the sealed set now covers test-spec files too.
+_list_contract_files() {
   local plans_dir="$1" slug="$2"
-  local main="$plans_dir/prd-$slug.md"
-  [[ -f "$main" ]] || { printf ''; return 0; }
-  local -a ordered
-  ordered=("prd-$slug.md")
+  [[ -f "$plans_dir/prd-$slug.md" ]] || return 0
+  print -r -- "prd-$slug.md"
   local b
   for b in ${(f)"$(cd "$plans_dir" 2>/dev/null && ls -1 2>/dev/null | grep -E "^prd-${slug}-US-.*\.md$" | LC_ALL=C sort)"}; do
-    [[ -n "$b" ]] && ordered+=("$b")
+    [[ -n "$b" ]] && print -r -- "$b"
   done
+  [[ -f "$plans_dir/test-spec-$slug.md" ]] && print -r -- "test-spec-$slug.md"
+  for b in ${(f)"$(cd "$plans_dir" 2>/dev/null && ls -1 2>/dev/null | grep -E "^test-spec-${slug}-US-.*\.md$" | LC_ALL=C sort)"}; do
+    [[ -n "$b" ]] && print -r -- "$b"
+  done
+}
+
+# Content hash over the whole sealed contract set (PRD + test-spec) for a slug,
+# byte-for-byte reproducible by src/node/util/gate-receipt.mjs
+# computePrdContentHash(). Each file contributes a line "<basename>:<sha256(file)>\n";
+# the digest is sha256 of those lines concatenated (trailing newline included).
+# No main PRD → empty.
+compute_prd_content_hash() {
+  local plans_dir="$1" slug="$2"
+  [[ -f "$plans_dir/prd-$slug.md" ]] || { printf ''; return 0; }
   local manifest="" name h
+  for name in ${(f)"$(_list_contract_files "$plans_dir" "$slug")"}; do
+    [[ -n "$name" ]] || continue
+    h=$(_rlp_sha256_file "$plans_dir/$name")
+    manifest+="${name}:${h}
+"
+  done
+  printf '%s' "$manifest" | _rlp_sha256_stdin
+}
+
+# vision-adopt §1a backward-compat: PRD-ONLY hash (the pre-vision-adopt sealed
+# set). Schema-1.0 receipts hold a PRD-only prd_sha256, so their live comparison
+# must use this — otherwise every released campaign false-mismatches once a
+# test-spec exists. Mirror of gate-receipt.mjs computeLegacyPrdHash().
+_compute_prd_only_hash() {
+  local plans_dir="$1" slug="$2"
+  [[ -f "$plans_dir/prd-$slug.md" ]] || { printf ''; return 0; }
+  local manifest="" name h
+  local -a ordered
+  ordered=("prd-$slug.md")
+  for name in ${(f)"$(cd "$plans_dir" 2>/dev/null && ls -1 2>/dev/null | grep -E "^prd-${slug}-US-.*\.md$" | LC_ALL=C sort)"}; do
+    [[ -n "$name" ]] && ordered+=("$name")
+  done
   for name in "${ordered[@]}"; do
     h=$(_rlp_sha256_file "$plans_dir/$name")
     manifest+="${name}:${h}
@@ -3207,17 +3383,121 @@ compute_prd_content_hash() {
   printf '%s' "$manifest" | _rlp_sha256_stdin
 }
 
-# Compare the live PRD hash to plans/gate-receipt-<slug>.json. Echoes exactly one
-# of: ok | missing | mismatch (mirror of gate-receipt.mjs verifyGateReceipt).
+# A receipt predates the vision-adopt sealed set (schema 1.0) when it has no
+# per-file file_hashes map. Echoes the live hash to compare it against: PRD-only
+# for a legacy receipt, full sealed set for a 1.1+ receipt.
+_live_hash_for_receipt() {
+  local plans_dir="$1" slug="$2" receipt="$3"
+  if jq -e '(.file_hashes | type) == "object"' "$receipt" >/dev/null 2>&1; then
+    compute_prd_content_hash "$plans_dir" "$slug"
+  else
+    _compute_prd_only_hash "$plans_dir" "$slug"
+  fi
+}
+
+# Compare the live hash to plans/gate-receipt-<slug>.json. Echoes exactly one of:
+# ok | missing | mismatch (mirror of gate-receipt.mjs verifyGateReceipt). The
+# comparison basis matches how the receipt was sealed (§1a backward-compat).
 verify_gate_receipt() {
   local plans_dir="$1" slug="$2"
   local receipt="$plans_dir/gate-receipt-$slug.json"
   local live rec
-  live=$(compute_prd_content_hash "$plans_dir" "$slug")
   [[ -f "$receipt" ]] || { printf 'missing'; return 0; }
   rec=$(jq -r '.prd_sha256 // ""' "$receipt" 2>/dev/null)
   [[ -n "$rec" ]] || { printf 'missing'; return 0; }
+  live=$(_live_hash_for_receipt "$plans_dir" "$slug" "$receipt")
   [[ "$rec" == "$live" ]] && printf 'ok' || printf 'mismatch'
+}
+
+# vision-adopt §1c: contract-revision audit chain (zsh mirror of
+# gate-receipt.mjs appendContractRevisions). When a sealed contract file's hash
+# differs from the receipt at run start, append `{ts, file, old_hash, new_hash,
+# receipt_version}` per changed file to an append-only JSONL log. Records the
+# change, NOT the author (git-blame actor identification was rejected). Follows
+# the story-ledger append-then-lock convention: the log stays 0444 between
+# appends. Idempotent — the same file→(old→new) transition is recorded once even
+# though the run path re-checks every start. Best-effort: never fails the run.
+append_contract_revisions() {
+  local plans_dir="$1" slug="$2" log_path="$3"
+  local receipt="$plans_dir/gate-receipt-$slug.json"
+  [[ -f "$receipt" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local rec_hash live
+  rec_hash=$(jq -r '.prd_sha256 // ""' "$receipt" 2>/dev/null)
+  [[ -n "$rec_hash" ]] || return 0
+  # vision-adopt §1a backward-compat: compare against the receipt's own hash
+  # basis (PRD-only for schema 1.0). A zero-edit legacy campaign must NOT record
+  # a bundle-composition "difference" from the test-spec sealed-set expansion.
+  live=$(_live_hash_for_receipt "$plans_dir" "$slug" "$receipt")
+  [[ "$rec_hash" == "$live" ]] && return 0   # no drift
+
+  local receipt_version ts
+  receipt_version=$(jq -r '.schema_version // "1.0"' "$receipt" 2>/dev/null)
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # Candidate revisions as three parallel arrays (file / old / new).
+  local -a c_file c_old c_new
+  c_file=(); c_old=(); c_new=()
+  if jq -e '(.file_hashes | type) == "object"' "$receipt" >/dev/null 2>&1; then
+    typeset -A live_hashes
+    local name
+    for name in ${(f)"$(_list_contract_files "$plans_dir" "$slug")"}; do
+      [[ -n "$name" ]] || continue
+      live_hashes[$name]=$(_rlp_sha256_file "$plans_dir/$name")
+    done
+    local -a names
+    names=(${(f)"$(jq -r '.file_hashes | keys[]' "$receipt" 2>/dev/null)"})
+    for name in ${(k)live_hashes}; do names+=("$name"); done
+    local uniq_name oldh newh
+    for uniq_name in ${(ou)names}; do
+      [[ -n "$uniq_name" ]] || continue
+      oldh=$(jq -r --arg n "$uniq_name" '.file_hashes[$n] // ""' "$receipt" 2>/dev/null)
+      newh="${live_hashes[$uniq_name]:-}"
+      if [[ "$oldh" != "$newh" ]]; then
+        c_file+=("$uniq_name"); c_old+=("$oldh"); c_new+=("$newh")
+      fi
+    done
+  else
+    # Legacy (schema 1.0) receipt: no per-file hashes. Record the PRD-only bundle
+    # drift ($live is already the PRD-only basis), so this fires only on a real
+    # PRD edit, not on the test-spec sealed-set expansion.
+    c_file+=("<contract-bundle>"); c_old+=("$rec_hash"); c_new+=("$live")
+  fi
+  (( ${#c_file} )) || return 0
+
+  # Idempotency: skip transitions already recorded.
+  typeset -A seen
+  if [[ -f "$log_path" ]]; then
+    local line key
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      key=$(printf '%s' "$line" | jq -r '"\(.file) \(.old_hash) \(.new_hash)"' 2>/dev/null) || continue
+      [[ -n "$key" ]] && seen[$key]=1
+    done < "$log_path"
+  fi
+
+  local -a a_file a_old a_new
+  a_file=(); a_old=(); a_new=()
+  local i k
+  for (( i = 1; i <= ${#c_file}; i++ )); do
+    k="${c_file[$i]} ${c_old[$i]} ${c_new[$i]}"
+    [[ -n "${seen[$k]:-}" ]] && continue
+    a_file+=("${c_file[$i]}"); a_old+=("${c_old[$i]}"); a_new+=("${c_new[$i]}")
+  done
+  (( ${#a_file} )) || return 0
+
+  mkdir -p "${log_path:h}" 2>/dev/null
+  [[ -f "$log_path" ]] && chmod 0644 "$log_path" 2>/dev/null
+  {
+    for (( i = 1; i <= ${#a_file}; i++ )); do
+      jq -nc --arg ts "$ts" --arg file "${a_file[$i]}" --arg old "${a_old[$i]}" \
+        --arg new "${a_new[$i]}" --arg rv "$receipt_version" \
+        '{ts:$ts, file:$file, old_hash:$old, new_hash:$new, receipt_version:$rv}' >> "$log_path"
+    done
+  } always {
+    chmod 0444 "$log_path" 2>/dev/null
+  }
+  return 0
 }
 
 # =============================================================================

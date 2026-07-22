@@ -466,6 +466,61 @@ print_run_presets() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 
+# --- vision-adopt §5: init CLI version stamp ---
+# Record the worker/verifier CLI versions at campaign init as a diagnostic
+# breadcrumb for CLI-release incidents (the codex 0.145.0 update-dialog class).
+# Best-effort and NON-BLOCKING: a missing tool is recorded as "not installed",
+# a capture failure as "unknown"; nothing here can fail init. NO version
+# pinning/enforcement — this is a breadcrumb, not a gate.
+write_init_env_stamp() {
+  local slug="$1"
+  local out_dir="$DESK/logs/$slug"
+  mkdir -p "$out_dir" 2>/dev/null || return 0
+  local stamp_file="$out_dir/init-env.json"
+  local codex_v claude_v now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+  # Capture each CLI's version AND exit status. This runs under `set -euo
+  # pipefail` (line 2), so a PRESENT-but-FAILING CLI (nonzero exit — e.g. the
+  # 0.145.0-class breakage this stamp exists to diagnose) MUST NOT abort init.
+  # The `--version` call sits in an `if` condition (set -e is suppressed there),
+  # and the first-line/CR-strip runs in a SEPARATE substitution over a variable
+  # so no pipeline exit code can propagate. absent → "not installed"; present
+  # but nonzero exit OR empty output → "unknown".
+  local _raw
+  if command -v codex >/dev/null 2>&1; then
+    if _raw=$(codex --version 2>/dev/null); then
+      codex_v=$(printf '%s\n' "$_raw" | head -1 | tr -d '\r')
+      [[ -n "$codex_v" ]] || codex_v="unknown"
+    else
+      codex_v="unknown"
+    fi
+  else
+    codex_v="not installed"
+  fi
+  if command -v claude >/dev/null 2>&1; then
+    if _raw=$(claude --version 2>/dev/null); then
+      claude_v=$(printf '%s\n' "$_raw" | head -1 | tr -d '\r')
+      [[ -n "$claude_v" ]] || claude_v="unknown"
+    else
+      claude_v="unknown"
+    fi
+  else
+    claude_v="not installed"
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    jq -n --arg ts "$now" --arg slug "$slug" --arg codex "$codex_v" --arg claude "$claude_v" \
+      '{stamped_at_utc:$ts, slug:$slug, cli_versions:{codex:$codex, claude:$claude}}' \
+      > "$stamp_file" 2>/dev/null || return 0
+  else
+    # jq-free fallback (versions are simple ASCII from --version; escape quotes).
+    codex_v="${codex_v//\"/\\\"}"; claude_v="${claude_v//\"/\\\"}"
+    printf '{"stamped_at_utc":"%s","slug":"%s","cli_versions":{"codex":"%s","claude":"%s"}}\n' \
+      "$now" "$slug" "$codex_v" "$claude_v" > "$stamp_file" 2>/dev/null || return 0
+  fi
+  echo "  CLI env stamp: codex=$codex_v claude=$claude_v → $stamp_file"
+  return 0
+}
+
 echo "Initializing Ralph Desk: $SLUG"
 echo "  Root: $ROOT"
 echo "  Desk: $DESK"
@@ -1191,11 +1246,12 @@ split_prd_by_us "$DESK/plans/prd-$SLUG.md" "$SLUG"
 
 # request-d ①-b: init-time gate-receipt drift check. Mirror of lib_ralph_desk.zsh
 # compute_prd_content_hash / src/node/util/gate-receipt.mjs computePrdContentHash
-# — KEEP THE THREE IN SYNC (main PRD first, then per-US files C-sorted, each line
-# "<basename>:<sha256(file)>\n", digest = sha256 of the concatenation). Only warns
-# when a receipt already EXISTS but the PRD now differs (e.g. --mode improve edited
-# a sealed PRD). Silent when no receipt exists yet — the receipt is written AFTER
-# init by `gate-receipt <slug>`.
+# — KEEP THE THREE IN SYNC. vision-adopt §1a: the sealed set is main PRD first,
+# then per-US PRD files C-sorted, then main test-spec, then per-US test-spec files
+# C-sorted; each line "<basename>:<sha256(file)>\n", digest = sha256 of the
+# concatenation. Only warns when a receipt already EXISTS but the contract now
+# differs (e.g. --mode improve edited a sealed PRD/test-spec). Silent when no
+# receipt exists yet — the receipt is written AFTER init by `gate-receipt <slug>`.
 _gr_receipt="$DESK/plans/gate-receipt-$SLUG.json"
 if [[ -f "$_gr_receipt" ]] && command -v jq >/dev/null 2>&1; then
   _gr_sha() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; else sha256sum "$1" 2>/dev/null | awk '{print $1}'; fi; }
@@ -1207,6 +1263,18 @@ if [[ -f "$_gr_receipt" ]] && command -v jq >/dev/null 2>&1; then
       [[ -n "$_gr_b" ]] && _gr_manifest+="${_gr_b}:$(_gr_sha "$DESK/plans/$_gr_b")
 "
     done
+    # vision-adopt §1a backward-compat: only fold the test-spec into the hash when
+    # the receipt was sealed as schema 1.1+ (has a file_hashes map). A legacy
+    # (1.0) receipt is PRD-only, so including the test-spec would false-mismatch a
+    # zero-edit campaign. Re-sealing upgrades it to 1.1 naturally.
+    if jq -e '(.file_hashes | type) == "object"' "$_gr_receipt" >/dev/null 2>&1; then
+      [[ -f "$DESK/plans/test-spec-$SLUG.md" ]] && _gr_manifest+="test-spec-$SLUG.md:$(_gr_sha "$DESK/plans/test-spec-$SLUG.md")
+"
+      for _gr_b in ${(f)"$(cd "$DESK/plans" 2>/dev/null && ls -1 2>/dev/null | grep -E "^test-spec-${SLUG}-US-.*\.md$" | LC_ALL=C sort)"}; do
+        [[ -n "$_gr_b" ]] && _gr_manifest+="${_gr_b}:$(_gr_sha "$DESK/plans/$_gr_b")
+"
+      done
+    fi
     if command -v shasum >/dev/null 2>&1; then
       _gr_live=$(printf '%s' "$_gr_manifest" | shasum -a 256 2>/dev/null | awk '{print $1}')
     else
@@ -1474,6 +1542,29 @@ if [[ -f "$PRD_FILE_LINT" ]]; then
     fi
   fi
 fi
+
+# vision-adopt §1b: 3-doc consistency lint (PRD ↔ test-spec ↔ per-US split).
+# At init this is a HARD REJECT (exit 3) — the campaign has not started, so a
+# structural inconsistency must be fixed before the scaffold is declared ready.
+# (The run-start re-check is WARN-loud, mirroring the gate-receipt convention.)
+# init does not source lib_ralph_desk.zsh (it stays standalone); run the lint in
+# a subshell that sources the lib so the shared implementation is reused without
+# leaking the lib's globals into init.
+_LINT3_LIB="${0:A:h}/lib_ralph_desk.zsh"
+if [[ -f "$_LINT3_LIB" && -f "$DESK/plans/prd-$SLUG.md" ]]; then
+  if ! ( source "$_LINT3_LIB" 2>/dev/null
+         log() { :; }; log_error() { :; }; log_warn() { :; }; log_debug() { :; }
+         _lint_3doc_consistency "$DESK/plans/prd-$SLUG.md" "$DESK/plans/test-spec-$SLUG.md" "$DESK/plans" "$SLUG" strict ); then
+    echo "" >&2
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+    echo "ERROR: PRD ↔ test-spec ↔ per-US split are structurally inconsistent (vision-adopt §1b)." >&2
+    echo "       Fix the mismatches listed above, then re-run init." >&2
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+    exit 3
+  fi
+fi
+
+write_init_env_stamp "$SLUG"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -1,0 +1,40 @@
+{
+  "note": "vision-adopt §2 recoverable reconciliation (fail-fast wins). Shared parity fixture consumed by tests/node/test-recoverable-parity.test.mjs (Node _classifyBlock + CATEGORY_RECOVERABLE) and tests/test_recoverable_parity.sh (zsh _blocked_recoverable_for_category). The zsh leader must agree with the Node conservative taxonomy per reason_category, and Node's per-source recoverable must equal the category default. infra_failure is FALSE (every infra SOURCE needs investigation, not a blind auto-retry).",
+  "category_recoverable": {
+    "metric_failure": true,
+    "cross_us_dep": true,
+    "contract_violation": true,
+    "context_limit": false,
+    "infra_failure": false,
+    "repeat_axis": false,
+    "mission_abort": false,
+    "external_fact": false
+  },
+  "sources": [
+    { "source": "WORKER_EXITED", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "VERIFIER_EXITED", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "FINAL_VERIFIER_EXITED", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "FLYWHEEL_EXITED", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "GUARD_EXITED", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "PROMPT_BLOCKED", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "PERMISSION_PROMPT", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "WORKER_TIMEOUT", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "VERIFIER_TIMEOUT", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "FINAL_VERIFIER_TIMEOUT", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "FLYWHEEL_TIMEOUT", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "GUARD_TIMEOUT", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "LEADER_EXITED_WITHOUT_TERMINAL_STATE", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "CODEX_EXIT_NO_DONE_CLAIM", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "GIT_STATE_UNVERIFIABLE", "reason_category": "infra_failure", "recoverable": false },
+    { "source": "MALFORMED_ARTIFACT", "reason_category": "contract_violation", "recoverable": true },
+    { "source": "MODEL_UPGRADE", "reason_category": "repeat_axis", "recoverable": false },
+    { "source": "FLYWHEEL_INCONCLUSIVE", "reason_category": "mission_abort", "recoverable": false },
+    { "source": "FLYWHEEL_EXHAUSTED", "reason_category": "mission_abort", "recoverable": false },
+    { "source": "WORKER_INCOMPLETE_UNCOMMITTED", "reason_category": "metric_failure", "recoverable": true }
+  ],
+  "unknown_source": {
+    "note": "_classifyBlock default branch: an UNRECOGNIZED source fails safe — reason_category=metric_failure but recoverable=FALSE, intentionally stricter than metric_failure's category default (true). This is the one documented per-source exception to category-default constancy.",
+    "reason_category": "metric_failure",
+    "recoverable": false
+  }
+}

@@ -286,7 +286,7 @@ _r12_check_lifecycle() {
     if (( _attempts >= 5 )); then
       log_error "[r12:$site] tmux session/pane dead after 5x1s polling (5s authoritative budget). session=$SESSION_NAME panes leader=$LEADER_PANE worker=$WORKER_PANE verifier=$VERIFIER_PANE"
       tmux list-panes -a -F '#{session_name}:#{pane_id} dead=#{pane_dead}' 2>&1 | head -20 >> "${DEBUG_LOG:-/dev/null}"
-      write_blocked_sentinel "tmux session/pane dead during $site" "${CURRENT_US:-ALL}" "infra_failure"
+      write_blocked_sentinel "tmux session/pane dead during $site" "${CURRENT_US:-ALL}" "infra_failure" "infra" "true" "restart"
       exit 1
     fi
     sleep 1
@@ -528,10 +528,27 @@ if [[ "$GATE_RECEIPT_STATUS" == "mismatch" || "$GATE_RECEIPT_STATUS" == "missing
     print -u2 "  Re-gate: score the modified PRD, then re-run 'gate-receipt $SLUG' (see /rlp-desk revise)."
     print -u2 "========================================================================"
     print "[$_gr_now] gate_receipt=mismatch slug=$SLUG — PRD changed after sealing; re-gate via revise" >> "$_gr_log" 2>/dev/null
+    # vision-adopt §1c: append the drift to the contract-revision audit chain
+    # (which contract file changed, old→new hash — never the author).
+    append_contract_revisions "$DESK/plans" "$SLUG" "$LOGS_DIR/contract-revisions.jsonl"
   else
     print -u2 "WARNING: no gate-receipt for $SLUG (ungated PRD: pre-receipt campaign or gate bypassed). Proceeding."
     print "[$_gr_now] gate_receipt=missing slug=$SLUG — ungated PRD (pre-receipt or bypassed); proceeding" >> "$_gr_log" 2>/dev/null
   fi
+fi
+
+# vision-adopt §1b: 3-doc consistency re-check at run start. Unlike init (hard
+# REJECT), this is WARN-loud + proceed — mirroring the gate-receipt drift
+# convention (an already-launched campaign is never hard-killed mid-flight; the
+# operator re-gates via revise). The lib is already sourced here.
+if [[ -f "$PRD_FILE" ]]; then
+  _3doc_tmp=$(mktemp "${TMPDIR:-/tmp}/rlp-3doc.XXXXXX" 2>/dev/null) || _3doc_tmp="${TMPDIR:-/tmp}/rlp-3doc.$$"
+  _lint_3doc_consistency "$PRD_FILE" "$TEST_SPEC_FILE" "$DESK/plans" "$SLUG" warn 2>"$_3doc_tmp" || true
+  if [[ -s "$_3doc_tmp" ]]; then
+    print -u2 "WARNING: PRD/test-spec/split consistency issues for $SLUG (vision-adopt §1b) — re-gate via revise:"
+    cat "$_3doc_tmp" >&2
+  fi
+  rm -f "$_3doc_tmp" 2>/dev/null
 fi
 
 # --- Analytics Directory (v5.7 §4.11.b: project-local) ---
@@ -3593,7 +3610,7 @@ poll_for_signal() {
       log_debug "[FLOW] iter=$ITERATION api_retry=${api_retry_count}/${_API_MAX_RETRIES} role=${role} reason=tmux_pane_api_error"
       if (( api_retry_count >= _API_MAX_RETRIES )); then
         log_error "API unavailable after ${_API_MAX_RETRIES} retries"
-        write_blocked_sentinel "API unavailable after ${_API_MAX_RETRIES} retries" "" "infra_failure"
+        write_blocked_sentinel "API unavailable after ${_API_MAX_RETRIES} retries" "" "infra_failure" "infra" "true" "restart"
         return 2
       fi
       # A5: If pane shows "queued messages" or rate-limit corruption, restart pane
@@ -3624,7 +3641,7 @@ poll_for_signal() {
       if (( capacity_strikes >= ${RLP_CAPACITY_MAX_STRIKES:-3} )); then
         log_error "  $role: model capacity stall persisted after ${capacity_strikes} resume injections — BLOCKED (request-j ①)"
         log_debug "[GOV] iter=$ITERATION role=$role capacity_stall_blocked=1 strikes=$capacity_strikes"
-        write_blocked_sentinel "model capacity stall: resume text injected ${capacity_strikes}x without progress (Selected model is at capacity)" "" "infra_failure"
+        write_blocked_sentinel "model capacity stall: resume text injected ${capacity_strikes}x without progress (Selected model is at capacity)" "" "infra_failure" "infra" "true" "restart"
         return 2
       fi
       local _cap_now

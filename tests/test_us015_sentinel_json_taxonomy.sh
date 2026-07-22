@@ -38,7 +38,7 @@ echo
 # ----------------------------------------------------------------------------
 assert_one "$GOV" 'Failure Taxonomy \(P1-D\)' \
   "AC1-a: governance §1f Failure Taxonomy section present"
-for cat in metric_failure cross_us_dep context_limit infra_failure repeat_axis mission_abort; do
+for cat in metric_failure cross_us_dep contract_violation context_limit infra_failure repeat_axis mission_abort external_fact; do
   assert_one "$GOV" "$cat" "AC1-b/$cat: governance enumerates $cat"
 done
 assert_one "$GOV" 'reason_category.*PRIMARY' \
@@ -254,7 +254,11 @@ fi
 rm -rf "$TMP_RACE_DIR"
 
 # ----------------------------------------------------------------------------
-# AC9: Wrapper jq one-liner branch works
+# AC9: Wrapper jq one-liner branch works. vision-adopt §2 (fail-fast wins): the
+# infra_failure CATEGORY DEFAULT is now recoverable=false + investigate (was
+# true + restart). The genuinely-transient infra callsites override at the
+# callsite to recoverable=true + restart — verified here too and pinned by
+# tests/test_recoverable_parity.sh.
 # ----------------------------------------------------------------------------
 TMP_WR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rlp-us015-wrap-XXXX")
 TMP_WR_SENT="$TMP_WR_DIR/wrap-blocked.md"
@@ -264,13 +268,32 @@ source '$LIB' 2>/dev/null
 log() { :; }
 log_error() { :; }
 atomic_write() { cat > \"\$1\"; }
-write_blocked_sentinel 'API down' '' 'infra_failure'
+write_blocked_sentinel 'pane dead' '' 'infra_failure'
 "
 got_action=$(jq -r '.suggested_action' "$TMP_WR_DIR/wrap-blocked.json" 2>/dev/null)
-if [[ "$got_action" == "restart" ]]; then
-  pass "AC9: wrapper jq retrieves suggested_action=restart for infra_failure"
+got_recov=$(jq -r '.recoverable' "$TMP_WR_DIR/wrap-blocked.json" 2>/dev/null)
+if [[ "$got_action" == "investigate" && "$got_recov" == "false" ]]; then
+  pass "AC9-a: infra_failure category default is recoverable=false + investigate (fail-fast)"
 else
-  fail "AC9: jq returned '$got_action'"
+  fail "AC9-a: got action='$got_action' recoverable='$got_recov'"
+fi
+
+# Override path: a transient infra callsite passes recoverable=true + restart.
+TMP_WR_SENT2="$TMP_WR_DIR/wrap-blocked2.md"
+ITERATION=2 BLOCKED_SENTINEL="$TMP_WR_SENT2" SLUG="wrap-test" CURRENT_US="US-002" \
+  zsh -c "
+source '$LIB' 2>/dev/null
+log() { :; }
+log_error() { :; }
+atomic_write() { cat > \"\$1\"; }
+write_blocked_sentinel 'API unavailable after retries' '' 'infra_failure' 'infra' 'true' 'restart'
+"
+ovr_action=$(jq -r '.suggested_action' "$TMP_WR_DIR/wrap-blocked2.json" 2>/dev/null)
+ovr_recov=$(jq -r '.recoverable' "$TMP_WR_DIR/wrap-blocked2.json" 2>/dev/null)
+if [[ "$ovr_action" == "restart" && "$ovr_recov" == "true" ]]; then
+  pass "AC9-b: transient infra override → recoverable=true + restart"
+else
+  fail "AC9-b: got action='$ovr_action' recoverable='$ovr_recov'"
 fi
 rm -rf "$TMP_WR_DIR"
 

@@ -951,7 +951,7 @@ export const BLOCK_TAGS = Object.freeze({
 // P1-D Failure Taxonomy classifier. governance §1f locks the reason_category
 // values + recoverable + suggested_action defaults per source. wrapper MUST
 // branch on reason_category; failure_category is diagnostic only.
-function _classifyBlock(source, { verdict, state, slug } = {}) {
+export function _classifyBlock(source, { verdict, state, slug } = {}) {
   let category;
   let recoverable;
   let action;

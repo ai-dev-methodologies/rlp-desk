@@ -587,11 +587,11 @@ of regex'ing free text.
   "us_id": "<us_id or ALL>",
   "blocked_at_iter": 4,
   "blocked_at_utc": "2026-04-25T12:34:56Z",
-  "reason_category": "metric_failure | cross_us_dep | context_limit | infra_failure | repeat_axis | mission_abort",
+  "reason_category": "metric_failure | cross_us_dep | contract_violation | context_limit | infra_failure | repeat_axis | mission_abort | external_fact",
   "reason_detail": "<full reason text>",
   "failure_category": "spec | implementation | integration | flaky | null",
   "recoverable": true,
-  "suggested_action": "next_mission_chain | restart | retry_after_fix | terminal_alert"
+  "suggested_action": "next_mission_chain | restart | retry_after_fix | terminal_alert | investigate"
 }
 ```
 
@@ -604,14 +604,16 @@ of regex'ing free text.
 
 ### Category → recovery action defaults
 
-| reason_category | recoverable | suggested_action      | meaning                                |
-|-----------------|-------------|-----------------------|----------------------------------------|
-| metric_failure  | true        | retry_after_fix       | AC missed; fix PRD/code, retry         |
-| cross_us_dep    | true        | retry_after_fix       | AC depends on a future US              |
-| infra_failure   | true        | restart               | CLI/network/spawn issue                |
-| context_limit   | false       | next_mission_chain    | mission stale; chain next axis         |
-| repeat_axis     | false       | next_mission_chain    | model ceiling reached on this axis     |
-| mission_abort   | false       | terminal_alert        | flywheel guard exhausted               |
+| reason_category    | recoverable | suggested_action      | meaning                                |
+|--------------------|-------------|-----------------------|----------------------------------------|
+| metric_failure     | true        | retry_after_fix       | AC missed; fix PRD/code, retry         |
+| cross_us_dep       | true        | retry_after_fix       | AC depends on a future US              |
+| contract_violation | true        | retry_after_fix       | malformed artifact; retry w/ schema feedback |
+| infra_failure      | false       | investigate           | CLI/network/spawn/pane/git failure — **fail-fast** (vision-adopt §2); transient API/capacity/lifecycle callsites override to `true`/`restart` |
+| context_limit      | false       | next_mission_chain    | mission stale; chain next axis         |
+| repeat_axis        | false       | next_mission_chain    | model ceiling reached on this axis     |
+| mission_abort      | false       | terminal_alert        | flywheel guard exhausted               |
+| external_fact      | false       | retry_after_fix       | halt: owner-supplied out-of-repo fact needed (vision-adopt §3, label only — no runtime channel) |
 
 ### Cross-US token list
 

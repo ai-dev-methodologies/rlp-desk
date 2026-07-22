@@ -66,12 +66,13 @@ A campaign executes with ZERO owner/user interaction. A PRD that cannot guarante
 3. **Unattended-completion check at the brainstorm gate.** Next to the Ambiguity Gate, brainstorm asks: "Can this PRD run to completion with no human in the loop? Does any AC/constraint induce a runtime interaction?" — if yes, **REJECT** and convert the offending AC into a delegation rule before proceeding.
 A repeated runtime owner-decision is a signal to fix the CONTRACT (add a delegation rule), never to add a human-in-the-loop channel — that would reverse the fresh-context autonomy the tool exists to provide.
 
-**IL-2¾: Work-Type Classification (request-f §2)**
-1. **명세형 (specification-type) vs 발굴형 (discovery-type).** A specification-type US has a contract that can be written up-front — the loop is eligible. A discovery-type US only yields its contract by digging (부채 청산 / debt cleanup, 미지 원인 수사 / unknown-cause investigation, 전수 열거 / exhaustive enumeration) — the contract cannot be pre-written. A discovery-type US fails the brainstorm gate exactly like an interaction-inducing AC: **REJECT**, it never enters the campaign.
-2. **Recovery path.** 선행 정찰 (prior reconnaissance) by a context-retaining supervisor or single agent, run outside the loop, produces the missing contract artifact (열거 목록 / enumeration list, 원인 특정 / identified cause, or 확정 수리 지시 / definite repair instruction). That artifact is converted into a specification-type US and re-gated through the Ambiguity Gate and this classification before it may be injected.
-3. **AC-verb judgment hint.** Verbs like "전수 열거하라 / 원인을 특정하라" (enumerate exhaustively / identify the cause) signal discovery-type; "이 목록을 등록하라 / 이 함수를 이렇게 수리하라" (register this list / repair this function this way) signal specification-type.
-4. **Mid-campaign discovery fragment.** If a discovery-type fragment surfaces at runtime, split only that fragment out to a parallel supervisor investigation; only the confirmed contract that results is re-injected into the loop.
-Ground rationale: fresh-context loops structurally cannot accumulate hypothesis/elimination history across iterations, so discovery work burns iterations without converging — this is field evidence from the pa-foundation retro.
+**IL-2¾: Work-Type Classification (request-f §2; 검증형 added vision-adopt §4)**
+1. **명세형 (specification-type) vs 발굴형 (discovery-type) vs 검증형 (verification-type).** A specification-type US has a contract that can be written up-front — the loop is eligible. A discovery-type US only yields its contract by digging (부채 청산 / debt cleanup, 미지 원인 수사 / unknown-cause investigation, 전수 열거 / exhaustive enumeration) — the contract cannot be pre-written. A discovery-type US fails the brainstorm gate exactly like an interaction-inducing AC: **REJECT**, it never enters the campaign. A **verification-type (검증형)** US has a contract that CAN be written up-front, but its deliverable is *verifying/confirming that existing behavior already holds* — so the TDD RED phase is structurally impossible (there is no new code to make a failing test go green; a fresh honest RED cannot exist for already-satisfied behavior). A verification-type US is **eligible for the loop** (it is not a REJECT), but it is auto-assigned the doctrine-based alternative gate instead of write_test→verify_red→implement→verify_green.
+2. **Verification-type alternative gate (auto-assigned).** Classifying a US as 검증형 auto-selects the existing RED-불가 exemption plumbing rather than leaving it to per-campaign doctrine: the Worker uses `verify_existing` (§Iterative Autonomy — Existing implementation rule) — run all covering tests, record exit codes, confirm every AC is covered by PASSING tests — and the Worker Process Audit judges on those fresh results, never demanding a `verify_red`/write-test-first sequence. This is the same allowance the confirmation-mode contract (§1f½ / v0.22.3) grants for already-verified code, generalized to a plan-time classification so a verification-type US never trips the TDD-RED mandate as a false FAIL.
+3. **Recovery path (discovery-type only).** 선행 정찰 (prior reconnaissance) by a context-retaining supervisor or single agent, run outside the loop, produces the missing contract artifact (열거 목록 / enumeration list, 원인 특정 / identified cause, or 확정 수리 지시 / definite repair instruction). That artifact is converted into a specification-type US and re-gated through the Ambiguity Gate and this classification before it may be injected.
+4. **AC-verb judgment hint.** Verbs like "전수 열거하라 / 원인을 특정하라" (enumerate exhaustively / identify the cause) signal discovery-type; "이 목록을 등록하라 / 이 함수를 이렇게 수리하라" (register this list / repair this function this way) signal specification-type; "이 동작이 유지되는지 검증하라 / 회귀가 없는지 확인하라" (verify this behavior still holds / confirm no regression) over EXISTING behavior signal verification-type.
+5. **Mid-campaign discovery fragment.** If a discovery-type fragment surfaces at runtime, split only that fragment out to a parallel supervisor investigation; only the confirmed contract that results is re-injected into the loop.
+Ground rationale: fresh-context loops structurally cannot accumulate hypothesis/elimination history across iterations, so discovery work burns iterations without converging — this is field evidence from the pa-foundation retro. Verification-type work does not have that problem (its contract is knowable up-front); its only hazard is the TDD-RED mandate misfiring on behavior that is already green, which the auto-assigned gate closes.
 
 **IL-3: Layer Completeness**
 Verification layers:
@@ -309,11 +310,11 @@ BLOCKED writes a JSON sidecar (`<slug>-blocked.json`) alongside the markdown sen
   "us_id": "<us_id or ALL>",
   "blocked_at_iter": <int>,
   "blocked_at_utc": "<iso8601>",
-  "reason_category": "metric_failure | cross_us_dep | context_limit | infra_failure | repeat_axis | mission_abort",
+  "reason_category": "metric_failure | cross_us_dep | contract_violation | context_limit | infra_failure | repeat_axis | mission_abort | external_fact",
   "reason_detail": "<full reason text>",
   "failure_category": "spec | implementation | integration | flaky | null",
   "recoverable": true | false,
-  "suggested_action": "next_mission_chain | restart | retry_after_fix | terminal_alert"
+  "suggested_action": "next_mission_chain | restart | retry_after_fix | terminal_alert | investigate"
 }
 ```
 
@@ -321,13 +322,25 @@ BLOCKED writes a JSON sidecar (`<slug>-blocked.json`) alongside the markdown sen
 - `reason_category` is **PRIMARY** — wrappers MUST branch on this field for recovery decisions.
 - `failure_category` is **SECONDARY, diagnostic only** — do NOT branch on it; logging/triage only.
 
-**Category → wrapper recovery action mapping** (defaults set by writer; wrappers may override but should follow):
+**Category → wrapper recovery action mapping.** These are the category-level
+DEFAULTS the writer applies, and the category → `recoverable` DEFAULT is the same
+on both leaders — pinned by `tests/fixtures/recoverable-parity/matrix.json`
+(`_blocked_recoverable_for_category` ↔ `src/node/util/reason-category.mjs`
+`CATEGORY_RECOVERABLE`). A callsite MAY override the default `recoverable`/
+`suggested_action` for a specific block (see the `infra_failure` row — the
+transient API/capacity/lifecycle callsites emit `recoverable=true`/`restart`).
+Therefore a **wrapper MUST read the emitted `recoverable` and `suggested_action`
+fields from the sidecar and MUST NOT re-derive them from `reason_category` alone**
+— the category is the primary routing key, not the sole source of the recovery
+verdict:
 - `metric_failure` → `retry_after_fix` (fix PRD/code, retry; recoverable=true)
 - `cross_us_dep` → `retry_after_fix` (move AC to later US or switch to batch mode; recoverable=true)
-- `infra_failure` → `restart` (CLI/network/spawn issue; recoverable=true)
+- `contract_violation` → `retry_after_fix` (malformed artifact — retry with schema feedback; recoverable=true)
+- `infra_failure` → `investigate` (CLI/network/spawn/pane/git failure; **recoverable=false — fail-fast**, vision-adopt §2). Node's `_classifyBlock` emits richer per-source actions (`investigate_pane_logs` / `investigate_git_state` / `manual_prompt_response` / …); the category default is a generic `investigate`. The genuinely-transient infra callsites (API-backoff exhaustion, model-capacity stall, lifecycle restart) are the documented exception: they override at the callsite to `recoverable=true` + `restart`.
 - `context_limit` → `next_mission_chain` (current mission stale; recoverable=false)
 - `repeat_axis` → `next_mission_chain` (model ceiling reached on this axis; recoverable=false)
 - `mission_abort` → `terminal_alert` (flywheel guard exhausted; recoverable=false)
+- `external_fact` → `retry_after_fix` (vision-adopt §3 — the campaign halted on a contract gap needing an owner-supplied out-of-repo fact; **recoverable=false** because no model can synthesize the fact; the operator updates the contract with the fact and relaunches). This is a halt-classification LABEL only: halt semantics are unchanged and there is NO runtime owner-interaction channel (IL-2½ untouched).
 
 **Cross-US token list (cross_us_dep classifier)** — verifier verdict / worker signal text matching ANY of these is classified as `cross_us_dep`:
 - English: `depends on US-`, `blocking US-`, `awaits US-`, `post-iter US-`, `requires US-N`, `cross-US`

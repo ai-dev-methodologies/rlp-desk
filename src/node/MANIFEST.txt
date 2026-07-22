@@ -23,4 +23,5 @@ util/desk-root.mjs
 util/gate-receipt.mjs
 util/ledger-seed.mjs
 util/lifecycle-metrics.mjs
+util/reason-category.mjs
 util/shell-quote.mjs
