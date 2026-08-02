@@ -6216,7 +6216,16 @@ main() {
 
             (( CONSECUTIVE_FAILURES++ ))
             record_us_failure "${signal_us_id:-unknown}"
-            check_model_upgrade "${signal_us_id:-unknown}"
+            # Luna-first spec §2.5: environment/harness failures (incl. verifier
+            # safety-classifier refusals, capacity stalls) and flaky failures never
+            # climb the model ladder — recover the environment, retry the SAME model.
+            local _fail_cat=""
+            [[ -f "$VERDICT_FILE" ]] && _fail_cat=$(jq -r '(.failure_category // (.checks // [] | map(.failure_category // empty) | first // ""))' "$VERDICT_FILE" 2>/dev/null)
+            if [[ "$_fail_cat" != "environment" && "$_fail_cat" != "flaky" ]]; then
+              check_model_upgrade "${signal_us_id:-unknown}"
+            else
+              log_debug "[DECIDE] iter=${ITERATION:-0} phase=model_select model_upgrade=false reason=failure_category_${_fail_cat}"
+            fi
 
             # Mid-CB warning: alert at halfway point (governance §8 early warning)
             if (( CONSECUTIVE_FAILURES == EFFECTIVE_CB_THRESHOLD / 2 )); then

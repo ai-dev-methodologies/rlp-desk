@@ -746,6 +746,30 @@ test_us001_emergency_fallback
 test_us001_zsh_node_equivalence
 
 # ============================================================
+# AC6: environment/flaky failure_category must not feed the ladder
+# ============================================================
+echo ""
+echo "--- AC6: environment/flaky failure_category guard ---"
+
+# AC6: environment/flaky failure_category must not feed the upgrade ladder
+test_ac6_environment_guard() {
+  local ctx
+  ctx=$(grep -n -B2 -A6 'check_model_upgrade ' "$RUN" 2>/dev/null | grep -v 'check_model_upgrade()')
+  if echo "$ctx" | grep -q 'failure_category'; then
+    pass "AC6: check_model_upgrade call is guarded by failure_category"
+  else
+    fail "AC6: no failure_category guard around check_model_upgrade invocation"
+  fi
+  if echo "$ctx" | grep -qE 'environment'; then
+    pass "AC6b: guard covers 'environment' category"
+  else
+    fail "AC6b: 'environment' category not handled"
+  fi
+}
+
+test_ac6_environment_guard
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
