@@ -9,6 +9,31 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+### Added
+- **Luna-first cost routing.** Workers now default to the cheapest capable
+  GPT-5.6 tier (2026-07-30 price cut: luna = 4% of sol) with evidence-gated
+  escalation: `luna:high → luna:max → terra:max → sol:xhigh`. Campaigns with
+  HIGH-complexity US choose a long-term/cost lane (terra:max quota hop) or a
+  speed lane (straight to sol) at brainstorm time. Verifier/consensus models
+  are now complexity-tiered (sonnet-5/opus-5 verifiers, luna→sol consensus);
+  the final gates are claude-fable-5:max + gpt-5.6-sol:xhigh.
+- **Effort-aware iteration timeout.** Worker budgets scale ×1.5 (`:xhigh`) /
+  ×2.0 (`:max`) so slow-but-cheap efforts don't convert savings into timeout
+  retries. Both leaders.
+- **Campaign cost summary.** The campaign report now includes a
+  sol-equivalent cost total (sol 1.0 / terra 0.4 / luna 0.04) and per-US
+  escalation counts.
+- **`environment` failure category.** Harness/tooling/capacity failures and
+  verifier safety-classifier refusals no longer climb the model ladder.
+
+### Changed
+- **BREAKING (ladder policy):** partial reversal of the v0.22.5 "no max/ultra
+  in the ladder" rule (32d181a) — for luna only. Sol/terra keep the xhigh
+  ceiling. Existing `~/.claude/rlp-desk-models.json` overrides are unaffected
+  (override precedence unchanged).
+- `--consensus-model` default `gpt-5.6-terra:medium` → `gpt-5.6-terra:high`;
+  `--final-consensus-model` default `gpt-5.6-sol:high` → `gpt-5.6-sol:xhigh`.
+
 ## [0.22.23] — 2026-07-22
 
 ### Added
