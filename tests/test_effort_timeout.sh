@@ -31,23 +31,39 @@ grep -q '_effective_iter_timeout' "$RUN" \
   && pass "T5: run_ralph_desk.zsh consumes _effective_iter_timeout" \
   || fail "T5: poll loop still uses raw ITER_TIMEOUT only"
 
-# T6: functional — helper computes 1200/900/600 from a 600 base
+# T6: functional — helper computes 1200/900/600 from a 600 base, driven with the
+# PRODUCTION role strings. run_ralph_desk.zsh:5501 passes "Worker" (capitalized —
+# the role doubles as a log label) and the verifier polls pass "Verifier-final" /
+# "Verifier<suffix>". A lowercase-only probe passes against a case-SENSITIVE
+# compare that is dead on every real callsite, so "Worker" is the load-bearing
+# case here; the lowercase call stays pinned alongside it.
 _fn_out=$(zsh -fc '
   ITER_TIMEOUT=600
   get_model_string() { if [[ "$1" == codex ]]; then echo "$2:$3"; else echo "$2"; fi }
   source <(awk "/_effective_iter_timeout\(\)/,/^}/" '"$LIB"')
   WORKER_ENGINE=codex WORKER_CODEX_MODEL=gpt-5.6-luna WORKER_CODEX_REASONING=max WORKER_MODEL=gpt-5.6-luna
-  echo -n "$(_effective_iter_timeout worker),"
+  echo -n "$(_effective_iter_timeout Worker),"
   WORKER_CODEX_REASONING=xhigh
-  echo -n "$(_effective_iter_timeout worker),"
+  echo -n "$(_effective_iter_timeout Worker),"
   WORKER_CODEX_REASONING=high
-  echo -n "$(_effective_iter_timeout worker),"
+  echo -n "$(_effective_iter_timeout Worker),"
   WORKER_CODEX_REASONING=max
-  echo -n "$(_effective_iter_timeout verifier)"
+  echo -n "$(_effective_iter_timeout worker),"
+  echo -n "$(_effective_iter_timeout Verifier-final)"
 ' 2>/dev/null)
-[[ "$_fn_out" == "1200,900,600,600" ]] \
-  && pass "T6: functional 600s -> max=1200 xhigh=900 high=600 verifier=600" \
-  || fail "T6: functional output was '$_fn_out' (want 1200,900,600,600)"
+[[ "$_fn_out" == "1200,900,600,1200,600" ]] \
+  && pass "T6: functional 600s -> Worker max=1200 xhigh=900 high=600, worker max=1200, Verifier-final=600" \
+  || fail "T6: functional output was '$_fn_out' (want 1200,900,600,1200,600)"
+
+# T7: the role compare must be case-INSENSITIVE. Regression guard for the
+# case-sensitive `[[ "$role" != "worker" ]]` that made the whole helper inert
+# (production passes "Worker"). Pinned on the zsh `${role:l}` lowercasing;
+# swap this grep if an equivalent mechanism replaces it.
+# Comment lines are stripped first — the helper's own comment names ${role:l},
+# and a grep that matched the comment would keep passing after a code regression.
+awk '/_effective_iter_timeout\(\)/,/^}/' "$LIB" | grep -v '^[[:space:]]*#' | grep -qF '${role:l}' \
+  && pass "T7: role compare is case-insensitive (\${role:l})" \
+  || fail "T7: role compare is case-sensitive — 'Worker' from run_ralph_desk.zsh:5501 will not match"
 
 echo "PASS=$PASS FAIL=$FAIL"
 (( FAIL == 0 )) || exit 1

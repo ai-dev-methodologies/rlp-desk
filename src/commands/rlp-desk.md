@@ -83,8 +83,8 @@ Ask about these items one by one (or in small groups):
 
    | Complexity | Worker (cost lane) | Worker (speed lane) | per-US Verifier | Final Verifier | Consensus (per-US leg) |
    |------------|--------------------|---------------------|-----------------|----------------|------------------------|
-   | LOW | gpt-5.6-luna:high | gpt-5.6-luna:high | claude-sonnet-5:high | claude-fable-5:max | gpt-5.6-luna:max (final-only) |
-   | MEDIUM | gpt-5.6-luna:xhigh | gpt-5.6-luna:xhigh | claude-opus-5:low | claude-fable-5:max | gpt-5.6-terra:high (final-only) |
+   | LOW | gpt-5.6-luna:high | gpt-5.6-luna:high | claude-sonnet-5:high | claude-fable-5:max | gpt-5.6-luna:max (per-US leg if `--consensus all`; default final-only) |
+   | MEDIUM | gpt-5.6-luna:xhigh | gpt-5.6-luna:xhigh | claude-opus-5:low | claude-fable-5:max | gpt-5.6-terra:high (per-US leg if `--consensus all`; default final-only) |
    | HIGH | gpt-5.6-luna:max | gpt-5.6-sol:medium | claude-opus-5:high | claude-fable-5:max | gpt-5.6-sol:medium (all) |
    | CRITICAL | gpt-5.6-sol:high | gpt-5.6-sol:high | claude-opus-5:max | claude-fable-5:max + human | gpt-5.6-sol:high (all) |
 
@@ -501,7 +501,7 @@ rm -f .rlp-desk/memos/<slug>-verify-verdict.json
 **③ Decide model** (§4 of governance.md — luna-first)
 - Previous iteration failed with failure_category spec/implementation/integration → upgrade model
 - failure_category environment/flaky (incl. verifier refusal, capacity stall) → SAME model, recover and retry
-- Simple task → downgrade
+- Simple repetitive task → keep current Worker model (luna-first start is already minimal)
 - User specified → use that
 - If `--debug`: debug_log `[DECIDE] iter=N phase=model_select worker_model=<model> reason=<reason>`
 
@@ -750,7 +750,7 @@ After the loop ends (COMPLETE, BLOCKED, or TIMEOUT), generate `logs/<slug>/campa
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
 - Same acceptance criterion fails 2 consecutive iterations → upgrade model, retry once, then BLOCKED
-- 3 consecutive **fail** verdicts on 3 unique criterion IDs → upgrade to opus, retry once, then BLOCKED
+- 3 consecutive **fail** verdicts on 3 unique criterion IDs → upgrade model per the ladder (claude: →opus; codex: next ladder step), retry once, then BLOCKED
 - max_iter reached → TIMEOUT, report to user
 
 Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pass`, unchanged by `request_info`). Only **fail** verdicts count for CB chains — `request_info` does not break or contribute.

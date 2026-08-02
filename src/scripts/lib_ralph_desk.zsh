@@ -377,7 +377,12 @@ check_model_upgrade() {
 # Recomputed per poll from the CURRENT (possibly ladder-escalated) model.
 _effective_iter_timeout() {
   local role="$1"
-  if [[ "$role" != "worker" ]]; then
+  # Role strings reach here capitalized from production callsites
+  # (run_ralph_desk.zsh passes "Worker" / "Verifier<suffix>" / "Verifier-final",
+  # which double as log labels), so the compare MUST be case-insensitive —
+  # `${role:l}`. A case-sensitive `!= "worker"` made this whole helper inert:
+  # every worker poll fell through to the base ITER_TIMEOUT.
+  if [[ "${role:l}" != "worker" ]]; then
     echo "$ITER_TIMEOUT"
     return 0
   fi
@@ -388,6 +393,23 @@ _effective_iter_timeout() {
     *:xhigh) echo $(( ITER_TIMEOUT * 3 / 2 )) ;;
     *)       echo "$ITER_TIMEOUT" ;;
   esac
+}
+
+# _verdict_failure_category() — extract the effective failure_category from a
+# verify-verdict JSON (luna-first spec §2.5 / governance §"Verifier: reasoning
+# in verify-verdict.json"). Governance classifies failures PER ISSUE, so the
+# field legitimately appears at three placements depending on the producer:
+# top-level, inside `issues[]`, or inside `checks[]`. Reading only the first
+# two of those silently bypassed the environment/flaky escalation guard on
+# issue-level verdicts.
+# Precedence: top-level .failure_category, else the first category found in
+# .issues[], else the first in .checks[]. Echoes "" when absent/unparseable
+# (callers treat "" as "not an environment/flaky failure").
+# Usage: _verdict_failure_category <verdict_file>
+_verdict_failure_category() {
+  local vf="$1"
+  [[ -f "$vf" ]] || { echo ""; return 0; }
+  jq -r '(.failure_category // (.issues // [] | map(.failure_category // empty) | first) // (.checks // [] | map(.failure_category // empty) | first) // "")' "$vf" 2>/dev/null || echo ""
 }
 
 # record_us_failure() — track per-US cumulative failure count (dual counter, Option D)

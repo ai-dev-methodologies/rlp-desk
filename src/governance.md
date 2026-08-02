@@ -313,7 +313,7 @@ BLOCKED writes a JSON sidecar (`<slug>-blocked.json`) alongside the markdown sen
   "blocked_at_utc": "<iso8601>",
   "reason_category": "metric_failure | cross_us_dep | contract_violation | context_limit | infra_failure | repeat_axis | mission_abort | external_fact",
   "reason_detail": "<full reason text>",
-  "failure_category": "spec | implementation | integration | flaky | null",
+  "failure_category": "spec | implementation | integration | flaky | environment | null",
   "recoverable": true | false,
   "suggested_action": "next_mission_chain | restart | retry_after_fix | terminal_alert | investigate"
 }

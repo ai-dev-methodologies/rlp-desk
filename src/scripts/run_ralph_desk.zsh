@@ -6219,8 +6219,11 @@ main() {
             # Luna-first spec §2.5: environment/harness failures (incl. verifier
             # safety-classifier refusals, capacity stalls) and flaky failures never
             # climb the model ladder — recover the environment, retry the SAME model.
-            local _fail_cat=""
-            [[ -f "$VERDICT_FILE" ]] && _fail_cat=$(jq -r '(.failure_category // (.checks // [] | map(.failure_category // empty) | first // ""))' "$VERDICT_FILE" 2>/dev/null)
+            # Placement-agnostic read (top-level / issues[] / checks[]) —
+            # governance classifies failures per ISSUE, so the category is not
+            # always top-level. See _verdict_failure_category in the lib.
+            local _fail_cat
+            _fail_cat=$(_verdict_failure_category "$VERDICT_FILE")
             if [[ "$_fail_cat" != "environment" && "$_fail_cat" != "flaky" ]]; then
               check_model_upgrade "${signal_us_id:-unknown}"
             else

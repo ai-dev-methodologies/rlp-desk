@@ -504,6 +504,29 @@ export function effectiveIterTimeoutMs(baseMs, workerModel) {
   return baseMs;
 }
 
+// Luna-first spec §2.5: environment/harness failures (incl. verifier
+// safety-classifier refusals) and flaky failures never climb the ladder.
+// Governance classifies failures per ISSUE, so the field legitimately appears
+// top-level, inside issues[], or inside checks[] depending on the producer —
+// all three placements must resolve (zsh parity: _verdict_failure_category in
+// src/scripts/lib_ralph_desk.zsh).
+export function verdictFailureCategory(verdict) {
+  if (!verdict || typeof verdict !== 'object') return '';
+  if (typeof verdict.failure_category === 'string') return verdict.failure_category;
+  for (const list of [verdict.issues, verdict.checks]) {
+    if (Array.isArray(list)) {
+      const hit = list.find((item) => item && typeof item.failure_category === 'string');
+      if (hit) return hit.failure_category;
+    }
+  }
+  return '';
+}
+
+export function escalationEligible(verdict) {
+  const cat = verdictFailureCategory(verdict);
+  return cat !== 'environment' && cat !== 'flaky';
+}
+
 export async function defaultCreateSession({ sessionName, workingDir, env = process.env, execFile: execFileImpl } = {}) {
   const exec = execFileImpl ?? execFileAsync;
   // v0.13.1: when invoked from inside an attached tmux session, the user
@@ -2309,6 +2332,9 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         };
         state.consecutive_failures += 1;
         await appendIterationAnalytics(paths, state, oracleUsId, 'fail', options, lifecycleMetrics);
+        // Luna-first spec §2.5 (same gate as the verifier-fail path below): an
+        // environment/flaky-classified oracle verdict must not climb the ladder.
+        const oracleLadderEligible = escalationEligible(oracleVerdict);
         const oracleUpgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
         if (oracleUpgradedModel === 'BLOCKED') {
           state.phase = 'blocked';
@@ -2327,7 +2353,13 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
           });
           return { status: 'blocked', usId: oracleUsId, reason: oracleBlockReason, category: 'repeat_axis', statusFile: paths.statusFile };
         }
-        state.worker_model = oracleUpgradedModel;
+        if (oracleLadderEligible) {
+          state.worker_model = oracleUpgradedModel;
+        } else {
+          console.error(
+            `[DECIDE] iter=${state.iteration} phase=model_select model_upgrade=false reason=failure_category_${verdictFailureCategory(oracleVerdict)}`,
+          );
+        }
         state.current_us = oracleUsId;
         fixContractPath = path.join(paths.campaignLogDir, `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`);
         await writePromptFile(fixContractPath, buildFixContract(oracleVerdict));
@@ -2572,6 +2604,13 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // terminal iteration).
     lifecycleMetrics.markUnlock(path.basename(paths.doneClaimFile), { ctx: 'archival', iter: state.iteration });
     await appendIterationAnalytics(paths, state, usId, 'fail', options, lifecycleMetrics);
+    // Luna-first spec §2.5: an environment/flaky failure must not climb the
+    // ladder — recover and retry the SAME model. Only the model assignment is
+    // gated: the consecutive-failure bump above and the BLOCKED-on-exhaustion
+    // check below stay on the path, so the CB still owns terminal escalation
+    // (zsh parity — skipping check_model_upgrade there does not skip the CB
+    // threshold either).
+    const ladderEligible = escalationEligible(verdict);
     const upgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
     if (upgradedModel === 'BLOCKED') {
       state.phase = 'blocked';
@@ -2614,7 +2653,13 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       };
     }
 
-    state.worker_model = upgradedModel;
+    if (ladderEligible) {
+      state.worker_model = upgradedModel;
+    } else {
+      console.error(
+        `[DECIDE] iter=${state.iteration} phase=model_select model_upgrade=false reason=failure_category_${verdictFailureCategory(verdict)}`,
+      );
+    }
     state.current_us = usId;
     fixContractPath = path.join(paths.campaignLogDir, `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`);
     await writePromptFile(fixContractPath, buildFixContract(verdict));
