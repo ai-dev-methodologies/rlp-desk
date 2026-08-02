@@ -369,6 +369,27 @@ check_model_upgrade() {
   return 0
 }
 
+# Effort-aware task budget (2026-08-03 luna-first spec §6). Slow reasoning
+# efforts (:xhigh, :max) get a longer per-iteration budget so cheap-but-slow
+# models don't convert their savings into timeout-retry costs. Worker role
+# only — verifier/consensus keep the base ITER_TIMEOUT. Applies on top of a
+# user-supplied ITER_TIMEOUT too (documented in rlp-desk.md flag reference).
+# Recomputed per poll from the CURRENT (possibly ladder-escalated) model.
+_effective_iter_timeout() {
+  local role="$1"
+  if [[ "$role" != "worker" ]]; then
+    echo "$ITER_TIMEOUT"
+    return 0
+  fi
+  local model_str
+  model_str=$(get_model_string "$WORKER_ENGINE" "${WORKER_CODEX_MODEL:-$WORKER_MODEL}" "${WORKER_CODEX_REASONING:-}")
+  case "$model_str" in
+    *:max)   echo $(( ITER_TIMEOUT * 2 )) ;;
+    *:xhigh) echo $(( ITER_TIMEOUT * 3 / 2 )) ;;
+    *)       echo "$ITER_TIMEOUT" ;;
+  esac
+}
+
 # record_us_failure() — track per-US cumulative failure count (dual counter, Option D)
 # Unlike CONSECUTIVE_FAILURES which resets on pass, US_FAIL_HISTORY persists across phases.
 # This enables prior-failure warnings when a US that struggled in per-US mode fails again in final verify.

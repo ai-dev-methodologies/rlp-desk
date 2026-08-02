@@ -3468,6 +3468,8 @@ poll_for_signal() {
   local _prev_api_tail=""   # IMP-07: last pane tail, to reset backoff on progress
   local poll_start
   poll_start=$(date +%s)
+  local _pfs_iter_timeout
+  _pfs_iter_timeout=$(_effective_iter_timeout "$role")
   _POLL_A4_ALREADY_REAPED=0
   # ④ request-b seal #4/#7: submit-anchored timeout, single-sourced here so the
   # worker poll, the sequential claude verifier, AND the final verifier all use
@@ -3505,8 +3507,8 @@ poll_for_signal() {
       log_debug "[FLOW] iter=$ITERATION role=$role first_progress_ts=$now (ITER_TIMEOUT re-based to first progress)"
     fi
     if (( _pfs_first_progress_ts > 0 )); then
-      if (( now - _pfs_first_progress_ts >= ITER_TIMEOUT )); then
-        log_error "$role timed out after ${ITER_TIMEOUT}s of task time (submit-anchored) for iteration $ITERATION"
+      if (( now - _pfs_first_progress_ts >= _pfs_iter_timeout )); then
+        log_error "$role timed out after ${_pfs_iter_timeout}s of task time (submit-anchored, effort-aware) for iteration $ITERATION"
         return 1  # timeout
       fi
     elif (( _pfs_banner_reinject_done == 0 )) && (( $+functions[_pane_submit_blocked_by_banner] )) \
