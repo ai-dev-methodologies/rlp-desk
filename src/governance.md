@@ -257,13 +257,13 @@ Worker records what was done, in what order, with command evidence in `done-clai
 ### Verifier: reasoning in verify-verdict.json
 Verifier records WHY each judgment was made in `verify-verdict.json`:
 - Each check includes: what was checked, decision (pass/fail), and the specific evidence basis
-- **failure_category** (required on fail verdicts): Verifier classifies each issue's root cause as one of:
+- **failure_category** (required on fail verdicts): Verifier classifies the failure's root cause as one of:
   - `spec` — AC is ambiguous, contradictory, or untestable (suggests IL-2 re-assessment, not model upgrade)
   - `implementation` — code logic error, missing case, wrong algorithm (model upgrade may help)
   - `integration` — individual pieces work but interaction fails (suggests task split or architecture review)
   - `flaky` — non-deterministic failure, timing, environment (suggests retry, not escalation)
   - `environment` — harness/tooling/capacity failure unrelated to model capability: model-capacity stall, terminal/tool error, context-ceiling truncation, or a verifier safety-classifier refusal. NEVER triggers model upgrade — Leader recovers the environment and retries the SAME model.
-  When a verdict carries multiple failure_category values, the effective category is resolved top-level first, then the first entry in `issues[]`, then `checks[]` — Verifiers should therefore put the DOMINANT root cause first.
+  When a verdict carries multiple failure_category values, the effective category is resolved top-level first, then the first entry in `issues[]`, then `reasoning[]`, then `checks[]` — Verifiers should therefore put the DOMINANT root cause first.
   Leader uses failure_category to decide between model upgrade, spec refinement, or architecture escalation.
 - Checks include: IL-1 Evidence Gate, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit, Test Coverage Audit
 - This proves the Verifier actually performed each check rather than rubber-stamping
