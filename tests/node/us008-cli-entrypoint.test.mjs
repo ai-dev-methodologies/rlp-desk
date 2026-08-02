@@ -637,8 +637,9 @@ test('US-008 P1.b: --mode tmux unaffected by P1.b banner changes', async (t) => 
 
 // v0.21.0: consensus defaults moved to the GPT-5.6 generation. Pinned here so
 // the Node RUN_DEFAULTS cannot drift from the zsh env defaults (test_option_cleanup D5/D6).
+// luna-first cost routing: bumped to terra:high / sol:xhigh (2026-08-03).
 test('RUN_DEFAULTS: consensus models are the 5.6 generation (terra/sol)', async () => {
   const { RUN_DEFAULTS } = await import('../../src/node/run.mjs');
-  assert.equal(RUN_DEFAULTS.consensusModel, 'gpt-5.6-terra:medium');
-  assert.equal(RUN_DEFAULTS.finalConsensusModel, 'gpt-5.6-sol:high');
+  assert.equal(RUN_DEFAULTS.consensusModel, 'gpt-5.6-terra:high');
+  assert.equal(RUN_DEFAULTS.finalConsensusModel, 'gpt-5.6-sol:xhigh');
 });

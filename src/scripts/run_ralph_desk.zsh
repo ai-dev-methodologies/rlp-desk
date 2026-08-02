@@ -452,8 +452,8 @@ CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 VERIFY_MODE="${VERIFY_MODE:-per-us}"        # per-us|batch
 # Consensus: off|all|final-only (replaces VERIFY_CONSENSUS + FINAL_CONSENSUS + CONSENSUS_SCOPE)
 CONSENSUS_MODE="${CONSENSUS_MODE:-off}"     # off|all|final-only
-CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.6-terra:medium}"       # per-US cross-verifier (lighter)
-FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.6-sol:high}"  # final cross-verifier (stricter)
+CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.6-terra:high}"       # per-US cross-verifier (lighter)
+FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.6-sol:xhigh}"  # final cross-verifier (stricter)
 # Legacy compat: map old flags to CONSENSUS_MODE
 if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
   CONSENSUS_MODE="${CONSENSUS_SCOPE:-all}"
@@ -6469,11 +6469,11 @@ while (( _cli_i <= $# )); do
       ;;
     --consensus-model)
       (( _cli_i++ ))
-      CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-terra:medium}"
+      CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-terra:high}"
       ;;
     --final-consensus-model)
       (( _cli_i++ ))
-      FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-sol:high}"
+      FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-sol:xhigh}"
       ;;
     --final-consensus)
       # Legacy: map to new --consensus final-only

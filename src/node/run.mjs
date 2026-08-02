@@ -34,8 +34,8 @@ export const RUN_DEFAULTS = {
   verifierModel: 'sonnet',
   finalVerifierModel: 'opus',
   consensusMode: 'off',
-  consensusModel: 'gpt-5.6-terra:medium',
-  finalConsensusModel: 'gpt-5.6-sol:high',
+  consensusModel: 'gpt-5.6-terra:high',
+  finalConsensusModel: 'gpt-5.6-sol:xhigh',
   // Feature 2: parallel consensus verification (claude + codex concurrently).
   // DEFAULT OFF — the sequential consensus path is byte-identical when off.
   consensusParallel: false,

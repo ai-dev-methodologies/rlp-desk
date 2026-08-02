@@ -66,30 +66,30 @@ else
   fail "D4: CONSENSUS_MODE default should be off"
 fi
 
-# D5: CONSENSUS_MODEL default is gpt-5.6-terra:medium (GPT-5.6 generation, v0.20.1)
-if grep -q 'CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.6-terra:medium}"' "$RUN"; then
-  pass "D5: CONSENSUS_MODEL default is gpt-5.6-terra:medium (per-US, lighter)"
+# D5: CONSENSUS_MODEL default is gpt-5.6-terra:high (luna-first cost routing, 2026-08-03)
+if grep -q 'CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.6-terra:high}"' "$RUN"; then
+  pass "D5: CONSENSUS_MODEL default is gpt-5.6-terra:high (per-US, lighter)"
 else
-  fail "D5: CONSENSUS_MODEL default should be gpt-5.6-terra:medium"
+  fail "D5: CONSENSUS_MODEL default should be gpt-5.6-terra:high"
 fi
 
-# D6: FINAL_CONSENSUS_MODEL default is gpt-5.6-sol:high (GPT-5.6 generation, v0.20.1)
-if grep -q 'FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.6-sol:high}"' "$RUN"; then
-  pass "D6: FINAL_CONSENSUS_MODEL default is gpt-5.6-sol:high (final, stricter)"
+# D6: FINAL_CONSENSUS_MODEL default is gpt-5.6-sol:xhigh (luna-first cost routing, 2026-08-03)
+if grep -q 'FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.6-sol:xhigh}"' "$RUN"; then
+  pass "D6: FINAL_CONSENSUS_MODEL default is gpt-5.6-sol:xhigh (final, stricter)"
 else
-  fail "D6: FINAL_CONSENSUS_MODEL default should be gpt-5.6-sol:high"
+  fail "D6: FINAL_CONSENSUS_MODEL default should be gpt-5.6-sol:xhigh"
 fi
 
 # D5b/D6b: the CLI empty-value fallbacks match the env defaults (no drift)
-if grep -qF 'CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-terra:medium}"' "$RUN"; then
+if grep -qF 'CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-terra:high}"' "$RUN"; then
   pass "D5b: --consensus-model empty-value CLI fallback matches the default"
 else
-  fail "D5b: --consensus-model CLI fallback drifted from gpt-5.6-terra:medium"
+  fail "D5b: --consensus-model CLI fallback drifted from gpt-5.6-terra:high"
 fi
-if grep -qF 'FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-sol:high}"' "$RUN"; then
+if grep -qF 'FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-sol:xhigh}"' "$RUN"; then
   pass "D6b: --final-consensus-model empty-value CLI fallback matches the default"
 else
-  fail "D6b: --final-consensus-model CLI fallback drifted from gpt-5.6-sol:high"
+  fail "D6b: --final-consensus-model CLI fallback drifted from gpt-5.6-sol:xhigh"
 fi
 
 # ============================================================
