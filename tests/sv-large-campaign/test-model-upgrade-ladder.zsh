@@ -41,11 +41,17 @@ LIB_DIR="${0:A:h:h:h}/src/scripts"
 # over the shipped defaults this test asserts on.
 RLP_DESK_MODELS_FILE="/nonexistent-hermetic-test-guard/rlp-desk-models.json"
 
-# Extract ONLY the ladder functions (get_model_string..record_us_failure span)
-# and source them at FILE scope (lib's funcstack source-guard requires file scope;
-# extracting the span avoids pulling the whole lib's global/dependency surface).
+# Extract ONLY the ladder functions (get_model_string, get_next_model,
+# check_model_upgrade, record_us_failure) and source them at FILE scope
+# (lib's funcstack source-guard requires file scope; extracting just these
+# functions avoids pulling the whole lib's global/dependency surface).
+# Function-name based, not a line range — drift-proof against the lib's
+# functions moving around as it grows (top-level functions close with a
+# `}` at column 0).
 _LADDER_SRC=$(mktemp -t ladder-fns.XXXXXX.zsh)
-sed -n '128,287p' "$LIB" > "$_LADDER_SRC"
+for _fn in get_model_string get_next_model check_model_upgrade record_us_failure; do
+  awk "/^${_fn}\(\)/{f=1} f{print} f&&/^\}/{f=0}" "$LIB" >> "$_LADDER_SRC"
+done
 source "$_LADDER_SRC"
 rm -f "$_LADDER_SRC"
 
@@ -64,6 +70,13 @@ ok "real lib ladder functions sourced from lib_ralph_desk.zsh"
   && ok "codex spark ladder ceiling at xhigh" || no "codex spark ladder wrong"
 [[ -z "$(get_next_model some-unknown-model)" ]] \
   && ok "unknown model → ceiling (no upgrade, safe)" || no "unknown model not treated as ceiling"
+[[ "$(get_next_model gpt-5.6-luna:high)" == gpt-5.6-luna:max \
+   && "$(get_next_model gpt-5.6-luna:xhigh)" == gpt-5.6-luna:max \
+   && "$(get_next_model gpt-5.6-luna:max)" == gpt-5.6-terra:max \
+   && "$(get_next_model gpt-5.6-terra:max)" == gpt-5.6-sol:xhigh ]] \
+  && ok "luna-first chain: luna:high→luna:max→terra:max→sol:xhigh" || no "luna-first chain wrong"
+[[ "$(get_next_model gpt-5.6-terra:xhigh)" == gpt-5.6-sol:high && -z "$(get_next_model gpt-5.6-sol:xhigh)" ]] \
+  && ok "terra:xhigh→sol:high jump and sol:xhigh ceiling unchanged" || no "unchanged entries regressed"
 
 # ---- check_model_upgrade: claude worker climbs on same-US double fail ----
 WORKER_ENGINE=claude; WORKER_MODEL=haiku; WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""

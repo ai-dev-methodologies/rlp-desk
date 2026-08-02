@@ -176,14 +176,42 @@ test('shipped ladder: gpt-5.6-sol:xhigh is the final ceiling (no max/ultra climb
 test('shipped ladder: gpt-5.6-terra:xhigh jumps model to gpt-5.6-sol:high', async () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
   assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-5.6-sol:high');
-  assert.equal(ladder['gpt-5.6-terra:max'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.6-terra:max'], 'gpt-5.6-sol:xhigh');
   assert.equal(ladder['gpt-5.6-terra:ultra'], CEILING_SENTINEL);
 });
 
-test('shipped ladder: gpt-5.6-luna:xhigh jumps model to gpt-5.6-terra:high (max is a dead end)', async () => {
+test('shipped ladder: gpt-5.6-luna:xhigh climbs to gpt-5.6-luna:max before hopping models', async () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
-  assert.equal(ladder['gpt-5.6-luna:xhigh'], 'gpt-5.6-terra:high');
-  assert.equal(ladder['gpt-5.6-luna:max'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.6-luna:high'], 'gpt-5.6-luna:max');
+  assert.equal(ladder['gpt-5.6-luna:xhigh'], 'gpt-5.6-luna:max');
+  assert.equal(ladder['gpt-5.6-luna:max'], 'gpt-5.6-terra:max');
+});
+
+// 2026-08-03 luna-first policy (docs/superpowers/specs/2026-08-03-luna-first-cost-routing-design.md):
+// within luna, effort climbs before the model jumps (high skips xhigh -> max);
+// luna:max hops to the quota-first terra:max lane; terra:max escapes to sol:xhigh
+// (terra:max quality sits between sol:high and sol:xhigh, so sol:high would be lateral).
+// Partial reversal of 32d181a for luna only — sol/terra keep the xhigh ladder ceiling.
+test('luna-first ladder: effort-before-model within luna, quota-first terra:max hop', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  assert.equal(ladder['gpt-5.6-luna:high'], 'gpt-5.6-luna:max');
+  assert.equal(ladder['gpt-5.6-luna:xhigh'], 'gpt-5.6-luna:max');
+  assert.equal(ladder['gpt-5.6-luna:max'], 'gpt-5.6-terra:max');
+  assert.equal(ladder['gpt-5.6-terra:max'], 'gpt-5.6-sol:xhigh');
+  // unchanged guards
+  assert.equal(ladder['gpt-5.6-luna:medium'], 'gpt-5.6-luna:high');
+  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-5.6-sol:high');
+  assert.equal(ladder['gpt-5.6-sol:xhigh'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.6-sol:max'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.6-sol:ultra'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.6-terra:ultra'], CEILING_SENTINEL);
+});
+
+test('nextWorkerModel walks the cost-lane chain to the sol:xhigh ceiling', () => {
+  assert.equal(nextWorkerModel('gpt-5.6-luna:high', 3), 'gpt-5.6-luna:max');
+  assert.equal(nextWorkerModel('gpt-5.6-luna:max', 3), 'gpt-5.6-terra:max');
+  assert.equal(nextWorkerModel('gpt-5.6-terra:max', 3), 'gpt-5.6-sol:xhigh');
+  assert.equal(nextWorkerModel('gpt-5.6-sol:xhigh', 3), 'BLOCKED');
 });
 
 test('shipped ladder: gpt-5.4 and gpt-5.4-mini climb low..xhigh', async () => {
