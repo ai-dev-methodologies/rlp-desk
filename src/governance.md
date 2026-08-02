@@ -157,7 +157,7 @@ because context budget must also cover PRD reading, test writing, and evidence c
 Rules:
 - Each US: max 3-4 ACs, max 2 changed files, completable in 1-2 iterations.
 - If a task is at the edge of a Worker's capability, either split the task or upgrade the Worker model.
-- Leader model selection: choose a model that can succeed comfortably, not the minimum viable model.
+- Leader model selection is luna-first: start at the cheapest model:effort the complexity allows and escalate ONLY on observed failure — the ladder supplies the comfort margin, so a conservative start just pays the top-tier premium on every iteration. Exception: CRITICAL US (security/payment/auth/data-loss) never start below sol:high, and judging roles (Verifier/Consensus) never downshift below their complexity tier (§4).
 - During brainstorm: when proposing US splits, target "smaller than what the Worker can handle" not "as much as the Worker can handle."
 
 This aligns with the original Ralph Loop principle: small tasks succeed most of the time.
@@ -262,6 +262,7 @@ Verifier records WHY each judgment was made in `verify-verdict.json`:
   - `implementation` — code logic error, missing case, wrong algorithm (model upgrade may help)
   - `integration` — individual pieces work but interaction fails (suggests task split or architecture review)
   - `flaky` — non-deterministic failure, timing, environment (suggests retry, not escalation)
+  - `environment` — harness/tooling/capacity failure unrelated to model capability: model-capacity stall, terminal/tool error, context-ceiling truncation, or a verifier safety-classifier refusal. NEVER triggers model upgrade — Leader recovers the environment and retries the SAME model.
   Leader uses failure_category to decide between model upgrade, spec refinement, or architecture escalation.
 - Checks include: IL-1 Evidence Gate, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit, Test Coverage Audit
 - This proves the Verifier actually performed each check rather than rubber-stamping
@@ -586,7 +587,28 @@ identical to sequential consensus.
 
 ## 4. Model Routing
 
-### Claude (default engine)
+### Doctrine (2026-08-03 luna-first)
+
+1. **Luna-first start**: workers start at the cheapest model:effort the US
+   complexity allows (see mapping in rlp-desk.md Step 7). Escalation requires
+   an observed failure — never an assumption of difficulty.
+2. **Effort before model (luna only)**: within luna the ladder raises effort
+   to `max` before jumping models. Terra/sol keep the `xhigh` ladder ceiling.
+3. **Lanes**: campaigns with HIGH US choose at brainstorm time between the
+   long-term/cost lane (HIGH starts `gpt-5.6-luna:max`; escalation passes the
+   quota-first `terra:max` hop) and the speed lane (HIGH starts
+   `gpt-5.6-sol:medium`; no terra hop). CRITICAL rows and all judging roles
+   are lane-independent.
+4. **Judging roles never downshift below evidence**: verifier/consensus tiers
+   scale with complexity (judgment-task benchmarks show large tier gaps,
+   unlike coding aggregates) and are campaign-fixed — no progressive upgrade.
+5. **Environment failures don't climb the ladder**: `failure_category` of
+   `environment` or `flaky` never counts toward model escalation. This
+   includes verifier safety-classifier refusals (opus-5/fable-5 cyber
+   safeguards can false-positive on benign security US) — a refusal is an
+   environment failure, never a verdict.
+
+### Claude (default engine, codex not installed)
 
 | Role | Default Model | Override Criteria |
 |------|---------------|-------------------|
@@ -595,25 +617,28 @@ identical to sequential consensus.
 | Verifier (per-US) | sonnet | Lightweight; campaign-fixed (no progressive upgrade) |
 | Verifier (final) | opus | Full rigor; independent of per-US model |
 
-**Worker auto-upgrade**: When a Worker fails, the Leader upgrades the model for the retry (haiku → sonnet → opus). This upgrade is Worker-only. Verifier model is campaign-fixed — it does not upgrade on failure.
-
-**Verifier model is campaign-fixed**: `--verifier-model` applies to all per-US verifications throughout the campaign. `--final-verifier-model` applies to the final ALL verification. Neither upgrades automatically.
+**Worker auto-upgrade**: When a Worker fails (failure_category `spec`/`implementation`/`integration`), the Leader upgrades the model for the retry. Worker-only; verifier models are campaign-fixed.
 
 The Leader decides each iteration. Decision criteria:
-- Previous iteration failed → upgrade Worker model (unless `--lock-worker-model`)
+- Previous iteration failed with an escalation-eligible failure_category → upgrade Worker model (unless `--lock-worker-model`)
+- failure_category `environment`/`flaky` → same model, recover environment / retry
 - Simple repetitive task → keep current Worker model
 - User explicitly specified → use as given
 
-### Codex (opt-in engine)
+### Codex (recommended worker engine when installed)
 
-Model routing uses `--worker-model` and `--verifier-model` with codex format: `spark:high` or `gpt-5.5:high`.
+Worker ladder chain (data: `src/node/models.json`; reference view:
+`src/model-upgrade-table.md`):
 
 ```
---worker-model spark:high        # codex worker, spark model, high reasoning
---verifier-model gpt-5.5:high    # codex verifier, gpt-5.5, high reasoning
+Cost lane:  luna:high → luna:max → terra:max → sol:xhigh (ceiling)
+            (MEDIUM joins at luna:xhigh → luna:max → …)
+Speed lane: sol:medium → sol:high → sol:xhigh (ceiling)
 ```
 
-`parse_model_flag()` auto-detects engine from the model name: plain names (haiku, sonnet, opus) = claude; `name:reasoning` format = codex. Claude is the default engine; codex is explicitly opt-in.
+`--worker-model spark:high` / `gpt-5.6-luna:max` format; `parse_model_flag()`
+auto-detects engine: plain names (haiku, sonnet, opus) = claude;
+`name:reasoning` = codex unless the name is a claude alias/`claude-*` id.
 
 ## 5a. Execution: Agent() Approach (default) — "Smart Mode"
 
@@ -941,13 +966,19 @@ Worker completes US → signal verify
 
 | Scenario | Primary verifier | Cross verifier |
 |----------|-----------------|----------------|
-| per-US, primary=claude | `--verifier-model` (sonnet) | `--consensus-model` (gpt-5.6-terra:medium) |
+| per-US, primary=claude | `--verifier-model` (complexity-tiered: sonnet-5:high / opus-5:low / opus-5:high / opus-5:max) | `--consensus-model` (complexity-tiered: gpt-5.6-luna:max / gpt-5.6-terra:high / gpt-5.6-sol:medium / gpt-5.6-sol:high) |
 | per-US, primary=codex | `--verifier-model` | claude opus (fixed) |
-| final, primary=claude | `--final-verifier-model` (opus) | `--final-consensus-model` (gpt-5.6-sol:high) |
+| final, primary=claude | `--final-verifier-model` (claude-fable-5:max) | `--final-consensus-model` (gpt-5.6-sol:xhigh) |
 | final, primary=codex | `--final-verifier-model` | claude opus (fixed) |
 
 - Both must pass. No engine priority.
+- The complexity tier (LOW/MEDIUM/HIGH/CRITICAL) is chosen once at brainstorm
+  time (rlp-desk.md Step 7) and baked into the run command flags —
+  campaign-fixed thereafter.
 - spark is not allowed as a consensus cross verifier (100k output limit).
+- Evidence basis for tiering: judgment tasks show large model-tier gaps
+  (Internal Research Debugging sol 68.3 / terra 67.8 / luna 50.8; CodeRabbit
+  review sol 69.7% vs terra 52.5%) — see the 2026-08-03 spec appendix.
 
 **Key rules:**
 - Both claude and codex CLI must be installed
