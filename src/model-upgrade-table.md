@@ -109,6 +109,17 @@ manual `luna:xhigh` joins at `luna:max`. CRITICAL rows start at `sol:high`
 regardless of lane. Speed lane HIGH starts `sol:medium → sol:high →
 sol:xhigh`.)
 
+**Known accepted edge (spec §5).** The lane choice applies only to HIGH rows —
+LOW and MEDIUM start on luna in *both* lanes. So a LOW/MEDIUM US that keeps
+failing on a speed-lane campaign still walks the cost-lane chain and reaches
+the quota-first `terra:max` hop, which is slower than sol: the operator picked
+"speed" but a repeatedly-failing cheap US lands on the slow rung anyway. This
+is accepted — escalation is evidence-gated, and by the time a LOW US has failed
+this many times its complexity was misjudged. Two mitigations if the latency
+matters: `--lock-worker-model` (pin the start model; the CB then owns the
+terminal outcome instead of the ladder) or a manual `--worker-model
+gpt-5.6-sol:medium` start for that campaign.
+
 ## GPT-5.4 / GPT-5.4-mini (low → medium → high → xhigh)
 
 Same 4-tier shape as gpt-5.5 below; substitute `gpt-5.4` or `gpt-5.4-mini`.

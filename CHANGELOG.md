@@ -20,9 +20,12 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - **Effort-aware iteration timeout.** Worker budgets scale ×1.5 (`:xhigh`) /
   ×2.0 (`:max`) so slow-but-cheap efforts don't convert savings into timeout
   retries. Both leaders.
-- **Campaign cost summary.** The campaign report now includes a
-  sol-equivalent cost total (sol 1.0 / terra 0.4 / luna 0.04) and per-US
-  escalation counts.
+- **Campaign cost summary.** For the campaign report, the leader computes a
+  sol-equivalent cost total for the codex legs (sol 1.0 / terra 0.4 / luna
+  0.04) plus per-US escalation counts and the final model reached, from the
+  per-iteration token data in `status.json`. Claude iterations are listed by
+  count only (separate subscription pool). The summary is marked `estimated`
+  when per-iteration token data is missing, as in tmux runs.
 - **`environment` failure category.** Harness/tooling/capacity failures and
   verifier safety-classifier refusals no longer climb the model ladder.
   Campaigns track `escalation_eligible_failures` in `status.json` separately

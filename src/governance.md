@@ -618,6 +618,13 @@ identical to sequential consensus.
 | Verifier (per-US) | sonnet | Lightweight; campaign-fixed (no progressive upgrade) |
 | Verifier (final) | opus | Full rigor; independent of per-US model |
 
+These are the **CLI defaults** — what you get when no model flag is passed. They
+are not the same as the **recommended tiers**, which brainstorm injects per
+complexity as explicit `--verifier-model` / `--final-verifier-model` values
+(`claude-sonnet-5:high` … `claude-opus-5:max`, final `claude-fable-5:max` — see
+§4 and the Consensus Model Routing table below). A campaign started through
+`/rlp-desk` therefore runs the tiers, not these defaults.
+
 **Worker auto-upgrade**: When a Worker fails (failure_category `spec`/`implementation`/`integration`), the Leader upgrades the model for the retry. Worker-only; verifier models are campaign-fixed.
 
 The Leader decides each iteration. Decision criteria:

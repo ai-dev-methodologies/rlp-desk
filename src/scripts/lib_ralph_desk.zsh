@@ -386,12 +386,25 @@ _effective_iter_timeout() {
     echo "$ITER_TIMEOUT"
     return 0
   fi
-  local model_str
-  model_str=$(get_model_string "$WORKER_ENGINE" "${WORKER_CODEX_MODEL:-$WORKER_MODEL}" "${WORKER_CODEX_REASONING:-}")
-  case "$model_str" in
-    *:max)   echo $(( ITER_TIMEOUT * 2 )) ;;
-    *:xhigh) echo $(( ITER_TIMEOUT * 3 / 2 )) ;;
-    *)       echo "$ITER_TIMEOUT" ;;
+  # Read the effort from the engine's OWN variable rather than composing a model
+  # string. Composing was engine-broken in two independent ways, so a claude
+  # worker could never scale: (a) run_ralph_desk.zsh sets WORKER_CODEX_MODEL
+  # unconditionally after engine detection, so the `:-$WORKER_MODEL` fallback is
+  # dead and a claude campaign inspected the literal "gpt-5.5"; (b)
+  # get_model_string only appends the level for codex, so a claude effort in
+  # WORKER_EFFORT never reached the case at all. The multiplier table is
+  # engine-agnostic (spec §6) — `--worker-model opus:max` must scale like
+  # `--worker-model gpt-5.6-luna:max`.
+  local effort
+  if [[ "${WORKER_ENGINE:-}" = "codex" ]]; then
+    effort="${WORKER_CODEX_REASONING:-}"
+  else
+    effort="${WORKER_EFFORT:-}"
+  fi
+  case "${effort:l}" in
+    max)   echo $(( ITER_TIMEOUT * 2 )) ;;
+    xhigh) echo $(( ITER_TIMEOUT * 3 / 2 )) ;;
+    *)     echo "$ITER_TIMEOUT" ;;
   esac
 }
 
@@ -403,8 +416,12 @@ _effective_iter_timeout() {
 # two of those silently bypassed the environment/flaky escalation guard on
 # issue-level verdicts.
 # Precedence: top-level .failure_category, else the first category found in
-# .issues[], else the first in .checks[]. Echoes "" when absent/unparseable
+# .issues[], else .reasoning[], else .checks[]. Echoes "" when absent/unparseable
 # (callers treat "" as "not an environment/flaky failure").
+#
+# .reasoning[] is the per-check array the verifier contract actually emits
+# (see the Verdict JSON block in init_ralph_desk.zsh); .checks[] is kept for
+# forward/backward compatibility with other producers.
 #
 # Every arm filters on `type=="string"`, matching the Node extractor's
 # `typeof x === 'string'` check (src/node/runner/campaign-main-loop.mjs
@@ -417,7 +434,7 @@ _effective_iter_timeout() {
 _verdict_failure_category() {
   local vf="$1"
   [[ -f "$vf" ]] || { echo ""; return 0; }
-  jq -r 'first((.failure_category? | select(type=="string")), (.issues? | .[]? | .failure_category? | select(type=="string")), (.checks? | .[]? | .failure_category? | select(type=="string")), "")' "$vf" 2>/dev/null || echo ""
+  jq -r 'first((.failure_category? | select(type=="string")), (.issues? | .[]? | .failure_category? | select(type=="string")), (.reasoning? | .[]? | .failure_category? | select(type=="string")), (.checks? | .[]? | .failure_category? | select(type=="string")), "")' "$vf" 2>/dev/null || echo ""
 }
 
 # record_us_failure() — track per-US cumulative failure count (dual counter, Option D)

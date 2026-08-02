@@ -19,7 +19,7 @@ const {
 // per ISSUE, so the field lands at any of three placements depending on the
 // producer. Reading only top-level let an issue-level `environment` verdict
 // climb the ladder on a verifier safety-classifier refusal.
-test('verdictFailureCategory resolves all three documented placements', () => {
+test('verdictFailureCategory resolves all four documented placements', () => {
   assert.equal(
     verdictFailureCategory({ verdict: 'fail', failure_category: 'environment' }),
     'environment',
@@ -31,6 +31,15 @@ test('verdictFailureCategory resolves all three documented placements', () => {
   assert.equal(
     verdictFailureCategory({ verdict: 'fail', checks: [{ name: 'IL-1', failure_category: 'flaky' }] }),
     'flaky',
+  );
+  // reasoning[] is the per-check array the verifier contract actually emits
+  // (Verdict JSON block in init_ralph_desk.zsh).
+  assert.equal(
+    verdictFailureCategory({
+      verdict: 'fail',
+      reasoning: [{ check: 'IL-1 Evidence Gate', decision: 'fail', failure_category: 'environment' }],
+    }),
+    'environment',
   );
   assert.equal(
     verdictFailureCategory({ verdict: 'fail', issues: [{ id: 'AC1', description: 'off-by-one' }] }),
@@ -52,7 +61,22 @@ test('verdictFailureCategory precedence and malformed inputs', () => {
     verdictFailureCategory({ issues: [{ id: 'AC1' }, { id: 'AC2', failure_category: 'spec' }] }),
     'spec',
   );
-  // checks[] is only consulted when issues[] yields nothing.
+  // Placement precedence: issues[] → reasoning[] → checks[].
+  assert.equal(
+    verdictFailureCategory({
+      issues: [{ failure_category: 'integration' }],
+      reasoning: [{ failure_category: 'environment' }],
+      checks: [{ failure_category: 'spec' }],
+    }),
+    'integration',
+  );
+  assert.equal(
+    verdictFailureCategory({
+      reasoning: [{ failure_category: 'environment' }],
+      checks: [{ failure_category: 'spec' }],
+    }),
+    'environment',
+  );
   assert.equal(
     verdictFailureCategory({
       issues: [{ failure_category: 'integration' }],
@@ -66,10 +90,11 @@ test('verdictFailureCategory precedence and malformed inputs', () => {
 });
 
 test('escalationEligible truth table — only environment/flaky block the ladder', () => {
-  for (const placement of ['top', 'issues', 'checks']) {
+  for (const placement of ['top', 'issues', 'reasoning', 'checks']) {
     const build = (cat) => {
       if (placement === 'top') return { failure_category: cat };
       if (placement === 'issues') return { issues: [{ id: 'AC1', failure_category: cat }] };
+      if (placement === 'reasoning') return { reasoning: [{ check: 'IL-1', failure_category: cat }] };
       return { checks: [{ name: 'IL-1', failure_category: cat }] };
     };
     assert.equal(escalationEligible(build('environment')), false, `environment/${placement}`);

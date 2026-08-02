@@ -37,9 +37,14 @@ grep -q '_effective_iter_timeout' "$RUN" \
 # "Verifier<suffix>". A lowercase-only probe passes against a case-SENSITIVE
 # compare that is dead on every real callsite, so "Worker" is the load-bearing
 # case here; the lowercase call stays pinned alongside it.
+# The claude cases are driven through the REAL variables the runner sets — no
+# get_model_string stub, because the helper no longer composes a model string.
+# WORKER_CODEX_MODEL is deliberately left at gpt-5.5 in the claude cases: the
+# runner sets it unconditionally after engine detection, and that stale value
+# is exactly what used to make a claude worker resolve to "gpt-5.5" and never
+# scale.
 _fn_out=$(zsh -fc '
   ITER_TIMEOUT=600
-  get_model_string() { if [[ "$1" == codex ]]; then echo "$2:$3"; else echo "$2"; fi }
   source <(awk "/_effective_iter_timeout\(\)/,/^}/" '"$LIB"')
   WORKER_ENGINE=codex WORKER_CODEX_MODEL=gpt-5.6-luna WORKER_CODEX_REASONING=max WORKER_MODEL=gpt-5.6-luna
   echo -n "$(_effective_iter_timeout Worker),"
@@ -49,11 +54,34 @@ _fn_out=$(zsh -fc '
   echo -n "$(_effective_iter_timeout Worker),"
   WORKER_CODEX_REASONING=max
   echo -n "$(_effective_iter_timeout worker),"
+  echo -n "$(_effective_iter_timeout Verifier-final),"
+  WORKER_ENGINE=claude WORKER_MODEL=opus WORKER_CODEX_MODEL=gpt-5.5 WORKER_CODEX_REASONING="" WORKER_EFFORT=max
+  echo -n "$(_effective_iter_timeout Worker),"
+  WORKER_EFFORT=xhigh
+  echo -n "$(_effective_iter_timeout Worker),"
+  WORKER_EFFORT=high
+  echo -n "$(_effective_iter_timeout Worker),"
+  WORKER_EFFORT=""
+  echo -n "$(_effective_iter_timeout Worker),"
+  WORKER_EFFORT=max
   echo -n "$(_effective_iter_timeout Verifier-final)"
 ' 2>/dev/null)
-[[ "$_fn_out" == "1200,900,600,1200,600" ]] \
-  && pass "T6: functional 600s -> Worker max=1200 xhigh=900 high=600, worker max=1200, Verifier-final=600" \
-  || fail "T6: functional output was '$_fn_out' (want 1200,900,600,1200,600)"
+[[ "$_fn_out" == "1200,900,600,1200,600,1200,900,600,600,600" ]] \
+  && pass "T6: functional 600s base — codex(max/xhigh/high) and claude(max/xhigh/high/none) both scale; verifier never does" \
+  || fail "T6: functional output was '$_fn_out' (want 1200,900,600,1200,600,1200,900,600,600,600)"
+
+# T6b: the I2 regression in isolation — a claude worker at :max must reach 1200
+# even though WORKER_CODEX_MODEL/-REASONING still hold codex leftovers.
+_claude_out=$(zsh -fc '
+  ITER_TIMEOUT=600
+  source <(awk "/_effective_iter_timeout\(\)/,/^}/" '"$LIB"')
+  WORKER_ENGINE=claude WORKER_MODEL=opus WORKER_EFFORT=max
+  WORKER_CODEX_MODEL=gpt-5.5 WORKER_CODEX_REASONING=high
+  _effective_iter_timeout Worker
+' 2>/dev/null)
+[[ "$_claude_out" == "1200" ]] \
+  && pass "T6b: --worker-model opus:max yields 1200 (claude effort read from WORKER_EFFORT)" \
+  || fail "T6b: claude opus:max gave '$_claude_out' (want 1200 — stale WORKER_CODEX_* must not win)"
 
 # T7: the role compare must be case-INSENSITIVE. Regression guard for the
 # case-sensitive `[[ "$role" != "worker" ]]` that made the whole helper inert

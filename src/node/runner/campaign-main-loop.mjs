@@ -507,13 +507,15 @@ export function effectiveIterTimeoutMs(baseMs, workerModel) {
 // Luna-first spec §2.5: environment/harness failures (incl. verifier
 // safety-classifier refusals) and flaky failures never climb the ladder.
 // Governance classifies failures per ISSUE, so the field legitimately appears
-// top-level, inside issues[], or inside checks[] depending on the producer —
-// all three placements must resolve (zsh parity: _verdict_failure_category in
-// src/scripts/lib_ralph_desk.zsh).
+// top-level, inside issues[], inside reasoning[], or inside checks[] depending
+// on the producer — all four placements must resolve (zsh parity:
+// _verdict_failure_category in src/scripts/lib_ralph_desk.zsh). reasoning[] is
+// the per-check array the verifier contract actually emits (see the Verdict
+// JSON block in init_ralph_desk.zsh); checks[] is kept for other producers.
 export function verdictFailureCategory(verdict) {
   if (!verdict || typeof verdict !== 'object') return '';
   if (typeof verdict.failure_category === 'string') return verdict.failure_category;
-  for (const list of [verdict.issues, verdict.checks]) {
+  for (const list of [verdict.issues, verdict.reasoning, verdict.checks]) {
     if (Array.isArray(list)) {
       const hit = list.find((item) => item && typeof item.failure_category === 'string');
       if (hit) return hit.failure_category;

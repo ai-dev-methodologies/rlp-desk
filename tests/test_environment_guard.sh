@@ -66,6 +66,22 @@ JSON
 cat > "$FIX/top-level-array.json" <<'JSON'
 [1,2,3]
 JSON
+# I1: reasoning[] is the per-check array the verifier contract ACTUALLY emits
+# (see the Verdict JSON block in init_ralph_desk.zsh). A verdict classified
+# there must reach the guard.
+cat > "$FIX/reasoning.json" <<'JSON'
+{"verdict":"fail","reasoning":[{"check":"IL-1 Evidence Gate","decision":"fail","basis":"codex CLI aborted at startup","failure_category":"environment"}]}
+JSON
+cat > "$FIX/reasoning-flaky.json" <<'JSON'
+{"verdict":"fail","reasoning":[{"check":"Test Sufficiency","decision":"pass"},{"check":"Anti-Gaming","decision":"fail","failure_category":"flaky"}]}
+JSON
+# Precedence: issues[] outranks reasoning[], reasoning[] outranks checks[].
+cat > "$FIX/reasoning-precedence.json" <<'JSON'
+{"verdict":"fail","issues":[{"id":"AC1","failure_category":"implementation"}],"reasoning":[{"check":"IL-1","failure_category":"environment"}]}
+JSON
+cat > "$FIX/reasoning-over-checks.json" <<'JSON'
+{"verdict":"fail","reasoning":[{"check":"IL-1","failure_category":"environment"}],"checks":[{"name":"legacy","failure_category":"spec"}]}
+JSON
 
 # Run the REAL extracted helper (same awk function-extraction technique as
 # tests/sv-large-campaign/test-model-upgrade-ladder.zsh — name-anchored, so it
@@ -104,6 +120,12 @@ _assert_cat "T10b: issues[] not an array -> falls through to checks[]" \
                                                       "$FIX/issues-not-array.json" "flaky"
 _assert_cat "T10c: top-level array -> empty (no jq error)" \
                                                       "$FIX/top-level-array.json" ""
+_assert_cat "T10d: environment inside reasoning[] (the contract's real per-check array)" \
+                                                      "$FIX/reasoning.json" "environment"
+_assert_cat "T10e: flaky inside reasoning[], entries without a category skipped" \
+                                                      "$FIX/reasoning-flaky.json" "flaky"
+_assert_cat "T10f: issues[] outranks reasoning[]"     "$FIX/reasoning-precedence.json" "implementation"
+_assert_cat "T10g: reasoning[] outranks checks[]"     "$FIX/reasoning-over-checks.json" "environment"
 
 # --- functional: the guard predicate over the REAL check_model_upgrade -------
 # The predicate below mirrors run_ralph_desk.zsh's fail-verdict guard; T13 pins
@@ -172,6 +194,27 @@ grep -qF '[[ "$_fail_cat" != "environment" && "$_fail_cat" != "flaky" ]]' "$RUN"
 grep -qF '_verdict_failure_category()' "$LIB" \
   && pass "T15: _verdict_failure_category() is defined in the lib" \
   || fail "T15: _verdict_failure_category() missing from the lib"
+
+# --- verifier contract pin (I1) ---------------------------------------------
+# The guard is only reachable if the Verifier is actually ASKED to emit the
+# field. Before this, `failure_category` appeared nowhere in the generated
+# verifier prompt, so the whole environment/flaky doctrine was inert at runtime
+# no matter how correct the leaders were. These pin the contract itself.
+INIT="${INIT:-$REPO_ROOT/src/scripts/init_ralph_desk.zsh}"
+awk '/^Verdict JSON:/,/^Rules:/' "$INIT" | grep -qF '"failure_category"' \
+  && pass "T16: Verdict JSON schema in init_ralph_desk.zsh declares failure_category" \
+  || fail "T16: verifier prompt schema has no failure_category — the guard is unreachable"
+
+for _cat in spec implementation integration flaky environment; do
+  awk '/^Verdict JSON:/,/^Rules:/' "$INIT" | grep -qF "$_cat" \
+    || { fail "T17: enum value '$_cat' missing from the Verdict JSON schema"; _t17_bad=1; }
+done
+[[ -z "${_t17_bad:-}" ]] \
+  && pass "T17: schema enumerates all five categories (spec|implementation|integration|flaky|environment)"
+
+grep -qF 'DOMINANT root cause' "$INIT" \
+  && pass "T18: Rules instruct the Verifier to classify the dominant root cause" \
+  || fail "T18: no dominant-root-cause rule in the verifier prompt"
 
 echo "PASS=$PASS FAIL=$FAIL"
 (( FAIL == 0 )) || exit 1

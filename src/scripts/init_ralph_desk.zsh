@@ -947,6 +947,7 @@ Verdict JSON:
   "us_id": "US-NNN or ALL (matches the scope you verified)",
   "verified_at_utc": "ISO timestamp",
   "summary": "...",
+  "failure_category": "spec|implementation|integration|flaky|environment (fail verdicts only — omit or null on pass)",
   "per_us_results": {"US-001": "pass|fail|not_started", "US-002": "pass|fail|not_started"},
   "criteria_results": [{"criterion":"...","met":true/false,"evidence":"..."}],
   "missing_evidence": [],
@@ -968,6 +969,7 @@ Verdict JSON:
 Rules:
 - Do NOT trust the worker's claim. Verify with fresh evidence.
 - If uncertain, verdict = request_info (describe your specific question in summary so Leader can decide).
+- **On a fail verdict, set \`failure_category\` to the DOMINANT root cause** — the one that explains the failure, not every contributing factor. \`spec\` = AC ambiguous/contradictory/untestable; \`implementation\` = code logic error, missing case, wrong algorithm; \`integration\` = pieces work individually but their interaction fails; \`flaky\` = non-deterministic or timing-dependent; \`environment\` = harness/tooling/capacity failure or a verifier safety-classifier refusal, i.e. NEVER a code defect. The Leader routes on this field: \`environment\` and \`flaky\` retry the SAME model (it recovers the environment instead), every other category may escalate it.
 - Campaign Memory is for orientation only — do NOT use it as source of truth for AC verification.
 - Deterministic checks (type hints, linting, security) delegate to test-spec tools; focus on AC verification + semantic review + smoke test.
 - Do NOT modify code or write sentinel files.
