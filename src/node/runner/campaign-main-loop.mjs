@@ -494,6 +494,16 @@ export function nextWorkerModel(currentModel, consecutiveFailures) {
   return model;
 }
 
+// Effort-aware task budget (2026-08-03 luna-first spec §6): slow reasoning
+// efforts get a longer per-iteration budget. Worker polls only — verifier
+// waits keep the base timeout.
+export function effectiveIterTimeoutMs(baseMs, workerModel) {
+  const model = workerModel ?? '';
+  if (model.endsWith(':max')) return baseMs * 2;
+  if (model.endsWith(':xhigh')) return Math.floor(baseMs * 1.5);
+  return baseMs;
+}
+
 export async function defaultCreateSession({ sessionName, workingDir, env = process.env, execFile: execFileImpl } = {}) {
   const exec = execFileImpl ?? execFileAsync;
   // v0.13.1: when invoked from inside an attached tmux session, the user
@@ -2164,7 +2174,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       signal = await pollForSignal(paths.signalFile, {
         mode: parseModelFlag(state.worker_model).engine,
         paneId: state.worker_pane_id,
-        timeoutMs: iterTimeoutMs,
+        timeoutMs: effectiveIterTimeoutMs(iterTimeoutMs, state.worker_model),
       });
       validateArtifact(signal, {
         expectedSlug: slug,
