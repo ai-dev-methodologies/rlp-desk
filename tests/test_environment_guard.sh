@@ -52,6 +52,20 @@ cat > "$FIX/precedence.json" <<'JSON'
 {"verdict":"fail","failure_category":"implementation","issues":[{"id":"AC1","failure_category":"environment"}]}
 JSON
 printf '{"verdict":"fail",\n' > "$FIX/malformed.json"
+# N2 (zsh/Node parity): a NON-STRING top-level value must not shadow a real
+# category in issues[]. jq's `//` treats a numeric 123 as truthy, so without a
+# type filter the zsh extractor returned '123' where Node returned 'environment'
+# — the two leaders disagreeing on the same verdict file.
+cat > "$FIX/nonstring-top.json" <<'JSON'
+{"verdict":"fail","failure_category":123,"issues":[{"id":"AC1","failure_category":"environment"}]}
+JSON
+# Malformed shapes must degrade to "" rather than erroring out of the guard.
+cat > "$FIX/issues-not-array.json" <<'JSON'
+{"verdict":"fail","issues":"oops","checks":[{"failure_category":"flaky"}]}
+JSON
+cat > "$FIX/top-level-array.json" <<'JSON'
+[1,2,3]
+JSON
 
 # Run the REAL extracted helper (same awk function-extraction technique as
 # tests/sv-large-campaign/test-model-upgrade-ladder.zsh — name-anchored, so it
@@ -84,6 +98,12 @@ _assert_cat "T7: implementation is passed through"    "$FIX/implementation.json"
 _assert_cat "T8: top level wins over issues[]"        "$FIX/precedence.json"    "implementation"
 _assert_cat "T9: malformed JSON -> empty (no crash)"  "$FIX/malformed.json"     ""
 _assert_cat "T10: missing file -> empty (no crash)"   "$FIX/does-not-exist.json" ""
+_assert_cat "T10a: non-string top level does NOT shadow issues[] (Node parity)" \
+                                                      "$FIX/nonstring-top.json" "environment"
+_assert_cat "T10b: issues[] not an array -> falls through to checks[]" \
+                                                      "$FIX/issues-not-array.json" "flaky"
+_assert_cat "T10c: top-level array -> empty (no jq error)" \
+                                                      "$FIX/top-level-array.json" ""
 
 # --- functional: the guard predicate over the REAL check_model_upgrade -------
 # The predicate below mirrors run_ralph_desk.zsh's fail-verdict guard; T13 pins

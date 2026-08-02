@@ -405,11 +405,19 @@ _effective_iter_timeout() {
 # Precedence: top-level .failure_category, else the first category found in
 # .issues[], else the first in .checks[]. Echoes "" when absent/unparseable
 # (callers treat "" as "not an environment/flaky failure").
+#
+# Every arm filters on `type=="string"`, matching the Node extractor's
+# `typeof x === 'string'` check (src/node/runner/campaign-main-loop.mjs
+# verdictFailureCategory). Without it a non-string top-level value (e.g. a
+# numeric 123) is truthy to jq's `//` and SHADOWS a real category sitting in
+# issues[] — the two leaders would then disagree on the same verdict file. The
+# `?` operators keep a malformed shape (issues[] not an array, non-object
+# entries, a top-level array/scalar) returning "" instead of a jq error.
 # Usage: _verdict_failure_category <verdict_file>
 _verdict_failure_category() {
   local vf="$1"
   [[ -f "$vf" ]] || { echo ""; return 0; }
-  jq -r '(.failure_category // (.issues // [] | map(.failure_category // empty) | first) // (.checks // [] | map(.failure_category // empty) | first) // "")' "$vf" 2>/dev/null || echo ""
+  jq -r 'first((.failure_category? | select(type=="string")), (.issues? | .[]? | .failure_category? | select(type=="string")), (.checks? | .[]? | .failure_category? | select(type=="string")), "")' "$vf" 2>/dev/null || echo ""
 }
 
 # record_us_failure() — track per-US cumulative failure count (dual counter, Option D)

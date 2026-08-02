@@ -527,6 +527,29 @@ export function escalationEligible(verdict) {
   return cat !== 'environment' && cat !== 'flaky';
 }
 
+// Counter transition for ONE failed iteration, shared by the verifier-fail and
+// oracle paths (identical rule at both) and exported so the ladder-arithmetic
+// tests drive this implementation instead of a copy of it.
+//
+// Dual counter, mirroring the zsh leader:
+//   consecutive_failures        — every failure; owns the circuit breaker and
+//                                 BLOCKED-on-exhaustion (zsh CONSECUTIVE_FAILURES)
+//   escalation_eligible_failures — eligible failures only; sole input to the
+//                                 ladder rung arithmetic (zsh's
+//                                 _SAME_US_FAIL_COUNT, which lives inside the
+//                                 check_model_upgrade that the guard skips)
+//
+// Mutates `state` in place to match the surrounding loop's style. Returns
+// whether this failure was escalation-eligible.
+export function recordFailureCounters(state, verdict) {
+  const eligible = escalationEligible(verdict);
+  state.consecutive_failures = (state.consecutive_failures ?? 0) + 1;
+  if (eligible) {
+    state.escalation_eligible_failures = (state.escalation_eligible_failures ?? 0) + 1;
+  }
+  return eligible;
+}
+
 export async function defaultCreateSession({ sessionName, workingDir, env = process.env, execFile: execFileImpl } = {}) {
   const exec = execFileImpl ?? execFileAsync;
   // v0.13.1: when invoked from inside an attached tmux session, the user
@@ -584,6 +607,22 @@ async function readCurrentState(paths, slug, options) {
     final_verifier_model: status.final_verifier_model ?? options.finalVerifierModel ?? 'opus',
     verified_us: status.verified_us ?? [],
     consecutive_failures: status.consecutive_failures ?? 0,
+    // Luna-first spec §2.5 dual counter (zsh parity): consecutive_failures owns
+    // the circuit breaker / BLOCKED-on-exhaustion and counts EVERY failure;
+    // escalation_eligible_failures owns the ladder rung arithmetic and counts
+    // only escalation-eligible failures, so environment/flaky failures never
+    // advance the rung. Mirrors zsh's CONSECUTIVE_FAILURES vs the
+    // _SAME_US_FAIL_COUNT that lives inside the skipped check_model_upgrade.
+    // Backward compat for a status.json written BEFORE this field existed: fall
+    // back to consecutive_failures, not 0. Every failure counted by such a file
+    // was escalation-eligible under the old rule (that was the defect), so this
+    // resumes an in-flight failure streak exactly as it behaved pre-upgrade —
+    // US-006 AC6.3 ("resume preserves the failure streak so the next failure
+    // upgrades immediately") depends on it. Defaulting to 0 would silently
+    // swallow the streak across the upgrade boundary. A fresh campaign has no
+    // status.json at all, so both fields are absent and this yields 0.
+    escalation_eligible_failures:
+      status.escalation_eligible_failures ?? status.consecutive_failures ?? 0,
     // US-021 R9 P2-I consecutive_blocks counter (governance §8). Tracks repeated
     // same-canonical-reason worker blocks; verify_fail uses consecutive_failures.
     consecutive_blocks: status.consecutive_blocks ?? 0,
@@ -1856,6 +1895,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       );
       state.phase = 'worker';
       state.consecutive_failures = 0;
+      state.escalation_eligible_failures = 0;
       state.consecutive_blocks = 0;
       state.last_block_reason = '';
       // Archive sidecar (rename, not delete) so operator can audit the
@@ -2330,11 +2370,12 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
           summary: `Leader commit-integrity oracle: ${oracleResult.reason}`,
           issues: [{ id: 'COMMIT-INTEGRITY', severity: 'critical', description: oracleResult.detail }],
         };
-        state.consecutive_failures += 1;
+        // Luna-first spec §2.5 (same dual counter as the verifier-fail path
+        // below): an environment/flaky-classified oracle verdict must neither
+        // climb the ladder nor advance the rung arithmetic.
+        const oracleLadderEligible = recordFailureCounters(state, oracleVerdict);
         await appendIterationAnalytics(paths, state, oracleUsId, 'fail', options, lifecycleMetrics);
-        // Luna-first spec §2.5 (same gate as the verifier-fail path below): an
-        // environment/flaky-classified oracle verdict must not climb the ladder.
-        const oracleLadderEligible = escalationEligible(oracleVerdict);
+        // BLOCKED-on-exhaustion stays on consecutive_failures (unchanged).
         const oracleUpgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
         if (oracleUpgradedModel === 'BLOCKED') {
           state.phase = 'blocked';
@@ -2354,11 +2395,21 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
           return { status: 'blocked', usId: oracleUsId, reason: oracleBlockReason, category: 'repeat_axis', statusFile: paths.statusFile };
         }
         if (oracleLadderEligible) {
-          state.worker_model = oracleUpgradedModel;
-        } else {
-          console.error(
-            `[DECIDE] iter=${state.iteration} phase=model_select model_upgrade=false reason=failure_category_${verdictFailureCategory(oracleVerdict)}`,
+          // Rung walked from the ELIGIBLE counter — see the verifier-fail path.
+          const oracleLadderModel = nextWorkerModel(
+            options.workerModel ?? state.worker_model,
+            state.escalation_eligible_failures,
           );
+          if (oracleLadderModel !== 'BLOCKED') {
+            state.worker_model = oracleLadderModel;
+          }
+        } else {
+          await debugLogger('DECIDE', {
+            iter: state.iteration,
+            phase: 'model_select',
+            model_upgrade: false,
+            reason: `failure_category_${verdictFailureCategory(oracleVerdict)}`,
+          });
         }
         state.current_us = oracleUsId;
         fixContractPath = path.join(paths.campaignLogDir, `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`);
@@ -2529,6 +2580,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
 
     if (verdict.verdict === 'pass') {
       state.consecutive_failures = 0;
+      state.escalation_eligible_failures = 0;
       if (!state.verified_us.includes(usId)) {
         state.verified_us.push(usId);
       }
@@ -2596,7 +2648,15 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       };
     }
 
-    state.consecutive_failures += 1;
+    // Luna-first spec §2.5 dual counter (zsh parity). consecutive_failures
+    // counts EVERY failure and owns the circuit breaker / BLOCKED-on-exhaustion;
+    // escalation_eligible_failures counts only escalation-eligible failures and
+    // is the sole input to the ladder rung arithmetic. Without the second
+    // counter, environment failures still advance `stage = floor(n/3)` and a
+    // later genuine failure climbs a rung it did not earn (or skips one
+    // entirely) — governance §4.5 says environment/flaky "never counts toward
+    // model escalation".
+    const ladderEligible = recordFailureCounters(state, verdict);
     // IMP-10: per-iteration close-out for the done-claim lock marked above
     // (mirrors zsh's unconditional archive_iter_artifacts call). MUST fire
     // BEFORE appendIterationAnalytics — see the 'pass' branch comment above
@@ -2604,13 +2664,10 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // terminal iteration).
     lifecycleMetrics.markUnlock(path.basename(paths.doneClaimFile), { ctx: 'archival', iter: state.iteration });
     await appendIterationAnalytics(paths, state, usId, 'fail', options, lifecycleMetrics);
-    // Luna-first spec §2.5: an environment/flaky failure must not climb the
-    // ladder — recover and retry the SAME model. Only the model assignment is
-    // gated: the consecutive-failure bump above and the BLOCKED-on-exhaustion
-    // check below stay on the path, so the CB still owns terminal escalation
-    // (zsh parity — skipping check_model_upgrade there does not skip the CB
-    // threshold either).
-    const ladderEligible = escalationEligible(verdict);
+    // Terminal escalation is unchanged: still computed from consecutive_failures
+    // so a run of environment failures still exhausts the ladder and BLOCKs,
+    // exactly as the zsh CB threshold does. Only the ASSIGNED model comes from
+    // the eligible-failure walk below.
     const upgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
     if (upgradedModel === 'BLOCKED') {
       state.phase = 'blocked';
@@ -2654,11 +2711,25 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     }
 
     if (ladderEligible) {
-      state.worker_model = upgradedModel;
-    } else {
-      console.error(
-        `[DECIDE] iter=${state.iteration} phase=model_select model_upgrade=false reason=failure_category_${verdictFailureCategory(verdict)}`,
+      // Rung walked from the ELIGIBLE counter, so prior environment/flaky
+      // failures contribute nothing. eligible <= consecutive, and the rung walk
+      // is monotone in the counter, so this can only be 'BLOCKED' if the check
+      // above already returned — the guard is belt-and-braces against ever
+      // assigning the sentinel string as a model.
+      const ladderModel = nextWorkerModel(
+        options.workerModel ?? state.worker_model,
+        state.escalation_eligible_failures,
       );
+      if (ladderModel !== 'BLOCKED') {
+        state.worker_model = ladderModel;
+      }
+    } else {
+      await debugLogger('DECIDE', {
+        iter: state.iteration,
+        phase: 'model_select',
+        model_upgrade: false,
+        reason: `failure_category_${verdictFailureCategory(verdict)}`,
+      });
     }
     state.current_us = usId;
     fixContractPath = path.join(paths.campaignLogDir, `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`);

@@ -663,6 +663,17 @@ export async function readStatus(slug, options = {}) {
     `Worker Model: ${status.worker_model ?? 'unknown'} | Verifier: ${status.verifier_model ?? 'unknown'} (per-US)${status.final_verifier_model ? ` / ${status.final_verifier_model} (final)` : ''}`,
     `Verified US: ${verifiedUs}`,
     `Consecutive Failures: ${status.consecutive_failures ?? 0}`,
+    // Luna-first spec §2.5 escalation observability: the ladder rung is walked
+    // from THIS counter, not consecutive_failures, so without it a stalled
+    // ladder ("6 failures and still on luna:high") is unexplainable from the
+    // report. Rendered only when present — the zsh leader does not persist it
+    // (its rung trigger lives in check_model_upgrade), and a fabricated 0 next
+    // to a non-zero failure count would read as "every failure was
+    // environment/flaky". Same producer-conditional precedent as
+    // final_verifier_model above (IMP-04).
+    ...(status.escalation_eligible_failures === undefined
+      ? []
+      : [`Escalation-Eligible Failures: ${status.escalation_eligible_failures}`]),
     `Updated: ${updatedAt} (elapsed: ${elapsed})`,
   ].join('\n');
 }

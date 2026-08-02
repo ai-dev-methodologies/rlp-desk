@@ -781,6 +781,7 @@ Phase: <phase> | Last Result: <last_result>
 Worker Model: <worker_model> | Verifier: <verifier_model> (per-US) / <final_verifier_model> (final)
 Verify Mode: <verify_mode> | Consensus: <consensus_mode>
 Consecutive Failures: <consecutive_failures>
+Escalation-Eligible Failures: <escalation_eligible_failures>   # omitted when the leader does not persist it
 Verified US: <verified_us array, comma-separated>
 Updated: <updated_at_utc> (elapsed: now - updated_at)
 ```

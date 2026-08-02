@@ -335,6 +335,43 @@ test('US-007 AC7.3 happy: readStatus renders iteration, phase, models, verified_
   assert.match(output, /Verified US: US-001, US-002/);
   assert.match(output, /Consecutive Failures: 1/);
   assert.match(output, /elapsed: 30s/);
+  // This fixture has no escalation_eligible_failures (the shape the zsh leader
+  // writes). The line must be omitted rather than fabricating a 0, which next
+  // to a non-zero failure count would read as "every failure was environment".
+  assert.doesNotMatch(output, /Escalation-Eligible Failures/);
+});
+
+test('US-007 AC7.3: readStatus surfaces escalation-eligible failures when the leader persists them', async (t) => {
+  const rootDir = await createTempDir(t);
+  const statusFile = deskPath(rootDir, 'logs', 'esc-slug', 'runtime', 'status.json');
+  await fs.mkdir(path.dirname(statusFile), { recursive: true });
+  await fs.writeFile(statusFile, JSON.stringify({
+    slug: 'esc-slug',
+    iteration: 7,
+    max_iterations: 9,
+    phase: 'worker',
+    worker_model: 'gpt-5.6-luna:high',
+    verifier_model: 'claude-sonnet-5:high',
+    verified_us: [],
+    // Luna-first §2.5 dual counter: six failures, only one of them eligible —
+    // this is exactly the "why hasn't the ladder climbed?" case the line exists
+    // to explain.
+    consecutive_failures: 6,
+    escalation_eligible_failures: 1,
+    started_at_utc: '2026-04-12T00:00:00.000Z',
+    updated_at_utc: '2026-04-12T00:02:30.000Z',
+  }, null, 2), 'utf8');
+
+  const { readStatus } = await import('../../src/node/reporting/campaign-reporting.mjs');
+  const output = await readStatus('esc-slug', {
+    rootDir,
+    now: new Date('2026-04-12T00:03:00Z'),
+  });
+
+  assert.match(output, /Consecutive Failures: 6/);
+  assert.match(output, /Escalation-Eligible Failures: 1/);
+  // Ordering: the two counters must read together, eligible directly below.
+  assert.match(output, /Consecutive Failures: 6\nEscalation-Eligible Failures: 1/);
 });
 
 test('US-007 AC7.3 boundary: readStatus reports no active campaign when status.json does not exist', async (t) => {
