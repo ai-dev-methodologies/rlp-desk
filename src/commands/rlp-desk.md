@@ -101,13 +101,18 @@ Ask about these items one by one (or in small groups):
    >   Sol usage; iterations may be slower.
    > - **Speed lane**: HIGH US go straight to sol; no terra hop.
 
+   Compose the recommended run command from the chosen lane's Worker column
+   (cost: HIGH=`gpt-5.6-luna:max` / speed: HIGH=`gpt-5.6-sol:medium`); the
+   presets below illustrate the cost lane — adapt per the lane decision. Log
+   `[DECIDE] phase=lane lane=<choice>`.
+
    **Worker model selection** (cross-engine, codex 0.144 / GPT-5.6 generation, luna-first per governance §4 — see model-upgrade-table.md for the full catalog):
-   - **gpt-5.6-luna** — default recommendation for LOW/MEDIUM and the cost-lane HIGH start (see the Cross-engine table above for the exact effort per complexity; `luna:high` ≈ the old `terra:medium` quality tier per the Artificial Analysis index tie at 46, at roughly 1/10 the cost after the 2026-07-30 API price cut). Escalation up the ladder (high → xhigh → max, then jumping model to terra/sol) is automatic on observed failure only — CRITICAL rows start above the ladder and are exempt from luna-first.
+   - **gpt-5.6-luna** — default recommendation for LOW/MEDIUM and the cost-lane HIGH start (see the Cross-engine table above for the exact effort per complexity; `luna:high` ≈ the old `terra:medium` quality tier per the Artificial Analysis index tie at 46, at roughly 1/10 the cost after the 2026-07-30 API price cut). Escalation up the ladder (`luna:high → luna:max` directly — the MEDIUM manual `luna:xhigh` entry also joins the ladder at `:max`, then `luna:max` jumps model to `terra:max`, escalating further to `sol:xhigh`) is automatic on observed failure only — CRITICAL rows start above the ladder and are exempt from luna-first.
    - **gpt-5.6-sol** — HIGH speed-lane start and CRITICAL start (frontier agentic model; HIGH speed lane starts at `sol:medium`, CRITICAL at `sol:high` — `sol:xhigh` is the final ladder ceiling, so starting below it keeps upgrade headroom)
    - **gpt-5.6-terra** — manual quota-first start (`terra:max` ≈ the sol:high–xhigh quality midpoint, slower than sol; escalates to `sol:xhigh` on repeated failure) — not a brainstorm default, but available via `--worker-model` when Sol quota is the binding constraint
    - **gpt-5.5 / gpt-5.4 / gpt-5.4-mini** — previous-generation models, still fully supported (low..xhigh ladders) if the account lacks 5.6 access
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
-   - Aliases: `sol`/`terra`/`luna`/`spark` expand to their full slugs; `max`/`ultra` reasoning efforts exist only on the 5.6 family (luna: max only) — parseable as starting points but NOT used by the upgrade ladder (effort ceiling is xhigh; past xhigh the ladder jumps luna → terra → sol, entering at :high)
+   - Aliases: `sol`/`terra`/`luna`/`spark` expand to their full slugs; `max`/`ultra` reasoning efforts exist only on the 5.6 family, and only `max` exists for `luna` (no `luna:ultra`). Ladder behavior differs by family: within `luna` the ladder raises effort straight to `:max` before any model jump (`luna:high → luna:max`; the MEDIUM manual `luna:xhigh` start also joins the ladder at `:max` — it is not an extra rung) — `luna:max` then jumps model on a quota-first hop to `terra:max`, which escalates further to `sol:xhigh`. `terra` and `sol` each keep their own `:xhigh` ladder ceiling before any model jump (e.g. `terra:high → terra:xhigh → sol:high`; `sol` climbs to `:xhigh` and stops there — the final ceiling). `sol:max` / `sol:ultra` / `terra:ultra` are manual-only starting keys with no forward escalation (dead ends).
 
    **Verifier model selection** (fully-explicit, version-pinned, per complexity):
    - **per-US Verifier** — `claude-sonnet-5:high` (LOW) / `claude-opus-5:low` (MEDIUM) / `claude-opus-5:high` (HIGH) / `claude-opus-5:max` (CRITICAL). Version-pinned full ids (not the floating `sonnet`/`opus` aliases) so the verify tier does not silently drift when the alias remaps. The claude engine accepts effort on both short aliases (`opus:max`) AND full ids (`claude-opus-5:high`).
@@ -129,7 +134,7 @@ Ask about these items one by one (or in small groups):
    **If codex is NOT installed** — say: "Codex is not installed. Defaulting to claude-only Worker. Note: without a second engine, your Verifier shares the same perspective as the Worker — there is a risk of blind spots where both Worker and Verifier miss the same issue. To unlock cross-engine coverage: `npm install -g @openai/codex`"
 
 8. **Batch Capacity Check** — when verify-mode is batch and PRD is large:
-   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to a full-context model (gpt-5.6-terra / gpt-5.5) or split smaller"
+   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to a full-context model (gpt-5.6-luna / gpt-5.6-terra / gpt-5.5) or split smaller"
    - batch + full-context codex model (gpt-5.6-*, gpt-5.5, gpt-5.4*) + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
    - per-us → no warning (US-level processing, no limit concern)
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
@@ -219,7 +224,8 @@ Tell the user:
    Available run commands (copy the one you want):
 
    # ★ Recommended: fully-explicit cross-engine config (every role pinned model:effort, no implicit defaults):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.6-luna:high --verifier-model claude-opus-5:high --final-verifier-model claude-fable-5:max --consensus all --consensus-model gpt-5.6-sol:xhigh --final-consensus-model gpt-5.6-sol:xhigh --verify-mode per-us --debug
+   # Verifier tier shown (claude-opus-5:high) is the HIGH-complexity example — the per-complexity table above governs; --consensus-model here is the per-US leg (terra:high), --final-consensus-model is the final leg (sol:xhigh, always stricter).
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.6-luna:high --verifier-model claude-opus-5:high --final-verifier-model claude-fable-5:max --consensus all --consensus-model gpt-5.6-terra:high --final-consensus-model gpt-5.6-sol:xhigh --verify-mode per-us --debug
 
    # Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):
    /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
@@ -233,7 +239,7 @@ Tell the user:
    # Full options reference:
    #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
    #                                          tmux: run inside a tmux session; the Leader anchors on its own pane and keeps the canonical layout (Leader visible at a readable width; Worker/Verifier/Consensus in one right column). Started outside tmux it fails fast ("start tmux first").
-   #   --worker-model MODEL                   claude (haiku|sonnet|opus|claude-opus-5:high, effort optional) or codex (gpt-5.6-sol:high|terra:high|spark:high) (default: haiku)
+   #   --worker-model MODEL                   claude (haiku|sonnet|opus|claude-opus-5:high, effort optional) or codex (gpt-5.6-sol:high|luna:high|terra:high|spark:high) (default: haiku)
    #   --lock-worker-model                    disable auto model upgrade
    #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5:high/claude-opus-5:low/claude-opus-5:high/claude-opus-5:max — version-pinned + explicit effort)
    #   --final-verifier-model MODEL           final ALL verifier (default: opus; recommended claude-fable-5:max — top model + top effort)
@@ -866,7 +872,7 @@ Example:
 
 Run options:
   --mode native|tmux                   Execution mode (default: native)
-  --worker-model MODEL                 Worker model: haiku|sonnet|opus|claude-opus-5:high (claude, effort optional) or gpt-5.6-sol:high|terra:high|spark:high (codex) (default: haiku)
+  --worker-model MODEL                 Worker model: haiku|sonnet|opus|claude-opus-5:high (claude, effort optional) or gpt-5.6-sol:high|luna:high|terra:high|spark:high (codex) (default: haiku)
   --lock-worker-model                  Disable auto model upgrade on failure
   --verifier-model MODEL               per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5:high/claude-opus-5:low/claude-opus-5:high/claude-opus-5:max)
   --final-verifier-model MODEL         Final ALL verifier (default: opus; recommended claude-fable-5:max)
