@@ -46,12 +46,17 @@ Source: the codex CLI's own model catalog (embedded catalog of codex-cli
 | gpt-5.4-mini | Small/cost-efficient (prev gen) | low, medium, high, xhigh | medium |
 | gpt-5.3-codex-spark | Ultra-fast coding, 100k context | low, medium, high, xhigh | high |
 
-- `max` and `ultra` are NEW effort tiers introduced with the GPT-5.6 family;
-  `gpt-5.6-luna` supports `max` but not `ultra`. **The upgrade ladder does NOT
-  use them** (policy 2026-07-20): effort ceiling is `:xhigh`; past `:xhigh` the
-  ladder jumps models (luna → terra → sol, entering at `:high`) instead of
-  raising effort. `:max`/`:ultra` remain valid `--worker-model` starting points
-  for parsing purposes, but they are dead-end keys (no further upgrade).
+- `max` and `ultra` are effort tiers introduced with the GPT-5.6 family;
+  `gpt-5.6-luna` supports `max` but not `ultra`. **Policy 2026-08-03
+  (luna-first — partial reversal of the 2026-07-20 xhigh-ceiling policy,
+  justified by the 2026-07-30 price cut):** within luna the ladder raises
+  effort to `max` before jumping models (`luna:high → luna:max`, skipping
+  xhigh in the default chain; `luna:xhigh → luna:max` for manual starts).
+  `luna:max` then hops to the quota-first `terra:max` lane, which escalates
+  to `sol:xhigh` (terra:max quality sits between sol:high and sol:xhigh —
+  sol:high would be lateral). Terra and sol keep the `:xhigh` ladder ceiling;
+  `sol:max`/`sol:ultra`/`terra:ultra` remain valid manual starting points but
+  are dead-end keys.
 - CLI aliases: `sol` → gpt-5.6-sol, `terra` → gpt-5.6-terra, `luna` →
   gpt-5.6-luna (same convention as the existing `spark` alias).
 - `gpt-5.5-pro` and `gpt-5.4-nano` appear in some OpenAI surfaces but are NOT
@@ -70,7 +75,7 @@ Source: the codex CLI's own model catalog (embedded catalog of codex-cli
 HIGH starts at `sol:medium` and CRITICAL at `sol:high`, never at the ceiling
 itself, so the ladder retains upgrade headroom.)
 
-## GPT-5.6 — Terra (xhigh then cross-model jump to Sol)
+## GPT-5.6 — Terra (xhigh → Sol:high jump; terra:max → sol:xhigh quota lane)
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11+ |
 |------------|-----|-----|-----|-----|------|-----|
@@ -83,18 +88,26 @@ itself, so the ladder retains upgrade headroom.)
 ladder jumps to `gpt-5.6-sol:high` — model step-up enters at `:high`, never a
 lower effort. Default CB of 6 reaches column 5-6.)
 
-## GPT-5.6 — Luna (xhigh then cross-model jump to Terra)
+(`terra:max` is the quota-first lane hop reached from `luna:max`, or a manual
+`--worker-model gpt-5.6-terra:max` start; on failure it escalates to
+`gpt-5.6-sol:xhigh`.)
 
-| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11+ |
-|------------|-----|-----|-----|-----|------|-----|
-| LOW | luna:low | luna:medium | luna:high | luna:xhigh | terra:high | BLOCKED |
-| MEDIUM | luna:medium | luna:high | luna:xhigh | terra:high | terra:xhigh | BLOCKED |
-| HIGH | luna:high | luna:xhigh | terra:high | terra:xhigh | sol:high | BLOCKED |
-| CRITICAL | luna:xhigh | terra:high | terra:xhigh | sol:high | sol:xhigh | BLOCKED |
+## GPT-5.6 — Luna (effort to max first, then terra:max quota lane)
 
-(Cells abbreviate `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol`. After
-`luna:xhigh` the ladder jumps to `gpt-5.6-terra:high`; the full escalation
-chain is luna → terra → sol, ceiling `gpt-5.6-sol:xhigh`.)
+| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9+ |
+|------------|-----|-----|-----|-----|-----|
+| LOW | luna:high | luna:max | terra:max | sol:xhigh | BLOCKED |
+| MEDIUM | luna:xhigh | luna:max | terra:max | sol:xhigh | BLOCKED |
+| HIGH | luna:max | terra:max | sol:xhigh | sol:xhigh | BLOCKED |
+| CRITICAL | sol:high | sol:xhigh | sol:xhigh | sol:xhigh | BLOCKED |
+
+(Cells abbreviate `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol`. Row =
+brainstorm start per complexity (cost lane); columns = consecutive-failure
+milestones. Full chain: `luna:high → luna:max → terra:max → sol:xhigh`
+(ceiling); manual `luna:low/medium` starts climb `low → medium → high` first;
+manual `luna:xhigh` joins at `luna:max`. CRITICAL rows start at `sol:high`
+regardless of lane. Speed lane HIGH starts `sol:medium → sol:high →
+sol:xhigh`.)
 
 ## GPT-5.4 / GPT-5.4-mini (low → medium → high → xhigh)
 
