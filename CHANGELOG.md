@@ -25,6 +25,11 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
   escalation counts.
 - **`environment` failure category.** Harness/tooling/capacity failures and
   verifier safety-classifier refusals no longer climb the model ladder.
+  Campaigns track `escalation_eligible_failures` in `status.json` separately
+  from `consecutive_failures` — only genuine-defect failures advance the
+  ladder, while the circuit breaker still counts every failure (a campaign
+  resumed from an older `status.json` falls back to the old counter). The
+  campaign status report shows `Escalation-Eligible Failures` when present.
 
 ### Changed
 - **BREAKING (ladder policy):** partial reversal of the v0.22.5 "no max/ultra
