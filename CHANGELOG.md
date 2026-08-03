@@ -9,6 +9,8 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.23.0] — 2026-08-03
+
 ### Added
 - **Luna-first cost routing.** Workers now default to the cheapest capable
   GPT-5.6 tier (2026-07-30 price cut: luna = 4% of sol) with evidence-gated
