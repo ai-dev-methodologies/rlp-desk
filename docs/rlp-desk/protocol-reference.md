@@ -295,8 +295,8 @@ Updated by the Worker each iteration to reflect the current frontier:
 | Condition | Detection | Action |
 |-----------|-----------|--------|
 | Stale context | `context-latest.md` hash unchanged for 3 consecutive iterations | Write BLOCKED sentinel |
-| Repeated criterion failure | Same acceptance criterion fails in 2 consecutive Verifier verdicts | Upgrade model, retry once; still failing → BLOCKED |
-| Persistent diverse failures | 3 consecutive **fail** verdicts on 3 unique acceptance criterion IDs | Upgrade to opus, retry once; still failing → BLOCKED |
+| Repeated criterion failure | Same acceptance criterion fails in 2 consecutive Verifier verdicts | Upgrade Worker model (ladder per §4 Model Routing), retry once; still failing → BLOCKED |
+| Persistent diverse failures | 3 consecutive **fail** verdicts on 3 unique acceptance criterion IDs | Upgrade Worker model to the ladder ceiling, retry once; still failing → BLOCKED |
 | Timeout | Iteration count reaches `max_iter` | Write TIMEOUT status, report to user |
 
 ### Stale Context Detection
@@ -306,8 +306,8 @@ The Leader computes a hash (or diff) of `context-latest.md` before and after eac
 ### Error Escalation
 
 ```
-Same acceptance criterion fails iteration N (sonnet) → retry with opus in iteration N+1
-Same acceptance criterion still fails iteration N+1 (opus) → BLOCKED
+Same acceptance criterion fails iteration N → retry with the next ladder rung in iteration N+1
+Same acceptance criterion still fails at the ladder ceiling → BLOCKED
 ```
 
 "Same error" is defined as: **the same acceptance criterion ID appears in the `issues` list of two consecutive Verifier `fail` verdicts.** A `request_info` verdict does not break or contribute to this chain — only `fail` verdicts are counted.
@@ -322,25 +322,36 @@ The Leader maintains `consecutive_failures` in `status.json`. This counter:
 
 ## Model Routing
 
-### Selection Matrix
+Full doctrine: `governance.md` §4 (luna-first, 2026-08-03 policy). Full ladder
+chains: `model-upgrade-table.md`. Per-complexity brainstorm defaults and the
+HIGH lane question: `rlp-desk.md` Step 7 (mapping tables).
 
-| Scenario | Model | Rationale |
-|----------|-------|-----------|
-| Single file, clear change | `haiku` | Fast, sufficient |
-| Standard implementation | `sonnet` | Balanced (default) |
-| Multi-file, architecture | `opus` | Needs broad understanding |
-| Previous iteration failed | upgrade | Harder model may succeed |
-| Verification (default) | `opus` | Independent verification requires thoroughness |
-| Verification (lightweight) | `sonnet` | Simple, well-defined checks only |
+### Selection Doctrine (summary)
 
-### Dynamic Adaptation
-
-The Leader reassesses the model every iteration:
-
-1. Read memory for previous iteration outcome
-2. If failed → upgrade one level (haiku → sonnet → opus)
-3. If simple/repetitive → consider downgrade
-4. User override via `--worker-model` / `--verifier-model` takes precedence
+- **Luna-first start**: Workers start at the cheapest model:effort the US
+  complexity allows — escalation requires an *observed* failure, never an
+  assumption of difficulty.
+- **Cross-engine defaults (codex installed)**: LOW → `gpt-5.6-luna:high`,
+  MEDIUM → `gpt-5.6-luna:xhigh`, HIGH → lane choice (cost lane: `luna:max`,
+  escalates via the quota-first `terra:max` hop; speed lane: `sol:medium`,
+  straight to the `sol:xhigh` ceiling), CRITICAL → `gpt-5.6-sol:high` (starts
+  above the ladder, exempt from luna-first).
+- **Claude-only fallback (codex absent)**: `haiku` (LOW) → `sonnet`
+  (MEDIUM/HIGH) → `opus` (CRITICAL); ladder is haiku → sonnet → opus on
+  failure.
+- **Effort before model, luna only**: within `luna` the ladder raises effort
+  to `:max` before jumping models; `terra`/`sol` keep their own `:xhigh`
+  ladder ceiling before any model jump.
+- **Escalation trigger is `failure_category`, not vibes**: `spec` /
+  `implementation` / `integration` failures upgrade the Worker model on
+  retry (unless `--lock-worker-model`). `environment` / `flaky` failures —
+  including verifier safety-classifier false-positive refusals — retry the
+  SAME model; they never count toward escalation.
+- **Judging roles are campaign-fixed**: per-US Verifier and Final Verifier
+  tiers scale with complexity at brainstorm time and never progressively
+  upgrade mid-campaign (Final Verifier is always `claude-fable-5:max`).
+- **User override always wins**: `--worker-model` / `--verifier-model` /
+  `--lock-worker-model` take precedence over any default.
 
 ## Result Log (`iter-NNN.result.md`)
 
@@ -552,8 +563,9 @@ Unlike Agent() mode where the LLM Leader dynamically selects models, tmux mode u
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WORKER_MODEL` | `sonnet` | Model for Worker invocations |
-| `VERIFIER_MODEL` | `opus` | Model for Verifier invocations |
+| `WORKER_MODEL` | `haiku` | Model for Worker invocations |
+| `VERIFIER_MODEL` | `sonnet` | Model for per-US Verifier invocations |
+| `FINAL_VERIFIER_MODEL` | `opus` | Model for the final ALL-verify pass |
 
 ### Reliability Environment Overrides (v0.22.18+)
 

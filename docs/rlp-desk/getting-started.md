@@ -49,9 +49,13 @@ The brainstorm phase interactively determines:
 | **Task Type & Risk** | code, LOW |
 | **Iteration Unit** | One user story per iteration |
 | **Verification** | `python3 -m pytest test_calc.py -v` |
-| **Models** | Worker: sonnet, Verifier: opus |
+| **Models** | Worker: haiku, per-US Verifier: sonnet, Final Verifier: opus |
 | **Ambiguity Gate (IL-2)** | AC quality score ≥ 6 required to proceed |
 | **Max Iterations** | 10 |
+
+These are the claude-only CLI defaults (governance §4). If codex CLI is
+installed, brainstorm instead recommends the luna-first cross-engine path —
+for this LOW-complexity example, Worker starts at `gpt-5.6-luna:high`.
 
 On approval, brainstorm offers to run `init` automatically.
 
@@ -124,8 +128,8 @@ What happens:
 You'll see status updates after each iteration:
 
 ```
-Iteration 1 | Worker (sonnet) | US-001 complete, continuing
-Iteration 2 | Worker (sonnet) | All stories done, requesting verification
+Iteration 1 | Worker (haiku) | US-001 complete, continuing
+Iteration 2 | Worker (haiku) | All stories done, requesting verification
 Iteration 3 | Verifier (opus) | PASS — all criteria met
 ✓ COMPLETE
 ```

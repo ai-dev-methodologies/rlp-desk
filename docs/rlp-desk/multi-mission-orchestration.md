@@ -78,7 +78,7 @@ for SLUG in "${MISSIONS[@]}"; do
 
   print "Launching $SLUG"
   ROOT="$ROOT" \
-  WORKER_MODEL="${WORKER_MODEL:-gpt-5.5:medium}" \
+  WORKER_MODEL="${WORKER_MODEL:-gpt-5.6-luna:high}" \
   VERIFIER_MODEL="${VERIFIER_MODEL:-opus}" \
   VERIFY_MODE="${VERIFY_MODE:-per-us}" \
   CB_THRESHOLD="${CB_THRESHOLD:-6}" \

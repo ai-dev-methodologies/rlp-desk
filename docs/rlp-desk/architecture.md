@@ -166,15 +166,25 @@ memos/*-blocked.md      Written once by Leader (terminal)
 
 ## Model Routing Strategy
 
-Not every task needs the most powerful model. RLP Desk routes based on complexity:
+Not every task needs the most powerful model. RLP Desk routes on a **luna-first**
+doctrine (governance §4): start at the cheapest model:effort the complexity
+allows, and only climb on an *observed* failure — never an assumption of
+difficulty.
 
 ```
-Simple fix (typo, config)  →  haiku   (fast, cheap)
-Standard implementation    →  sonnet  (balanced)
-Architecture / debugging   →  opus    (thorough)
+Cross-engine (codex installed): cheapest capable start per complexity
+  LOW/MEDIUM  →  gpt-5.6-luna:high / :xhigh
+  HIGH        →  lane choice (cost: luna:max · speed: sol:medium)
+  CRITICAL    →  gpt-5.6-sol:high  (starts above the ladder)
+
+Ladder on failure:  luna:high → luna:max → terra:max → sol:xhigh (ceiling)
+
+Claude-only fallback (codex absent):  haiku → sonnet → opus
 ```
 
 The Leader adapts dynamically:
-- Previous iteration failed → upgrade model
-- Simple repetitive task → downgrade model
-- User explicitly specified → respect the choice
+- Failure category `spec`/`implementation`/`integration` → upgrade Worker model one ladder rung
+- Failure category `environment`/`flaky` → same model, recover and retry (never climbs the ladder)
+- User explicitly specified (`--worker-model`, `--lock-worker-model`) → respect the choice
+
+Verifier/consensus tiers are campaign-fixed by complexity at brainstorm time — they never progressively upgrade mid-campaign. Full tables: `model-upgrade-table.md`.
