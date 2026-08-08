@@ -23,6 +23,15 @@ Below: the native-mode dispatch (`--mode native`, via `Agent()`). `--mode tmux` 
               └── reads done-claim → runs checks → writes verdict
 ```
 
+## What's new in v0.23.0
+
+- **Luna-first cost routing.** Workers use evidence-gated escalation: `luna:high → luna:max → terra:max → sol:xhigh`.
+- **Effort-aware iteration timeout.** Worker budgets scale with `:xhigh` and `:max` efforts.
+- **Campaign cost summary.** Reports include estimated sol-equivalent Codex costs, escalation counts, and the final model.
+- **Environment failure category.** Harness, tooling, capacity, and safety-refusal failures no longer climb the model ladder.
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+
 ## Deterministic Pre-Gates
 
 Most Ralph-loop and autonomous-agent stacks verify an LLM's work with more LLM calls — every verification round pays the full model cost, and a large share of that cost re-checks things a script could have decided. RLP Desk puts a deterministic layer in front of the verifier: machine-checkable claims are settled by machines, in seconds, at zero token cost, and only what survives reaches an LLM. **Machines catch what machines can — LLM rounds are for real defects only.**
