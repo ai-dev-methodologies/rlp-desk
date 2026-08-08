@@ -2656,7 +2656,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // is the sole input to the ladder rung arithmetic. Without the second
     // counter, environment failures still advance `stage = floor(n/3)` and a
     // later genuine failure climbs a rung it did not earn (or skips one
-    // entirely) — governance §4.5 says environment/flaky "never counts toward
+    // entirely) — governance §4 says environment/flaky "never counts toward
     // model escalation".
     const ladderEligible = recordFailureCounters(state, verdict);
     // IMP-10: per-iteration close-out for the done-claim lock marked above
