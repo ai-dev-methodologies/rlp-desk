@@ -2011,10 +2011,10 @@ ${untracked}"
     echo ""
     echo "## Verification Results"
     local ri=1
+    local us_id
     while (( ri <= ITERATION )); do
       local iter_dc="$LOGS_DIR/iter-$(printf '%03d' $ri)-done-claim.json"
       if [[ -f "$iter_dc" ]]; then
-        local us_id
         us_id=$(jq -r '.us_id // "unknown"' "$iter_dc" 2>/dev/null)
         echo "- $(basename "$iter_dc"): us_id=$us_id"
       fi
@@ -2037,8 +2037,8 @@ ${untracked}"
     echo "## Cost & Performance"
     if [[ -f "$COST_LOG" ]]; then
       local total_tokens=0
+      local t
       while IFS= read -r line; do
-        local t
         t=$(echo "$line" | jq -r '.estimated_tokens // 0' 2>/dev/null || echo 0)
         total_tokens=$(( total_tokens + t ))
       done < "$COST_LOG"
