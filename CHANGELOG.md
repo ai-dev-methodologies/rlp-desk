@@ -9,6 +9,23 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.24.1] — 2026-08-09
+
+### Fixed
+- **Campaign-launched codex sessions are now isolated from the operator's
+  interactive omx (oh-my-codex) state.** Every codex launch a campaign
+  performs — tmux/zsh leader (all 8 launch sites), Node engine dispatches,
+  and the native-leader `codex exec` templates — now exports
+  `OMX_STATE_ROOT=<campaign runtime dir>/omx-state`, so operator-side omx
+  guards (e.g. a deep-interview input lock) can no longer block or wedge
+  headless campaign workers. `OMX_STATE_ROOT` is a root: omx state lands at
+  `<root>/.omx/state/`. Without omx installed the variable is inert. See
+  failure-modes.md F1.18 (includes the `OMX_ROOT` precedence operator note).
+- **Single-quote-safe launch quoting on the zsh leader.** The isolation
+  prefix uses `${(q)…}` quoting, so a repo path containing a single quote
+  can no longer break the assembled codex launch command at the send-keys
+  sites (the Node engine already shell-quoted correctly).
+
 ## [0.24.0] — 2026-08-09
 
 ### Added

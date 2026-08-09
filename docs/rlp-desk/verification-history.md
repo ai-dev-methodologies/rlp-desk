@@ -19,6 +19,44 @@ Entry template:
 
 ---
 
+## 2026-08-09 — OMX_STATE_ROOT isolation: SV gate + fix wave (v0.24.1)
+
+- **Target**: campaign-launched codex sessions isolated from the operator's
+  interactive omx state (follow-up to the v0.24.0 ENV finding: omx
+  deep-interview guard blocked/wedged headless `codex exec`, 3 incidents on
+  2026-08-09 incl. a 31m 0%-CPU hang). All codex launch surfaces now export
+  `OMX_STATE_ROOT=<campaign runtime dir>/omx-state` — zsh leader (8 launch
+  assembly sites), Node engine (`buildLaunchCommand` prefix via
+  `paths.omxStateDir`, codex-only, no-dir = byte-identical compat), native
+  leader templates (rlp-desk.md ④/⑦ + governance.md §native).
+- **Method**: 3-scenario SV gate (opus, read-only) — S1 LOW docs/census
+  coherence with independent 8-site count; S2 MEDIUM zsh quoting-context
+  walkthrough of all 8 sites under 3 path shapes + mkdir-ordering proof incl.
+  relaunch paths; S3 CRITICAL Node contract diff vs pre-change
+  (`git show eb6d1c1`), caller census, adversarial probes vs us002 pins /
+  codex-exit fallback / capacity-stall matching. Gate also verified the
+  load-bearing premise: installed oh-my-codex honors OMX_STATE_ROOT (321 refs,
+  root semantics — state lands at `<root>/.omx/state`).
+- **Result**: **3/3 PASS**. Full Node suite 609/609; isolation test 7/7
+  (post-fix-wave, incl. governance census + mutation checks); update-dialog
+  16/16; zsh -n clean.
+- **Findings**: 1 Polyp (MEDIUM) + 7 LOW, all dispositioned:
+  - MEDIUM-1 — governance.md:678 native-leader template unprefixed (parallel
+    artifact missed) — **fixed** + census extended to governance.md.
+  - LOW-5 — zsh single-quote-unsafe interpolation at the send-keys sites —
+    **fixed** with `${(q)OMX_STATE_DIR}` (Node already shQuote-safe).
+  - LOW-7 — isolation test BRE mid-`$` false-FAIL under ugrep shim — **fixed**
+    (grep -cF).
+  - LOW-2/3/8 + F1.18 incident count — doc corrections **applied** (root
+    semantics, consensus-leg note, tmux illustration).
+  - LOW-6 — `OMX_ROOT` outranks `OMX_STATE_ROOT` in oh-my-codex — operator
+    note added to F1.18 Recovery (no code change).
+  - LOW-4 — deliberately-unprefixed doc mentions — accepted as documented.
+- **Artifacts**: branch fix/omx-state-isolation commits 8edbd84 (feature) +
+  8a3474d (fix wave); SV report
+  .omc/state/sessions/17d4220c-*/sv-gate-omx-report.md; implementation report
+  .omc/state/sessions/17d4220c-*/omx-report.md; failure-modes.md F1.18.
+
 ## 2026-08-09 — G1-G4 gap-fix build: ralplan consensus + ralph + SV gate + dual dogfood (v0.24.0)
 
 - **Target**: the four 2026-08-08 dogfood findings — G1 zsh sol-equivalent cost
