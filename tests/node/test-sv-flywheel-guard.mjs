@@ -49,6 +49,14 @@ function createMockOptions(rootDir, pollResponses, overrides = {}) {
     },
     runIntegrationCheck: async () => ({ exitCode: 0, summary: 'ok' }),
     onStatusChange: (s) => { statusHistory.push({ ...s }); },
+    // Bug #7 Fix-Q/R (established pattern, see us006-campaign-main-loop.test.mjs):
+    // reapProducer calls killPaneProcess/waitForProcessExit on the accept-signal
+    // path. Without a fake, the real tmux-backed defaults poll actual tmux
+    // against the fake pane IDs createPane() returns above and time out for
+    // several seconds per call, per reap — hanging the whole file well past
+    // the pregate replay timeout.
+    killPaneProcess: async () => {},
+    waitForProcessExit: async () => {},
     _sendKeysCalls: sendKeysCalls,
     _statusHistory: statusHistory,
     ...overrides,
