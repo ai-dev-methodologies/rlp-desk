@@ -9,6 +9,44 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 
+## [0.24.0] — 2026-08-09
+
+### Added
+- **Deterministic sol-equivalent cost summary on both leaders.** The tmux/zsh
+  leader's campaign report now computes the full Cost & Performance block in
+  code (sol 1.0 / terra 0.4 / luna 0.04 over enriched `cost-log.jsonl` rows:
+  model/engine/effort/us_id per iteration): sol-equivalent total for codex
+  legs, Claude legs by count, escalation count, final model per US, ESTIMATED
+  marking, and a visible `(N iteration(s) unattributed)` reconciliation line
+  for legacy rows. The Node leader gains the same bytes÷4 token basis
+  (`estimated_tokens`/`token_source` on analytics rows, floor-rounded to match
+  zsh exactly) and emits a byte-identical sol-equivalent + reconciliation line.
+- **Real per-iteration duration on the Node leader.** Analytics rows carry
+  measured wall-clock seconds instead of a hard-coded 0, so "Total duration"
+  is real.
+- **Narrow-terminal auto-degrade.** The tmux leader no longer hard-fails when
+  the terminal is narrower than `RLP_LEADER_SPLIT_WIDTH` (a comfort target):
+  it continues at the largest feasible width above the new
+  `RLP_LEADER_DEGRADE_FLOOR` (default 60) with a WARN, and any later blocked
+  sentinel carries the degraded-width note. Set the floor equal to the target
+  to restore strict behavior.
+- **Empty-commit anti-fabrication (both leaders).** A verification/confirmation
+  iteration (`verify_existing`) expects NO commit, the worker prompt now says
+  so, and the commit-integrity oracle rejects a commit whose tree equals its
+  parent's (`empty_commit_on_confirmation_claim`, identical on both leaders)
+  with a fix contract that says to DROP the empty commit. Root-commit and
+  shallow-clone boundaries stay accepted; genuine git errors keep the existing
+  infra path.
+
+### Fixed
+- **Stray `t=` / `us_id=` lines no longer leak into campaign reports** (zsh
+  bare-`local` display-command defect in the report generator).
+
+### Removed
+- Legacy tracked `.claude/ralph-desk/` artifacts (pre-v0.13 campaign state)
+  removed from the repository; the directory was breaking `init`'s migration
+  guard. History retains them.
+
 ## [0.23.0] — 2026-08-03
 
 ### Added
