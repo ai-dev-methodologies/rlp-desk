@@ -35,6 +35,8 @@ const runtimeSources = [
   ["docs/rlp-desk/multi-mission-orchestration.md", path.join(docsDir, "rlp-desk", "multi-mission-orchestration.md")],
   // Plan v6 PR-0a: signal protocol documentation (Architect/Critic codex iter 6).
   ["docs/rlp-desk/signal-protocol.md", path.join(docsDir, "rlp-desk", "signal-protocol.md")],
+  // 2026-08-09 owner standing rule: SV/dogfood verification ledger (append-only).
+  ["docs/rlp-desk/verification-history.md", path.join(docsDir, "rlp-desk", "verification-history.md")],
 ];
 // v0.14.0: legacy-deletion list cleared. The Node-canonical era (v5.7+)
 // removed zsh after install; v0.14.0 reverts that — the zsh runner is the

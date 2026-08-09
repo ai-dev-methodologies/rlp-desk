@@ -76,6 +76,7 @@ docs/rlp-desk/protocol-reference.md      → ~/.claude/ralph-desk/docs/rlp-desk/
 docs/rlp-desk/TODO-verification-next.md  → ~/.claude/ralph-desk/docs/rlp-desk/TODO-verification-next.md
 docs/rlp-desk/multi-mission-orchestration.md → ~/.claude/ralph-desk/docs/rlp-desk/multi-mission-orchestration.md
 docs/rlp-desk/signal-protocol.md             → ~/.claude/ralph-desk/docs/rlp-desk/signal-protocol.md
+docs/rlp-desk/verification-history.md        → ~/.claude/ralph-desk/docs/rlp-desk/verification-history.md
 docs/rlp-desk/internal/*                 → ~/.claude/ralph-desk/docs/rlp-desk/internal/
 docs/rlp-desk/blueprints/*               → ~/.claude/ralph-desk/docs/rlp-desk/blueprints/
 docs/rlp-desk/plans/*                    → ~/.claude/ralph-desk/docs/rlp-desk/plans/
