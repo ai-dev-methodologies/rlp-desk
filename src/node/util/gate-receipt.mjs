@@ -219,7 +219,7 @@ export function verifyGateReceipt(plansDir, slug) {
 // any error is swallowed and reported as an empty append — an audit-log failure
 // must never block a campaign.
 function _revisionKey(rec) {
-  return `${rec.file} ${rec.old_hash} ${rec.new_hash}`;
+  return `${rec.file}\0${rec.old_hash}\0${rec.new_hash}`;
 }
 
 export function appendContractRevisions(plansDir, slug, revisionsLogPath) {

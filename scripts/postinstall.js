@@ -6,38 +6,14 @@ const path = require("path");
 const os = require("os");
 const pkg = require(path.join(__dirname, "..", "package.json"));
 
+// The install set and the banner format live in install-manifest.js so
+// scripts/verify-install-sync.js proves this install against the SAME list.
+const manifest = require(path.join(__dirname, "install-manifest.js"));
+
 const home = os.homedir();
-const claudeDir = path.join(home, ".claude");
-const commandsDir = path.join(claudeDir, "commands");
-const deskDir = path.join(claudeDir, "ralph-desk");
-const docsDir = path.join(deskDir, "docs");
-const nodeDir = path.join(deskDir, "node");
+const { commandsDir, deskDir, docsDir, nodeDir } = manifest.installLayout(home);
 const pkgDir = path.join(__dirname, "..");
-const runtimeSources = [
-  ["src/commands/rlp-desk.md", path.join(commandsDir, "rlp-desk.md")],
-  ["src/governance.md", path.join(deskDir, "governance.md")],
-  ["src/model-upgrade-table.md", path.join(deskDir, "model-upgrade-table.md")],
-  ["README.md", path.join(deskDir, "README.md")],
-  ["install.sh", path.join(deskDir, "install.sh")],
-  // v0.14.0: zsh runner is the canonical --mode tmux backend again.
-  // src/node/run.mjs spawns it as a subprocess for tmux mode invocations.
-  // injectBannerAndLock preserves the shebang and adds a `# DO NOT EDIT`
-  // line on line 2 so the verification scripts in CLAUDE.md still
-  // recognize the file as installed.
-  ["src/scripts/init_ralph_desk.zsh", path.join(deskDir, "init_ralph_desk.zsh")],
-  ["src/scripts/run_ralph_desk.zsh", path.join(deskDir, "run_ralph_desk.zsh")],
-  ["src/scripts/lib_ralph_desk.zsh", path.join(deskDir, "lib_ralph_desk.zsh")],
-  // v5.7 §4.15: all rlp-desk docs (user-facing + dev meta) under docs/rlp-desk/.
-  ["docs/rlp-desk/architecture.md", path.join(docsDir, "rlp-desk", "architecture.md")],
-  ["docs/rlp-desk/getting-started.md", path.join(docsDir, "rlp-desk", "getting-started.md")],
-  ["docs/rlp-desk/protocol-reference.md", path.join(docsDir, "rlp-desk", "protocol-reference.md")],
-  ["docs/rlp-desk/TODO-verification-next.md", path.join(docsDir, "rlp-desk", "TODO-verification-next.md")],
-  ["docs/rlp-desk/multi-mission-orchestration.md", path.join(docsDir, "rlp-desk", "multi-mission-orchestration.md")],
-  // Plan v6 PR-0a: signal protocol documentation (Architect/Critic codex iter 6).
-  ["docs/rlp-desk/signal-protocol.md", path.join(docsDir, "rlp-desk", "signal-protocol.md")],
-  // 2026-08-09 owner standing rule: SV/dogfood verification ledger (append-only).
-  ["docs/rlp-desk/verification-history.md", path.join(docsDir, "rlp-desk", "verification-history.md")],
-];
+const runtimeSources = manifest.runtimeSources(home);
 // v0.14.0: legacy-deletion list cleared. The Node-canonical era (v5.7+)
 // removed zsh after install; v0.14.0 reverts that — the zsh runner is the
 // production --mode tmux path. Keep the empty array so the surrounding loop
@@ -86,23 +62,9 @@ function removePath(targetPath) {
   fs.rmSync(targetPath, { recursive: true, force: true });
 }
 
-// v5.7 §4.10: per-extension banner format. `# DO NOT EDIT` text leaks into
-// rendered Markdown, so .md uses HTML comment; .mjs/.js uses //; shell uses #.
-function bannerFor(extension, sourceRelativePath) {
-  const msg = `DO NOT EDIT — generated from ${sourceRelativePath}. Edit source and re-sync. See ~/.claude/ralph-desk/UNLOCK.md for debug unlock.`;
-  switch (extension) {
-    case ".md":
-      return `<!-- ${msg} -->\n`;
-    case ".mjs":
-    case ".js":
-      return `// ${msg}\n`;
-    case ".zsh":
-    case ".sh":
-      return `# ${msg}\n`;
-    default:
-      return null; // .json and unknown types: rely on chmod alone
-  }
-}
+// v5.7 §4.10: per-extension banner format lives in install-manifest.js so the
+// verifier reconstructs byte-identical expectations.
+const bannerFor = manifest.bannerFor;
 
 let _chmodWarningEmitted = false;
 function tryLockFile(targetPath) {
@@ -281,10 +243,10 @@ for (const [sourcePath, targetPath] of runtimeSources) {
 
 // v5.7 §4.15: dev meta docs live under docs/rlp-desk/ to avoid mixing with
 // user-facing operational docs (per user feedback).
-copyMarkdownDirectory("docs/rlp-desk/internal", path.join(docsDir, "rlp-desk", "internal"));
-copyMarkdownDirectory("docs/rlp-desk/blueprints", path.join(docsDir, "rlp-desk", "blueprints"));
-copyMarkdownDirectory("docs/rlp-desk/plans", path.join(docsDir, "rlp-desk", "plans"));
-copyNodeRuntime(path.join(pkgDir, "src", "node"), nodeDir);
+for (const [sourceRelativeDir, targetDir] of manifest.markdownDirectories(home)) {
+  copyMarkdownDirectory(sourceRelativeDir, targetDir);
+}
+copyNodeRuntime(path.join(pkgDir, manifest.NODE_SOURCE_RELATIVE_DIR), nodeDir);
 
 // v5.7 §4.10: write the UNLOCK.md escape-hatch doc for debug sessions.
 writeUnlockDoc();

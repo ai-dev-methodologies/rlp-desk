@@ -24,7 +24,7 @@
 - If any scenario FAIL: fix the issue, re-run the failing scenario, then re-verify all 3.
 
 ### Local File Sync (ABSOLUTE — no exceptions)
-After every commit that changes ANY src/ file, sync ALL distributable files to local install. Not just the changed ones — ALL of them. Then verify with the **banner-aware procedure below** (NOT naive `diff -q` / `diff -rq` — post-v0.12.0 installed files have line-1 banners that naive diff treats as drift; see §4.5 verification recipe). This applies to BOTH release tiers (Tier-1 dogfood and Tier-2 registry — see Release Workflow below).
+After every commit that changes ANY src/ file, sync ALL distributable files to local install. Not just the changed ones — ALL of them. Then verify with **`npm run verify:sync`** (NOT naive `diff -q` / `diff -rq`, and NOT a hand-rolled banner-strip — post-v0.12.0 installed files have line-1 banners that naive diff treats as drift; see §4.5). This applies to BOTH release tiers (Tier-1 dogfood and Tier-2 registry — see Release Workflow below).
 
 **Runtime files (always sync via `npm install` / postinstall.js — Node canonical):**
 ```
@@ -56,9 +56,9 @@ path migration is mirrored in these scripts.
 **Sync consequence:** a commit that changes only a `src/scripts/*_ralph_desk.zsh`
 file STILL requires local sync (it is a runtime file). The canonical channel is
 `npm install` / postinstall (files are `chmod 0o444` + banner-headed — never edit
-the installed copies). Verify with the banner-aware recipe in §4.5 (for the
-shebanged `.zsh`, strip the line-2 banner: `sed '/^# .*DO NOT EDIT/d' <installed>`
-then diff against `src/scripts/<file>.zsh`).
+the installed copies). Verify with `npm run verify:sync` per §4.5 — it already
+knows the shebanged `.zsh` files carry their banner on line 2, so there is no
+per-file recipe to remember.
 
 **v0.12.0+ note (v5.7 §4.10)**: installed files are write-protected (`chmod 0o444`)
 + banner-headed (`<!-- DO NOT EDIT ... -->` for `.md`, `# ...` for shell, `// ...`
@@ -86,29 +86,33 @@ docs/rlp-desk/plans/*                    → ~/.claude/ralph-desk/docs/rlp-desk/
 
 Post-v0.12.0, installed files have an injected banner (line 1 for `.md`/`.mjs`/`.js`,
 line 2 for shebanged `.zsh`/`.sh`) plus `chmod 0o444`. A naive `diff -q` will report
-a banner-line difference. Use the banner-aware verification below instead.
+a banner-line difference, so verification runs through one executable oracle:
 
 ```bash
-# 1. Banner + chmod sanity (every installed runtime file)
-for f in ~/.claude/commands/rlp-desk.md \
-         ~/.claude/ralph-desk/governance.md \
-         ~/.claude/ralph-desk/node/run.mjs ; do
-  test -f "$f" || { echo "MISSING: $f"; exit 1; }
-  head -2 "$f" | grep -qE 'DO NOT EDIT' || { echo "NO BANNER: $f"; exit 1; }
-  [[ "$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" == "444" ]] \
-    || echo "WARN: $f not 0o444 (filesystem may not honor chmod)"
-done
-
-# 2. Body equality (strip banner before diff)
-strip_banner() { tail -n +2 "$1" | grep -v -E '^(<!-- |# |// )DO NOT EDIT' || true; }
-diff <(cat src/governance.md) <(strip_banner ~/.claude/ralph-desk/governance.md) | head
-
-# 3. Recursive Node tree check (v5.7 §4.5)
-diff -rq src/node ~/.claude/ralph-desk/node | grep -v 'DO NOT EDIT'
+npm run verify:sync            # exit 0 = every installed file matches source
 ```
 
-All checks must report no body difference. Banner + chmod are install artifacts;
-the source of truth remains the `src/` tree.
+`scripts/verify-install-sync.js` reconstructs the expected installed bytes from
+`scripts/install-manifest.js` (the same manifest `postinstall.js` writes from) and
+compares with `Buffer.compare`. It covers the whole install set in one pass:
+the single-file runtime sources, the recursive `docs/rlp-desk/{internal,blueprints,plans}`
+markdown copies, and the recursive `src/node` tree — including **orphan detection**
+(an installed file whose source was deleted is drift too). Banner presence and
+content are verified as a side effect of the byte comparison. `chmod` deviations
+are warnings by default (some filesystems ignore `chmod`); pass `--strict-chmod`
+to make them blocking, which is what the release runbook's P4 step does.
+
+**Do not hand-roll a banner-stripping diff.** The previous recipe used
+`grep -v` to strip the banner and `diff -rq | grep -v 'DO NOT EDIT'` for the
+tree, and both were broken: `grep` reports nothing for any file containing a NUL
+byte (so `src/node/util/gate-receipt.mjs` verified as an empty body — a permanent
+false FAIL), and `diff -rq` prints `Files A and B differ`, a line the banner
+filter never matches (so the tree check was unconditionally red). Text-parsing
+the installed file is the bug; byte reconstruction is the fix. Regression tests:
+`tests/node/install-sync-oracle.test.mjs`, which also enforces that no source
+file carries a raw NUL byte (use the `\0` escape in string literals).
+
+Banner + chmod are install artifacts; the source of truth remains the `src/` tree.
 
 ### Release Notes Rule
 - Release notes MUST only contain **user-facing features and fixes**.
@@ -125,7 +129,7 @@ No npm publish, no registry ceremony — just land the change and sync it locall
 2. FF merge to `main`
 3. `git tag vX.Y.Z`
 4. Local sync via `npm install` (postinstall runs from the working copy)
-5. **Retained sync verification (§4.5)**: banner-aware body-diff + recursive Node-tree check + chmod 0o444 spot check. These are SYNC checks, kept in Tier-1 — NOT the Tier-2 publish ceremony.
+5. **Retained sync verification (§4.5)**: `npm run verify:sync` (byte-exact body check + recursive Node-tree + orphan detection + chmod 0o444 warning). This is a SYNC check, kept in Tier-1 — NOT the Tier-2 publish ceremony.
 - NO `npm publish`. NO A1-A2/P5 registry preflight/post-verify.
 
 #### Tier-2 (registry release, on-demand: external users / quarterly)
@@ -138,8 +142,8 @@ The full runbook below — use when publishing a version external users will ins
 4. Push to main
 5. `gh release create vX.Y.Z` with release notes
 6. `npm publish`
-7. Local file sync (banner-aware verification per §4.5)
-7a. **Post-publish verify (P1-P5, auto, all BLOCKING)** per runbook §3: P1 fresh `npm install` / P2 banner-strip diff (3 ref files) / P3 recursive Node sync (banner-aware per-file, NOT `diff -rq`) / P4 chmod 0o444 verify / P5 `npm view @ai-dev-methodologies/rlp-desk@vX.Y.Z version` (allow single retry on registry propagation lag).
+7. Local file sync (`npm run verify:sync` per §4.5)
+7a. **Post-publish verify (P1-P5, auto, all BLOCKING)** per runbook §3: P1 fresh `npm install` / P2-P4 `npm run verify:sync -- --strict-chmod` (byte-exact bodies + recursive Node tree + orphan detection + chmod 0o444, all blocking) / P5 `npm view @ai-dev-methodologies/rlp-desk@vX.Y.Z version` (allow single retry on registry propagation lag).
 - Steps 1-7 require user approval at each stage.
 
 ## Review Process
