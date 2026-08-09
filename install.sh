@@ -117,6 +117,8 @@ fetch "$REPO_URL/docs/rlp-desk/TODO-verification-next.md" "$DESK_DIR/docs/rlp-de
 fetch "$REPO_URL/docs/rlp-desk/multi-mission-orchestration.md" "$DESK_DIR/docs/rlp-desk/multi-mission-orchestration.md"
 # Plan v6 PR-0a: signal protocol documentation
 fetch "$REPO_URL/docs/rlp-desk/signal-protocol.md" "$DESK_DIR/docs/rlp-desk/signal-protocol.md"
+# 2026-08-09 owner standing rule: SV/dogfood verification ledger (append-only).
+fetch "$REPO_URL/docs/rlp-desk/verification-history.md" "$DESK_DIR/docs/rlp-desk/verification-history.md"
 # Dev meta docs (v5.7 §4.15: under docs/rlp-desk/ to avoid mixing with user docs)
 fetch "$REPO_URL/docs/rlp-desk/internal/verification-policy-gap-analysis.md" "$DESK_DIR/docs/rlp-desk/internal/verification-policy-gap-analysis.md"
 fetch "$REPO_URL/docs/rlp-desk/internal/verification-strategy-research.md" "$DESK_DIR/docs/rlp-desk/internal/verification-strategy-research.md"
