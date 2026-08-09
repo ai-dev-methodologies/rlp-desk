@@ -2898,7 +2898,7 @@ restart_worker() {
   # Re-launch worker (tmux interactive pattern)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
     _require_codex_effort "$WORKER_CODEX_REASONING" "worker-restart"
-    safe_send_keys "$pane_id" "OMX_STATE_ROOT='$OMX_STATE_DIR' ${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    safe_send_keys "$pane_id" "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
   else
     safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
   fi
@@ -3093,7 +3093,7 @@ write_worker_trigger() {
   # Engine-specific launch command (expanded at write time)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
     _require_codex_effort "$WORKER_CODEX_REASONING" "worker-trigger"
-    local engine_cmd="OMX_STATE_ROOT='$OMX_STATE_DIR' ${CODEX_BIN:-codex} \\
+    local engine_cmd="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} \\
   -m $WORKER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\"${_CODEX_NO_UPDATE_FLAG} \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
@@ -3265,7 +3265,7 @@ write_verifier_trigger() {
   # Engine-specific launch command (expanded at write time)
   if [[ "$verifier_engine" = "codex" ]]; then
     _require_codex_effort "$VERIFIER_CODEX_REASONING" "verifier-trigger"
-    local engine_cmd="OMX_STATE_ROOT='$OMX_STATE_DIR' ${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
+    local engine_cmd="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\"${_CODEX_NO_UPDATE_FLAG} \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\" \\
@@ -4005,7 +4005,7 @@ run_single_verifier() {
       _cx_model="$model"
     fi
     _require_codex_effort "$_cx_reason" "verifier-dispatch"
-    verifier_launch="OMX_STATE_ROOT='$OMX_STATE_DIR' ${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    verifier_launch="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
     # F-1 (v0.22.21): guard the codex launch return exactly like the claude branch
     # below. Previously an unchecked call let a stuck update dialog (launch never
     # reached ready) fall through to verdict polling — burning the 90s submit
@@ -4263,7 +4263,7 @@ _final_verify_one_us() {
   local verifier_launch
   if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
     _require_codex_effort "$FINAL_VERIFIER_CODEX_REASONING" "final-verifier-dispatch"
-    verifier_launch="OMX_STATE_ROOT='$OMX_STATE_DIR' ${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    verifier_launch="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $FINAL_VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$FINAL_VERIFIER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
     # F-1 (v0.22.21): guard the return like the claude branch below (return 2 hard-
     # fail) — an unchecked launch let a stuck update dialog fall through to verdict
     # polling. Thread the durable launch reason (cf. :3898).
@@ -4647,7 +4647,7 @@ run_consensus_verification_parallel() {
     return 1
   fi
   _require_codex_effort "$_cx_reason" "consensus-codex-dispatch"
-  codex_launch="OMX_STATE_ROOT='$OMX_STATE_DIR' ${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+  codex_launch="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $_cx_model -c model_reasoning_effort=\"$_cx_reason\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
   # F-1 (v0.22.21): guard the return like the claude branch above (return 1) — an
   # unchecked launch let a stuck update dialog fall through to the both-verdict
   # poll. Thread the durable launch reason (cf. :3898).
@@ -5496,7 +5496,7 @@ main() {
       # ONCE before BLOCKing, instead of terminating the campaign on a transient.
       if [[ "$WORKER_ENGINE" = "codex" ]]; then
         _require_codex_effort "$WORKER_CODEX_REASONING" "worker-dispatch"
-        worker_launch="OMX_STATE_ROOT='$OMX_STATE_DIR' ${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+        worker_launch="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
         if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
           log "  Worker codex failed to start — replacing pane and retrying once (F-11)."
           log_debug "[GOV] iter=$ITERATION worker_start_failed=true action=replace_retry engine=codex"
@@ -5994,7 +5994,7 @@ main() {
           local verifier_launch
           if [[ "$_v_eng" = "codex" ]]; then
             _require_codex_effort "$_v_cxr" "verifier-relaunch"
-            verifier_launch="OMX_STATE_ROOT='$OMX_STATE_DIR' ${CODEX_BIN:-codex} -m $_v_cxm -c model_reasoning_effort=\"$_v_cxr\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+            verifier_launch="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $_v_cxm -c model_reasoning_effort=\"$_v_cxr\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
           else
             verifier_launch="$(build_claude_cmd tui "$_v_model" "" "" "$_v_eff")"
           fi

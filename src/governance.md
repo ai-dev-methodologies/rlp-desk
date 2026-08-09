@@ -675,8 +675,9 @@ Agent(
 If `--worker-model` or `--verifier-model` uses codex format (e.g., `spark:high`, `gpt-5.5:high`) (opt-in):
 ```
 # Worker or Verifier (codex engine)
-Bash("codex -m <codex_model> -c model_reasoning_effort=<codex_reasoning> --dangerously-bypass-approvals-and-sandbox <prompt>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex -m <codex_model> -c model_reasoning_effort=<codex_reasoning> --dangerously-bypass-approvals-and-sandbox <prompt>")
 ```
+- `OMX_STATE_ROOT` isolates every codex launch from the operator's interactive omx state (a campaign-scoped root — actual state lands at `<root>/.omx/state/…`, disjoint from the project's own `.omx/state/`); see F1.18 in `docs/rlp-desk/failure-modes.md`.
 - Codex runs as a subprocess via `Bash()`, not `Agent()` — the Agent tool is Claude-specific.
 - Each `Bash()` call = fresh context for codex.
 - Claude is the default engine. Codex is explicitly opt-in.
@@ -734,12 +735,12 @@ claude -p "$(cat /path/to/prompt.md)" \
 When `WORKER_ENGINE=codex` or `VERIFIER_ENGINE=codex`, the `codex` CLI is used instead:
 ```bash
 # codex engine (opt-in)
-codex -m gpt-5.5 \
+OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex -m gpt-5.5 \
   -c model_reasoning_effort="high" \
   --dangerously-bypass-approvals-and-sandbox \
   "$(cat /path/to/prompt.md)"
 ```
-The codex CLI is only required when an engine is set to `codex`. Claude remains the default engine throughout.
+The codex CLI is only required when an engine is set to `codex`. Claude remains the default engine throughout. `OMX_STATE_ROOT` is prefixed at every codex launch — see F1.18.
 
 **Security implication:** Both `--dangerously-skip-permissions` (claude) and `--dangerously-bypass-approvals-and-sandbox` (codex) allow the CLI to execute code without user confirmation. The tmux runner requires this because there is no interactive user to approve each action. Only run tmux mode in trusted environments with trusted prompts.
 

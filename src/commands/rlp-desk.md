@@ -547,7 +547,7 @@ Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --mode
 ```
 - Codex runs as a subprocess via Bash(), not Agent().
 - Each Bash() call = fresh context for codex.
-- `OMX_STATE_ROOT` prefixes EVERY codex launch (worker and verifier — see ⑦a below), pointed at the campaign-scoped `.rlp-desk/logs/<slug>/runtime/omx-state` dir (mkdir -p it before the first launch if absent). oh-my-codex hooks read project-local `.omx/state/` by default; without isolation, stale interactive-session state (e.g. an unreleased input_lock, or a large pre-existing `.omx/state/sessions/` tree from the operator's own Claude Code sessions) can block/wedge a campaign codex worker. `--disable plugins` does NOT cover hooks.json native hooks, so env isolation is required (stale-lock incident 2026-08-09).
+- `OMX_STATE_ROOT` prefixes EVERY codex launch (worker, verifier, and consensus — see ⑦a/⑦b below), pointed at the campaign-scoped `.rlp-desk/logs/<slug>/runtime/omx-state` **root** (mkdir -p it before the first launch if absent). `OMX_STATE_ROOT` is a root, not the state dir itself — actual state lands one level deeper, at `.rlp-desk/logs/<slug>/runtime/omx-state/.omx/state/…`. oh-my-codex hooks read project-local `.omx/state/` by default; without isolation, stale interactive-session state (e.g. an unreleased input_lock, or a large pre-existing `.omx/state/sessions/` tree from the operator's own Claude Code sessions) can block/wedge a campaign codex worker. `--disable plugins` does NOT cover hooks.json native hooks, so env isolation is required (3 incidents 2026-08-09 — see failure-modes.md F1.18).
 
 
 **⑥ Read memory.md again** (Worker updated it)
@@ -611,7 +611,7 @@ After the primary verifier runs, run a cross-engine second verifier:
 - Determine cross-verifier model based on scope:
   - per-US verify → use `--consensus-model` (default: gpt-5.6-terra:high)
   - final ALL verify → use `--final-consensus-model` (default: gpt-5.6-sol:xhigh)
-- If primary engine is claude → cross-verifier uses codex (the consensus model)
+- If primary engine is claude → cross-verifier uses codex (the consensus model) — dispatched with the same `OMX_STATE_ROOT`-prefixed `Bash("...")` form as ④/⑦a above (one shared campaign-scoped omx-state dir per campaign, not a separate one for consensus)
 - If primary engine is codex → cross-verifier uses claude `opus` (fixed)
 - Both produce `verify-verdict.json` (Leader renames to `verify-verdict-claude.json` and `verify-verdict-codex.json`)
 - **Both pass** → proceed (next US or COMPLETE)

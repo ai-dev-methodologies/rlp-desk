@@ -23,8 +23,10 @@ SCRIPT_DIR="${0:A:h}"
 ROOT_DIR="${SCRIPT_DIR:h}"
 RUN="$ROOT_DIR/src/scripts/run_ralph_desk.zsh"
 SPEC="$ROOT_DIR/src/commands/rlp-desk.md"
+GOV="$ROOT_DIR/src/governance.md"
 [[ -f "$RUN" ]] || { print -u2 "FAIL: $RUN not found"; exit 1; }
 [[ -f "$SPEC" ]] || { print -u2 "FAIL: $SPEC not found"; exit 1; }
+[[ -f "$GOV" ]] || { print -u2 "FAIL: $GOV not found"; exit 1; }
 
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); print "  PASS $1"; }
@@ -46,12 +48,16 @@ grep -qE 'mkdir -p "\$LOGS_DIR" "\$RUNTIME_DIR" "\$OMX_STATE_DIR"' "$RUN" \
 # ---------------------------------------------------------------------------
 # (b) ROOT: every codex launch assembly site (all 8 — same census as the
 #     update-dialog hardening test) prefixes the command with
-#     OMX_STATE_ROOT='$OMX_STATE_DIR'.
+#     OMX_STATE_ROOT=${(q)OMX_STATE_DIR} — the (q) flag zsh-quotes the value
+#     for safe shell reinput (a literal '$OMX_STATE_DIR' would break on a
+#     single-quote-bearing path; LOW-5). grep -cF (fixed-string, not BRE):
+#     a mid-pattern '$' is POSIX-undefined and false-FAILs under a ugrep-
+#     shimmed `grep` (LOW-7, reproduced in this session's interactive shell).
 # ---------------------------------------------------------------------------
 _assembly_sites=$(grep -c '\${CODEX_BIN:-codex}' "$RUN")
-_omx_sites=$(grep -c "OMX_STATE_ROOT='\$OMX_STATE_DIR' \${CODEX_BIN:-codex}" "$RUN")
+_omx_sites=$(grep -cF 'OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex}' "$RUN")
 { [[ "$_assembly_sites" == 8 && "$_omx_sites" == 8 ]] } \
-  && ok "(b) all 8 codex launch assembly sites carry OMX_STATE_ROOT='\$OMX_STATE_DIR' (sites=$_assembly_sites omx=$_omx_sites)" \
+  && ok "(b) all 8 codex launch assembly sites carry OMX_STATE_ROOT=\${(q)OMX_STATE_DIR} (sites=$_assembly_sites omx=$_omx_sites)" \
   || no "(b) launch-site/OMX_STATE_ROOT count mismatch (assembly=$_assembly_sites omx=$_omx_sites, expected 8/8)"
 
 # ---------------------------------------------------------------------------
@@ -70,6 +76,24 @@ _spec_prose_mentions=$(grep -cE 'Bash\("OMX_STATE_ROOT=.*codex exec' "$SPEC")
 { [[ "$_spec_prose_mentions" -ge 4 ]] } \
   && ok "(c) at least 4 rlp-desk.md mentions (2 prose + 2 fenced) carry the OMX_STATE_ROOT-prefixed codex exec form ($_spec_prose_mentions)" \
   || no "(c) expected >=4 OMX_STATE_ROOT-prefixed codex exec mentions in rlp-desk.md, got $_spec_prose_mentions"
+
+# ---------------------------------------------------------------------------
+# (d) governance.md (distributed runtime file, synced to
+#     ~/.claude/ralph-desk/governance.md — authoritative for the leader) carries
+#     the SAME OMX_STATE_ROOT prefix at its native-leader codex template AND
+#     its tmux-runner codex CLI illustration (Polyp fix: a leader following an
+#     unprefixed governance.md template would construct an unisolated codex
+#     launch — precisely the failure F1.18 claims is closed).
+# ---------------------------------------------------------------------------
+_gov_omx_mentions=$(grep -cF "OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state'" "$GOV")
+{ [[ "$_gov_omx_mentions" == 2 ]] } \
+  && ok "(d) governance.md's native-leader template AND tmux-runner illustration both carry OMX_STATE_ROOT ($_gov_omx_mentions)" \
+  || no "(d) expected 2 OMX_STATE_ROOT-prefixed codex mentions in governance.md, got $_gov_omx_mentions"
+
+_gov_unprefixed=$(grep -cF 'Bash("codex -m <codex_model>' "$GOV")
+{ [[ "$_gov_unprefixed" == 0 ]] } \
+  && ok "(d) no unprefixed native-leader codex Bash(...) template remains in governance.md" \
+  || no "(d) an unprefixed native-leader codex Bash(...) template still exists in governance.md ($_gov_unprefixed)"
 
 print ""
 print "PASS=$PASS FAIL=$FAIL"
