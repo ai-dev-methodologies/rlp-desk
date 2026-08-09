@@ -110,3 +110,65 @@ export function loadModelLadder({
   warnOnce('using emergency inline model ladder (haiku, sonnet, opus only)');
   return { ...EMERGENCY_LADDER };
 }
+
+// G1.c/G1.i (RC-5/RC-6): sol/terra/luna cost-factor table, read from the
+// SAME models.json this module already resolves for the escalation ladder.
+// Precedence is the INVERSE of loadModelLadder's (RC-6): the shipped file
+// wins; the user override is consulted ONLY when the shipped file's
+// `cost_factors` table is absent/malformed. A user may reasonably redefine
+// which model to escalate to; a user may not redefine what a luna token
+// costs relative to sol — that is a vendor pricing fact, not a preference.
+// Unknown-family fallback (factor 1.0) is the CALLER's responsibility
+// (summarizeCost) — this loader returns {} when no table is found at all,
+// never throws, and warns at most once.
+function readCostFactorsFile(file) {
+  const raw = fs.readFileSync(file, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed.cost_factors !== 'object' || parsed.cost_factors === null || Array.isArray(parsed.cost_factors)) {
+    throw new Error(`'${file}' missing a 'cost_factors' object`);
+  }
+  return { ...parsed.cost_factors };
+}
+
+/**
+ * @param {Object} [options]
+ * @param {string} [options.shippedFile] — shipped defaults path (defaults to
+ *   models.json next to this module).
+ * @param {string} [options.overrideFile] — user override path, consulted
+ *   ONLY when shippedFile lacks cost_factors (defaults to
+ *   RLP_DESK_MODELS_FILE or ~/.claude/rlp-desk-models.json).
+ * @param {(message: string) => void} [options.warn] — warning sink.
+ * @returns {Record<string, number>} model family -> cost factor map.
+ */
+export function loadCostFactors({
+  shippedFile = defaultShippedModelsFile(),
+  overrideFile = defaultOverrideModelsFile(),
+  warn = (message) => console.error(`[cost-factors] ${message}`),
+} = {}) {
+  let warned = false;
+  const warnOnce = (message) => {
+    if (warned) return;
+    warned = true;
+    warn(message);
+  };
+
+  if (shippedFile && fs.existsSync(shippedFile)) {
+    try {
+      return readCostFactorsFile(shippedFile);
+    } catch (err) {
+      warnOnce(`shipped defaults '${shippedFile}' has no usable cost_factors (${err.message}); falling through to override`);
+    }
+  } else {
+    warnOnce(`shipped defaults not found at '${shippedFile}'; falling through to override`);
+  }
+
+  if (overrideFile && fs.existsSync(overrideFile)) {
+    try {
+      return readCostFactorsFile(overrideFile);
+    } catch (err) {
+      warnOnce(`override file '${overrideFile}' has no usable cost_factors (${err.message}); no cost_factors table available`);
+    }
+  }
+
+  return {};
+}

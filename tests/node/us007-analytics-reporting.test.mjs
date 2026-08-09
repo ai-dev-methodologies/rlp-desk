@@ -252,11 +252,16 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   assert.equal(lines.length, 2);
   // v0.15.4 PR-B4 schema, v0.22.4 semantics: lifecycle_metrics is ALWAYS an
   // object ({} when the iteration produced no records) — the opt-out is gone.
+  // G1.g/G1.h: estimated_tokens + token_source are now REQUIRED on every row
+  // (see appendIterationAnalytics's isWorkerDispatch guard) — these are real
+  // worker-dispatch iterations, so token_source is 'estimated'.
   assert.deepEqual(Object.keys(lines[0]).sort(), [
     'duration',
+    'estimated_tokens',
     'iter',
     'lifecycle_metrics',
     'timestamp',
+    'token_source',
     'us_id',
     'verdict',
     'worker_engine',
@@ -264,6 +269,7 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   ]);
   assert.equal(lines[0].iter, 1);
   assert.equal(lines[1].iter, 2);
+  assert.equal(lines[0].token_source, 'estimated');
   // v0.22.4: the removed flag cannot null the field any more.
   assert.notEqual(lines[0].lifecycle_metrics, null, 'opt-out env must be ignored');
   assert.equal(typeof lines[0].lifecycle_metrics, 'object');
@@ -392,4 +398,136 @@ test('US-007 AC7.3 negative: readStatus handles a corrupt status.json without th
   const output = await readStatus('corrupt-slug', { rootDir });
 
   assert.match(output, /status\.json is corrupt/i);
+});
+
+// =============================================================================
+// G1-4: Node-leader sol-equivalent cost summary parity (dogfood-gaps-g1-g4.md
+// §G1-4/G1.g-i). appendIterationAnalytics is called directly (exported for
+// this purpose) rather than driving a full campaign via run() — cheap and
+// targeted, avoids the multi-minute end-to-end harness above.
+// =============================================================================
+
+test('g1-node: analytics record carries estimated_tokens and token_source on a real worker-dispatch row', async (t) => {
+  const rootDir = await createTempDir(t);
+  const { buildPaths, appendIterationAnalytics } = await import('../../src/node/runner/campaign-main-loop.mjs');
+  const paths = buildPaths(rootDir, 'g1-slug');
+  await fs.mkdir(paths.campaignLogDir, { recursive: true });
+  await fs.mkdir(path.dirname(paths.doneClaimFile), { recursive: true });
+
+  // Iteration 1's rendered prompt (8 bytes) + done-claim (4 bytes) + verdict
+  // (4 bytes) = 16 bytes / 4 = 4 estimated tokens (C1 basis).
+  const promptFile = path.join(paths.campaignLogDir, 'iter-001.worker-prompt.md');
+  await fs.writeFile(promptFile, '12345678', 'utf8');
+  await fs.writeFile(paths.doneClaimFile, '1234', 'utf8');
+  await fs.writeFile(paths.verdictFile, '1234', 'utf8');
+
+  const state = { iteration: 1, worker_model: 'gpt-5.6-luna:high' };
+  await appendIterationAnalytics(paths, state, 'US-001', 'pass', { now: new Date('2026-08-09T00:00:00Z') });
+
+  const rows = (await fs.readFile(paths.analyticsFile, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].estimated_tokens, 4);
+  assert.equal(rows[0].token_source, 'estimated');
+});
+
+test('g1-node: zero-byte iteration is accepted (0 is not treated as missing)', async (t) => {
+  const rootDir = await createTempDir(t);
+  const { buildPaths, appendIterationAnalytics } = await import('../../src/node/runner/campaign-main-loop.mjs');
+  const paths = buildPaths(rootDir, 'g1-zero-slug');
+  await fs.mkdir(paths.campaignLogDir, { recursive: true });
+  // No prompt/done-claim/verdict files written at all -> every artifact
+  // contributes 0 bytes -> estimated_tokens: 0. appendCampaignAnalytics's
+  // strict undefined/null/'' check must NOT reject a genuine 0.
+  const state = { iteration: 1, worker_model: 'gpt-5.6-luna:high' };
+
+  await assert.doesNotReject(
+    appendIterationAnalytics(paths, state, 'US-001', 'pass', { now: new Date('2026-08-09T00:00:00Z') }),
+  );
+
+  const rows = (await fs.readFile(paths.analyticsFile, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(rows[0].estimated_tokens, 0);
+  assert.equal(rows[0].token_source, 'estimated');
+});
+
+test('g1-node: a non-worker-dispatch row (lane_violation_warning shape) is excluded from token accounting', async (t) => {
+  const rootDir = await createTempDir(t);
+  const { buildPaths, appendIterationAnalytics } = await import('../../src/node/runner/campaign-main-loop.mjs');
+  const paths = buildPaths(rootDir, 'g1-nonworker-slug');
+  await fs.mkdir(paths.campaignLogDir, { recursive: true });
+  await fs.mkdir(path.dirname(paths.doneClaimFile), { recursive: true });
+  // A STALE prior-iteration prompt file with real bytes — if this leaked into
+  // the estimate, the C2 exclusion guard would have failed to do its job.
+  await fs.writeFile(path.join(paths.campaignLogDir, 'iter-001.worker-prompt.md'), '12345678', 'utf8');
+
+  const state = { iteration: 1, worker_model: 'gpt-5.6-luna:high' };
+  await appendIterationAnalytics(
+    paths, state, 'ALL', 'lane_violation_warning',
+    { now: new Date('2026-08-09T00:00:00Z') }, null, /* isWorkerDispatch */ false,
+  );
+
+  const rows = (await fs.readFile(paths.analyticsFile, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(rows[0].estimated_tokens, 0, 'must not charge the stale iter-001 prompt bytes to a non-dispatch row');
+  assert.equal(rows[0].token_source, 'none');
+});
+
+async function writeAnalyticsLines(analyticsFile, records) {
+  await fs.mkdir(path.dirname(analyticsFile), { recursive: true });
+  await fs.writeFile(analyticsFile, `${records.map((r) => JSON.stringify(r)).join('\n')}\n`, 'utf8');
+}
+
+test('g1-node: summarizeCost emits sol-equivalent from campaign.jsonl rows', async (t) => {
+  const rootDir = await createTempDir(t);
+  const deskRoot = deskPath(rootDir);
+  const analyticsFile = path.join(deskRoot, 'logs', 'g1-cost-slug', 'campaign.jsonl');
+  const reportFile = path.join(deskRoot, 'logs', 'g1-cost-slug', 'campaign-report.md');
+  const prdFile = path.join(deskRoot, 'plans', 'prd-g1-cost-slug.md');
+  const statusFile = path.join(deskRoot, 'logs', 'g1-cost-slug', 'runtime', 'status.json');
+
+  // luna 1000 (x0.04=40) + terra 1000 (x0.4=400) + sol 1000 (x1.0=1000) = 1440,
+  // same fixture matrix as the zsh g1 "mixed families sum correctly" test.
+  await writeAnalyticsLines(analyticsFile, [
+    { iter: 1, us_id: 'US-001', worker_model: 'gpt-5.6-luna', worker_engine: 'codex', verdict: 'pass', duration: 1, timestamp: 't1', estimated_tokens: 1000, token_source: 'estimated' },
+    { iter: 2, us_id: 'US-001', worker_model: 'gpt-5.6-terra', worker_engine: 'codex', verdict: 'pass', duration: 1, timestamp: 't2', estimated_tokens: 1000, token_source: 'estimated' },
+    { iter: 3, us_id: 'US-001', worker_model: 'gpt-5.6-sol', worker_engine: 'codex', verdict: 'pass', duration: 1, timestamp: 't3', estimated_tokens: 1000, token_source: 'estimated' },
+  ]);
+
+  const { generateCampaignReport } = await import('../../src/node/reporting/campaign-reporting.mjs');
+  await generateCampaignReport({ slug: 'g1-cost-slug', reportFile, prdFile, statusFile, analyticsFile, now: new Date('2026-08-09T00:00:00Z') });
+
+  const report = await fs.readFile(reportFile, 'utf8');
+  assert.match(report, /Codex legs sol-equivalent: 1440 tokens/);
+});
+
+test('g1-node: summarizeCost emits the unattributed reconciliation line on rows lacking tokens', async (t) => {
+  const rootDir = await createTempDir(t);
+  const deskRoot = deskPath(rootDir);
+  const analyticsFile = path.join(deskRoot, 'logs', 'g1-reconcile-slug', 'campaign.jsonl');
+  const reportFile = path.join(deskRoot, 'logs', 'g1-reconcile-slug', 'campaign-report.md');
+  const prdFile = path.join(deskRoot, 'plans', 'prd-g1-reconcile-slug.md');
+  const statusFile = path.join(deskRoot, 'logs', 'g1-reconcile-slug', 'runtime', 'status.json');
+
+  await writeAnalyticsLines(analyticsFile, [
+    // Legacy row: no token_source field at all (written before G1 shipped).
+    { iter: 1, us_id: 'US-001', worker_model: 'gpt-5.6-luna', worker_engine: 'codex', verdict: 'pass', duration: 1, timestamp: 't1' },
+    { iter: 2, us_id: 'US-001', worker_model: 'gpt-5.6-luna', worker_engine: 'codex', verdict: 'pass', duration: 1, timestamp: 't2', estimated_tokens: 1000, token_source: 'estimated' },
+  ]);
+
+  const { generateCampaignReport } = await import('../../src/node/reporting/campaign-reporting.mjs');
+  await generateCampaignReport({ slug: 'g1-reconcile-slug', reportFile, prdFile, statusFile, analyticsFile, now: new Date('2026-08-09T00:00:00Z') });
+
+  const report = await fs.readFile(reportFile, 'utf8');
+  assert.match(report, /\(1 iteration\(s\) unattributed\)/);
+});
+
+test('g1-node: models.json cost_factors has the three families (shared-table pin)', async () => {
+  const { loadCostFactors, defaultShippedModelsFile } = await import('../../src/node/model-ladder.mjs');
+  // Hermeticity: force a guaranteed-nonexistent override so this pins the
+  // real shipped table regardless of ambient RLP_DESK_MODELS_FILE state
+  // (same guard pattern as models-ladder.test.mjs).
+  const nonexistentOverride = path.join(repoRoot, '.tmp', 'us007-g1-cost-factors-test', 'does-not-exist.json');
+  const costFactors = loadCostFactors({ overrideFile: nonexistentOverride, shippedFile: defaultShippedModelsFile() });
+
+  assert.equal(costFactors['gpt-5.6-sol'], 1.0);
+  assert.equal(costFactors['gpt-5.6-terra'], 0.4);
+  assert.equal(costFactors['gpt-5.6-luna'], 0.04);
 });

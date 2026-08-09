@@ -735,13 +735,20 @@ After the loop ends (COMPLETE, BLOCKED, or TIMEOUT), generate `logs/<slug>/campa
    - **US Status**: Each US with final verified/failed/pending status (from `status.json`)
    - **Verification Results**: Per-US and final verify outcomes (from archived iter artifacts)
    - **Issues Encountered**: Fix contracts and failure verdicts from campaign
-   - **Cost & Performance**: Per-iter token/duration data from `status.json`,
-     PLUS a sol-equivalent cost summary for codex legs: total = Σ(iteration
-     tokens × factor), factors sol 1.0 / terra 0.4 / luna 0.04 (2026-07-30
-     API prices). Also report the escalation count (ladder moves) and final
-     model reached per US. Claude iterations are listed by count only
-     (separate subscription pool — no factor conversion). If per-iter token
-     data is missing (tmux estimates), mark the summary "estimated".
+   - **Cost & Performance**: computed deterministically by the leader (zsh
+     `generate_campaign_report` reading `cost-log.jsonl`; Node `summarizeCost`
+     reading `campaign.jsonl`) — this section is code output, not prose for
+     the LLM to compose. Includes per-iter token/duration data, PLUS a
+     sol-equivalent cost summary for codex legs: total = Σ(iteration tokens ×
+     factor), factors sol 1.0 / terra 0.4 / luna 0.04 (2026-07-30 API
+     prices, read from `models.json`'s `cost_factors` table, shipped-first).
+     Also reports the escalation count (ladder moves) and final model
+     reached per US. Claude iterations are listed by count only (separate
+     subscription pool — no factor conversion). Rows lacking model
+     attribution (pre-enrichment logs) are still counted into the total and
+     surfaced as "(N iteration(s) unattributed)" rather than silently
+     dropped. If per-iter token data is missing (tmux estimates), the
+     summary is marked "estimated".
    - **SV Summary**: If `--with-self-verification` ran, pointer to SV report file; otherwise "N/A — --with-self-verification not enabled"
    - **Files Changed**: `git diff --stat <baseline_commit>` (working tree vs baseline, includes uncommitted changes and untracked files). Note: may include pre-existing uncommitted changes if the campaign started in a dirty worktree.
 3. Data sources: `status.json` (baseline_commit, per-iter data), archived `iter-NNN-done-claim.json` / `iter-NNN-verify-verdict.json`, PRD, git diff.

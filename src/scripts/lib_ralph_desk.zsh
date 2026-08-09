@@ -271,6 +271,75 @@ get_next_model() {
   jq -r --arg m "$current" '.upgrades[$m] // ""' "$ladder_file" 2>/dev/null
 }
 
+# G1.d (RC-5/RC-6): sol/terra/luna cost-factor resolver. Duplicates the
+# shipped-file search from get_next_model() above INLINE rather than sharing
+# a helper — Driver 3: tests/test_us004_progressive_upgrade.sh and
+# tests/test_option_cleanup.sh extract get_next_model's single function body
+# with `sed -n "/^${fn}() {$/,/^}$/p"` under `zsh -f`; a shared helper
+# extraction would break both harnesses.
+#
+# Precedence is the INVERSE of get_next_model's (RC-6): the shipped
+# models.json wins; the user override file is consulted ONLY when the
+# shipped file's `cost_factors` table is absent/malformed. A user may
+# reasonably redefine which model to escalate to; a user may not redefine
+# what a luna token costs relative to sol — that is a vendor pricing fact,
+# not a preference.
+#
+# Sets two global side-channel outputs (does NOT echo a captured value —
+# callers must invoke this directly, never via `$(...)`. Command substitution
+# forks a subshell in zsh, which would silently discard both globals before
+# the caller could read them):
+#   _COST_FACTOR_X100    — INTEGER x100 value (e.g. 4 for luna's 0.04), so
+#                           callers can accumulate-then-divide-once in zsh
+#                           integer arithmetic without truncating small
+#                           per-row products to zero (RC-12/F11 — this is for
+#                           deterministic, exact fixture assertions; zsh has
+#                           typeset -F and awk is already a hard dependency,
+#                           so this is not a floating-point workaround).
+#   _COST_FACTOR_LAST_UNKNOWN — 1 when the family was absent from the
+#                           resolved table (factor 1.0 assumed; mirrors the
+#                           existing _MODEL_LADDER_WARNED pattern), else 0.
+#                           Callers use this to surface an explicit "(unknown
+#                           model — factor 1.0 assumed)" note instead of
+#                           silently dropping tokens.
+_cost_factor_x100() {
+  local model="$1"
+  local family="${model%%:*}"
+  _COST_FACTOR_X100=100
+  _COST_FACTOR_LAST_UNKNOWN=0
+
+  local shipped_candidate factors_file=""
+  for shipped_candidate in "$LIB_DIR/node/models.json" "$LIB_DIR/../node/models.json"; do
+    if [[ -f "$shipped_candidate" ]] && jq -e '(.cost_factors | type) == "object"' "$shipped_candidate" >/dev/null 2>&1; then
+      factors_file="$shipped_candidate"
+      break
+    fi
+  done
+  if [[ -z "$factors_file" ]]; then
+    local override_file="${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json}"
+    if [[ -f "$override_file" ]] && jq -e '(.cost_factors | type) == "object"' "$override_file" >/dev/null 2>&1; then
+      factors_file="$override_file"
+    fi
+  fi
+  if [[ -z "$factors_file" ]]; then
+    _COST_FACTOR_LAST_UNKNOWN=1
+    return 0
+  fi
+
+  local result x100 flag
+  result=$(jq -r --arg f "$family" \
+    'if (.cost_factors | has($f)) then (((.cost_factors[$f] * 100) | floor | tostring) + " known") else "100 unknown" end' \
+    "$factors_file" 2>/dev/null)
+  x100="${result%% *}"
+  flag="${result##* }"
+  if [[ -z "$x100" || ! "$x100" =~ ^-?[0-9]+$ ]]; then
+    _COST_FACTOR_LAST_UNKNOWN=1
+    return 0
+  fi
+  _COST_FACTOR_X100="$x100"
+  [[ "$flag" == "unknown" ]] && _COST_FACTOR_LAST_UNKNOWN=1
+}
+
 # _a4_pane_still_needs_reap() — fail-SAFE liveness recheck for the A4
 # already-reaped guard (codex round 4). The already-reaped flag only proves a
 # reap was ATTEMPTED (_kill_pane_process is fail-open), so the second reap may
@@ -1751,6 +1820,19 @@ write_cost_log() {
 
   local estimated_tokens=$(( (prompt_bytes + claim_bytes + verdict_bytes) / 4 ))
 
+  # G1.b: per-row model attribution so the Cost & Performance summary can
+  # convert to a sol-equivalent WITHOUT re-deriving it from campaign.jsonl
+  # (which tolerates row loss — Option C, dogfood-gaps-g1-g4.md §G1). us_id
+  # is the same value the iteration passes to write_campaign_jsonl below
+  # (both read the same global). worker_effort is separate from worker_model
+  # for codex legs (see get_next_model / check_model_upgrade) — ladder moves
+  # can be effort-only.
+  local cost_us_id="${signal_us_id:-unknown}"
+  local cost_worker_model="$WORKER_MODEL"
+  local cost_worker_engine="$WORKER_ENGINE"
+  local cost_worker_effort="${WORKER_CODEX_REASONING:-}"
+  local cost_verifier_engine="$VERIFIER_ENGINE"
+
   # AC1: per-phase timing fields
   local worker_start_time="" worker_end_time="" worker_duration_s=0
   local verifier_start_time="" verifier_end_time="" verifier_duration_s=0
@@ -1782,7 +1864,7 @@ write_cost_log() {
     cost_note="no_actual_usage_recorded"
   fi
 
-  echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"worker_start_time":"'"$worker_start_time"'","worker_end_time":"'"$worker_end_time"'","worker_duration_s":'"$worker_duration_s"',"verifier_start_time":"'"$verifier_start_time"'","verifier_end_time":"'"$verifier_end_time"'","verifier_duration_s":'"$verifier_duration_s"''"$consensus_fields"',"note":"'"$cost_note"'","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$COST_LOG"
+  echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","us_id":"'"$cost_us_id"'","worker_model":"'"$cost_worker_model"'","worker_engine":"'"$cost_worker_engine"'","worker_effort":"'"$cost_worker_effort"'","verifier_engine":"'"$cost_verifier_engine"'","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"worker_start_time":"'"$worker_start_time"'","worker_end_time":"'"$worker_end_time"'","worker_duration_s":'"$worker_duration_s"',"verifier_start_time":"'"$verifier_start_time"'","verifier_end_time":"'"$verifier_end_time"'","verifier_duration_s":'"$verifier_duration_s"''"$consensus_fields"',"note":"'"$cost_note"'","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$COST_LOG"
 }
 
 # codex round 2 R2-3: set on EVERY write_campaign_jsonl call (success or
@@ -2034,15 +2116,125 @@ ${untracked}"
     done
     (( fi_found == 0 )) && echo "- None"
     echo ""
-    echo "## Cost & Performance"
+    echo "## Cost & Performance (ESTIMATED — tmux/zsh bytes÷4 basis)"
     if [[ -f "$COST_LOG" ]]; then
-      local total_tokens=0
-      local t
+      # G1-3: sol-equivalent cost summary. Every number below is derived
+      # SOLELY from cost-log.jsonl (Option C — lossless raw total; per-row
+      # model attribution enriched by G1.b). campaign.jsonl is never joined
+      # here: it tolerates row loss (lib:1885-1897) and would silently
+      # under-count exactly the iterations that failed to flush.
+      local total_tokens=0 raw_rows=0 attributed_rows=0
+      local codex_sol_x100_sum=0 claude_legs=0
+      local escalation_count=0
+      local prev_model="" prev_effort="" have_prev=0
+      local unknown_family_seen=0
+      typeset -A final_model_by_us
+      local -a final_model_us_order
+      local line t row_worker_model row_worker_engine row_worker_effort row_us_id
       while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        (( raw_rows++ ))
         t=$(echo "$line" | jq -r '.estimated_tokens // 0' 2>/dev/null || echo 0)
+        [[ "$t" =~ ^-?[0-9]+$ ]] || t=0
         total_tokens=$(( total_tokens + t ))
+
+        row_worker_model=$(echo "$line" | jq -r '.worker_model // ""' 2>/dev/null)
+        # No model attribution -> pre-enrichment row (legacy log) or a row
+        # written before G1.b shipped. Still counted into the raw total
+        # above; surfaced via the unattributed reconciliation line below —
+        # never silently dropped (Principle 3).
+        if [[ -z "$row_worker_model" ]]; then
+          continue
+        fi
+        (( attributed_rows++ ))
+        row_worker_engine=$(echo "$line" | jq -r '.worker_engine // ""' 2>/dev/null)
+        row_worker_effort=$(echo "$line" | jq -r '.worker_effort // ""' 2>/dev/null)
+        row_us_id=$(echo "$line" | jq -r '.us_id // "unknown"' 2>/dev/null)
+
+        if [[ "$row_worker_engine" == "codex" ]]; then
+          # C1 rounding contract: accumulate estimated_tokens × factor_x100
+          # (integer) across ALL codex rows and divide by 100 exactly ONCE,
+          # after the loop — never per-row. Per-row division would truncate
+          # small rows (e.g. 10 luna tokens × 0.04) to zero (RC-12/F11).
+          _cost_factor_x100 "$row_worker_model"
+          codex_sol_x100_sum=$(( codex_sol_x100_sum + t * _COST_FACTOR_X100 ))
+          (( _COST_FACTOR_LAST_UNKNOWN )) && unknown_family_seen=1
+        elif [[ "$row_worker_engine" == "claude" ]]; then
+          (( claude_legs++ ))
+        fi
+
+        # Escalation count: adjacent ATTRIBUTED row pairs (file order ==
+        # iteration order — cost-log.jsonl is append-only) where worker_model
+        # OR worker_effort changed. Ladder moves can be effort-only.
+        if (( have_prev )); then
+          if [[ "$row_worker_model" != "$prev_model" || "$row_worker_effort" != "$prev_effort" ]]; then
+            (( escalation_count++ ))
+          fi
+        fi
+        prev_model="$row_worker_model"
+        prev_effort="$row_worker_effort"
+        have_prev=1
+
+        # Final model per US: last attributed row per us_id wins (map
+        # overwrite), rendered "model:effort" (or bare model for claude
+        # legs, which have no effort field).
+        if [[ -z "${final_model_by_us[$row_us_id]:-}" ]]; then
+          final_model_us_order+=("$row_us_id")
+        fi
+        if [[ -n "$row_worker_effort" ]]; then
+          final_model_by_us[$row_us_id]="${row_worker_model}:${row_worker_effort}"
+        else
+          final_model_by_us[$row_us_id]="$row_worker_model"
+        fi
       done < "$COST_LOG"
-      echo "- Total estimated tokens: $total_tokens (source: estimated, tmux mode)"
+
+      local codex_sol_equivalent=$(( codex_sol_x100_sum / 100 ))
+      echo "- Codex legs sol-equivalent: ${codex_sol_equivalent} tokens  (factors sol 1.0 / terra 0.4 / luna 0.04)"
+      if (( unknown_family_seen )); then
+        echo "- Note: one or more codex rows used an unrecognized model family — factor 1.0 assumed"
+      fi
+      echo "- Claude legs: ${claude_legs} iteration(s) (subscription pool — no factor conversion)"
+
+      # Cross-check against status.json's model_upgraded flag — a soft
+      # signal (it reflects only the LAST status write, not a cumulative
+      # count), so a disagreement prints BOTH numbers rather than picking
+      # one (G1-3 "Escalation count" derivation).
+      local status_model_upgraded=""
+      if [[ -n "${STATUS_FILE:-}" && -f "${STATUS_FILE:-/nonexistent}" ]]; then
+        status_model_upgraded=$(jq -r '.model_upgraded // empty' "$STATUS_FILE" 2>/dev/null)
+      fi
+      if [[ -n "$status_model_upgraded" ]]; then
+        local status_saw_upgrade=0 cost_log_saw_upgrade=0
+        [[ "$status_model_upgraded" == "1" ]] && status_saw_upgrade=1
+        (( escalation_count > 0 )) && cost_log_saw_upgrade=1
+        if (( status_saw_upgrade != cost_log_saw_upgrade )); then
+          echo "- Escalation count: ${escalation_count} ladder move(s) (status.json model_upgraded=${status_model_upgraded} — disagreement, printing both)"
+        else
+          echo "- Escalation count: ${escalation_count} ladder move(s)"
+        fi
+      else
+        echo "- Escalation count: ${escalation_count} ladder move(s)"
+      fi
+
+      if (( ${#final_model_us_order[@]} > 0 )); then
+        local fm_line="" fm_us
+        for fm_us in "${final_model_us_order[@]}"; do
+          if [[ -n "$fm_line" ]]; then
+            fm_line="${fm_line}, ${fm_us} = ${final_model_by_us[$fm_us]}"
+          else
+            fm_line="${fm_us} = ${final_model_by_us[$fm_us]}"
+          fi
+        done
+        echo "- Final model per US: ${fm_line}"
+      else
+        echo "- Final model per US: (none — no attributed rows)"
+      fi
+
+      echo "- Total estimated tokens (raw): ${total_tokens} (source: estimated, tmux mode)"
+      local unattributed=$(( raw_rows - attributed_rows ))
+      if (( unattributed > 0 )); then
+        echo "- (${unattributed} iteration(s) unattributed)"
+      fi
       echo "- See: cost-log.jsonl for per-iteration breakdown"
     else
       echo "- No cost data available"

@@ -36,5 +36,10 @@
     "gpt-5.6-luna:high": "gpt-5.6-luna:max",
     "gpt-5.6-luna:xhigh": "gpt-5.6-luna:max",
     "gpt-5.6-luna:max": "gpt-5.6-terra:max"
+  },
+  "cost_factors": {
+    "gpt-5.6-sol": 1.0,
+    "gpt-5.6-terra": 0.4,
+    "gpt-5.6-luna": 0.04
   }
 }

@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 
 import { resolveDeskRoot } from '../util/desk-root.mjs';
 import { normalizeVerdict, normalizeVerdictString } from '../shared/verdict-schema.mjs';
+import { loadCostFactors } from '../model-ladder.mjs';
 
 const execFileAsync = promisify(execFile);
 const REQUIRED_ANALYTICS_FIELDS = [
@@ -15,6 +16,11 @@ const REQUIRED_ANALYTICS_FIELDS = [
   'verdict',
   'duration',
   'timestamp',
+  // G1.h: every row (worker-dispatch or not) now carries these — see
+  // appendIterationAnalytics's isWorkerDispatch guard in
+  // campaign-main-loop.mjs, the only caller of appendCampaignAnalytics.
+  'estimated_tokens',
+  'token_source',
 ];
 
 async function exists(targetPath) {
@@ -120,16 +126,58 @@ async function summarizeIssues(reportDir) {
   return fixContracts.length > 0 ? fixContracts : ['- None'];
 }
 
-function summarizeCost(records) {
+// G1.i: family key = worker_model with any ":effort" suffix stripped (the
+// zsh cost-log stores worker_model bare and worker_effort separately, but
+// campaign.jsonl's worker_model can carry a ":effort" suffix depending on
+// producer — strip defensively either way). Unknown family -> factor 1.0.
+function _resolveCostFactor(costFactors, workerModel) {
+  const family = String(workerModel ?? '').split(':')[0];
+  return Object.prototype.hasOwnProperty.call(costFactors, family) ? costFactors[family] : 1.0;
+}
+
+function summarizeCost(records, costFactors = loadCostFactors()) {
   if (records.length === 0) {
     return ['- No cost data available', '- Total duration: 0s'];
   }
 
   const totalDuration = records.reduce((sum, record) => sum + Number(record.duration ?? 0), 0);
-  return [
+  const lines = [
     `- Iteration records: ${records.length}`,
     `- Total duration: ${totalDuration}s`,
   ];
+
+  // G1.i / C2 (batch-audit critic): only rows from a real worker dispatch
+  // (token_source === 'estimated' — see appendIterationAnalytics's
+  // isWorkerDispatch guard) carry a trustworthy byte-based estimate. Rows
+  // explicitly marked token_source === 'none' (e.g. the loop-top
+  // lane-violation event, fired before this iteration's worker artifacts
+  // exist) are deliberately EXCLUDED from both the sol-equivalent sum and
+  // the reconciliation count: they were never supposed to carry a token
+  // estimate, so they are not "missing" one. Only rows with NO
+  // token_source field at all (written before this enrichment shipped —
+  // legacy campaign.jsonl) count as unattributed.
+  const attributed = records.filter((record) => record.token_source === 'estimated');
+  const unattributed = records.filter((record) => record.token_source === undefined);
+
+  // C1 rounding contract: accumulate estimated_tokens x factor across ALL
+  // attributed codex rows and floor ONCE at the end — never per-row — so a
+  // small row's contribution (e.g. 10 luna tokens x 0.04) is not truncated
+  // to zero before it can accumulate with its peers. Mirrors the zsh
+  // leader's accumulate-then-divide-once integer arithmetic (lib_ralph_desk.zsh
+  // _cost_factor_x100 callers) even though Node's IEEE754 floats have no
+  // truncation hazard of their own to work around.
+  const codexSolEquivalent = Math.floor(
+    attributed
+      .filter((record) => record.worker_engine === 'codex')
+      .reduce((sum, record) => sum + Number(record.estimated_tokens ?? 0) * _resolveCostFactor(costFactors, record.worker_model), 0),
+  );
+  lines.push(`- Codex legs sol-equivalent: ${codexSolEquivalent} tokens (ESTIMATED — tmux bytes÷4 basis; factors sol 1.0 / terra 0.4 / luna 0.04)`);
+
+  if (unattributed.length > 0) {
+    lines.push(`- (${unattributed.length} iteration(s) unattributed)`);
+  }
+
+  return lines;
 }
 
 async function defaultGitDiffProvider({ cwd }) {

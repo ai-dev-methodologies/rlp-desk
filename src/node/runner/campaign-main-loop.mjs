@@ -815,11 +815,49 @@ async function _archiveRecoveredSidecar(paths) {
   }
 }
 
-async function appendIterationAnalytics(paths, state, usId, verdict, options, lifecycleMetrics = null) {
+// G1.g / C1: byte basis parity with the zsh leader's write_cost_log — same
+// three artifacts (rendered worker prompt, done-claim, verdict), same ÷4
+// estimate. zsh's `$(( bytes / 4 ))` is zsh integer arithmetic, which
+// truncates toward zero for non-negative operands; Math.floor here is the
+// Node-side equivalent so an identical byte total converts to an identical
+// estimated_tokens value on both leaders (pin this rule on both sides — do
+// not change one without the other). Best-effort per file: a missing/
+// unreadable artifact contributes 0 bytes rather than throwing.
+async function _iterationArtifactBytes(paths, iteration) {
+  const promptFile = path.join(paths.campaignLogDir, `iter-${String(iteration).padStart(3, '0')}.worker-prompt.md`);
+  const sizes = await Promise.all([promptFile, paths.doneClaimFile, paths.verdictFile].map(async (file) => {
+    try {
+      const stat = await fs.stat(file);
+      return stat.size;
+    } catch {
+      return 0;
+    }
+  }));
+  return sizes.reduce((sum, size) => sum + size, 0);
+}
+
+// C2 (batch-audit critic): appendIterationAnalytics is called from BOTH a
+// real worker-dispatch outcome (pass/fail/blocked/oracle-fail — the current
+// iteration's prompt/done-claim/verdict files are genuinely this
+// iteration's) AND the loop-top lane-violation path (L1933), which fires
+// BEFORE the current iteration's worker prompt exists — its
+// paths.workerPrompt/doneClaimFile/verdictFile are stale, reused, or absent.
+// Charging a synthetic lane_violation_warning row with a byte count read
+// from the WRONG iteration's artifacts would corrupt the sol-equivalent sum.
+// isWorkerDispatch=false rows get an explicit, non-throwing zero (0 is not
+// 'missing' to appendCampaignAnalytics's strict undefined/null/'' check —
+// see the zero-byte-iteration test) and token_source:'none' so
+// summarizeCost can exclude them from token aggregation WITHOUT confusing
+// them for the separate "legacy row missing the field entirely" case (see
+// summarizeCost below).
+export async function appendIterationAnalytics(paths, state, usId, verdict, options, lifecycleMetrics = null, isWorkerDispatch = true) {
   // v0.15.4 PR-B4: lifecycle_metrics field — null when flag unset (collector
   // returns null), object grouped by metric name when flag set. Test:
   // tests/node/test-campaign-jsonl-shape.mjs.
   const lifecycleSnapshot = lifecycleMetrics ? lifecycleMetrics.flush() : null;
+  const estimatedTokens = isWorkerDispatch
+    ? Math.floor((await _iterationArtifactBytes(paths, state.iteration)) / 4)
+    : 0;
   await appendCampaignAnalytics(paths.analyticsFile, {
     iter: state.iteration,
     us_id: usId,
@@ -829,6 +867,8 @@ async function appendIterationAnalytics(paths, state, usId, verdict, options, li
     duration: 0,
     timestamp: toIso(resolveNow(options.now)),
     lifecycle_metrics: lifecycleSnapshot,
+    estimated_tokens: estimatedTokens,
+    token_source: isWorkerDispatch ? 'estimated' : 'none',
   });
 }
 
@@ -1930,7 +1970,11 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     const _laneViolations = await _checkLaneViolations(paths, _laneSnapshot, _laneSnapshotAfter, state, options);
     if (_laneViolations) {
       for (const v of _laneViolations) {
-        await appendIterationAnalytics(paths, state, state.current_us ?? 'ALL', 'lane_violation_warning', { ...options, lane_violation: v }, lifecycleMetrics);
+        // C2: this fires at the loop TOP, before this iteration's worker
+        // prompt/done-claim/verdict exist — not a real worker dispatch, so
+        // it must not carry a byte-based token estimate (see the guard
+        // comment on appendIterationAnalytics above).
+        await appendIterationAnalytics(paths, state, state.current_us ?? 'ALL', 'lane_violation_warning', { ...options, lane_violation: v }, lifecycleMetrics, false);
       }
       if (options.laneStrict) {
         // Strict mode: escalate to BLOCKED with downgrade
