@@ -19,6 +19,50 @@ Entry template:
 
 ---
 
+## 2026-08-09 — G1-G4 gap-fix build: ralplan consensus + ralph + SV gate + dual dogfood (v0.24.0)
+
+- **Target**: the four 2026-08-08 dogfood findings — G1 zsh sol-equivalent cost
+  summary (+ Node parity, Option C split raw/attribution), G2 tracked legacy
+  dir removal, G3 empty-commit anti-fabrication (verifier contract + oracle
+  predicate + fix contracts, both leaders), G4 leader-pane width auto-degrade
+  (target/floor model, RLP_LEADER_DEGRADE_FLOOR=60).
+- **Method**: ralplan consensus (Planner/Architect opus, Critic codex — plan
+  rev-3 after 12 Architect RCs + 1 blocking contradiction fix + 5 codex-critic
+  ITERATE items absorbed as in-flight fix rounds), ralph story loop (5 stories,
+  executor subagents, mutation-verified fixes incl. 2 self-found bugs:
+  stale-note leak, subshell global-discard), then the 3-scenario SV gate
+  (opus, artifact walkthroughs + adversarial C3 attack probe), then DUAL
+  dogfood: tmux campaign `g-dogfood` (real deferred fix: Node duration:0;
+  luna:high; NO width knob) and native campaign `g-dogfood-nv`
+  (verification-type, verify_existing).
+- **Result**: SV gate **3/3 PASS** (10 findings: 6 LOW cigarette-fixed in-pass
+  commit 7692c2e, 4 INFO accepted); suites 607+ node / full zsh sweep green;
+  tmux dogfood **COMPLETE** (3 iters, 24m34s) — new Cost & Performance block
+  rendered live and exact (9,935 raw luna tokens → 397 sol-equivalent ✓, 0
+  strays, 0 escalations; enriched cost-log rows verified); G4 live probe
+  against the real tmux pane (want=200 vs 147 cols) degraded correctly
+  (WARN + rc=0 + note, fail-reason clear); native dogfood **COMPLETE** —
+  verification-type run produced **zero commits** with the new conditional
+  prompt rule live (G3 objective met in production; contrast: 2026-08-08 run
+  fabricated empty commit 787b663).
+- **Findings**:
+  - ENV — operator-side omx "deep-interview" guard blocks/wedges headless
+    `codex exec` worker runs (3 incidents; one 31m 0%-CPU hang). Classified
+    environment per the new doctrine (engine-swap, no ladder move) — exactly
+    the failure class G-series doctrine was built for. OPEN operator item:
+    omx guard config for headless codex.
+  - INFO — final-verify cost-log rows carry us_id "unknown" → renders as an
+    "unknown" bucket in Final-model-per-US (data-faithful; polish candidate).
+  - INFO — iter-signal precedent files used a "stop" key but the zsh leader
+    parses `.status` (worker discovery; precedent corrected in-campaign).
+  - Process failure recorded in gotchas (project commit 0b7f5a1 + global):
+    unattended-run stall on an unmonitored background critic — timebox+poll
+    now mandatory; reviews never serialize ahead of implementation.
+- **Artifacts**: branch fix/dogfood-gaps-g1-g4 commits 2d8ea98..2bc40d9 (incl.
+  in-campaign duration fix 2bc40d9); plan .omc/plans/dogfood-gaps-g1-g4.md;
+  SV report + executor reports under .omc/state/sessions/17d4220c-*/;
+  campaign logs .rlp-desk/logs/g-dogfood*/.
+
 ## 2026-08-08 — luna-first dogfood: tmux + native campaigns (v0.23.0 validation)
 
 - **Target**: v0.23.0 luna-first routing in production use — worker
