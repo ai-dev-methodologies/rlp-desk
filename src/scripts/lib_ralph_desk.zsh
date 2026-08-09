@@ -2782,6 +2782,34 @@ _commit_oracle_tracked_dirty() {
   return 0
 }
 
+# _commit_oracle_empty_tree(): does the claimed commit's tree equal its PARENT's
+# (i.e. is it an empty commit)? Mirrors Node _gitClaimedCommitEmptyTree.
+#
+# Args: $1=claimed sha (MUST already be known to resolve — the caller gates on
+#       the cat-file check, so an unresolvable sha stays a worker lie
+#       (claimed_sha_absent) and is never re-routed through here).
+# Returns: 0 empty (tree == parent's) / 1 non-empty (real delta) / 3 UNKNOWN
+#   (expected parent-unavailable: root commit or shallow clone whose parent is
+#   grafted away — the caller ACCEPTS) / 2 GIT-FC infra (any OTHER git failure:
+#   corrupt object, git binary error). The 3-vs-2 split is deliberate: swallowing
+#   real git errors into "unknown" would let a broken repo corroborate a claim.
+_commit_oracle_empty_tree() {
+  local sha="$1" parent
+  parent=$(git -C "$ROOT" rev-parse --verify --quiet "${sha}^{commit}^" 2>/dev/null)
+  if [[ -z "$parent" ]]; then
+    # Parent lookup failed. EXPECTED boundary iff the commit itself still
+    # resolves — repo + git binary healthy, there is simply no parent to diff.
+    git -C "$ROOT" cat-file -e "${sha}^{commit}" 2>/dev/null && return 3
+    return 2
+  fi
+  git -C "$ROOT" diff --quiet "$parent" "$sha" 2>/dev/null
+  case $? in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 # _commit_oracle_check(): the commit-integrity predicate (sourceable + invokable
 # with fixtures). Fires ONLY when the done-claim asserts a successful commit (an
 # execution_steps entry step=="commit" exit_code 0). See commit-oracle.mjs for
@@ -2812,6 +2840,12 @@ _commit_oracle_check() {
   [[ -n "$commit_idx" ]] || return 0
 
   ORACLE_ASSERTED=1
+  # G3: BUILD-claim classification — the jq mirror of shared/done-claim-kind.mjs
+  # isBuildClaim (same predicate the Layer 1.5 lint keys on). A claim with no
+  # write_test step is confirmation/verification-SHAPED and is the only shape the
+  # empty-commit check below fires on.
+  local is_build_claim
+  is_build_claim=$(jq -r 'any((.execution_steps // [])[]; .step == "write_test")' "$dc_file" 2>/dev/null)
   local claimed_sha
   claimed_sha=$(jq -r ".execution_steps[$commit_idx].commit_sha // \"\"" "$dc_file" 2>/dev/null)
   [[ "$claimed_sha" == "null" ]] && claimed_sha=""
@@ -2854,9 +2888,11 @@ _commit_oracle_check() {
     return 1
   fi
 
-  # Full predicate: A (advance + resolves + reachable) AND B (tracked clean),
-  # asserted INDEPENDENTLY so the fix contract names the exact violation.
+  # Full predicate: A (advance + resolves + reachable) AND B (tracked clean) AND
+  # C (G3: not an empty commit on a non-build claim), asserted INDEPENDENTLY so
+  # the fix contract names the exact violation.
   local -a reasons details
+  local sha_resolves=0
   if (( ! head_advanced )); then
     reasons+=("head_not_advanced")
     details+=("HEAD did not advance beyond the iteration-start snapshot (${_s_start:-none}); current HEAD ${_s_head:-none}.")
@@ -2864,15 +2900,37 @@ _commit_oracle_check() {
   if ! git -C "$ROOT" cat-file -e "${claimed_sha}^{commit}" 2>/dev/null; then
     reasons+=("claimed_sha_absent")
     details+=("claimed commit ${_s_sha} does not resolve (git cat-file -e failed).")
-  elif ! git -C "$ROOT" merge-base --is-ancestor "$claimed_sha" HEAD 2>/dev/null; then
-    reasons+=("claimed_sha_unreachable")
-    details+=("claimed commit ${_s_sha} is not reachable from HEAD.")
+  else
+    sha_resolves=1
+    if ! git -C "$ROOT" merge-base --is-ancestor "$claimed_sha" HEAD 2>/dev/null; then
+      reasons+=("claimed_sha_unreachable")
+      details+=("claimed commit ${_s_sha} is not reachable from HEAD.")
+    fi
   fi
   if (( tracked_dirty )); then
     local _first5
     _first5=$(printf '%s\n' "${dirty_files[@]}" | head -n 5 | tr '\n' ',' | sed 's/,$//')
     reasons+=("tracked_tree_dirty")
     details+=("tracked files remain uncommitted after the claimed commit: ${_first5}.")
+  fi
+  # G3 anti-fabrication: an empty commit records NO work, so it can never
+  # corroborate a claim. Scoped to claims with no write_test step (the shape a
+  # verification/confirmation pass produces) — same predicate as the Node
+  # isBuildClaim classifier, same reason string, and appended LAST so a
+  # multi-reason join is byte-identical across leaders. rc 3 (root commit /
+  # shallow clone) accepts; rc 2 keeps the GIT-FC infra path.
+  if (( sha_resolves )) && [[ "$is_build_claim" != "true" ]]; then
+    local _et_rc
+    _commit_oracle_empty_tree "$claimed_sha"; _et_rc=$?
+    if (( _et_rc == 2 )); then
+      ORACLE_REASON="git_facts_unavailable"
+      ORACLE_DETAIL="commit-oracle git snapshot failed (git error) — oracle cannot adjudicate; forcing full verifier round."
+      return 2
+    fi
+    if (( _et_rc == 0 )); then
+      reasons+=("empty_commit_on_confirmation_claim")
+      details+=("claimed commit ${_s_sha} has the same tree as its parent (empty commit) and the done-claim carries no write_test step: the iteration recorded no work, so the commit is evidence of nothing (IL-1 evidence breach).")
+    fi
   fi
 
   (( ${#reasons} == 0 )) && return 0
@@ -2932,7 +2990,14 @@ _oracle_register_fail() {
     printf '%s\n' "$_verdict" | jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.id // .criterion // .criterion_id // "?"): \(.description // .summary // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' 2>/dev/null || echo "- (no structured issues)"
     echo ""
     echo "## Next Iteration Contract"
-    echo "Actually create the commit (git add + git commit) so HEAD advances and the tracked tree is clean, and record the resulting commit SHA in your done-claim's commit step (commit_sha). Scope Lock: only changes that make the commit real are in scope."
+    # G3: branch the contract. Telling a worker that fabricated an EMPTY commit
+    # to "actually create the commit" instructs it to fabricate another one —
+    # the fix is to DROP it. Parity with the Node oracle fix_hint branch.
+    if [[ "$ORACLE_REASON" == *empty_commit_on_confirmation_claim* ]]; then
+      echo "Drop the empty commit (git reset --soft HEAD^ — its tree is identical to its parent, so nothing is lost) and do NOT create another commit to compensate. If this iteration produced no file changes, do not claim a commit step at all: report the verification result without a commit assertion. Scope Lock: only the empty commit and the done-claim commit assertion are in scope."
+    else
+      echo "Actually create the commit (git add + git commit) so HEAD advances and the tracked tree is clean, and record the resulting commit SHA in your done-claim's commit step (commit_sha). Scope Lock: only changes that make the commit real are in scope."
+    fi
   } | atomic_write "$oracle_contract"
   return 0
 }

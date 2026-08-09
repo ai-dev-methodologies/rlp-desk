@@ -1,5 +1,5 @@
 {
-  "_comment": "US-001 shared commit-integrity oracle parity matrix. Consumed by BOTH tests/node/test-done-claim-commit-oracle.test.mjs (pure predicate + git wrapper) AND tests/test_commit_oracle.sh (zsh _commit_oracle_check against real git). Each runtime translates the abstract recipe into either injected facts (Node pure) or a real temp git repo (zsh + Node wrapper). Fields: commitStep (is there a commit exec-step exit 0), commitSha (head|unreachable|bogus|absent), advance (this-iter|first-commit|prior-only-lie|none), dirty (clean|tracked|untracked|preexisting), expectAsserted, expectOk.",
+  "_comment": "US-001 shared commit-integrity oracle parity matrix. Consumed by BOTH tests/node/test-done-claim-commit-oracle.test.mjs (pure predicate + git wrapper) AND tests/test_commit_oracle.sh (zsh _commit_oracle_check against real git). Each runtime translates the abstract recipe into either injected facts (Node pure) or a real temp git repo (zsh + Node wrapper). Fields: commitStep (is there a commit exec-step exit 0), commitSha (head|unreachable|bogus|absent), advance (this-iter|first-commit|prior-only-lie|none), dirty (clean|tracked|untracked|preexisting), claimKind (build|confirmation — build claims carry a write_test step, confirmation claims carry verify_existing instead; drives isBuildClaim / the zsh jq not-build predicate; default build), commitTreeDelta (empty|nonempty|root — the claimed commit's tree vs its PARENT's: empty = git commit --allow-empty, root = no parent at all so the delta is unknowable; default nonempty), expectAsserted, expectOk, expectReason (optional — when present BOTH runtimes assert the reason string, which is how cross-leader reason parity is pinned).",
   "scenarios": [
     {
       "name": "real-sha-reachable-accept",
@@ -7,6 +7,8 @@
       "commitSha": "head",
       "advance": "this-iter",
       "dirty": "clean",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": true
     },
@@ -16,6 +18,8 @@
       "commitSha": "head",
       "advance": "first-commit",
       "dirty": "clean",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": true
     },
@@ -25,6 +29,8 @@
       "commitSha": "bogus",
       "advance": "this-iter",
       "dirty": "clean",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": false
     },
@@ -34,6 +40,8 @@
       "commitSha": "unreachable",
       "advance": "this-iter",
       "dirty": "clean",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": false
     },
@@ -43,6 +51,8 @@
       "commitSha": "head",
       "advance": "prior-only-lie",
       "dirty": "clean",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": false
     },
@@ -52,6 +62,8 @@
       "commitSha": "head",
       "advance": "this-iter",
       "dirty": "tracked",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": false
     },
@@ -61,6 +73,8 @@
       "commitSha": "head",
       "advance": "this-iter",
       "dirty": "untracked",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": true
     },
@@ -70,6 +84,8 @@
       "commitSha": "head",
       "advance": "this-iter",
       "dirty": "preexisting",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": true
     },
@@ -79,6 +95,8 @@
       "commitSha": "absent",
       "advance": "this-iter",
       "dirty": "clean",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": true
     },
@@ -88,6 +106,8 @@
       "commitSha": "absent",
       "advance": "none",
       "dirty": "clean",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": false
     },
@@ -97,8 +117,60 @@
       "commitSha": "absent",
       "advance": "none",
       "dirty": "clean",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": false,
       "expectOk": true
+    },
+    {
+      "name": "confirmation-claim-empty-commit-reject",
+      "_comment": "G3 anti-fabrication: a confirmation/verification claim (no write_test step) whose claimed commit has the same tree as its parent. The commit landed and HEAD advanced, so every pre-G3 check passes — only the empty-tree predicate rejects it.",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "this-iter",
+      "dirty": "clean",
+      "claimKind": "confirmation",
+      "commitTreeDelta": "empty",
+      "expectAsserted": true,
+      "expectOk": false,
+      "expectReason": "empty_commit_on_confirmation_claim"
+    },
+    {
+      "name": "confirmation-claim-real-commit-accept",
+      "_comment": "G3 negative control: the SAME confirmation-shaped claim with a real (non-empty) commit is untouched — the new predicate must not reject confirmation claims per se, only empty ones.",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "this-iter",
+      "dirty": "clean",
+      "claimKind": "confirmation",
+      "commitTreeDelta": "nonempty",
+      "expectAsserted": true,
+      "expectOk": true
+    },
+    {
+      "name": "confirmation-claim-empty-root-commit-accept",
+      "_comment": "G3 boundary: the claimed commit is the repo ROOT (no parent), so `git diff <sha>^ <sha>` has nothing to compare — the fact is `unknown` and the oracle ACCEPTS. Same shape as a shallow clone whose parent object is absent. Never an infra/GIT-FC rc-2: an expected parent-unavailable case is not a git failure.",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "first-commit",
+      "dirty": "clean",
+      "claimKind": "confirmation",
+      "commitTreeDelta": "root",
+      "expectAsserted": true,
+      "expectOk": true
+    },
+    {
+      "name": "no-write-test-but-build-work-empty-commit-reject",
+      "_comment": "G3 intent pin (RC-9): a refactor/doc/fix-against-existing-test iteration is BUILD work, but its claim carries no write_test step, so the classifier reads it as `confirmation` — mechanically identical facts to confirmation-claim-empty-commit-reject, and that is the point. The rejection is INTENDED here: an empty commit records no work regardless of claim type (governance §1f½, G3.a prompt wording). The classifier only bounds the new rejection's blast radius; it is not a claim that the classifier identifies verification work correctly. A claim of this shape with a NON-empty commit is covered by confirmation-claim-real-commit-accept.",
+      "commitStep": true,
+      "commitSha": "head",
+      "advance": "this-iter",
+      "dirty": "clean",
+      "claimKind": "confirmation",
+      "commitTreeDelta": "empty",
+      "expectAsserted": true,
+      "expectOk": false,
+      "expectReason": "empty_commit_on_confirmation_claim"
     },
     {
       "name": "git-error-infra",
@@ -108,6 +180,8 @@
       "commitSha": "head",
       "advance": "this-iter",
       "dirty": "tracked",
+      "claimKind": "build",
+      "commitTreeDelta": "nonempty",
       "expectAsserted": true,
       "expectOk": false,
       "expectReason": "git_facts_unavailable"

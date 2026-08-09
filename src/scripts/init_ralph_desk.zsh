@@ -775,7 +775,7 @@ Read these files in order:
 - Write evidence artifacts.
 - **After writing tests, update test-spec Criteria Mapping with actual test file paths and function names** (replace placeholder -k filters).
 - Ensure **each AC has >= 3 tests** (happy + negative + boundary). Do not just meet the total count — distribute evenly per AC.
-- **Commit all changes when the iteration is complete** (include iteration number and story ID in commit message).
+- **Commit all changes when the iteration produced changes** (include iteration number and story ID in commit message). On a verification/confirmation pass (verify_existing — you confirmed existing behavior and changed no files), do **NOT** commit: an empty commit (git commit --allow-empty, or any commit whose tree equals its parent's) records no work and is an IL-1 evidence breach. Claim a commit step in done-claim.json ONLY when a real commit landed, and record its SHA as commit_sha.
 
 MANDATORY: When done with this iteration, write the following signal file:
 - Path: $DESK/memos/$SLUG-iter-signal.json

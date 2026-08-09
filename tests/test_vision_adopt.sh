@@ -152,6 +152,14 @@ grep -q 'verify_existing' "$GOV" && grep -q 'verification-type' "$GOV" \
   && pass "§4-b: governance auto-assigns the verify_existing alternative gate for 검증형" \
   || fail "§4-b: verify_existing auto-assignment missing"
 grep -q '검증형' "$CMD" && pass "§4-c: brainstorm step (rlp-desk.md) classifies 검증형" || fail "§4-c: 검증형 missing in rlp-desk.md"
+# G3: the verification-type gate also states the NO-COMMIT expectation — a
+# verification pass that changed no files must not manufacture an empty commit.
+grep -q 'A verification-type US expects NO commit' "$GOV" \
+  && pass "§4-d: governance states a verification-type US expects no commit" \
+  || fail "§4-d: no-commit expectation missing from IL-2¾ §2"
+grep -q 'empty_commit_on_confirmation_claim' "$GOV" \
+  && pass "§4-e: governance names the empty-commit oracle reason (§1f½ inverse)" \
+  || fail "§4-e: empty_commit_on_confirmation_claim missing from governance"
 
 # ===========================================================================
 # §5: init CLI version stamp

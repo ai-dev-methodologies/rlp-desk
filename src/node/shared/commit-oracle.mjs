@@ -13,6 +13,8 @@
 // via a thin git-gathering wrapper (campaign-main-loop.mjs). Keeping the logic
 // here — not inline in the loop — is what prevents zsh<->Node drift.
 
+import { isBuildClaim } from './done-claim-kind.mjs';
+
 // Locate the done-claim's commit assertion: the FIRST execution_steps entry
 // with step === "commit" and exit_code 0 (accepts numeric 0 or string "0";
 // governance §1f workers may serialize either). Returns the entry (with its
@@ -48,6 +50,14 @@ export function findCommitClaim(doneClaim) {
 //                          Bug #8 tracked-only `git diff --name-only <base>`
 //                          MINUS the campaign-preexisting-dirty set and MINUS
 //                          untracked cruft (AC1.2 — NOT git status --porcelain)
+//   claimedCommitEmptyTree tri-state (G3): true when the claimed commit's tree
+//                          equals its parent's (`git diff --quiet <sha>^ <sha>`),
+//                          false when it carries a real delta, 'unknown' when
+//                          the parent is unavailable (root commit / shallow
+//                          clone) — 'unknown' ACCEPTS, it is never a rejection
+//                          and never an infra failure. Only consulted when a
+//                          commit_sha is present (there is no other anchor to
+//                          diff), so the no-sha transition rule is unaffected.
 //
 // returns { asserted, ok, reason, detail, claimedSha }.
 //   asserted=false → no commit asserted → no-op (ok=true).
@@ -61,6 +71,7 @@ export function evaluateCommitOracle(facts = {}) {
     claimedShaResolves = false,
     claimedShaReachable = false,
     trackedDirtyWorkerFiles = [],
+    claimedCommitEmptyTree = 'unknown',
   } = facts;
 
   const claim = findCommitClaim(doneClaim);
@@ -123,6 +134,23 @@ export function evaluateCommitOracle(facts = {}) {
     details.push(
       `tracked files remain uncommitted after the claimed commit: ` +
       `${(trackedDirtyWorkerFiles ?? []).slice(0, 5).join(', ')}.`,
+    );
+  }
+  // G3 anti-fabrication: an empty commit records NO work, so it can never
+  // corroborate a done-claim. The gate is scoped to claims carrying no
+  // write_test step — the shape a verification/confirmation pass produces, and
+  // the pressure point that made a worker fabricate one. Claims carrying a
+  // write_test step are untouched in this release; the classifier bounds the
+  // rejection's blast radius, it does not assert that the claim really was
+  // verification work (a refactor/doc claim is build work and is still rejected
+  // here — intended: the empty commit is the defect, not the claim type).
+  // 'unknown' (root commit / shallow clone) accepts — see the fact contract above.
+  if (!isBuildClaim(doneClaim) && claimedCommitEmptyTree === true) {
+    reasons.push('empty_commit_on_confirmation_claim');
+    details.push(
+      `claimed commit ${short(claimedSha)} has the same tree as its parent (empty commit) ` +
+      `and the done-claim carries no write_test step: the iteration recorded no work, so the ` +
+      `commit is evidence of nothing (IL-1 evidence breach).`,
     );
   }
 

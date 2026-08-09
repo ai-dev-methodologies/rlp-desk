@@ -26,11 +26,24 @@ _grev(){ git -C "$1" rev-parse "${2:-HEAD}" 2>/dev/null; }
 #   <root>\t<iter_start_head>\t<done_claim_file>\t<preexisting_csv>
 build_repo(){
   local name="$1" commitStep="$2" commitSha="$3" advance="$4" dirty="$5"
+  # G3: claimKind (build|confirmation) picks the non-commit step that decides the
+  # not-build predicate; treeDelta (empty|nonempty|root) decides whether the
+  # worker commit is a REAL commit, `git commit --allow-empty`, or a parentless
+  # root commit. Defaults keep every pre-G3 caller unchanged.
+  local claimKind="${6:-build}" treeDelta="${7:-nonempty}"
   local R="$TMP/$name"; mkdir -p "$R"
   _g "$R" init
   _g "$R" config user.email t@e.com; _g "$R" config user.name t; _g "$R" config commit.gpgsign false
   local ISH="" PRE=""
   [[ "$advance" != "first-commit" ]] && { echo v1 > "$R/a.txt"; _g "$R" add a.txt; _g "$R" commit -m baseline; }
+  # The commit this iteration's claim points at: empty tree delta vs real work.
+  _worker_commit(){
+    if [[ "$treeDelta" == "empty" || "$treeDelta" == "root" ]]; then
+      _g "$R" commit --allow-empty -m worker
+    else
+      echo v1 > "$R/b.txt"; _g "$R" add b.txt; _g "$R" commit -m worker
+    fi
+  }
   case "$advance" in
     prior-only-lie)
       echo v1 > "$R/b.txt"; _g "$R" add b.txt; _g "$R" commit -m prior
@@ -40,10 +53,10 @@ build_repo(){
       ISH=$(_grev "$R") ;;         # snapshot == current HEAD; NO new commit this iter
     this-iter)
       ISH=$(_grev "$R")
-      echo v1 > "$R/b.txt"; _g "$R" add b.txt; _g "$R" commit -m worker ;;
+      _worker_commit ;;
     first-commit)
       ISH=""                       # repo had no commits at iteration start
-      echo v1 > "$R/b.txt"; _g "$R" add b.txt; _g "$R" commit -m worker ;;
+      _worker_commit ;;
   esac
   local HEADSHA; HEADSHA=$(_grev "$R")
   case "$dirty" in
@@ -59,14 +72,18 @@ build_repo(){
     absent)      SHA="" ;;
   esac
   local DC="$R/done-claim.json"
+  # claimKind → the step the not-build predicate keys on: a build claim carries
+  # write_test, a confirmation/verification claim carries verify_existing.
+  local LEAD='{"step":"write_test","exit_code":0}'
+  [[ "$claimKind" == "build" ]] || LEAD='{"step":"verify_existing","exit_code":0}'
   if [[ "$commitStep" == "true" ]]; then
     if [[ "$commitSha" == "absent" ]]; then
-      jq -n '{execution_steps:[{step:"commit",exit_code:0}]}' > "$DC"
+      jq -n --argjson lead "$LEAD" '{execution_steps:[$lead,{step:"commit",exit_code:0}]}' > "$DC"
     else
-      jq -n --arg s "$SHA" '{execution_steps:[{step:"commit",exit_code:0,commit_sha:$s}]}' > "$DC"
+      jq -n --argjson lead "$LEAD" --arg s "$SHA" '{execution_steps:[$lead,{step:"commit",exit_code:0,commit_sha:$s}]}' > "$DC"
     fi
   else
-    jq -n '{execution_steps:[{step:"test",exit_code:0}]}' > "$DC"
+    jq -n --argjson lead "$LEAD" '{execution_steps:[$lead,{step:"test",exit_code:0}]}' > "$DC"
   fi
   printf '%s\t%s\t%s\t%s\n' "$R" "$ISH" "$DC" "$PRE"
 }
@@ -96,7 +113,10 @@ for (( i=0; i<_n; i++ )); do
   dty=$(jq -r ".scenarios[$i].dirty" "$MATRIX")
   eAss=$(jq -r ".scenarios[$i].expectAsserted" "$MATRIX")
   eOk=$(jq -r ".scenarios[$i].expectOk" "$MATRIX")
-  line=$(build_repo "$name" "$cS" "$cSha" "$adv" "$dty")
+  cKind=$(jq -r ".scenarios[$i].claimKind // \"build\"" "$MATRIX")
+  cDelta=$(jq -r ".scenarios[$i].commitTreeDelta // \"nonempty\"" "$MATRIX")
+  eReason=$(jq -r ".scenarios[$i].expectReason // \"\"" "$MATRIX")
+  line=$(build_repo "$name" "$cS" "$cSha" "$adv" "$dty" "$cKind" "$cDelta")
   R="${line%%$'\t'*}"; rest="${line#*$'\t'}"
   ISH="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
   DC="${rest%%$'\t'*}"; PRE="${rest#*$'\t'}"
@@ -108,6 +128,13 @@ for (( i=0; i<_n; i++ )); do
     ok "$name (rc=$want_rc asserted=$want_ass)"
   else
     no "$name — want rc=$want_rc asserted=$want_ass; got: $out"
+  fi
+  # expectReason rows pin the cross-leader reason STRING (the Node mirror asserts
+  # the same field against evaluateCommitOracle).
+  if [[ -n "$eReason" ]]; then
+    [[ "$out" == *"REASON=$eReason"* ]] \
+      && ok "$name reason=$eReason (cross-leader parity)" \
+      || no "$name — want REASON=$eReason; got: $out"
   fi
 done
 
@@ -282,6 +309,110 @@ out=$(zsh --no-rcs -c '
 ')
 [[ "$out" == *"BLOCKED"* ]] && ok "Site A assignment-form: git error propagates through VAR=\$(...) → BLOCKED" \
   || no "Site A rc-eating regression ($out)"
+
+print -r -- "== G3: empty-commit anti-fabrication (_commit_oracle_empty_tree) =="
+# 1. Healthy repo: empty commit → rc 0 (empty), real commit → rc 1 (nonempty),
+#    root commit → rc 3 (unknown, no parent to diff against).
+line=$(build_repo g3-empty true head this-iter clean confirmation empty)
+R="${line%%$'\t'*}"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  ROOT="'"$R"'"
+  _commit_oracle_empty_tree "$(git -C "$ROOT" rev-parse HEAD)"; print "EMPTY=[$?]"
+  _commit_oracle_empty_tree "$(git -C "$ROOT" rev-parse HEAD^)"; print "ROOT=[$?]"
+')
+[[ "$out" == *"EMPTY=[0]"* ]] && ok "empty commit → rc 0 (tree equals parent)" \
+  || no "empty commit probe wrong ($out)"
+[[ "$out" == *"ROOT=[3]"* ]] && ok "root commit → rc 3 (unknown, parent unavailable)" \
+  || no "root commit probe wrong ($out)"
+line=$(build_repo g3-real true head this-iter clean confirmation nonempty)
+R="${line%%$'\t'*}"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  ROOT="'"$R"'"
+  _commit_oracle_empty_tree "$(git -C "$ROOT" rev-parse HEAD)"; print "REAL=[$?]"
+')
+[[ "$out" == *"REAL=[1]"* ]] && ok "real commit → rc 1 (non-empty tree delta)" \
+  || no "real commit probe wrong ($out)"
+
+# 2. C3 EXPECTED class — shallow clone: the tip's parent is grafted away, so the
+#    probe must report unknown (rc 3) and the oracle must ACCEPT, never rc 2.
+ORIGIN="$TMP/g3-origin"; mkdir -p "$ORIGIN"
+_g "$ORIGIN" init
+_g "$ORIGIN" config user.email t@e.com; _g "$ORIGIN" config user.name t; _g "$ORIGIN" config commit.gpgsign false
+echo v1 > "$ORIGIN/a.txt"; _g "$ORIGIN" add a.txt; _g "$ORIGIN" commit -m baseline
+echo v1 > "$ORIGIN/b.txt"; _g "$ORIGIN" add b.txt; _g "$ORIGIN" commit -m second
+SHALLOW="$TMP/g3-shallow"
+git clone -q --depth 1 "file://$ORIGIN" "$SHALLOW" >/dev/null 2>&1
+TIP=$(_grev "$SHALLOW")
+jq -n --arg s "$TIP" '{execution_steps:[{step:"verify_existing",exit_code:0},{step:"commit",exit_code:0,commit_sha:$s}]}' > "$TMP/g3-shallow-dc.json"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  ROOT="'"$SHALLOW"'"; CAMPAIGN_PREEXISTING_DIRTY=""
+  _commit_oracle_empty_tree "'"$TIP"'"; print "PROBE=[$?]"
+  _commit_oracle_check "'"$TMP"'/g3-shallow-dc.json" ""; print "RC=$? REASON=$ORACLE_REASON"
+')
+[[ "$out" == *"PROBE=[3]"* && "$out" == *"RC=0"* ]] \
+  && ok "C3 expected class: shallow-clone tip → unknown → accept (never rc 2)" \
+  || no "C3 shallow-clone handling wrong ($out)"
+
+# 3. C3 GENUINE-FAILURE class — a git error inside the probe keeps the GIT-FC
+#    rc-2 path (it must NOT be swallowed into unknown/accept).
+line=$(build_repo g3-giterr true head this-iter clean confirmation empty)
+R="${line%%$'\t'*}"; rest="${line#*$'\t'}"
+ISH="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"; DC="${rest%%$'\t'*}"; PRE="${rest#*$'\t'}"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null; log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  sleep(){ :; }
+  git(){ case "$*" in *"diff --quiet"*) return 128;; *) command git "$@";; esac }
+  ROOT="'"$R"'"; CAMPAIGN_PREEXISTING_DIRTY="'"$PRE"'"
+  _commit_oracle_empty_tree "$(command git -C "$ROOT" rev-parse HEAD)"; print "PROBE=[$?]"
+  _commit_oracle_check "'"$DC"'" "'"$ISH"'"; print "RC=$? REASON=$ORACLE_REASON"
+')
+[[ "$out" == *"PROBE=[2]"* && "$out" == *"RC=2"* && "$out" == *"REASON=git_facts_unavailable"* ]] \
+  && ok "C3 genuine class: git error in the probe → rc 2 + git_facts_unavailable (GIT-FC preserved)" \
+  || no "C3 genuine git failure must stay infra ($out)"
+
+# 4. Fix contract branches on the empty-commit reason: DROP the commit, never
+#    "create the commit" (which would re-fabricate it).
+LOGS2="$TMP/logs-g3"; mkdir -p "$LOGS2"
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  LOGS_DIR="'"$LOGS2"'"; ORACLE_FAILURES=0; _ORACLE_FAIL_US=""; ORACLE_FAIL_CAP=3
+  ORACLE_REASON="empty_commit_on_confirmation_claim"
+  ORACLE_DETAIL="claimed commit abc1234567 has the same tree as its parent (empty commit)."
+  _oracle_register_fail 9 US-001; print "RC=$?"
+')
+C2="$LOGS2/iter-009.fix-contract.md"
+if [[ -f "$C2" ]] && grep -qi 'drop the empty commit' "$C2" && ! grep -q 'Actually create the commit' "$C2"; then
+  ok "empty-commit fix contract instructs DROPPING the commit (no re-fabrication)"
+else
+  no "empty-commit fix contract wrong ($(cat "$C2" 2>/dev/null | tail -3))"
+fi
+# The generic commit-integrity reason keeps the original create-the-commit wording.
+out=$(zsh --no-rcs -c '
+  source "'"$LIB"'" 2>/dev/null
+  log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+  LOGS_DIR="'"$LOGS2"'"; ORACLE_FAILURES=0; _ORACLE_FAIL_US=""; ORACLE_FAIL_CAP=3
+  ORACLE_REASON="head_not_advanced"; ORACLE_DETAIL="HEAD did not advance."
+  _oracle_register_fail 10 US-001; print "RC=$?"
+')
+grep -q 'Actually create the commit' "$LOGS2/iter-010.fix-contract.md" 2>/dev/null \
+  && ok "non-empty-commit reasons keep the create-the-commit contract" \
+  || no "generic commit-integrity contract regressed"
+
+print -r -- "== G3.a: generated worker prompt forbids the fabricated empty commit =="
+INIT="$REPO/src/scripts/init_ralph_desk.zsh"
+grep -q 'Commit all changes when the iteration is complete' "$INIT" \
+  && no "init still carries the UNCONDITIONAL commit bullet" \
+  || ok "init no longer carries the unconditional 'commit when the iteration is complete' bullet"
+grep -qi 'empty commit' "$INIT" \
+  && ok "init carries the empty-commit prohibition" \
+  || no "init is missing the empty-commit prohibition"
+grep -q 'verify_existing' "$INIT" \
+  && ok "init names the verification/confirmation pass exemption" \
+  || no "init does not name verify_existing in the commit rule"
 
 print -r -- ""
 print -r -- "RESULTS: $PASS passed, $FAIL failed"

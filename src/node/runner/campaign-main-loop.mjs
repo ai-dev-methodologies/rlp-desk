@@ -269,6 +269,46 @@ export async function _gitTrackedDirtyWorkerFiles(rootDir, preexistingDirty = []
   return dirty.filter((file) => !pre.has(file));
 }
 
+// G3: does the claimed commit's tree equal its PARENT's (an empty commit)?
+// Returns true | false | 'unknown'. Mirrors zsh _commit_oracle_empty_tree.
+//
+// The codex C3 split, which this function exists to hold: a parent that is
+// EXPECTEDLY unavailable — a root commit, or a shallow clone whose parent is
+// grafted away — is not a git failure. It yields 'unknown', and the predicate
+// accepts. Every OTHER git failure (unresolvable sha, corrupt object, git binary
+// error) THROWS, so the caller keeps the existing GIT-FC infra path (zsh rc 2):
+// swallowing those into 'unknown' would let a broken repo silently corroborate a
+// commit claim, which is the exact failure GIT-FC was built to prevent.
+export async function _gitClaimedCommitEmptyTree(rootDir, sha) {
+  let parent;
+  try {
+    const { stdout } = await execFileAsync(
+      'git', ['-C', rootDir, 'rev-parse', '--verify', '--quiet', `${sha}^{commit}^`],
+    );
+    parent = stdout.trim();
+  } catch (err) {
+    // Parent lookup failed. It is the EXPECTED boundary iff the claimed commit
+    // itself still resolves — repo and git binary are healthy, there is simply
+    // no parent object to diff against.
+    if (await _gitObjectExists(rootDir, `${sha}^{commit}`)) {
+      return 'unknown';
+    }
+    throw err;
+  }
+  if (!parent) {
+    return 'unknown';
+  }
+  try {
+    await execFileAsync('git', ['-C', rootDir, 'diff', '--quiet', parent, sha]);
+    return true; // exit 0 → no tree delta → empty commit
+  } catch (err) {
+    if (err && err.code === 1) {
+      return false; // exit 1 → real changes (git diff --quiet is --exit-code)
+    }
+    throw err; // exit >1 / spawn failure → genuine git error
+  }
+}
+
 // US-001: default git-gathering wrapper around the pure commit-oracle predicate.
 // Kept SEPARATE from evaluateCommitOracle (I/O-free). Tests inject a stub via
 // run() option `checkCommitIntegrity`; the shared-fixture parity matrix drives the
@@ -306,6 +346,26 @@ export async function _defaultCheckCommitIntegrity(rootDir, { doneClaim, iterSta
       claimedSha,
     };
   }
+  // G3: the empty-tree fact. Gathered HERE because the predicate is I/O-free —
+  // without this the empty-commit rejection would ship as dead code that only
+  // the pure-predicate tests ever reach. Probed only when the claimed sha
+  // resolves: an unresolvable sha is already adjudicated as claimed_sha_absent
+  // (a worker lie, NOT infra), so it must not be re-routed through this probe.
+  let claimedCommitEmptyTree = 'unknown';
+  if (claimedSha && claimedShaResolves) {
+    try {
+      claimedCommitEmptyTree = await _gitClaimedCommitEmptyTree(rootDir, claimedSha);
+    } catch (err) {
+      return {
+        asserted: true,
+        ok: false,
+        infra: true,
+        reason: 'git_facts_unavailable',
+        detail: `commit-oracle git snapshot failed (git error): ${String(err)}`,
+        claimedSha,
+      };
+    }
+  }
   return evaluateCommitOracle({
     doneClaim,
     iterStartHead,
@@ -313,6 +373,7 @@ export async function _defaultCheckCommitIntegrity(rootDir, { doneClaim, iterSta
     claimedShaResolves,
     claimedShaReachable,
     trackedDirtyWorkerFiles,
+    claimedCommitEmptyTree,
   });
 }
 
@@ -2411,10 +2472,22 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         console.error(
           `[oracle] commit-integrity FAILED (${oracleResult.reason}) — skipping verification, redispatching Worker`,
         );
+        // G3: branch the contract. Telling a worker that fabricated an EMPTY
+        // commit to "actually create the commit" would instruct it to fabricate
+        // another one; the fix is to drop it. Parity with the zsh
+        // _oracle_register_fail Next Iteration Contract branch.
+        const oracleFixHint = String(oracleResult.reason ?? '').includes('empty_commit_on_confirmation_claim')
+          ? 'Drop the empty commit (git reset --soft HEAD^ — its tree is identical to its parent, so nothing is lost) and do NOT create another commit to compensate. If this iteration produced no file changes, do not claim a commit step at all: report the verification result without a commit assertion. Scope Lock: only the empty commit and the done-claim commit assertion are in scope.'
+          : 'Actually create the commit (git add + git commit) so HEAD advances and the tracked tree is clean, and record the resulting commit SHA in your done-claim commit step (commit_sha). Scope Lock: only changes that make the commit real are in scope.';
         const oracleVerdict = {
           verdict: 'fail',
           summary: `Leader commit-integrity oracle: ${oracleResult.reason}`,
-          issues: [{ id: 'COMMIT-INTEGRITY', severity: 'critical', description: oracleResult.detail }],
+          issues: [{
+            id: 'COMMIT-INTEGRITY',
+            severity: 'critical',
+            description: oracleResult.detail,
+            fix_hint: oracleFixHint,
+          }],
         };
         // Luna-first spec §2.5 (same dual counter as the verifier-fail path
         // below): an environment/flaky-classified oracle verdict must neither

@@ -12,6 +12,8 @@
 // §3a Layer 1.5) — a claim that passes this lint must not be re-failed on
 // step-sequence/label format grounds.
 
+import { isBuildClaim } from '../shared/done-claim-kind.mjs';
+
 const PHASES = ['write_test', 'verify_red', 'implement', 'verify_green'];
 const CLAIM_AC_RE = /^\s*(AC[0-9]+)\s*:/;
 
@@ -50,9 +52,10 @@ export function lintDoneClaimTddSequence(doneClaim, { env = process.env } = {}) 
   }
   // Only BUILD-mode claims are linted. A claim with no write_test step is a
   // confirmation/replay claim (verify_existing/verify) and is exempt — this
-  // prevents false positives against resume/confirmation claims.
-  const isBuild = steps.some((step) => step && step.step === 'write_test');
-  if (!isBuild) {
+  // prevents false positives against resume/confirmation claims. The predicate
+  // is shared with the commit oracle's empty-commit check (G3/RC-9) so the two
+  // can never disagree on what "build claim" means.
+  if (!isBuildClaim(doneClaim)) {
     return { status: 'skip', reason: 'not-build' };
   }
 
