@@ -6,13 +6,11 @@
 # OMC/OMX runtime state
 # OS
 # RLP Desk runtime artifacts (generated during runs)
-# The entire .claude/ralph-desk/ directory is project-local runtime state
 # Worktrees
 *.swo
 *.swp
 *~
 .DS_Store
-.claude/ralph-desk/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
 .idea/
