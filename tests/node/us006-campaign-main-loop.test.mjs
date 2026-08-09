@@ -233,12 +233,45 @@ test('US-006 AC6.1 happy: run creates the tmux panes, launches the worker with c
   assert.match(workerCommand, /--disable plugins --dangerously-bypass-approvals-and-sandbox/);
   assert.match(workerCommand, /iter-001\.worker-prompt\.md/);
 
+  // fix/omx-state-isolation: every codex launch this leader spawns must carry
+  // OMX_STATE_ROOT pointed at a campaign-scoped scratch dir under the
+  // campaign runtime dir, isolating it from the operator's interactive omx
+  // state (stale input_lock incident). Assert the prefix AND that it lands
+  // under this campaign's runtime dir (not a bare/interactive path).
+  const runtimeDir = deskPath(campaign.rootDir, 'logs', campaign.slug, 'runtime');
+  const omxStateDir = path.join(runtimeDir, 'omx-state');
+  assert.ok(
+    workerCommand.startsWith(`OMX_STATE_ROOT='${omxStateDir}' codex`),
+    `expected workerCommand to start with OMX_STATE_ROOT='${omxStateDir}' codex, got: ${workerCommand}`,
+  );
+  const omxStateDirStat = await fs.stat(omxStateDir);
+  assert.ok(omxStateDirStat.isDirectory(), 'omx-state dir must be mkdir -p\'d before the codex launch');
+
   assert.equal(statusHistory[0].iteration, 1);
   assert.equal(statusHistory[0].phase, 'worker');
 
   const statusFile = deskPath(campaign.rootDir, 'logs', campaign.slug, 'runtime', 'status.json');
   const status = await readJson(statusFile);
   assert.equal(status.phase, 'complete');
+});
+
+test('US-006 fix/omx-state-isolation: buildLaunchCommand prefixes codex launches with OMX_STATE_ROOT and leaves claude launches + no-runtimeDir callers unprefixed (compat)', async () => {
+  const { buildLaunchCommand } = await import('../../src/node/runner/campaign-main-loop.mjs');
+
+  const codexWithDir = buildLaunchCommand('/tmp/prompt.md', 'gpt-5.5:medium', '/tmp/run/omx-state');
+  assert.match(codexWithDir, /^OMX_STATE_ROOT='\/tmp\/run\/omx-state' codex -m/);
+
+  // Compat: a caller that does not pass an omxStateDir (e.g. a future
+  // non-campaign use of this helper) must get the byte-identical unprefixed
+  // command — isolation must never become a hard requirement.
+  const codexWithoutDir = buildLaunchCommand('/tmp/prompt.md', 'gpt-5.5:medium');
+  assert.doesNotMatch(codexWithoutDir, /OMX_STATE_ROOT/);
+  assert.match(codexWithoutDir, /^codex -m/);
+
+  // claude launches are never codex processes, so OMX_STATE_ROOT must never
+  // be injected even when an omxStateDir is supplied.
+  const claudeWithDir = buildLaunchCommand('/tmp/prompt.md', 'sonnet', '/tmp/run/omx-state');
+  assert.doesNotMatch(claudeWithDir, /OMX_STATE_ROOT/);
 });
 
 test('US-006 AC6.1 boundary: run can create a real tmux session with four panes (leader + flywheel + worker + verifier) before continuing the campaign', async (t) => {

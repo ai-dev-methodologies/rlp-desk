@@ -345,7 +345,7 @@ Cross-project aggregation: scan `~/.claude/ralph-desk/analytics/` and read each 
 
 Parse the `--mode` flag. Slash command canonical labels:
 
-- `--mode native` (default): **Native Agent() path** below. The slash command IS the leader. It calls `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)` for claude workers/verifiers and `Bash("codex exec --model <m> --reasoning-effort <r> <prompt>")` for codex workers/verifiers.
+- `--mode native` (default): **Native Agent() path** below. The slash command IS the leader. It calls `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)` for claude workers/verifiers and `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> --reasoning-effort <r> <prompt>")` for codex workers/verifiers. `OMX_STATE_ROOT` isolates every codex launch from the operator's interactive omx state (`.rlp-desk/logs/<slug>/runtime/omx-state`, mkdir -p'd before first use) — stale interactive-session state can otherwise block/wedge campaign codex workers (stale-lock incident 2026-08-09).
 - `--mode tmux`: **zsh runner path** below. The slash command shells out to `node ~/.claude/ralph-desk/node/run.mjs run --mode tmux …` which spawns `run_ralph_desk.zsh` as a subprocess.
 
 Legacy `--mode agent` typed against this slash command emits a deprecation notice and redirects to `--mode native`. **Do NOT confuse `/rlp-desk run --mode agent`** (slash command, redirects to Native Agent()) **with** `node run.mjs run --mode agent` (deprecated Node-leader alpha, direct CLI invocation, unrelated code path — see "Direct Node CLI invocation" below).
@@ -416,7 +416,7 @@ node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
 
 #### Native Agent() Mode (`--mode native` or default)
 
-The slash command IS the leader. Workers/Verifiers are spawned via `Agent(model=…, mode="bypassPermissions", prompt=…)` (claude) or `Bash("codex exec --model <m> --reasoning-effort <r> <prompt>")` (codex).
+The slash command IS the leader. Workers/Verifiers are spawned via `Agent(model=…, mode="bypassPermissions", prompt=…)` (claude) or `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> --reasoning-effort <r> <prompt>")` (codex) — the `OMX_STATE_ROOT` prefix isolates the codex launch from the operator's interactive omx state (see §"Execute Worker" below).
 
 ### Native Agent() Safety Contract
 
@@ -543,10 +543,11 @@ Agent(
 
 If codex engine:
 ```
-Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full worker prompt text>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full worker prompt text>")
 ```
 - Codex runs as a subprocess via Bash(), not Agent().
 - Each Bash() call = fresh context for codex.
+- `OMX_STATE_ROOT` prefixes EVERY codex launch (worker and verifier — see ⑦a below), pointed at the campaign-scoped `.rlp-desk/logs/<slug>/runtime/omx-state` dir (mkdir -p it before the first launch if absent). oh-my-codex hooks read project-local `.omx/state/` by default; without isolation, stale interactive-session state (e.g. an unreleased input_lock, or a large pre-existing `.omx/state/sessions/` tree from the operator's own Claude Code sessions) can block/wedge a campaign codex worker. `--disable plugins` does NOT cover hooks.json native hooks, so env isolation is required (stale-lock incident 2026-08-09).
 
 
 **⑥ Read memory.md again** (Worker updated it)
@@ -601,8 +602,9 @@ Agent(
 
 If codex engine:
 ```
-Bash("codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full verifier prompt text>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full verifier prompt text>")
 ```
+- Same `OMX_STATE_ROOT` isolation as the Worker codex launch (④ above) — one shared campaign-scoped omx-state dir per campaign.
 
 **⑦b Consensus Verification** (when `--consensus` is `all`, or `final-only` and scope is ALL):
 After the primary verifier runs, run a cross-engine second verifier:

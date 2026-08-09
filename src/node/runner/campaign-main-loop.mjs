@@ -105,6 +105,13 @@ export function buildPaths(rootDir, slug, env = process.env) {
     contextDir: path.join(deskRoot, 'context'),
     campaignLogDir,
     runtimeDir: path.join(campaignLogDir, 'runtime'),
+    // fix/omx-state-isolation: campaign-scoped OMX_STATE_ROOT for every codex
+    // launch this leader spawns. oh-my-codex hooks read project-local
+    // .omx/state/ by default; without isolation, stale interactive-session
+    // state (e.g. an unreleased input_lock) can block/wedge campaign codex
+    // workers. --disable plugins does NOT cover hooks.json native hooks, so
+    // env isolation is required. mkdir happens in ensureDirs alongside runtimeDir.
+    omxStateDir: path.join(campaignLogDir, 'runtime', 'omx-state'),
     workerPrompt: path.join(deskRoot, 'prompts', `${slug}.worker.prompt.md`),
     verifierPrompt: path.join(deskRoot, 'prompts', `${slug}.verifier.prompt.md`),
     memoryFile: path.join(deskRoot, 'memos', `${slug}-memory.md`),
@@ -411,6 +418,7 @@ async function ensureScaffold(paths) {
 async function ensureDirs(paths) {
   await fs.mkdir(paths.campaignLogDir, { recursive: true });
   await fs.mkdir(paths.runtimeDir, { recursive: true });
+  await fs.mkdir(paths.omxStateDir, { recursive: true });
 }
 
 async function readJsonIfExists(targetPath) {
@@ -478,7 +486,11 @@ function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-function buildLaunchCommand(promptFile, modelFlag) {
+// fix/omx-state-isolation: omxStateDir is optional so non-campaign callers of
+// this helper (if any emerge) keep the byte-identical unprefixed command —
+// only the campaign dispatch sites below pass paths.omxStateDir.
+// Exported for direct unit testing (compat path: no omxStateDir -> no prefix).
+export function buildLaunchCommand(promptFile, modelFlag, omxStateDir) {
   const parsed = parseModelFlag(modelFlag);
   const promptExpr = `"$(cat ${shQuote(promptFile)})"`;
 
@@ -486,7 +498,9 @@ function buildLaunchCommand(promptFile, modelFlag) {
     return `${buildClaudeCmd('tui', parsed.model, { effort: parsed.effort })} ${promptExpr}`;
   }
 
-  return `${buildCodexCmd('tui', parsed.model, { reasoning: parsed.reasoning })} ${promptExpr}`;
+  const codexCmd = buildCodexCmd('tui', parsed.model, { reasoning: parsed.reasoning });
+  const omxPrefix = omxStateDir ? `OMX_STATE_ROOT=${shQuote(omxStateDir)} ` : '';
+  return `${omxPrefix}${codexCmd} ${promptExpr}`;
 }
 
 async function writePromptFile(targetPath, content) {
@@ -972,7 +986,7 @@ async function dispatchWorker({
   const promptFile = path.join(paths.campaignLogDir, `iter-${String(iteration).padStart(3, '0')}.worker-prompt.md`);
 
   await writePromptFile(promptFile, prompt);
-  await sendKeys(workerPaneId, buildLaunchCommand(promptFile, state.worker_model));
+  await sendKeys(workerPaneId, buildLaunchCommand(promptFile, state.worker_model, paths.omxStateDir));
 }
 
 async function dispatchVerifier({
@@ -1009,7 +1023,7 @@ async function dispatchVerifier({
   const promptFile = path.join(paths.campaignLogDir, fileName);
 
   await writePromptFile(promptFile, prompt);
-  await sendKeys(verifierPaneId, buildLaunchCommand(promptFile, verifierModel));
+  await sendKeys(verifierPaneId, buildLaunchCommand(promptFile, verifierModel, paths.omxStateDir));
   return promptFile;
 }
 

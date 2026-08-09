@@ -585,6 +585,8 @@ The tmux leader's pane and stall-recovery behavior is tunable via environment va
 
 `RLP_DONECLAIM_LINT` (default on; `0` skips) governs the deterministic done-claim TDD-sequence pre-gate and applies to both leaders, not just tmux — see governance §3a.
 
+Every codex launch (Worker, Verifier, consensus, and all TUI restart/relaunch paths — both leaders) is prefixed with `OMX_STATE_ROOT` pointed at a campaign-scoped `<runtime dir>/omx-state` directory instead of the project's shared `.omx/state/`. This isolates each campaign codex session from the operator's interactive omx state (`--disable plugins` does not cover `hooks.json` native hooks, so env isolation is required) — see failure-modes.md F1.18.
+
 ### Session Config
 
 Session metadata is stored in `logs/<slug>/session-config.json`:
