@@ -39,7 +39,6 @@ echo ""
 # Create directories
 mkdir -p "$COMMANDS_DIR"
 mkdir -p "$DESK_DIR"
-mkdir -p "$DESK_DIR/docs/rlp-desk/internal"
 mkdir -p "$DESK_DIR/docs/rlp-desk/blueprints"
 mkdir -p "$DESK_DIR/docs/rlp-desk/plans"
 mkdir -p "$NODE_DIR"
@@ -119,9 +118,10 @@ fetch "$REPO_URL/docs/rlp-desk/multi-mission-orchestration.md" "$DESK_DIR/docs/r
 fetch "$REPO_URL/docs/rlp-desk/signal-protocol.md" "$DESK_DIR/docs/rlp-desk/signal-protocol.md"
 # 2026-08-09 owner standing rule: SV/dogfood verification ledger (append-only).
 fetch "$REPO_URL/docs/rlp-desk/verification-history.md" "$DESK_DIR/docs/rlp-desk/verification-history.md"
-# Dev meta docs (v5.7 §4.15: under docs/rlp-desk/ to avoid mixing with user docs)
-fetch "$REPO_URL/docs/rlp-desk/internal/verification-policy-gap-analysis.md" "$DESK_DIR/docs/rlp-desk/internal/verification-policy-gap-analysis.md"
-fetch "$REPO_URL/docs/rlp-desk/internal/verification-strategy-research.md" "$DESK_DIR/docs/rlp-desk/internal/verification-strategy-research.md"
+# Dev meta docs under docs/rlp-desk/internal/ are NOT fetched: the directory is
+# gitignored (local-only), so its raw URLs 404 and `fetch`'s curl -f would abort
+# the whole install (2026-08-10 dogfood finding — the curl channel was broken
+# here for every user; owner decision: drop the lines, keep internal/ local).
 fetch "$REPO_URL/docs/rlp-desk/blueprints/blueprint-flywheel-enhancement.md" "$DESK_DIR/docs/rlp-desk/blueprints/blueprint-flywheel-enhancement.md"
 fetch "$REPO_URL/docs/rlp-desk/blueprints/blueprint-pivot-step.md" "$DESK_DIR/docs/rlp-desk/blueprints/blueprint-pivot-step.md"
 fetch "$REPO_URL/docs/rlp-desk/blueprints/plan-flywheel-enhancement.md" "$DESK_DIR/docs/rlp-desk/blueprints/plan-flywheel-enhancement.md"
