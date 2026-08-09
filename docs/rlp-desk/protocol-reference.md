@@ -574,7 +574,8 @@ The tmux leader's pane and stall-recovery behavior is tunable via environment va
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RLP_LEADER_MIN_WIDTH` | `30` | Readable min width the Leader pane is kept at, at startup and each iteration (v0.22.20) |
-| `RLP_LEADER_SPLIT_WIDTH` | `110` | Width the Leader is widened to before any `-h` split; still-too-narrow is an explicit error (v0.22.20) |
+| `RLP_LEADER_SPLIT_WIDTH` | `110` | Target width the Leader is widened to before any `-h` split |
+| `RLP_LEADER_DEGRADE_FLOOR` | `60` | Floor a still-too-narrow split degrades-and-continues at instead of hard-failing; never stricter than `RLP_LEADER_SPLIT_WIDTH` itself — only landing below the floor is an explicit error (G4) |
 | `RLP_SHELL_READY_TIMEOUT_S` | `8` | Bounded wait for a (reused) pane's shell to reclaim the foreground before the launch command is pasted; proceeds anyway on timeout (v0.22.19/v0.22.23) |
 | `RLP_CAPACITY_MAX_STRIKES` | `3` | Resume attempts on a "model at capacity" stall before failing fast with `model capacity` BLOCKED (v0.22.18) |
 | `RLP_CAPACITY_REINJECT_COOLDOWN_S` | `120` | Cooldown between capacity-resume injections (v0.22.18) |

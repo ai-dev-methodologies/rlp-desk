@@ -421,7 +421,7 @@ When the operator pane is an AI CLI (e.g. a Claude Code session) it cannot host 
 +-------------+--------+---------------------+
 ```
 
-The operator pane is outside the runner's control (it only assumes it exists). Worker, Verifier, and the optional Consensus pane always form ONE right column stacked top-down; a new pane appearing in a second column, another window, or another session is drift the runner blocks. The split width (`RLP_LEADER_SPLIT_WIDTH`, default 110) is a readability comfort width, not a tmux hard minimum — on a genuinely narrow terminal, lower it to avoid a startup width error.
+The operator pane is outside the runner's control (it only assumes it exists). Worker, Verifier, and the optional Consensus pane always form ONE right column stacked top-down; a new pane appearing in a second column, another window, or another session is drift the runner blocks. The split width (`RLP_LEADER_SPLIT_WIDTH`, default 110) is a readability comfort width, not a tmux hard minimum — a terminal too narrow to reach it degrades and continues at whatever width the resize achieved, as long as it clears `RLP_LEADER_DEGRADE_FLOOR` (default 60); only a resize landing below the floor is a startup width error.
 
 - Real-time visibility — watch Worker/Verifier execute live
 - Zero-token orchestration — shell loop, not LLM

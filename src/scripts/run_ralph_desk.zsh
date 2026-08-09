@@ -59,6 +59,8 @@ _validate_int_knob() {
 #   MAX_NUDGES                - max nudges per pane per iteration (default: 3)
 #   RLP_LEADER_MIN_WIDTH      - readable min width the Leader pane is kept at (default: 30)
 #   RLP_LEADER_SPLIT_WIDTH    - width the Leader is widened to before any -h split (default: 110)
+#   RLP_LEADER_DEGRADE_FLOOR  - floor a still-too-narrow split degrades-and-continues at,
+#                               instead of hard-failing (default: 60)
 #
 # Canonical layout (--mode tmux): run INSIDE a tmux session (outside → fail-fast,
 # "start tmux first"). The Leader anchors on its own $TMUX_PANE and stays visible at
@@ -193,14 +195,27 @@ _CODEX_LAUNCH_FAIL_REASON=""
 #                                before any `-h` split (worker/verifier creation) so
 #                                the resulting panes are readable. It is NOT the tmux
 #                                hard minimum (a split can succeed on far fewer cols);
-#                                it is the contract's minimum. Still too narrow after
-#                                the resize attempt is an ERROR (startup → hard exit;
-#                                in-loop → BLOCKED infra_failure). On a genuinely narrow
-#                                terminal, lower RLP_LEADER_SPLIT_WIDTH.
+#                                it is the contract's target.
+#   RLP_LEADER_DEGRADE_FLOOR (60) — G4 target/floor model: still too narrow after the
+#                                resize attempt degrades and continues at whatever
+#                                width was actually achieved, as long as it clears this
+#                                floor (never stricter than RLP_LEADER_SPLIT_WIDTH
+#                                itself). Only a resize landing BELOW the floor is an
+#                                ERROR (startup → hard exit; in-loop → BLOCKED
+#                                infra_failure). On a genuinely narrow terminal, lower
+#                                RLP_LEADER_SPLIT_WIDTH or RLP_LEADER_DEGRADE_FLOOR.
 RLP_LEADER_MIN_WIDTH="${RLP_LEADER_MIN_WIDTH:-30}"
 _validate_int_knob RLP_LEADER_MIN_WIDTH 30 1
 RLP_LEADER_SPLIT_WIDTH="${RLP_LEADER_SPLIT_WIDTH:-110}"
 _validate_int_knob RLP_LEADER_SPLIT_WIDTH 110 1
+# G4: below RLP_LEADER_SPLIT_WIDTH, `_ensure_leader_pane_width` no longer hard-fails
+# outright — it degrades and continues at whatever width the resize attempt actually
+# achieved, as long as that width is >= RLP_LEADER_DEGRADE_FLOOR. Never stricter than
+# the caller's own `want` (a low-`want` call like the RLP_LEADER_MIN_WIDTH site is
+# unaffected by a higher floor). Raise this to the same value as
+# RLP_LEADER_SPLIT_WIDTH to restore the old hard-fail-only behavior.
+RLP_LEADER_DEGRADE_FLOOR="${RLP_LEADER_DEGRADE_FLOOR:-60}"
+_validate_int_knob RLP_LEADER_DEGRADE_FLOOR 60 1
 # request-l: retrofit the request-k shell-ready wait through the same D-19 guard
 # (a non-integer previously fell through to the inline default unvalidated —
 # clears the accepted request-k review LOW). Assigned once here so the inline
@@ -1540,6 +1555,12 @@ _ensure_leader_pane_width() {
   # can thread it into the PERSISTED BLOCKED-sentinel reason (the durable artifact an
   # operator/audit reads post-mortem), not just the ephemeral log. Reset per call.
   typeset -g _WIDTH_FAIL_REASON=""
+  # G4: set only when this call degraded-and-continued below `want`. Callers thread
+  # it into a BLOCKED sentinel raised later in the same call path (RC-11 ii: on
+  # degrade the split is still attempted, and if tmux then refuses it, the failure
+  # surfaces at _assert_pane_in_session with a reason that names nothing about
+  # width) — so a post-mortem can see the campaign ran narrow. Empty = no degrade.
+  typeset -g _WIDTH_DEGRADED_NOTE=""
   local cur
   cur=$(tmux display-message -p -t "$LEADER_PANE" '#{pane_width}' 2>/dev/null)
   if ! [[ "$cur" == <-> ]]; then
@@ -1554,6 +1575,20 @@ _ensure_leader_pane_width() {
   tmux resize-pane -t "$LEADER_PANE" -x "$want" 2>/dev/null
   cur=$(tmux display-message -p -t "$LEADER_PANE" '#{pane_width}' 2>/dev/null)
   if [[ "$cur" == <-> ]] && (( cur >= want )); then
+    return 0
+  fi
+  # G4: still below `want` after the resize attempt — tmux already gave its best
+  # effort, so `cur` (if numeric) IS the largest feasible width. Degrade (continue
+  # at `cur`) instead of hard-failing when it clears RLP_LEADER_DEGRADE_FLOOR. The
+  # effective floor is never stricter than `want` itself, so a low-`want` caller
+  # (e.g. the RLP_LEADER_MIN_WIDTH site) is unaffected by a higher default floor.
+  local floor="${RLP_LEADER_DEGRADE_FLOOR:-60}"
+  local effective_floor=$want
+  (( floor < want )) && effective_floor=$floor
+  if [[ "$cur" == <-> ]] && (( cur >= effective_floor )); then
+    _WIDTH_FAIL_REASON=""
+    _WIDTH_DEGRADED_NOTE="leader ran at ${cur} cols (target ${want}, floor ${effective_floor})"
+    log "  WARNING: [leader-width:$ctx] terminal too narrow for ${want} cols — continuing at ${cur} (raise/lower RLP_LEADER_SPLIT_WIDTH or RLP_LEADER_DEGRADE_FLOOR)"
     return 0
   fi
   _WIDTH_FAIL_REASON="leader pane $LEADER_PANE still ${cur:-unreadable} cols after resize to ${want} (ctx=$ctx, knob RLP_LEADER_SPLIT_WIDTH; lower RLP_LEADER_SPLIT_WIDTH for narrow terminals)"
@@ -1658,6 +1693,13 @@ replace_worker_pane() {
   # a session-invariant check on the new pane refuses any pane that escaped the
   # campaign session.
   local new_pane
+  # G4/C4: captured ONLY when a fallback branch below actually degraded — the
+  # primary (sibling-alive) split paths never call _ensure_leader_pane_width, so
+  # reading the global $_WIDTH_DEGRADED_NOTE directly at the shared session-invariant
+  # check further down could leak a STALE note from some earlier, unrelated call
+  # into a sentinel that has nothing to do with leader width. A local captured
+  # right after the call that can actually set it avoids that leak.
+  local _fallback_width_note=""
   if [[ "$role" == "verifier" ]]; then
     # Verifier goes below worker: split vertically from worker pane
     if tmux display-message -t "$WORKER_PANE" -p '#{pane_id}' &>/dev/null; then
@@ -1671,6 +1713,7 @@ replace_worker_pane() {
         write_blocked_sentinel "replace_worker_pane: $role -h split blocked — $_WIDTH_FAIL_REASON" "${CURRENT_US:-ALL}" "infra_failure"
         return 1
       fi
+      _fallback_width_note="$_WIDTH_DEGRADED_NOTE"
       new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     else
       log_error "  Cannot replace $role pane: no valid in-session split target (worker + leader both unusable) — refusing ambient-session fallback"
@@ -1689,6 +1732,7 @@ replace_worker_pane() {
         write_blocked_sentinel "replace_worker_pane: $role -h split blocked — $_WIDTH_FAIL_REASON" "${CURRENT_US:-ALL}" "infra_failure"
         return 1
       fi
+      _fallback_width_note="$_WIDTH_DEGRADED_NOTE"
       new_pane=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     else
       log_error "  Cannot replace $role pane: no valid in-session split target (verifier + leader both unusable) — refusing ambient-session fallback"
@@ -1700,7 +1744,7 @@ replace_worker_pane() {
   # ② request-j: session-invariant — a replacement pane that escaped the campaign
   # session is killed and reported instead of being driven in a foreign session.
   if ! _assert_pane_in_session "$new_pane" "replace-$role"; then
-    write_blocked_sentinel "replace_worker_pane: $role pane created outside campaign session $SESSION_NAME" "${CURRENT_US:-ALL}" "infra_failure"
+    write_blocked_sentinel "replace_worker_pane: $role pane created outside campaign session $SESSION_NAME${_fallback_width_note:+ — degraded leader width: $_fallback_width_note}" "${CURRENT_US:-ALL}" "infra_failure"
     return 1
   fi
 
@@ -1871,7 +1915,7 @@ create_session() {
     # -h off current pane → right column (worker)
     WORKER_PANE=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     _assert_pane_in_session "$WORKER_PANE" "create-inside-worker" \
-      || { write_blocked_sentinel "create_session: worker pane created outside campaign session $SESSION_NAME (inside-tmux)" "ALL" "infra_failure"; exit 1; }
+      || { write_blocked_sentinel "create_session: worker pane created outside campaign session $SESSION_NAME (inside-tmux)${_WIDTH_DEGRADED_NOTE:+ — degraded leader width: $_WIDTH_DEGRADED_NOTE}" "ALL" "infra_failure"; exit 1; }
     _verify_split_target "$WORKER_PANE" "create-inside-verifier" \
       || { write_blocked_sentinel "create_session: worker pane not a valid split target for verifier (inside-tmux)" "ALL" "infra_failure"; exit 1; }
     # -v off worker → stacked below on right (verifier)
@@ -1927,7 +1971,7 @@ create_session() {
       || { write_blocked_sentinel "create_session: worker -h split blocked (outside-tmux) — $_WIDTH_FAIL_REASON" "ALL" "infra_failure"; exit 1; }
     WORKER_PANE=$(tmux split-window -h -d -t "$LEADER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     _assert_pane_in_session "$WORKER_PANE" "create-outside-worker" \
-      || { write_blocked_sentinel "create_session: worker pane created outside campaign session $SESSION_NAME (outside-tmux)" "ALL" "infra_failure"; exit 1; }
+      || { write_blocked_sentinel "create_session: worker pane created outside campaign session $SESSION_NAME (outside-tmux)${_WIDTH_DEGRADED_NOTE:+ — degraded leader width: $_WIDTH_DEGRADED_NOTE}" "ALL" "infra_failure"; exit 1; }
     _verify_split_target "$WORKER_PANE" "create-outside-verifier" \
       || { write_blocked_sentinel "create_session: worker pane not a valid split target for verifier (outside-tmux)" "ALL" "infra_failure"; exit 1; }
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")

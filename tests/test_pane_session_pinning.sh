@@ -384,6 +384,263 @@ _w_unreadable() {
 [[ "$(_w_unreadable)" == "rc=1" ]] \
   && ok "width: unreadable pane_width → fail (1)" || no "unreadable width not failed"
 
+# =============================================================================
+# G4: auto-degrade instead of hard-fail. Still-narrow-after-resize accepts down
+# to RLP_LEADER_DEGRADE_FLOOR (default 60) instead of always returning 1 — but
+# never accepts below `want` itself when the floor is set/left above `want`
+# (effective_floor = min(floor, want), never stricter than `want`).
+# =============================================================================
+REC_LOG_G4="$TMPDIR_T/rec-log-g4"
+
+# g4 #1: width 90 < want 110, default floor 60 → degrade accepted: rc=0, WARN
+# logged, note names "continuing at 90".
+_g4_degrade_ok() {
+  unset RLP_LEADER_DEGRADE_FLOOR
+  tmux() { case "$1" in display-message) print 90;; resize-pane) return 0;; esac; return 0; }
+  log() { print -r -- "$*" >> "$REC_LOG_G4"; }
+  _ensure_leader_pane_width 110 "g4ctx"; local rc=$?
+  unfunction tmux log
+  print "rc=$rc note=[$_WIDTH_DEGRADED_NOTE] reason=[$_WIDTH_FAIL_REASON]"
+}
+: > "$REC_LOG_G4"; _g4o1=$(_g4_degrade_ok)
+{ [[ "$_g4o1" == "rc=0"* ]] && grep -q "WARNING" "$REC_LOG_G4" && grep -q "continuing at 90" "$REC_LOG_G4" } \
+  && ok "g4: width 90 < want 110, floor 60 → rc=0 with WARN ($_g4o1)" \
+  || no "g4: degrade-accept path wrong ($_g4o1; log=$(cat "$REC_LOG_G4"))"
+
+# g4 #2: width 40 < floor 60 (still below even after resize) → rc=1, existing
+# hard-fail message text preserved verbatim.
+_g4_hardfail() {
+  unset RLP_LEADER_DEGRADE_FLOOR
+  tmux() { case "$1" in display-message) print 40;; resize-pane) return 0;; esac; return 0; }
+  _ensure_leader_pane_width 110 "g4ctx"; local rc=$?
+  unfunction tmux
+  print "rc=$rc reason=[$_WIDTH_FAIL_REASON]"
+}
+_g4o2=$(_g4_hardfail)
+{ [[ "$_g4o2" == "rc=1"* ]] && [[ "$_g4o2" == *"still 40 cols after resize to 110"* ]] } \
+  && ok "g4: width 40 < floor 60 → rc=1, hard-fail message preserved ($_g4o2)" \
+  || no "g4: below-floor path wrong ($_g4o2)"
+
+# g4 #3: regression guard — on degrade-accept, _WIDTH_FAIL_REASON is cleared (a
+# stale reason from a prior call must not poison an unrelated blocked-sentinel).
+_g4_reason_cleared() {
+  unset RLP_LEADER_DEGRADE_FLOOR
+  tmux() { case "$1" in display-message) print 90;; resize-pane) return 0;; esac; return 0; }
+  _WIDTH_FAIL_REASON="STALE-FROM-PRIOR-CALL"
+  _ensure_leader_pane_width 110 "g4ctx" >/dev/null; local rc=$?
+  unfunction tmux
+  print "rc=$rc reason=[$_WIDTH_FAIL_REASON]"
+}
+_g4o3=$(_g4_reason_cleared)
+[[ "$_g4o3" == "rc=0 reason=[]" ]] \
+  && ok "g4: _WIDTH_FAIL_REASON cleared on degrade-accept ($_g4o3)" \
+  || no "g4: stale _WIDTH_FAIL_REASON survived degrade-accept ($_g4o3)"
+
+# g4 #4: _WIDTH_DEGRADED_NOTE is set on degrade (reusing #1's capture) and EMPTY
+# on a normal non-degraded pass — a stale note from a prior degrade must not
+# leak forward into a later call.
+_g4_note_normal_pass() {
+  tmux() { case "$1" in display-message) print 120;; esac; return 0; }
+  _WIDTH_DEGRADED_NOTE="STALE-FROM-PRIOR-DEGRADE"
+  _ensure_leader_pane_width 110 "g4ctx" >/dev/null
+  unfunction tmux
+  print "note=[$_WIDTH_DEGRADED_NOTE]"
+}
+_g4o4b=$(_g4_note_normal_pass)
+{ [[ "$_g4o1" == *"note=[leader ran at 90 cols (target 110, floor 60)]"* ]] && [[ "$_g4o4b" == "note=[]" ]] } \
+  && ok "g4: _WIDTH_DEGRADED_NOTE set on degrade and empty otherwise ($_g4o1 | $_g4o4b)" \
+  || no "g4: _WIDTH_DEGRADED_NOTE not properly scoped ($_g4o1 | $_g4o4b)"
+
+# g4 C5 (critic finding): the reset must happen at the START of EVERY invocation,
+# not just be an incidental effect visible when a caller manually pre-seeds the
+# global before calling (as #4 above does). Drive TWO REAL CONSECUTIVE calls —
+# a degrade, immediately followed by a normal pass — and confirm the note left
+# behind by call 1 does NOT survive into call 2's read.
+_g4c5_two_calls() {
+  unset RLP_LEADER_DEGRADE_FLOOR
+  tmux() { case "$1" in display-message) print 90;; resize-pane) return 0;; esac; return 0; }
+  _ensure_leader_pane_width 110 "g4c5-call1"; local rc1=$? note1="$_WIDTH_DEGRADED_NOTE"
+  unfunction tmux
+  tmux() { case "$1" in display-message) print 120;; esac; return 0; }
+  _ensure_leader_pane_width 110 "g4c5-call2"; local rc2=$? note2="$_WIDTH_DEGRADED_NOTE"
+  unfunction tmux
+  print "rc1=$rc1 note1=[$note1] rc2=$rc2 note2=[$note2]"
+}
+_g4o_c5=$(_g4c5_two_calls)
+{ [[ "$_g4o_c5" == *"note1=[leader ran at 90 cols"* ]] && [[ "$_g4o_c5" == *"note2=[]"* ]] } \
+  && ok "g4 C5: _WIDTH_DEGRADED_NOTE reset on every invocation (degrade then normal → empty after 2nd) ($_g4o_c5)" \
+  || no "g4 C5: note not reset across consecutive invocations ($_g4o_c5)"
+
+# g4 #5: the downstream "worker pane created outside campaign session" sentinel
+# (RC-11 ii: the misleading sentinel a degraded split can surface if tmux then
+# refuses the split) carries the degraded-width note when one is set, and is
+# unchanged when it isn't.
+_cs_g4=$(_extract_fn create_session "$RUN")
+_g4_inline_block=$(print -r -- "$_cs_g4" | awk '/_assert_pane_in_session "\$WORKER_PANE" "create-inside-worker"/{f=1} f{print} f&&/exit 1; \}/{exit}')
+[[ -n "$_g4_inline_block" ]] \
+  && ok "g4: extracted the create-inside-worker sentinel block" \
+  || no "g4: could not extract create-inside-worker sentinel block (drift?)"
+
+_g4_drive_sentinel() {  # $1 = _WIDTH_DEGRADED_NOTE to simulate
+  local WORKER_PANE="%W" SESSION_NAME="camp" _WIDTH_DEGRADED_NOTE="$1"
+  _assert_pane_in_session() { return 1; }
+  write_blocked_sentinel() { print -r -- "$1"; }
+  local _out
+  _out=$(eval "$_g4_inline_block" 2>/dev/null)
+  unfunction _assert_pane_in_session write_blocked_sentinel
+  print -r -- "$_out"
+}
+_g4o5_degraded=$(_g4_drive_sentinel "leader ran at 90 cols (target 110, floor 60)")
+_g4o5_clean=$(_g4_drive_sentinel "")
+{ [[ "$_g4o5_degraded" == *"leader ran at 90 cols"* ]] && [[ "$_g4o5_clean" != *"leader ran at"* ]] } \
+  && ok "g4: degraded note appears in the downstream blocked-sentinel reason ($_g4o5_degraded)" \
+  || no "g4: degraded note not threaded into downstream sentinel (degraded=$_g4o5_degraded clean=$_g4o5_clean)"
+
+# g4 C4 (critic finding): create_session isn't the ONLY -h-split path that can
+# degrade — replace_worker_pane's LEADER_PANE fallback (:1700-1727, taken when
+# the worker/verifier sibling is also dead) calls the SAME _ensure_leader_pane_width
+# before its own -h split, and shares ONE downstream _assert_pane_in_session check
+# (:1737) that raises the SAME class of misleading sentinel (RC-11 ii applies here
+# too). Behaviorally drives the REAL replace_worker_pane (extracted at :76 above,
+# and it calls the REAL _ensure_leader_pane_width extracted at :80) through: dead
+# worker pane → LEADER_PANE fallback → G4 degrade (90 < want 110, floor 60) →
+# split → new pane lands in a foreign session → BLOCKED. The persisted reason
+# must carry the degraded-width note.
+_g4c4_tmux() {
+  local w prev="" tgt="" fmt=""
+  case "$1" in
+    kill-pane|resize-pane) return 0;;
+    split-window) print "%NEW"; return 0;;
+    display-message)
+      for w in "$@"; do
+        [[ "$prev" == "-t" ]] && tgt="$w"
+        [[ "$w" == '#{'* ]] && fmt="$w"
+        prev="$w"
+      done
+      case "$tgt" in
+        "%dead") return 1;;                            # dead worker → forces LEADER_PANE fallback
+        "%L") [[ "$fmt" == '#{pane_width}' ]] && print 90; return 0;;  # 90 pre- AND post-resize → degrade
+        "%NEW") [[ "$fmt" == '#{session_name}' ]] && print -r -- "foreign-session"; return 0;;
+      esac
+      return 0;;
+  esac
+  return 0
+}
+_g4c4_drive() {
+  local WORKER_PANE="%dead" VERIFIER_PANE="%deadv" LEADER_PANE="%L" SESSION_NAME="camp"
+  local RLP_LEADER_SPLIT_WIDTH=110
+  unset RLP_LEADER_DEGRADE_FLOOR   # default 60
+  functions[tmux]=$functions[_g4c4_tmux]
+  local _sent=""
+  write_blocked_sentinel() { _sent="$1"; }
+  replace_worker_pane "%dead" "verifier"; local rc=$?
+  unfunction tmux write_blocked_sentinel
+  print "rc=$rc sent=[$_sent]"
+}
+_g4o_c4=$(_g4c4_drive)
+{ [[ "$_g4o_c4" == "rc=1"* ]] && [[ "$_g4o_c4" == *"leader ran at 90 cols"* ]] } \
+  && ok "g4 C4: replace_worker_pane leader-fallback sentinel carries the degraded-width note ($_g4o_c4)" \
+  || no "g4 C4: replace_worker_pane fallback sentinel missing degraded-width note ($_g4o_c4)"
+
+# g4 C4 regression guard: the PRIMARY (sibling-alive) split path never calls
+# _ensure_leader_pane_width at all, so it must NOT surface a note from some
+# earlier, unrelated call still sitting in the global $_WIDTH_DEGRADED_NOTE — a
+# local capture (not a bare global read) at the shared session-invariant check
+# is what prevents this leak.
+_g4c4_primary_tmux() {
+  local w prev="" tgt="" fmt=""
+  case "$1" in
+    kill-pane) return 0;;
+    split-window) print "%NEW"; return 0;;
+    display-message)
+      for w in "$@"; do
+        [[ "$prev" == "-t" ]] && tgt="$w"
+        [[ "$w" == '#{'* ]] && fmt="$w"
+        prev="$w"
+      done
+      case "$tgt" in
+        "%1") return 0;;                                # WORKER_PANE alive → PRIMARY path, no fallback
+        "%NEW") [[ "$fmt" == '#{session_name}' ]] && print -r -- "foreign-session"; return 0;;
+      esac
+      return 0;;
+  esac
+  return 0
+}
+_g4c4_primary_drive() {
+  local WORKER_PANE="%1" VERIFIER_PANE="%2" LEADER_PANE="%L" SESSION_NAME="camp"
+  # Simulate a note left behind by some earlier, unrelated _ensure_leader_pane_width
+  # call — this call path must never read it.
+  _WIDTH_DEGRADED_NOTE="STALE-FROM-UNRELATED-EARLIER-CALL"
+  functions[tmux]=$functions[_g4c4_primary_tmux]
+  local _sent=""
+  write_blocked_sentinel() { _sent="$1"; }
+  replace_worker_pane "%old" "verifier"; local rc=$?
+  unfunction tmux write_blocked_sentinel
+  print "rc=$rc sent=[$_sent]"
+}
+_g4o_c4_primary=$(_g4c4_primary_drive)
+{ [[ "$_g4o_c4_primary" == "rc=1"* ]] && [[ "$_g4o_c4_primary" != *"STALE-FROM-UNRELATED"* ]] } \
+  && ok "g4 C4: primary (non-fallback) split path does NOT leak a stale global note ($_g4o_c4_primary)" \
+  || no "g4 C4: primary split path leaked a stale _WIDTH_DEGRADED_NOTE into an unrelated sentinel ($_g4o_c4_primary)"
+
+# g4 #6: want=30 (mirrors the RLP_LEADER_MIN_WIDTH call site) with the DEFAULT
+# floor 60 (> want). The accept threshold for THIS call must still be `want`
+# (30) — never inflated to the raw floor (60): 29 (< want) stays rejected, 30
+# (== want) is accepted. Proves the floor clamps DOWN to `want`, never up.
+_g4_mw_below() {
+  unset RLP_LEADER_DEGRADE_FLOOR
+  tmux() { case "$1" in display-message) print 29;; resize-pane) return 0;; esac; return 0; }
+  _ensure_leader_pane_width 30 "min-width-ctx" >/dev/null; local rc=$?
+  unfunction tmux
+  print "rc=$rc"
+}
+_g4_mw_at_want() {
+  unset RLP_LEADER_DEGRADE_FLOOR
+  tmux() { case "$1" in display-message) print 30;; resize-pane) return 0;; esac; return 0; }
+  _ensure_leader_pane_width 30 "min-width-ctx" >/dev/null; local rc=$?
+  unfunction tmux
+  print "rc=$rc"
+}
+_g4o6a=$(_g4_mw_below); _g4o6b=$(_g4_mw_at_want)
+{ [[ "$_g4o6a" == "rc=1" && "$_g4o6b" == "rc=0" ]] } \
+  && ok "g4: want 30 (MIN_WIDTH site) with floor 60 → floor clamps to 30, width 30 accepted (29=$_g4o6a 30=$_g4o6b)" \
+  || no "g4: MIN_WIDTH site accept threshold drifted from want (29=$_g4o6a 30=$_g4o6b)"
+
+# g4 #7: unreadable width AFTER the resize attempt must still hard-fail — the
+# degrade branch only accepts a NUMERIC cur; an unreadable read is a tmux
+# fault, not "narrow" (unchanged from pre-G4).
+_g4_unreadable_after_resize() {
+  unset RLP_LEADER_DEGRADE_FLOOR
+  RESIZED=0
+  tmux() { case "$1" in display-message) (( RESIZED )) && print "n/a" || print 20;; resize-pane) RESIZED=1;; esac; return 0; }
+  _ensure_leader_pane_width 110 "g4ctx" >/dev/null; local rc=$?
+  unfunction tmux
+  print "rc=$rc note=[$_WIDTH_DEGRADED_NOTE]"
+}
+_g4o7=$(_g4_unreadable_after_resize)
+[[ "$_g4o7" == "rc=1 note=[]" ]] \
+  && ok "g4: unreadable width still rc=1 (unchanged) ($_g4o7)" || no "g4: unreadable width path regressed ($_g4o7)"
+
+# g4 #8: RLP_LEADER_DEGRADE_FLOOR=110 (== want) restores strict (pre-G4)
+# behavior at width 90 → rc=1 (no degrade room left once floor == want).
+_g4_floor_eq_want_strict() {
+  RLP_LEADER_DEGRADE_FLOOR=110
+  tmux() { case "$1" in display-message) print 90;; resize-pane) return 0;; esac; return 0; }
+  _ensure_leader_pane_width 110 "g4ctx" >/dev/null; local rc=$?
+  unfunction tmux
+  unset RLP_LEADER_DEGRADE_FLOOR
+  print "rc=$rc"
+}
+[[ "$(_g4_floor_eq_want_strict)" == "rc=1" ]] \
+  && ok "g4: RLP_LEADER_DEGRADE_FLOOR=110 restores strict behavior at width 90 → rc=1" \
+  || no "g4: raising the floor to want did not restore strict (pre-G4) behavior"
+
+# g4: knob structural — RLP_LEADER_DEGRADE_FLOOR declared + D-19 validated.
+grep -qE '_validate_int_knob RLP_LEADER_DEGRADE_FLOOR ' "$RUN" \
+  && ok "structural: RLP_LEADER_DEGRADE_FLOOR validated via D-19" || no "RLP_LEADER_DEGRADE_FLOOR not D-19 validated"
+grep -qE 'RLP_LEADER_DEGRADE_FLOOR=.\$\{RLP_LEADER_DEGRADE_FLOOR:-60\}' "$RUN" \
+  && ok "structural: RLP_LEADER_DEGRADE_FLOOR defaults to 60" || no "RLP_LEADER_DEGRADE_FLOOR default missing/changed"
+
 # --- structural: RLP_SHELL_READY_TIMEOUT_S retrofitted through D-19 -------------
 grep -qE '_validate_int_knob RLP_SHELL_READY_TIMEOUT_S ' "$RUN" \
   && ok "structural: RLP_SHELL_READY_TIMEOUT_S validated via D-19 (_validate_int_knob)" \
