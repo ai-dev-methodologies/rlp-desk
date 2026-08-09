@@ -1921,7 +1921,7 @@ create_session() {
     # -v off worker → stacked below on right (verifier)
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     _assert_pane_in_session "$VERIFIER_PANE" "create-inside-verifier" \
-      || { write_blocked_sentinel "create_session: verifier pane created outside campaign session $SESSION_NAME (inside-tmux)" "ALL" "infra_failure"; exit 1; }
+      || { write_blocked_sentinel "create_session: verifier pane created outside campaign session $SESSION_NAME (inside-tmux)${_WIDTH_DEGRADED_NOTE:+ — degraded leader width: $_WIDTH_DEGRADED_NOTE}" "ALL" "infra_failure"; exit 1; }
     # request-l §3: verify the canonical geometry (leader left column; worker/verifier
     # one right column, top-down). Startup mismatch → hard exit with the helper's
     # expected-vs-actual diagnostic. NO move-pane auto-repair.
@@ -1976,7 +1976,7 @@ create_session() {
       || { write_blocked_sentinel "create_session: worker pane not a valid split target for verifier (outside-tmux)" "ALL" "infra_failure"; exit 1; }
     VERIFIER_PANE=$(tmux split-window -v -d -t "$WORKER_PANE" -P -F '#{pane_id}' -c "$ROOT")
     _assert_pane_in_session "$VERIFIER_PANE" "create-outside-verifier" \
-      || { write_blocked_sentinel "create_session: verifier pane created outside campaign session $SESSION_NAME (outside-tmux)" "ALL" "infra_failure"; exit 1; }
+      || { write_blocked_sentinel "create_session: verifier pane created outside campaign session $SESSION_NAME (outside-tmux)${_WIDTH_DEGRADED_NOTE:+ — degraded leader width: $_WIDTH_DEGRADED_NOTE}" "ALL" "infra_failure"; exit 1; }
     # request-l §3: verify the canonical geometry (parity with inside-tmux branch).
     _assert_pane_geometry "create-outside" "$LEADER_PANE" "$WORKER_PANE" "$VERIFIER_PANE" \
       || { write_blocked_sentinel "create_session: pane geometry violation (outside-tmux) — $_GEO_FAIL_REASON" "ALL" "infra_failure"; exit 1; }

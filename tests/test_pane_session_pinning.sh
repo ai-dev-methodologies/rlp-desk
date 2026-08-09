@@ -496,6 +496,32 @@ _g4o5_clean=$(_g4_drive_sentinel "")
   && ok "g4: degraded note appears in the downstream blocked-sentinel reason ($_g4o5_degraded)" \
   || no "g4: degraded note not threaded into downstream sentinel (degraded=$_g4o5_degraded clean=$_g4o5_clean)"
 
+# g4 #5b (sibling gap found while re-auditing for C4): create_session's VERIFIER-pane
+# "outside campaign session" sentinel is a SIBLING of the worker one above — no
+# _ensure_leader_pane_width / reset happens between the worker-split note being set
+# and the verifier-split check further down in the SAME create_session call, so
+# $_WIDTH_DEGRADED_NOTE is still the live, relevant value there too. It must carry
+# the note the same way the worker sentinel does.
+_g4_inline_block_v=$(print -r -- "$_cs_g4" | awk '/_assert_pane_in_session "\$VERIFIER_PANE" "create-inside-verifier"/{f=1} f{print} f&&/exit 1; \}/{exit}')
+[[ -n "$_g4_inline_block_v" ]] \
+  && ok "g4: extracted the create-inside-verifier sentinel block" \
+  || no "g4: could not extract create-inside-verifier sentinel block (drift?)"
+
+_g4_drive_sentinel_v() {  # $1 = _WIDTH_DEGRADED_NOTE to simulate
+  local VERIFIER_PANE="%V" SESSION_NAME="camp" _WIDTH_DEGRADED_NOTE="$1"
+  _assert_pane_in_session() { return 1; }
+  write_blocked_sentinel() { print -r -- "$1"; }
+  local _out
+  _out=$(eval "$_g4_inline_block_v" 2>/dev/null)
+  unfunction _assert_pane_in_session write_blocked_sentinel
+  print -r -- "$_out"
+}
+_g4o5v_degraded=$(_g4_drive_sentinel_v "leader ran at 90 cols (target 110, floor 60)")
+_g4o5v_clean=$(_g4_drive_sentinel_v "")
+{ [[ "$_g4o5v_degraded" == *"leader ran at 90 cols"* ]] && [[ "$_g4o5v_clean" != *"leader ran at"* ]] } \
+  && ok "g4: degraded note appears in the create-inside-verifier sentinel too ($_g4o5v_degraded)" \
+  || no "g4: degraded note not threaded into create-inside-verifier sentinel (degraded=$_g4o5v_degraded clean=$_g4o5v_clean)"
+
 # g4 C4 (critic finding): create_session isn't the ONLY -h-split path that can
 # degrade — replace_worker_pane's LEADER_PANE fallback (:1700-1727, taken when
 # the worker/verifier sibling is also dead) calls the SAME _ensure_leader_pane_width
