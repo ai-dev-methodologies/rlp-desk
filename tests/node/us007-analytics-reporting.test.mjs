@@ -119,6 +119,9 @@ test('US-007 AC7.1 happy: completing a five-iteration campaign writes campaign-r
     ]),
     runIntegrationCheck: async () => ({ exitCode: 0, summary: 'all green' }),
     ...tmux.deps,
+    sendRawKey: async () => {},
+    killPaneProcess: async () => {},
+    waitForProcessExit: async () => {},
   });
 
   const report = await readText(
@@ -223,6 +226,22 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
     ],
   });
   const tmux = createTmuxFakes();
+  const originalDateNow = Date.now;
+  let clockNow = 1_000_000;
+  let pollIndex = 0;
+  const pollQueue = [
+    { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
+    { verdict: 'pass', recommended_state_transition: 'continue' },
+    { iteration: 2, status: 'verify', us_id: 'US-002', summary: 'done' },
+    { verdict: 'pass', recommended_state_transition: 'continue' },
+    { verdict: 'pass', recommended_state_transition: 'continue' },
+    { verdict: 'pass', recommended_state_transition: 'complete' },
+  ];
+  const pollNext = createPoller(pollQueue);
+  Date.now = () => clockNow;
+  t.after(() => {
+    Date.now = originalDateNow;
+  });
   const { run } = await import('../../src/node/runner/campaign-main-loop.mjs');
 
   await run(campaign.slug, {
@@ -231,19 +250,22 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
     workerModel: 'gpt-5.5:medium',
     maxIterations: 3,
     now: new Date('2026-04-12T00:00:00Z'),
-    pollForSignal: createPoller([
-      { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
-      { verdict: 'pass', recommended_state_transition: 'continue' },
-      { iteration: 2, status: 'verify', us_id: 'US-002', summary: 'done' },
-      { verdict: 'pass', recommended_state_transition: 'continue' },
-      { verdict: 'pass', recommended_state_transition: 'continue' },
-      { verdict: 'pass', recommended_state_transition: 'complete' },
-    ]),
+    pollForSignal: async (targetPath) => {
+      // The first four polls are two worker+verifier iterations. Each pair
+      // advances the mocked clock by 2.5s + 4.5s = 7s.
+      if (pollIndex === 0 || pollIndex === 2) clockNow += 2_500;
+      if (pollIndex === 1 || pollIndex === 3) clockNow += 4_500;
+      pollIndex += 1;
+      return pollNext(targetPath);
+    },
     runIntegrationCheck: async () => ({ exitCode: 0 }),
     // v0.22.4: the RLP_LIFECYCLE_METRICS flag is REMOVED — passing the old
     // opt-out here proves the env is ignored (field is an object, never null).
     env: { RLP_LIFECYCLE_METRICS: '0' },
     ...tmux.deps,
+    sendRawKey: async () => {},
+    killPaneProcess: async () => {},
+    waitForProcessExit: async () => {},
   });
 
   const analyticsFile = deskPath(campaign.rootDir, 'logs', campaign.slug, 'campaign.jsonl');
@@ -269,10 +291,33 @@ test('US-007 AC7.2 happy: the runner appends one valid analytics JSON line per c
   ]);
   assert.equal(lines[0].iter, 1);
   assert.equal(lines[1].iter, 2);
+  assert.equal(lines[0].duration, 7);
+  assert.equal(lines[1].duration, 7);
   assert.equal(lines[0].token_source, 'estimated');
   // v0.22.4: the removed flag cannot null the field any more.
   assert.notEqual(lines[0].lifecycle_metrics, null, 'opt-out env must be ignored');
   assert.equal(typeof lines[0].lifecycle_metrics, 'object');
+});
+
+test('g-dogfood US-001 AC2 boundary: sub-second worker+verifier duration remains zero', async (t) => {
+  const rootDir = await createTempDir(t);
+  const { buildPaths, appendIterationAnalytics } = await import('../../src/node/runner/campaign-main-loop.mjs');
+  const paths = buildPaths(rootDir, 'g-dogfood-zero-duration');
+  const state = { iteration: 1, worker_model: 'gpt-5.6-luna:high' };
+
+  await appendIterationAnalytics(
+    paths,
+    state,
+    'US-001',
+    'pass',
+    { now: new Date('2026-08-09T00:00:00Z') },
+    null,
+    true,
+    0,
+  );
+
+  const row = JSON.parse((await fs.readFile(paths.analyticsFile, 'utf8')).trim());
+  assert.equal(row.duration, 0);
 });
 
 test('US-007 AC7.2 boundary: starting a new campaign versions an existing campaign.jsonl before appending fresh analytics', async (t) => {

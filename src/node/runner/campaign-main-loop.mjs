@@ -920,7 +920,7 @@ async function _iterationArtifactBytes(paths, iteration) {
 // summarizeCost can exclude them from token aggregation WITHOUT confusing
 // them for the separate "legacy row missing the field entirely" case (see
 // summarizeCost below).
-export async function appendIterationAnalytics(paths, state, usId, verdict, options, lifecycleMetrics = null, isWorkerDispatch = true) {
+export async function appendIterationAnalytics(paths, state, usId, verdict, options, lifecycleMetrics = null, isWorkerDispatch = true, durationSeconds = 0) {
   // v0.15.4 PR-B4: lifecycle_metrics field — null when flag unset (collector
   // returns null), object grouped by metric name when flag set. Test:
   // tests/node/test-campaign-jsonl-shape.mjs.
@@ -934,7 +934,7 @@ export async function appendIterationAnalytics(paths, state, usId, verdict, opti
     worker_model: state.worker_model,
     worker_engine: parseModelFlag(state.worker_model).engine,
     verdict,
-    duration: 0,
+    duration: isWorkerDispatch ? durationSeconds : 0,
     timestamp: toIso(resolveNow(options.now)),
     lifecycle_metrics: lifecycleSnapshot,
     estimated_tokens: estimatedTokens,
@@ -2317,8 +2317,11 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // and done-claim.json, so pollForSignal below will pick them up immediately
     // and the loop continues into the verifier phase. The flag is cleared
     // after consumption so subsequent iterations dispatch the worker normally.
+    let iterationStartMs;
+    let iterationDurationSeconds = 0;
     if (state._skipNextWorkerDispatch) {
       state._skipNextWorkerDispatch = false;
+      iterationStartMs = Date.now();
       console.error(
         `[recovery] Skipping worker dispatch for iter=${state.iteration} (honoring operator manual recovery)`,
       );
@@ -2335,6 +2338,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       // first commit as an advance. Persisted by the writeStatus below.
       state.iter_start_head = await _gitHeadSha(rootDir);
       await writeStatus(paths, state, options.onStatusChange, options.now);
+      iterationStartMs = Date.now();
       await dispatchWorker({
         iteration: state.iteration,
         paths,
@@ -2502,7 +2506,8 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
         // below): an environment/flaky-classified oracle verdict must neither
         // climb the ladder nor advance the rung arithmetic.
         const oracleLadderEligible = recordFailureCounters(state, oracleVerdict);
-        await appendIterationAnalytics(paths, state, oracleUsId, 'fail', options, lifecycleMetrics);
+        iterationDurationSeconds = Math.max(0, Math.floor((Date.now() - iterationStartMs) / 1000));
+        await appendIterationAnalytics(paths, state, oracleUsId, 'fail', options, lifecycleMetrics, true, iterationDurationSeconds);
         // BLOCKED-on-exhaustion stays on consecutive_failures (unchanged).
         const oracleUpgradedModel = nextWorkerModel(options.workerModel ?? state.worker_model, state.consecutive_failures);
         if (oracleUpgradedModel === 'BLOCKED') {
@@ -2693,6 +2698,8 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       });
     }
 
+    iterationDurationSeconds = Math.max(0, Math.floor((Date.now() - iterationStartMs) / 1000));
+
     // v0.15.4 PR-B4: verdict_write_to_read_ms parallel to iter_signal metric.
     try {
       const verdStat = fsSync.statSync(paths.verdictFile);
@@ -2722,7 +2729,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       // the flush is orphaned in the collector's buffer and silently lost on
       // a COMPLETE-exit iteration (no later flush to catch it).
       lifecycleMetrics.markUnlock(path.basename(paths.doneClaimFile), { ctx: 'archival', iter: state.iteration });
-      await appendIterationAnalytics(paths, state, usId, 'pass', options, lifecycleMetrics);
+      await appendIterationAnalytics(paths, state, usId, 'pass', options, lifecycleMetrics, true, iterationDurationSeconds);
       await writeStatus(paths, state, options.onStatusChange, options.now);
 
       if (state.verified_us.length === usList.length) {
@@ -2738,7 +2745,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       const blockedReason = verdict.reason || verdict.summary || 'verifier-blocked';
       const blockedClassification = _classifyBlock('verifier', { verdict, state, slug });
       await writeSentinel(paths.blockedSentinel, 'blocked', usId, blockedReason, blockedClassification, paths);
-      await appendIterationAnalytics(paths, state, usId, 'blocked', options, lifecycleMetrics);
+      await appendIterationAnalytics(paths, state, usId, 'blocked', options, lifecycleMetrics, true, iterationDurationSeconds);
       await writeStatus(paths, state, options.onStatusChange, options.now);
       let svSummary;
       if (options.withSelfVerification) {
@@ -2791,7 +2798,7 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // for why (flush-ordering; a post-flush markUnlock is silently lost on a
     // terminal iteration).
     lifecycleMetrics.markUnlock(path.basename(paths.doneClaimFile), { ctx: 'archival', iter: state.iteration });
-    await appendIterationAnalytics(paths, state, usId, 'fail', options, lifecycleMetrics);
+    await appendIterationAnalytics(paths, state, usId, 'fail', options, lifecycleMetrics, true, iterationDurationSeconds);
     // Terminal escalation is unchanged: still computed from consecutive_failures
     // so a run of environment failures still exhausts the ladder and BLOCKs,
     // exactly as the zsh CB threshold does. Only the ASSIGNED model comes from
