@@ -287,9 +287,18 @@ export async function _gitClaimedCommitEmptyTree(rootDir, sha) {
     );
     parent = stdout.trim();
   } catch (err) {
-    // Parent lookup failed. It is the EXPECTED boundary iff the claimed commit
-    // itself still resolves — repo and git binary are healthy, there is simply
-    // no parent object to diff against.
+    // Parent lookup failed. LOW-6 (SV gate) — precise claim: this only
+    // proves the CHILD commit object is readable (_gitObjectExists on $sha)
+    // and that the parent FIELD is absent/unresolvable (rev-parse on $sha^
+    // threw) — a genuine root commit or a shallow-clone graft. It does NOT
+    // prove a parent OBJECT (if the field pointed to one) is intact:
+    // rev-parse reads the child's parent pointer without dereferencing it,
+    // so a present-but-corrupt parent object would ALSO make rev-parse
+    // succeed, taking the `git diff --quiet parent sha` path below instead
+    // — that call is where a corrupt/missing parent object actually
+    // surfaces (throws, caught below, re-thrown as a genuine git error,
+    // preserving the GIT-FC path). So this branch is reached only when the
+    // parent FIELD itself is empty.
     if (await _gitObjectExists(rootDir, `${sha}^{commit}`)) {
       return 'unknown';
     }

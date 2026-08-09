@@ -1823,10 +1823,17 @@ write_cost_log() {
   # G1.b: per-row model attribution so the Cost & Performance summary can
   # convert to a sol-equivalent WITHOUT re-deriving it from campaign.jsonl
   # (which tolerates row loss — Option C, dogfood-gaps-g1-g4.md §G1). us_id
-  # is the same value the iteration passes to write_campaign_jsonl below
-  # (both read the same global). worker_effort is separate from worker_model
-  # for codex legs (see get_next_model / check_model_upgrade) — ladder moves
-  # can be effort-only.
+  # is the same value the iteration passes to write_campaign_jsonl below —
+  # not a global; it is a variable LOCAL to the enclosing production
+  # function (`local signal_us_id` in run_ralph_desk.zsh's verify) case
+  # arm), visible here only because zsh's dynamic scoping makes a caller's
+  # locals visible inside functions it calls (LOW-5, SV gate). On an
+  # iteration where that arm doesn't run, signal_us_id retains the PRIOR
+  # iteration's value — write_campaign_jsonl has always had that same
+  # property, so cost-log and campaign.jsonl stay consistent with each
+  # other even then. worker_effort is separate from worker_model for codex
+  # legs (see get_next_model / check_model_upgrade) — ladder moves can be
+  # effort-only.
   local cost_us_id="${signal_us_id:-unknown}"
   local cost_worker_model="$WORKER_MODEL"
   local cost_worker_engine="$WORKER_ENGINE"
@@ -2139,10 +2146,27 @@ ${untracked}"
         total_tokens=$(( total_tokens + t ))
 
         row_worker_model=$(echo "$line" | jq -r '.worker_model // ""' 2>/dev/null)
-        # No model attribution -> pre-enrichment row (legacy log) or a row
-        # written before G1.b shipped. Still counted into the raw total
-        # above; surfaced via the unattributed reconciliation line below —
-        # never silently dropped (Principle 3).
+        # LOW-2 (SV gate): this leader's "unattributed" PREDICATE is
+        # "worker_model is absent/empty" — every row in cost-log.jsonl is a
+        # real worker-dispatch record (this file has no non-dispatch event
+        # rows, unlike campaign.jsonl), so a missing worker_model can only
+        # mean pre-enrichment (before G1.b shipped). No model attribution ->
+        # still counted into the raw total above; surfaced via the
+        # unattributed reconciliation line below — never silently dropped
+        # (Principle 3).
+        #
+        # This predicate is DELIBERATELY DIFFERENT from the Node leader's
+        # (campaign-reporting.mjs summarizeCost: token_source === undefined,
+        # not "worker_model absent") because each leader owns a different
+        # file with a different row shape (Option C, dogfood-gaps-g1-g4.md
+        # §G1) — campaign.jsonl also carries non-dispatch rows
+        # (token_source:'none') that this file's rows never do. The two
+        # predicates are correct for the file each one reads, but they are
+        # NOT interchangeable: a row with token_source:"estimated" and no
+        # worker_model (this file's real legacy shape) would NOT be
+        # recognized as unattributed by Node's predicate if it ever reached
+        # campaign.jsonl — today the two files are disjoint, so this is
+        # latent, not a live bug.
         if [[ -z "$row_worker_model" ]]; then
           continue
         fi
@@ -2797,8 +2821,17 @@ _commit_oracle_empty_tree() {
   local sha="$1" parent
   parent=$(git -C "$ROOT" rev-parse --verify --quiet "${sha}^{commit}^" 2>/dev/null)
   if [[ -z "$parent" ]]; then
-    # Parent lookup failed. EXPECTED boundary iff the commit itself still
-    # resolves — repo + git binary healthy, there is simply no parent to diff.
+    # Parent lookup failed. LOW-6 (SV gate) — precise claim: this only
+    # proves the CHILD commit object is readable (`cat-file -e` on $sha) and
+    # that the parent FIELD is absent/unresolvable (`rev-parse` on $sha^
+    # returned nothing) — a genuine root commit or a shallow-clone graft.
+    # It does NOT prove a parent OBJECT (if the field pointed to one) is
+    # intact: rev-parse reads the child's parent pointer without dereferencing
+    # it, so a present-but-corrupt parent object would ALSO make rev-parse
+    # succeed, taking the code below `git diff --quiet "$parent" "$sha"`
+    # instead — that call is where a corrupt/missing parent object actually
+    # surfaces, exiting >1 and falling through to `return 2` (GIT-FC). So
+    # this branch is reached only when the parent FIELD itself is empty.
     git -C "$ROOT" cat-file -e "${sha}^{commit}" 2>/dev/null && return 3
     return 2
   fi
@@ -2981,10 +3014,25 @@ _oracle_register_fail() {
     echo "# Fix Contract (COMMIT-INTEGRITY FAILURE, iteration $iter)"
     echo ""
     echo "## COMMIT-INTEGRITY FAILURE (leader-adjudicated git ground truth)"
-    echo "Your done-claim asserted a successful \`commit\` step, but the leader"
-    echo "verified against git and the claim does not hold. A commit that did not"
-    echo "actually land (or that left tracked files uncommitted) is an IL-1"
-    echo "evidence breach — fix it before any verifier runs."
+    # LOW-4 (SV gate): the preamble must describe what actually went wrong.
+    # The generic "did not actually land / left tracked files uncommitted"
+    # framing is FALSE for empty_commit_on_confirmation_claim — that commit
+    # DID land and the tracked tree IS clean; the breach is that its tree
+    # equals its parent's, so it records no work. Reusing the generic text
+    # there contradicts the branch's own Next Iteration Contract below (see
+    # G3's DROP instruction), so this branches too.
+    if [[ "$ORACLE_REASON" == *empty_commit_on_confirmation_claim* ]]; then
+      echo "Your done-claim asserted a successful \`commit\` step, and a commit did"
+      echo "land — but its tree is identical to its parent's (an empty commit): it"
+      echo "records no work, so it is evidence of nothing. A confirmation-only pass"
+      echo "(verify_existing) that changed no files must not claim a commit step at"
+      echo "all. This is an IL-1 evidence breach — fix it before any verifier runs."
+    else
+      echo "Your done-claim asserted a successful \`commit\` step, but the leader"
+      echo "verified against git and the claim does not hold. A commit that did not"
+      echo "actually land (or that left tracked files uncommitted) is an IL-1"
+      echo "evidence breach — fix it before any verifier runs."
+    fi
     echo ""
     echo "## Issues (leader commit-integrity oracle)"
     printf '%s\n' "$_verdict" | jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.id // .criterion // .criterion_id // "?"): \(.description // .summary // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' 2>/dev/null || echo "- (no structured issues)"

@@ -156,6 +156,23 @@ function summarizeCost(records, costFactors = loadCostFactors()) {
   // estimate, so they are not "missing" one. Only rows with NO
   // token_source field at all (written before this enrichment shipped —
   // legacy campaign.jsonl) count as unattributed.
+  //
+  // LOW-2 (SV gate): this leader's "unattributed" PREDICATE is
+  // `token_source === undefined` — i.e. the field is entirely absent, not
+  // merely falsy/empty. `'none'` rows are excluded from BOTH the numerator
+  // (attributed) AND the denominator (unattributed) — they are neither.
+  //
+  // This predicate is DELIBERATELY DIFFERENT from the zsh leader's
+  // (lib_ralph_desk.zsh generate_campaign_report: "worker_model absent",
+  // not "token_source absent") because each leader owns a different file
+  // with a different row shape (Option C, dogfood-gaps-g1-g4.md §G1) —
+  // cost-log.jsonl has no non-dispatch event rows (every row is a real
+  // worker dispatch), so zsh's predicate never needs the 3-way split this
+  // one does. The two predicates are correct for the file each one reads,
+  // but they are NOT interchangeable: a row shaped like cost-log.jsonl's
+  // real legacy rows (token_source:"estimated", no worker_model) would NOT
+  // be recognized as unattributed here. Today the two files are disjoint,
+  // so this is latent, not a live bug.
   const attributed = records.filter((record) => record.token_source === 'estimated');
   const unattributed = records.filter((record) => record.token_source === undefined);
 
@@ -171,7 +188,14 @@ function summarizeCost(records, costFactors = loadCostFactors()) {
       .filter((record) => record.worker_engine === 'codex')
       .reduce((sum, record) => sum + Number(record.estimated_tokens ?? 0) * _resolveCostFactor(costFactors, record.worker_model), 0),
   );
-  lines.push(`- Codex legs sol-equivalent: ${codexSolEquivalent} tokens (ESTIMATED — tmux bytes÷4 basis; factors sol 1.0 / terra 0.4 / luna 0.04)`);
+  // LOW-1 (SV gate): byte-identical to the zsh leader's line
+  // (lib_ralph_desk.zsh generate_campaign_report) — two spaces before the
+  // parenthetical, no inline ESTIMATED clause. zsh's canonical placement
+  // puts the ESTIMATED marker on the SECTION HEADER instead (the
+  // '## Cost & Performance (ESTIMATED ...)' header in generateCampaignReport
+  // below, which callers of summarizeCost must supply) — mirrored there so
+  // Node doesn't silently drop that signal.
+  lines.push(`- Codex legs sol-equivalent: ${codexSolEquivalent} tokens  (factors sol 1.0 / terra 0.4 / luna 0.04)`);
 
   if (unattributed.length > 0) {
     lines.push(`- (${unattributed.length} iteration(s) unattributed)`);
@@ -270,7 +294,10 @@ export async function generateCampaignReport({
     '## Issues Encountered',
     ...issues,
     '',
-    '## Cost & Performance',
+    // LOW-1 (SV gate): ESTIMATED marker moved to the header, matching the
+    // zsh leader's placement — summarizeCost's sol-equivalent line is now
+    // byte-identical to zsh's, which carries no inline ESTIMATED clause.
+    '## Cost & Performance (ESTIMATED — bytes÷4 basis)',
     ...summarizeCost(records),
     '',
     '## SV Summary',

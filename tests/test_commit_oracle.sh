@@ -390,6 +390,18 @@ if [[ -f "$C2" ]] && grep -qi 'drop the empty commit' "$C2" && ! grep -q 'Actual
 else
   no "empty-commit fix contract wrong ($(cat "$C2" 2>/dev/null | tail -3))"
 fi
+# LOW-4 (SV gate): the preamble above the Next Iteration Contract must not
+# contradict it. A commit DID land on this reason (its tree just equals its
+# parent's) — the generic "did not actually land / left tracked files
+# uncommitted" framing is false here and was mutation-verified to be
+# present before this fix.
+if grep -qi 'evidence of nothing' "$C2" \
+  && ! grep -q 'did not actually land' "$C2" \
+  && ! grep -q 'left tracked files uncommitted' "$C2"; then
+  ok "empty-commit fix contract preamble accurately describes the breach (no longer claims the commit did not land)"
+else
+  no "empty-commit fix contract preamble still contradicts its own DROP instruction ($(cat "$C2" 2>/dev/null | head -6))"
+fi
 # The generic commit-integrity reason keeps the original create-the-commit wording.
 out=$(zsh --no-rcs -c '
   source "'"$LIB"'" 2>/dev/null
@@ -401,6 +413,15 @@ out=$(zsh --no-rcs -c '
 grep -q 'Actually create the commit' "$LOGS2/iter-010.fix-contract.md" 2>/dev/null \
   && ok "non-empty-commit reasons keep the create-the-commit contract" \
   || no "generic commit-integrity contract regressed"
+# Note: "did not actually land" is word-wrapped across two `echo` lines in
+# the source (single-line grep can't match it) — assert both fragments
+# separately instead.
+if grep -q 'A commit that did not' "$LOGS2/iter-010.fix-contract.md" 2>/dev/null \
+  && grep -q 'actually land' "$LOGS2/iter-010.fix-contract.md" 2>/dev/null; then
+  ok "non-empty-commit reasons keep the original preamble wording (LOW-4 branch did not disturb the else arm)"
+else
+  no "generic commit-integrity preamble regressed"
+fi
 
 print -r -- "== G3.a: generated worker prompt forbids the fabricated empty commit =="
 INIT="$REPO/src/scripts/init_ralph_desk.zsh"
