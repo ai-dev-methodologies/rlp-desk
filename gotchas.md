@@ -68,3 +68,9 @@ Lessons from failures. Format: Symptom / Root cause / Recovery / Prevention (one
 - Recovery: tail 전에 빈 줄 제거 — `capture-pane -p | grep -v '^[[:space:]]*$' | tail -10`. 위치 무관해지고 -10(랩 대응) 유지. 보조로 첫 paste 전 쉘-준비 대기(가시 non-blank 텍스트 등장까지 bounded poll, fail-open).
 - Prevention: **pane/터미널 내용 단언은 viewport 위치 독립적으로 작성한다** — tail -N을 raw capture에 쓰기 전 blank 제거. 테스트는 반드시 "프롬프트 상단 + 후행 빈 줄" 픽스처를 포함(사용된-쉘 레이아웃만 테스트하면 이 케이스가 새어나간다).
 - 관련(같은 보고서 ②): `tmux display-message -p '#{pane_id/session_name}'`는 **호출한 쉘의 pane이 아니라 attached 클라이언트의 활성 pane**을 보고한다(다중 클라이언트 시 오퍼레이터 pane/타 세션 채택 → pane 흩어짐). "내 pane/세션"이 필요하면 **`$TMUX_PANE`(호출 프로세스 고유 pane, 활성-pane drift 무관)**를 우선하고 세션은 그 pane에서 파생(`display-message -p -t "$LEADER_PANE"`). LEADER_PANE·SESSION_NAME을 둘 다 활성 클라이언트에서 잡으면 self-consistent-but-wrong이라 세션 불변식(pane session == SESSION_NAME)도 못 잡는다.
+
+## 2026-08-09 — 무인 실행 중 백그라운드 프로세스 대기 정지 (소유자 격노 사례)
+- 증상: ralplan Critic(codex sol:high, 1001줄 계획 심사)을 백그라운드로 던져놓고 완료 통지만 기다리며 **수십 분간 아무 진전 없이 정지**. 소유자가 두 번 개입("진행사항 보고해" → 질책)한 뒤에야 0바이트 행 상태를 확인하고 킬.
+- 원인: ①외부/백그라운드 프로세스에 **타임박스·능동 폴링 없이** 통지 의존 ②4개 소형 수정에 1001줄 계획+3라운드 리뷰라는 **작업 규모 대비 과중한 프로세스** 허용 ③이미 통과한 동등 게이트(architect 2라운드 승인)가 있는데 후속 리뷰를 **직렬 블로커**로 둠.
+- 복구: 행 프로세스 킬 → Critic을 경량(terra:high)·병렬로 강등, 결과는 구현 중 픽스 라운드로 흡수 → 구현 즉시 개시.
+- 재발 방지(강제): ①무인 실행에서 모든 외부/백그라운드 프로세스는 **런치 시점에 타임박스 명시 + 주기 폴링**, 만료 즉시 킬/대체/우회 — 통지만 기다리는 대기 금지 ②리뷰·계획 단계가 구현을 블로킹하지 않게 — 동등 게이트 통과 시 후속 리뷰는 병렬화 ③프로세스 무게는 작업 크기에 비례 ④"끝까지"의 산출물은 완성된 작업이지 "X 대기 중" 상태가 아님.
