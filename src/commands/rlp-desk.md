@@ -462,6 +462,14 @@ External wrappers calling `--mode agent` must migrate to `--mode tmux` by 0.17.0
    - **Re-execution versioning**: If `debug.log` already exists at `--debug` start, rename it to `debug-v{N}.log` (N = next available integer ≥ 1) before creating a fresh `debug.log`.
    - **baseline.log lifecycle**: baseline.log is deleted on re-execution (when `init --mode improve` or `init --mode fresh` is run).
 7. Capture baseline commit: `Bash("git rev-parse HEAD 2>/dev/null || echo none")` → store as `BASELINE_COMMIT`. Include in the first `status.json` write as `baseline_commit` field.
+7a. **Advisory leader registration (`--mode native`, always-on)**: announce this campaign in the per-root leader registry (governance §3c) so a concurrently-running `--mode tmux` leader does not sweep your in-flight edits into its F-8 leader-recovery commit. Identical path and schema as the zsh leader:
+```
+Bash("R=$(git rev-parse --show-toplevel) && H=$(printf '%s' \"$R\" | { shasum 2>/dev/null || sha1sum 2>/dev/null || cksum; } | awk '{print substr($1,1,8)}') && D=\"$R/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}/logs/.rlp-desk-leaders-$H.d\" && mkdir -p \"$D\" && printf '{\"schema_version\":\"1.0\",\"pid\":%s,\"mode\":\"native\",\"slug\":\"<slug>\",\"root\":\"%s\",\"started_at\":\"%s\"}\\n' \"$PPID\" \"$R\" \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"$D/$PPID.json.tmp\" && mv \"$D/$PPID.json.tmp\" \"$D/$PPID.json\" && echo \"leader-registry: registered pid=$PPID\"; true")
+```
+   - **`$PPID`, never `$$`** — each Bash tool call runs in a NEW shell, so `$$` is dead the instant the call returns and the reader's `kill -0` liveness check would prune the entry immediately (silent no-op). `$PPID` is the Claude Code session process, alive for the whole campaign. **Record the printed pid** — the deregistration step at loop end needs it.
+   - **tmp + `mv`**, not a plain redirect: same truncation-safety idiom as the zsh leader's `atomic_write`. A half-written entry is read fail-closed and would cause spurious carryovers.
+   - **ADVISORY — this step must NEVER fail, exit, or stop the campaign.** A registry that already holds other entries is normal and expected: entries coexist, nothing is exclusive here. If the write fails, say so in the run log and continue to step 8. Never `exit 1`, never report a busy namespace as an error.
+   - **Never** write to `.rlp-desk-runner-<hash>.lock` (or its `.meta` / `.recovery.d` siblings) — that file is the zsh leader's EXCLUSIVE runner lock, and touching it would hard-fail the OTHER (zsh) leader's campaign — yours never reads or holds that lock.
 8. **Launch breadcrumb (`--mode tmux`, always-on)**: `logs/<slug>/launch-record.json` is written synchronously at process start — before scaffold validation, before any dependency check can exit early — so a campaign that dies before iteration 1 still leaves a post-mortem trail (zero-artifact abandonment guardrail). `run.mjs` writes a provisional record (`phase: "parsing"`) before flag parsing, then overwrites it with `phase: "launched"` (+ pid, mode, parsed options) once options parse; the zsh leader rewrites the same file with its own t0 record (`leader: "zsh"`, its pid, `phase: "launched"`) before its dependency checks can exit early, and a best-effort exit trap (EXIT/INT/TERM/HUP) updates it to `phase: "exited"` with the exit code. SIGKILL is untrappable — a `kill -9`'d campaign keeps the t0 record with no outcome update, which alone still proves the campaign launched.
 
 ### Leader Loop
@@ -671,6 +679,11 @@ After reading the verdict, archive to `logs/<slug>/`:
 - If `--debug`: debug_log `[FLOW] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
 
 At loop end (COMPLETE, BLOCKED, or TIMEOUT):
+- **Always: deregister from the advisory leader registry** (governance §3c) using the pid recorded at preparation step 7a — best-effort, never fatal, and it must run on every exit path (COMPLETE, BLOCKED, and TIMEOUT alike):
+```
+Bash("R=$(git rev-parse --show-toplevel) && H=$(printf '%s' \"$R\" | { shasum 2>/dev/null || sha1sum 2>/dev/null || cksum; } | awk '{print substr($1,1,8)}') && rm -f \"$R/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}/logs/.rlp-desk-leaders-$H.d/$PPID.json\"; true")
+```
+  Skipping this leaves a live-PID entry behind for the rest of the Claude Code session, which would keep downgrading a later tmux leader's F-8 to carryover. That is graceful (carryover, never a BLOCK), but it is still wrong — remove the entry.
 - If `--debug`: debug_log `[FLOW] result=<COMPLETE|BLOCKED|TIMEOUT> iterations=<N> verified_us=<list>`
 
 **⑨ Campaign Self-Verification** (when `--with-self-verification` is enabled):

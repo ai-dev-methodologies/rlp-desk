@@ -588,6 +588,41 @@ and release it immediately after. Static, unit, file-existence and read-only
 checks stay parallel. The merge rule (NO ENGINE PRIORITY: both must pass) is
 identical to sequential consensus.
 
+### 3c. Cross-Mode Leader Registry (advisory, always-on)
+
+Two zsh leaders cannot share a project root (`RUNNER_LOCKFILE_PATH` is exclusive
+per root hash), but a `--mode native` leader takes no lock at all. So a native
+campaign editing the tree while a tmux campaign runs looks, to F-8's dirty-file
+attribution, exactly like Worker output — and gets swept into a
+`chore(leader-recovery)` commit.
+
+Every leader therefore registers a per-PID entry:
+
+- **Path** — `<root>/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}/logs/.rlp-desk-leaders-<root_hash>.d/<pid>.json`,
+  where `<root_hash>` is the first 8 chars of `shasum` over the absolute git
+  toplevel (same derivation as the runner lock). Gitignored, so entries never
+  become dirty files.
+- **Schema** — `{"schema_version":"1.0","pid","mode":"native"|"tmux","slug","root","started_at"}`.
+- **Write** — tmp + `mv` (`atomic_write` in the zsh leader). NOT `set -C`: a
+  file already at our own pid is by definition stale, and noclobber would only
+  make us refuse to register.
+- **ADVISORY, never exclusive.** Registration MUST NOT fail a campaign and MUST
+  NOT reuse `RUNNER_LOCKFILE_PATH`. Entries coexist; a populated registry is a
+  normal state, not an error. A native leader must never `exit 1` on a busy
+  namespace.
+- **Liveness** — `kill -0` at read time, PID-based only (no TTL, no age
+  heuristic — same invariant as `acquire_slug_lock`).
+- **Deregistration** — each leader removes its own entry at teardown
+  (zsh: `cleanup()`; native: loop end). Best-effort. Because the native leader is
+  an LLM and is the least reliable party at running its own cleanup, the READER
+  also unlinks every dead entry it finds in the same pass — that prune is
+  load-bearing, not belt-and-braces.
+- **Effect** — when F-8 is about to auto-commit and ≥1 LIVE entry exists whose
+  pid is not our own, the leader logs the foreign leader (mode + slug + pid) and
+  downgrades to the existing carryover path instead of staging or committing.
+  Zero live foreign entries → F-8 behaves exactly as before. A registry that
+  cannot be read is fail-closed to carryover (same idiom as Gate 3's GIT-FC). The registry READ is zsh-side only — a native leader writes and removes its own entry but never evaluates registry contents, so no registry state can block or alter a native campaign.
+
 ## 4. Model Routing
 
 ### Doctrine (2026-08-03 luna-first)
@@ -1139,7 +1174,7 @@ Multi-mission queue/daemon (`RLP_BACKGROUND=1`) workflows can lose their tmux se
 When `tmux new-session -d` collides with an existing session and `RLP_BACKGROUND=1`, the runner appends `-bg-<epoch>-<pid>` to `SESSION_NAME` and runs a `tmux has-session` loop with random 4-digit suffixes until the name is unique. The new session also sets `destroy-unattached off` so the session survives every attached client disconnecting. **Limits**: this option is best-effort; it does NOT survive a manual `tmux kill-session` or a tmux server restart. R12 will detect those events at the next checkpoint.
 
 ### R14 — Project-scoped runner lockfile (mkdir atomic)
-`RUNNER_LOCKFILE_PATH` keys on `ROOT_HASH` (`shasum || sha1sum || cksum` of the repo root), so two different projects can run runners in parallel while the same project root is single-runner. `RUNNER_LOCKDIR` (`${RUNNER_LOCKFILE_PATH}.d`) is acquired by `mkdir` for true filesystem-level atomicity — no check-then-write race. Stale pids (no longer responding to `kill -0`) are reaped automatically; live duplicates exit 1 with a recovery hint.
+`RUNNER_LOCKFILE_PATH` keys on `ROOT_HASH` (`shasum || sha1sum || cksum` of the CANONICAL physical repo root — `pwd -P`-resolved since 2026-08-10, so symlinked and physical launches of the same repo share one hash), so two different projects can run runners in parallel while the same project root is single-runner. `RUNNER_LOCKDIR` (`${RUNNER_LOCKFILE_PATH}.d`) is acquired by `mkdir` for true filesystem-level atomicity — no check-then-write race. Stale pids (no longer responding to `kill -0`) are reaped automatically; live duplicates exit 1 with a recovery hint.
 
 ## 8. Circuit Breaker
 

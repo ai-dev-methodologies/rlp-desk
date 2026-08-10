@@ -557,7 +557,15 @@ fi
 # US-026 R14 P0: project-root-hashed runner lockfile prevents duplicate runner spawns
 # on the same project root while allowing parallel runs across different projects.
 # shasum is mac-default; sha1sum on Linux; cksum is POSIX-final fallback.
-ROOT_HASH=$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum 2>/dev/null || cksum; } | awk '{print substr($1,1,8)}')
+# US-002B SV-gate A1 (2026-08-10): hash the CANONICAL (physical) root, not the raw
+# string. zsh's $PWD preserves symlinks (macOS /var vs /private/var), while the
+# native leader hashes `git rev-parse --show-toplevel` (physical) — a raw-string
+# hash made the two leaders write DIFFERENT registry dirs on the SAME repo and
+# never see each other, silently no-op'ing the cross-mode downgrade (proven live:
+# 88cb2ec8 vs 02cfe880 on one tmp repo). Falls back to the raw string only if the
+# directory is unreachable, where every derived path is about to fail anyway.
+ROOT_CANON=$(cd "$ROOT" 2>/dev/null && pwd -P) || ROOT_CANON="$ROOT"
+ROOT_HASH=$(printf '%s' "$ROOT_CANON" | { shasum 2>/dev/null || sha1sum 2>/dev/null || cksum; } | awk '{print substr($1,1,8)}')
 RUNNER_LOCKFILE_PATH="$DESK/logs/.rlp-desk-runner-$ROOT_HASH.lock"
 RUNNER_LOCKDIR="${RUNNER_LOCKFILE_PATH}.d"
 PROMPTS_DIR="$DESK/prompts"
@@ -1507,6 +1515,19 @@ _bug8_check_synth_allowed() {
         # as success: proceed to synthesis (the Verifier still gates correctness).
         log "  Bug #8 F-8 (D-20): Worker files already committed (commit race) — nothing to auto-commit; proceeding."
         log_debug "[GOV] iter=$iter bug8=autocommit_noop_already_committed us_id=$us_id files='$_bug8_first5'"
+      elif _leader_registry_foreign_live; then
+        # US-002B (Option D): another LIVE leader is registered on this toplevel
+        # (or the registry could not be read — fail-closed). We cannot tell its
+        # edits from the Worker's, so DOWNGRADE from auto-commit to the existing
+        # carryover path rather than risk committing a foreign editor's work
+        # (field incident: an out-of-band install.sh edit landed in dd0e6d9).
+        # The read sits HERE, immediately before _bug8_autocommit and after the
+        # D-20 already-committed no-op, so the race window is microseconds rather
+        # than the whole comm/log sequence — and losing the race merely reverts to
+        # today's behaviour for one iteration, which cannot regress anything.
+        log_error "  Bug #8 F-8 (Option D): another live leader is registered on this project root ($LEADER_REGISTRY_FOREIGN) — DOWNGRADING leader-recovery to carryover; staging nothing. Uncommitted: $_bug8_first5"
+        log_debug "[GOV] iter=$iter bug8=autocommit_downgraded_foreign_leader us_id=$us_id foreign='$LEADER_REGISTRY_FOREIGN' files='$_bug8_first5'"
+        _bug8_record_carryover "$us_id" "$_bug8_worker_files"
       elif _bug8_autocommit "$ROOT" "chore(leader-recovery): commit Worker's uncommitted $us_id changes (Bug #8 F-8)" "${_bug8_add[@]}"; then
         log "  Leader-recovery auto-commit OK (Worker files only) — Verifier will gate correctness."
       else
@@ -3406,6 +3427,12 @@ cleanup() {
     fi
   fi
 
+  # US-002B (Option D): drop our advisory leader-registry entry alongside the
+  # runner lock. Best-effort and unconditional on lock ownership — the entry is
+  # keyed by our own PID, so removing it can never touch another leader's. A
+  # SIGKILL leaves it behind; the reader's kill -0 prune is the real guarantee.
+  unregister_leader
+
   # Kill claude processes then kill panes
   log_debug "cleanup: WORKER_PANE=${WORKER_PANE:-unset} VERIFIER_PANE=${VERIFIER_PANE:-unset} CONSENSUS_PANE=${CONSENSUS_PANE:-unset}"
   if [[ -n "${WORKER_PANE:-}" ]]; then
@@ -4984,6 +5011,11 @@ main() {
   if acquire_slug_lock "$RUNNER_LOCKFILE_PATH"; then
     printf '{"pid":%s,"slug":"%s","root":"%s","started_at":"%s"}\n' \
       "$$" "$SLUG" "$ROOT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${RUNNER_LOCKFILE_PATH}.meta" 2>/dev/null
+    # US-002B (Option D): announce ourselves in the ADVISORY cross-mode leader
+    # registry (lib_ralph_desk.zsh). Separate from the exclusive runner lock on
+    # purpose — a native leader must be able to coexist here without hard-failing.
+    # Best-effort: register_leader never fails a campaign.
+    register_leader "tmux"
   else
     local existing existing_slug
     existing=$(cat "$RUNNER_LOCKFILE_PATH" 2>/dev/null)

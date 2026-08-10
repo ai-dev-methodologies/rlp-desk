@@ -653,6 +653,113 @@ atomic_write() {
 }
 
 # =============================================================================
+# US-002B (Option D): cross-mode leader registry — ADVISORY, never exclusive
+# =============================================================================
+# US-002A narrowed F-8's exposure from the whole campaign to a single worker
+# window, but a FOREIGN leader editing the tree DURING that window is still
+# attributed to the Worker. zsh-vs-zsh is already impossible (RUNNER_LOCKFILE_PATH
+# is exclusive per ROOT_HASH); the gap is the `--mode native` leader, which takes
+# no lock at all. This registry closes that cross-mode case: every leader drops a
+# per-PID entry here, and F-8 downgrades to the existing carryover path when a
+# LIVE foreign entry is present on the same toplevel.
+#
+# ADVISORY is the whole design constraint. It MUST NOT reuse RUNNER_LOCKFILE_PATH:
+# that lock is exclusive, so reusing it would make a native campaign hard-fail on
+# a busy root — turning an anti-dirty-file mechanism into a campaign killer.
+# Registration failure is logged and ignored; nothing here may fail a campaign.
+#
+# Path caveat (AC7h, documented in docs/rlp-desk/failure-modes.md F1.20): DESK
+# honours the operator-overridable RLP_DESK_RUNTIME_DIR. Two leaders that resolve
+# it differently write to different registries and never see each other, so
+# Option D silently no-ops — fail-OPEN to today's auto-commit, acceptable but it
+# means the operator must set that variable for BOTH leaders or neither.
+_leader_registry_dir() {
+  print -r -- "${DESK:-.}/logs/.rlp-desk-leaders-${ROOT_HASH:-unknown}.d"
+}
+
+# Register this leader. $1 = mode ("tmux" | "native"). Always returns 0.
+register_leader() {
+  local mode="${1:-tmux}" dir entry
+  dir=$(_leader_registry_dir)
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    log_debug "[GOV] leader_registry=register_skipped reason=mkdir_failed dir=$dir"
+    return 0
+  fi
+  entry="$dir/$$.json"
+  # atomic_write, NOT `set -C`: a per-PID name has no contention to arbitrate, and
+  # a pre-existing file at OUR OWN pid is by definition stale (we are alive holding
+  # that PID), so plain overwrite is correct — noclobber would only make us refuse
+  # to register. What atomic_write does buy is truncation safety: an unparseable
+  # (half-written) entry is read fail-closed and would cause spurious carryovers.
+  if printf '{"schema_version":"1.0","pid":%s,"mode":"%s","slug":"%s","root":"%s","started_at":"%s"}\n' \
+       "$$" "$mode" "${SLUG:-unknown}" "${ROOT:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+       | atomic_write "$entry"; then
+    log_debug "[GOV] leader_registry=registered pid=$$ mode=$mode entry=$entry"
+  else
+    log_debug "[GOV] leader_registry=register_failed pid=$$ entry=$entry (advisory — continuing)"
+  fi
+  return 0
+}
+
+# Remove this leader's own entry. Best-effort; never fatal. Always returns 0.
+unregister_leader() {
+  local entry; entry="$(_leader_registry_dir)/$$.json"
+  [[ -e "$entry" ]] || return 0
+  rm -f "$entry" 2>/dev/null \
+    && log_debug "[GOV] leader_registry=unregistered pid=$$" \
+    || log_debug "[GOV] leader_registry=unregister_failed pid=$$ entry=$entry (advisory)"
+  return 0
+}
+
+# Is another LIVE leader registered on this toplevel?
+#   rc 0 = YES, downgrade (a live foreign entry, or the registry could not be
+#          read / an entry could not be parsed — fail-closed, mirroring the
+#          GIT-FC idiom in Gate 3: an IO error must not read as "all clear")
+#   rc 1 = NO, proceed exactly as before
+# Sets LEADER_REGISTRY_FOREIGN to a human-readable cause on rc 0.
+#
+# Two properties are load-bearing:
+#  - self-exclusion by $$ — without it a registering leader downgrades its own
+#    F-8 forever, a spectacular self-own;
+#  - reader-side pruning of dead entries — the native leader is an LLM, so it is
+#    the LEAST reliable party at running its own cleanup and precisely the party
+#    this feature exists to detect. A dead native entry must never downgrade F-8
+#    indefinitely, so the reader unlinks what it finds dead in the same pass.
+# Staleness is PID-based only (`kill -0`), never age-based — same invariant as
+# acquire_slug_lock, so a slow-but-alive leader is never falsely reaped.
+_leader_registry_foreign_live() {
+  typeset -g LEADER_REGISTRY_FOREIGN=""
+  local dir; dir=$(_leader_registry_dir)
+  # No registry at all → nobody has ever registered here → not an error.
+  [[ -d "$dir" ]] || return 1
+  if [[ ! -r "$dir" || ! -x "$dir" ]]; then
+    LEADER_REGISTRY_FOREIGN="registry unreadable at $dir (fail-closed)"
+    return 0
+  fi
+  local -a entries; entries=("$dir"/*.json(N))
+  local f pid emode eslug rc=1
+  for f in "${entries[@]}"; do
+    pid=$(jq -r '.pid // empty' "$f" 2>/dev/null)
+    if [[ -z "$pid" || "$pid" != <-> ]]; then
+      # Torn or foreign-schema entry: cannot prove it is dead, so fail closed.
+      LEADER_REGISTRY_FOREIGN="unparseable registry entry ${f:t} (fail-closed)"
+      rc=0
+      continue
+    fi
+    [[ "$pid" == "$$" ]] && continue            # AC7f: never our own entry
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$f" 2>/dev/null                    # AC7d: reader-side prune
+      continue
+    fi
+    emode=$(jq -r '.mode // "unknown"' "$f" 2>/dev/null)
+    eslug=$(jq -r '.slug // "unknown"' "$f" 2>/dev/null)
+    LEADER_REGISTRY_FOREIGN="mode=$emode slug=$eslug pid=$pid"
+    return 0
+  done
+  return $rc
+}
+
+# =============================================================================
 # ZSH-4: race-safe per-slug lock acquisition (redesign, v0.17.1)
 # =============================================================================
 # Acquire an exclusive lock at $1 (a file holding the owner PID). Race-safe vs:
