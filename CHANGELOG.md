@@ -8,6 +8,58 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 
 ### Planned (not yet shipped)
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
+- Cost-log campaign-exit row attribution (`final-verify` / `campaign-exit` buckets instead of `unknown`) — spec ready in `docs/plans/manifest-followup-handoff.md`.
+
+## [0.25.0] — 2026-08-10
+
+### Fixed
+- **`curl | bash` install was broken for every user** — `install.sh` fetched
+  two `docs/rlp-desk/internal/` files that are deliberately not in the
+  repository, so the raw URLs 404'd and `curl -f` aborted the install mid-way.
+  The fetches are removed; the internal docs stay local-only.
+- **Campaign codex workers are no longer captured by the oh-my-codex
+  deep-interview hook.** The omx `UserPromptSubmit` keyword-detector
+  auto-activates deep-interview from ordinary prose in the campaign's own
+  seeded worker prompt (e.g. `Don't assume.`), after which `PreToolUse` blocks
+  every write tool for the rest of that codex session. All campaign codex
+  launches (zsh leader, native-leader templates, Node parity) now pass
+  `--disable hooks`, probe-gated at startup against `codex features list` so
+  older CLIs without the flag are unaffected, with a strip-and-retry fallback
+  so a mid-campaign codex upgrade costs at most one degraded launch. Escape
+  hatch: `RLP_CODEX_HOOKS=1`. Native-leader templates also gain the
+  previously-missing `--disable plugins`.
+- **Leader-recovery (F-8) no longer sweeps a foreign editor's work into its
+  commits.** The dirty-file baseline is re-captured at every worker dispatch
+  (previously once per campaign), so files modified mid-campaign by a human or
+  another leader are excluded from recovery commits.
+- **Iteration-signal `stop` key tolerance.** A worker writing the legacy
+  `stop` key instead of `status` no longer trips the circuit breaker: leaders
+  read `status` canonically, accept `stop` with a deprecation log, and the
+  signal/Stop-Status channels are now documented as distinct contracts in
+  `signal-protocol.md`.
+- Runner/registry root hashing is now canonical (`pwd -P`), so symlinked and
+  physical launches of the same repository share one lock and one registry.
+  (Symlinked-path operators: the runner-lock filename changes once after this
+  upgrade; a leftover old-hash lock file is inert.)
+
+### Added
+- **Cross-mode leader registry (advisory).** Every campaign leader (tmux/zsh
+  and native) registers a per-PID entry under
+  `.rlp-desk/logs/.rlp-desk-leaders-<hash>.d/`; when the zsh leader's F-8
+  recovery sees another live leader on the same repository it downgrades from
+  auto-commit to the carryover path, so concurrent campaigns can no longer
+  commit each other's files. Advisory by design — registration can never fail
+  or block a campaign.
+- `docs/rlp-desk/failure-modes.md` now ships with the package (npm and curl
+  channels) and gains F1.19 (deep-interview keyword capture) and F1.20
+  (foreign-editor recovery sweep) with recovery guidance.
+- Install parity guard hardening: the `install.sh`-vs-manifest test now checks
+  file existence (a fetch of a nonexistent path is drift), covers all
+  markdown-directory shipping decisions bidirectionally, and broadens the
+  no-exec property to every `child_process` API.
+- `npm run verify:sync` — byte-exact install-sync oracle replacing the
+  hand-rolled banner-strip recipes; `scripts/uninstall.js` now derives its
+  removal set from the shared install manifest.
 
 ## [0.24.1] — 2026-08-09
 
