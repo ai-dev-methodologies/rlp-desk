@@ -2565,6 +2565,60 @@ generate_sv_report() {
 }
 
 # =============================================================================
+# US-003: iter-signal status tolerant-read
+# =============================================================================
+# _resolve_iter_signal_status() — canonical key is `status`
+# (init_ralph_desk.zsh:782, protocol-reference.md:104-127); some precedent
+# worker prompts wrote the legacy `stop` key instead
+# (docs/rlp-desk/verification-history.md:94). Before this, a `stop`-only
+# signal parsed to null and fell straight into the leader's existing "Unknown
+# signal status" soft-fail — a BLOCKED campaign on a key-name mismatch alone.
+#
+# Contract (US-003 AC1-AC4):
+#   - `status` present               → status wins, byte-identical to today.
+#   - `status` absent, `stop` present → resolves to stop's value; ONE
+#     deprecation notice naming the file.
+#   - both present, DIFFERENT values → `status` (canonical) wins; divergence
+#     logged.
+#   - neither present                → prints jq's literal missing-field
+#     output ("null"), so the existing "Unknown signal status: null" soft-fail
+#     is completely unchanged (no new silent-accept hole).
+#
+# Callers invoke this inside a $(...) capture (mirrors _git_snapshot's note
+# above), so any side-effect log line MUST be routed off stdout — `log` is
+# redirected to stderr (>&2) below rather than called bare.
+#
+# Usage: _resolve_iter_signal_status <signal_file>
+#   → prints the resolved status string on stdout.
+_resolve_iter_signal_status() {
+  local signal_file="$1"
+  local status_raw stop_raw
+  status_raw=$(jq -r '.status' "$signal_file" 2>/dev/null)
+
+  if [[ "$status_raw" != "null" && -n "$status_raw" ]]; then
+    stop_raw=$(jq -r '.stop // empty' "$signal_file" 2>/dev/null)
+    if [[ -n "$stop_raw" && "$stop_raw" != "$status_raw" ]]; then
+      log "  WARNING: $signal_file has both 'status' and legacy 'stop' keys with divergent values (status=$status_raw stop=$stop_raw) — 'status' (canonical) wins." >&2
+      log_debug "[GOV] iter=${ITERATION:-0} iter_signal_key_divergence=true file=$signal_file status=$status_raw stop=$stop_raw"
+    fi
+    print -r -- "$status_raw"
+    return 0
+  fi
+
+  stop_raw=$(jq -r '.stop // empty' "$signal_file" 2>/dev/null)
+  if [[ -n "$stop_raw" ]]; then
+    log "  DEPRECATED: $signal_file uses legacy 'stop' key with no 'status' — resolving status=$stop_raw. Worker prompts should write 'status' (canonical)." >&2
+    log_debug "[GOV] iter=${ITERATION:-0} iter_signal_legacy_stop_key=true file=$signal_file value=$stop_raw"
+    print -r -- "$stop_raw"
+    return 0
+  fi
+
+  # Neither key present — preserve jq's exact missing-field output ("null")
+  # so the pre-existing Unknown-signal-status soft-fail is byte-unchanged (AC4).
+  print -r -- "$status_raw"
+}
+
+# =============================================================================
 # Leader-side mechanical pre-gate (Feature 1)
 # =============================================================================
 # Runs campaign-defined deterministic checks BEFORE any LLM verifier is

@@ -91,3 +91,31 @@ Dependencies:
 - Self-Verification Gate parity matrix (Node × zsh × team-api).
 
 This track is **explicitly out of scope** for the Bug #6/#7/#8 plan v6. It is captured here so future maintainers do not interpret "rlp-desk does not use a mailbox" as an oversight — it is a deliberate architectural decision with a known successor path.
+
+---
+
+## 6. Field Contracts — Iteration-signal vs Stop Status
+
+Two channels share the same read step (`rlp-desk.md` step ⑥, "Read memory.md again") and were, until commit c59ae4c (US-001 AC6a/AC6b), adjacent with no channel label — a reader could plausibly carry a value across from one into the other (the root cause US-003 corrects; see US-003 in `.omc/plans/manifest-followup-wave.md` for the full analysis). This section is the durable fix: both value sets are pinned here, each labelled with its channel and file, and this section is **normative** — `docs/rlp-desk/protocol-reference.md:20` points here rather than restating the value set.
+
+### Iteration-signal field contract
+
+File: `<slug>-iter-signal.json`, written by the Worker every iteration (schema: `protocol-reference.md` §"Iteration Signal").
+
+- **Canonical key:** `status`.
+- **Values:** `continue | verify | verify_partial | blocked`.
+- **Legacy key `stop`:** accepted-on-read only, **never written** by any leader-side synthesizer (`run_ralph_desk.zsh`'s 4 iter-signal synthesis sites — codex-exit, A4 fallback, sequential-final-verify, D-16 leader-finalize — all emit `status`). Deprecated **2026-08-10**.
+- **Tolerant-read contract** (zsh leader — live; Node `campaign-main-loop.mjs` — dead-code parity mirror only, `--mode agent` is CLI-unreachable per ADR-001):
+  - `status` present → used as-is, byte-identical to pre-US-003 behavior.
+  - `status` absent, `stop` present → resolves to `stop`'s value; one-line deprecation log naming the file.
+  - both present, different values → `status` (canonical) wins; divergence logged.
+  - neither present → the existing "Unknown signal status" soft-fail fires, unchanged (no new silent-accept hole).
+  - Implementation: `_resolve_iter_signal_status` (`lib_ralph_desk.zsh`), called from `run_ralph_desk.zsh`'s single live `.status` read site.
+
+### Stop Status channel
+
+memory.md's `## Stop Status` section — a genuinely **different** channel from iteration-signal above, read at `rlp-desk.md`'s step ⑥ (`:554-556`), seeded `continue` (`init_ralph_desk.zsh:1191-1192`).
+
+- **Value set:** `continue | verify | blocked`.
+- Five consumers: `run_ralph_desk.zsh:2975`, `prompt-assembler.mjs:126`, `governance.md:852`, `campaign-initializer.mjs:236`, `rlp-desk.md:496`.
+- Never carry a value across between the two channels — they are read at the same step but are not interchangeable, and this channel's value set is deliberately **not** extended to match the other's.

@@ -17,7 +17,7 @@ for iteration in 1..max_iter:
      (Ensures stale runtime files from a previous run cannot mislead the loop)
 
   ② Read memory.md
-     - Parse "Stop Status" section → continue/verify/blocked
+     - Parse "Stop Status" section → continue/verify/blocked (normative: docs/rlp-desk/signal-protocol.md §6)
      - Parse "Next Iteration Contract" → task for this iteration
        • Also read "Completed Stories" → track what has been verified
        • Also read "Key Decisions" → architectural choices already settled
@@ -108,7 +108,7 @@ Written by the Worker at the end of every iteration. Provides a structured JSON 
 ```json
 {
   "iteration": 3,
-  "status": "continue|verify|blocked",
+  "status": "continue|verify|verify_partial|blocked",
   "us_id": "US-001",
   "summary": "Completed US-001, other stories remain",
   "timestamp": "2025-01-15T10:30:00Z"
@@ -118,7 +118,7 @@ Written by the Worker at the end of every iteration. Provides a structured JSON 
 | Field | Type | Description |
 |-------|------|-------------|
 | `iteration` | number | Current iteration number |
-| `status` | string | One of: `continue`, `verify`, `blocked` |
+| `status` | string | One of: `continue`, `verify`, `verify_partial`, `blocked` |
 | `us_id` | string\|null | US being verified: `"US-001"`, `"ALL"` (final full verify), or null (batch mode) |
 | `summary` | string | Brief description of what was accomplished |
 | `timestamp` | string | ISO 8601 UTC timestamp |
@@ -126,7 +126,10 @@ Written by the Worker at the end of every iteration. Provides a structured JSON 
 **Status values:**
 - `continue` -- Current action done but more work remains. Leader proceeds to next iteration.
 - `verify` -- Current US complete (per-US mode) or all work complete (batch mode). Leader dispatches Verifier scoped to `us_id`.
+- `verify_partial` -- Worker explicitly verified a subset of `us_id`'s ACs and deferred the rest (`verified_acs[]`). Leader dispatches Verifier scoped to only the verified ACs, then returns for the remainder.
 - `blocked` -- Autonomous blocker encountered. Leader writes BLOCKED sentinel.
+
+Canonical key is `status`; a legacy `stop` key is accepted-on-read (never written) — see [`signal-protocol.md` §6](signal-protocol.md#6-field-contracts--iteration-signal-vs-stop-status) for the full field contract, including why this is a distinct channel from memory.md's "Stop Status" section above.
 
 **Usage by mode:**
 - **Tmux mode:** The shell Leader polls for this file's existence after dispatching the Worker. Once it appears, the Leader reads the `status` field via `jq` to decide the next step. This is the primary control-flow mechanism in tmux mode.

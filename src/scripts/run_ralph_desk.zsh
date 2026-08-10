@@ -5791,8 +5791,11 @@ main() {
     ITER_VERIFIER_CODEX_DURATION_S=""
 
     # --- governance.md s7 step 6: Read iter-signal.json via jq (JSON only, no markdown) ---
+    # US-003: tolerant-read via _resolve_iter_signal_status (lib_ralph_desk.zsh)
+    # — canonical `status`, tolerant fallback to legacy `stop`. See that
+    # function's header comment for the full AC1-AC4 contract.
     local signal_status
-    signal_status=$(jq -r '.status' "$SIGNAL_FILE" 2>/dev/null)
+    signal_status=$(_resolve_iter_signal_status "$SIGNAL_FILE")
     local signal_summary
     signal_summary=$(jq -r '.summary // "no summary"' "$SIGNAL_FILE" 2>/dev/null)
 

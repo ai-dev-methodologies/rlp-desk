@@ -1480,6 +1480,38 @@ function validateArtifact(parsed, ctx) {
   return parsed;
 }
 
+// US-003 — iter-signal status tolerant-read (Node parity, PARITY-ONLY).
+// `--mode agent` hard-errors at run.mjs:891 (ADR-001), so this leader's
+// signal reads are CLI-unreachable. This helper mirrors the live zsh-leader
+// implementation (_resolve_iter_signal_status in lib_ralph_desk.zsh) so the
+// two stay in sync, but it must NEVER be cited as coverage of a shipping
+// path — the tolerant-read contract only ships via the zsh leader.
+//
+// Canonical key is `status`; legacy `stop` is accepted-on-read when `status`
+// is absent (one-line deprecation console.error naming the file); both
+// present with different values → `status` (canonical) wins, divergence
+// logged; neither present → returns the (possibly undefined) `status` field
+// unchanged, so downstream behavior is untouched.
+export function resolveIterSignalStatus(signal, signalFilePath) {
+  if (!signal || typeof signal !== 'object') return signal?.status;
+  const { status, stop } = signal;
+  if (status !== undefined && status !== null) {
+    if (stop !== undefined && stop !== null && stop !== status) {
+      console.error(
+        `[iter-signal] ${signalFilePath}: both 'status' and legacy 'stop' present with divergent values (status=${status} stop=${stop}) — 'status' (canonical) wins.`,
+      );
+    }
+    return status;
+  }
+  if (stop !== undefined && stop !== null) {
+    console.error(
+      `[iter-signal] DEPRECATED: ${signalFilePath} uses legacy 'stop' key with no 'status' — resolving status=${stop}. Worker prompts should write 'status' (canonical).`,
+    );
+    return stop;
+  }
+  return status;
+}
+
 async function writeSentinel(filePath, status, usId, reason, classification = null, paths = null) {
   // governance §1f BLOCKED Surfacing: BLOCKED is surfaced on FIVE channels —
   // sentinel (markdown + JSON sidecar), status, console (stderr), report,
@@ -2639,7 +2671,11 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
     // US-019 R7 P1-G: verify_partial malformed downgrade.
     // verify_partial requires verified_acs[] to be a non-empty array. Otherwise the verifier
     // has nothing to evaluate and we must treat the signal as broken contract → blocked.
-    if (signal && signal.status === 'verify_partial') {
+    // US-003 (parity-only, see resolveIterSignalStatus above): tolerant-read so a
+    // legacy `stop`-keyed signal still resolves here instead of silently
+    // bypassing the malformed-downgrade check.
+    const resolvedSignalStatus = signal ? resolveIterSignalStatus(signal, paths.signalFile) : undefined;
+    if (signal && resolvedSignalStatus === 'verify_partial') {
       const acs = Array.isArray(signal.verified_acs) ? signal.verified_acs : null;
       if (!acs || acs.length === 0) {
         const malformedUs = signal.us_id ?? state.current_us;
