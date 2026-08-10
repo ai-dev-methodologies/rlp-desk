@@ -92,7 +92,22 @@ export function buildCodexCmd(mode, model, options = {}) {
     parts.push('-c', shellQuote(`model_reasoning_effort="${options.reasoning}"`));
   }
 
-  parts.push('--disable', 'plugins', '--dangerously-bypass-approvals-and-sandbox');
+  // US-001 (failure-modes.md F1.19): `--disable hooks` removes the oh-my-codex
+  // native-hook surface, whose UserPromptSubmit keyword-detector auto-activates
+  // deep-interview from prose in the campaign's own worker prompt and then
+  // PreToolUse-blocks every write tool. `--disable plugins` does not cover it.
+  //
+  // DEAD-CODE PARITY ONLY — do NOT cite this as live coverage. run.mjs
+  // hard-errors `--mode agent` (ADR-001), and `--mode tmux` shells out to
+  // run_ralph_desk.zsh, so buildCodexCmd is CLI-unreachable. The shipping
+  // implementation is the zsh probe + `_codex_launch_with_hook_fallback`
+  // chokepoint.
+  //
+  // Emitted UNCONDITIONALLY with no probe: CODEX_BIN here is a bare 'codex'
+  // resolved from PATH inside the pane, while the zsh leader probes the
+  // absolute path from `command -v codex` — a Node-side probe would therefore
+  // interrogate a different binary than the one that runs.
+  parts.push('--disable', 'plugins', '--disable', 'hooks', '--dangerously-bypass-approvals-and-sandbox');
 
   return parts.join(' ');
 }

@@ -379,6 +379,95 @@ _require_codex_effort() {
   return 0
 }
 
+# US-001 (failure-modes.md F1.19): the SINGLE chokepoint every codex
+# launch-assembly site in run_ralph_desk.zsh routes through.
+#
+# Two responsibilities, deliberately fused so there is exactly one place that
+# knows the `--disable hooks` token:
+#
+#   1. DECORATION — splice `$_CODEX_NO_HOOKS_FLAG` in immediately after
+#      `--disable plugins`. Appending at the end of the string would land the
+#      flag AFTER the positional prompt argument at the trigger-script sites.
+#   2. STRIP-AND-RETRY (AC7) — the startup probe can go stale mid-campaign (an
+#      operator running `codex update` out-of-band during an hours-long run).
+#      An unknown feature name is a hard error, so without this a stale-true
+#      probe is a total outage on EVERY launch rather than graceful
+#      degradation. On a launch failure whose captured text names "Unknown
+#      feature flag", retry EXACTLY once with the token stripped and clear
+#      _CODEX_NO_HOOKS_FLAG globally (typeset -g, the _LC_FLUSH_ATTEMPTED
+#      pattern) so the clearing persists for the remainder of the run. A second
+#      failure — or any failure that is not "Unknown feature flag" —
+#      propagates unchanged: the fallback must never mask an unrelated error.
+#
+# Usage:
+#   decorate-only   _codex_launch_with_hook_fallback <base_cmd>
+#                   → prints the decorated command, rc 0. Used by the send-keys
+#                     restart and the two trigger-script assemblies, where the
+#                     leader does not own the resulting process and so has no
+#                     launch rc to retry on. Staleness note (SV-gate C-2,
+#                     2026-08-10): ordering does NOT guarantee these sites see a
+#                     post-fallback flag — the worker trigger script is written
+#                     BEFORE the iteration's run-mode launch. That is safe for a
+#                     different reason: the codex trigger scripts are write-only
+#                     evidence artifacts (no execution site in src/), and the
+#                     send-keys restart branch is unreachable for codex
+#                     (restart_worker returns 1 for 1-shot exec engines). If
+#                     either ever becomes executable, re-derive the flag at the
+#                     consumption site instead of trusting write-time state.
+#   run-mode        _codex_launch_with_hook_fallback <base_cmd> <launcher_fn> <pane> <prompt> <iter>
+#                   → decorates, invokes `<launcher_fn> <pane> <prompt> <iter>
+#                     <decorated_cmd>` (the launch_{worker,verifier}_codex
+#                     contract, launch command last), owns the retry, returns
+#                     the launch rc.
+#
+# The launcher publishes the text to inspect in _CODEX_LAUNCH_FAIL_TEXT (the
+# real launchers set it from their final `tmux capture-pane`). Callers keep
+# holding the UNDECORATED base command, so a later re-dispatch of the same
+# variable through this chokepoint picks up the post-fallback state for free.
+typeset -g _CODEX_LAUNCH_FAIL_TEXT=""
+typeset -g _CODEX_HOOK_FALLBACK_TRIPPED=0
+
+_codex_launch_with_hook_fallback() {
+  local base_cmd="$1"; shift
+
+  local decorated="$base_cmd"
+  if [[ -n "${_CODEX_NO_HOOKS_FLAG:-}" \
+        && "$base_cmd" == *"--disable plugins"* \
+        && "$base_cmd" != *"--disable hooks"* ]]; then
+    decorated="${base_cmd/--disable plugins/--disable plugins${_CODEX_NO_HOOKS_FLAG}}"
+  fi
+
+  # Decorate-only mode.
+  if (( $# == 0 )); then
+    print -r -- "$decorated"
+    return 0
+  fi
+
+  local launcher="$1"; shift
+  local rc=0
+  _CODEX_LAUNCH_FAIL_TEXT=""
+  "$launcher" "$@" "$decorated" || rc=$?
+  (( rc == 0 )) && return 0
+
+  # Only the stale-probe case earns a retry.
+  [[ "$decorated" == *"--disable hooks"* ]] || return $rc
+  if ! print -r -- "${_CODEX_LAUNCH_FAIL_TEXT:-}${_CODEX_LAUNCH_FAIL_REASON:-}" \
+       | grep -q 'Unknown feature flag'; then
+    return $rc
+  fi
+
+  typeset -g _CODEX_NO_HOOKS_FLAG=""
+  typeset -g _CODEX_HOOK_FALLBACK_TRIPPED=1
+  local stripped="${decorated/ --disable hooks/}"
+  log "  codex rejected '--disable hooks' (Unknown feature flag) — the startup probe went stale. Retrying once without it and omitting it for the rest of this run."
+  log_debug "[GOV] iter=${ITERATION:-0} codex_hook_flag_fallback=1 action=strip_and_retry_once"
+
+  rc=0
+  _CODEX_LAUNCH_FAIL_TEXT=""
+  "$launcher" "$@" "$stripped" || rc=$?
+  return $rc
+}
+
 # check_model_upgrade() — evaluate and apply Worker model upgrade on repeated same-US failure
 # Called in the fail verdict path. Upgrades Worker model when same US fails >= 2 consecutive times.
 # Respects LOCK_WORKER_MODEL flag. Never modifies VERIFIER_MODEL.

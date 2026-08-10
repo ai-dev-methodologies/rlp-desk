@@ -136,7 +136,7 @@ EOF
 
 # Build launch commands using the REAL builders / the exact production cmd shapes.
 if [[ "$WORKER_ENGINE" == codex ]]; then
-  worker_launch="${CODEX_BIN} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+  worker_launch="${CODEX_BIN} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox"
 else
   # build_claude_cmd is the REAL production builder (mode=tui). Emits an EMPTY
   # command if CLAUDE_BIN unset — we already hard-asserted it is present.
@@ -254,7 +254,7 @@ Do not modify ANSWER.txt. Do not run unrelated commands.
 EOF
 
 if [[ "$VERIFIER_ENGINE" == codex ]]; then
-  verifier_launch="${CODEX_BIN} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+  verifier_launch="${CODEX_BIN} -m $VERIFIER_CODEX_MODEL -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox"
 else
   verifier_launch="$(build_claude_cmd tui "$VERIFIER_MODEL" "" "" "${VERIFIER_EFFORT:-}")"
 fi

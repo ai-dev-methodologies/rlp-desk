@@ -345,7 +345,7 @@ Cross-project aggregation: scan `~/.claude/ralph-desk/analytics/` and read each 
 
 Parse the `--mode` flag. Slash command canonical labels:
 
-- `--mode native` (default): **Native Agent() path** below. The slash command IS the leader. It calls `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)` for claude workers/verifiers and `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> --reasoning-effort <r> <prompt>")` for codex workers/verifiers. `OMX_STATE_ROOT` isolates every codex launch from the operator's interactive omx state (`.rlp-desk/logs/<slug>/runtime/omx-state`, mkdir -p'd before first use) — stale interactive-session state can otherwise block/wedge campaign codex workers (stale-lock incident 2026-08-09).
+- `--mode native` (default): **Native Agent() path** below. The slash command IS the leader. It calls `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)` for claude workers/verifiers and `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> --reasoning-effort <r> --disable plugins --disable hooks <prompt>")` for codex workers/verifiers. `OMX_STATE_ROOT` isolates every codex launch from the operator's interactive omx state (`.rlp-desk/logs/<slug>/runtime/omx-state`, mkdir -p'd before first use) — stale interactive-session state can otherwise block/wedge campaign codex workers (stale-lock incident 2026-08-09).
 - `--mode tmux`: **zsh runner path** below. The slash command shells out to `node ~/.claude/ralph-desk/node/run.mjs run --mode tmux …` which spawns `run_ralph_desk.zsh` as a subprocess.
 
 Legacy `--mode agent` typed against this slash command emits a deprecation notice and redirects to `--mode native`. **Do NOT confuse `/rlp-desk run --mode agent`** (slash command, redirects to Native Agent()) **with** `node run.mjs run --mode agent` (deprecated Node-leader alpha, direct CLI invocation, unrelated code path — see "Direct Node CLI invocation" below).
@@ -416,7 +416,7 @@ node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
 
 #### Native Agent() Mode (`--mode native` or default)
 
-The slash command IS the leader. Workers/Verifiers are spawned via `Agent(model=…, mode="bypassPermissions", prompt=…)` (claude) or `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> --reasoning-effort <r> <prompt>")` (codex) — the `OMX_STATE_ROOT` prefix isolates the codex launch from the operator's interactive omx state (see §"Execute Worker" below).
+The slash command IS the leader. Workers/Verifiers are spawned via `Agent(model=…, mode="bypassPermissions", prompt=…)` (claude) or `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> --reasoning-effort <r> --disable plugins --disable hooks <prompt>")` (codex) — the `OMX_STATE_ROOT` prefix isolates the codex launch from the operator's interactive omx state (see §"Execute Worker" below).
 
 ### Native Agent() Safety Contract
 
@@ -543,18 +543,27 @@ Agent(
 
 If codex engine:
 ```
-Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full worker prompt text>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> --reasoning-effort <codex_reasoning> --disable plugins --disable hooks <full worker prompt text>")
 ```
 - Codex runs as a subprocess via Bash(), not Agent().
 - Each Bash() call = fresh context for codex.
 - `OMX_STATE_ROOT` prefixes EVERY codex launch (worker, verifier, and consensus — see ⑦a/⑦b below), pointed at the campaign-scoped `.rlp-desk/logs/<slug>/runtime/omx-state` **root** (mkdir -p it before the first launch if absent). `OMX_STATE_ROOT` is a root, not the state dir itself — actual state lands one level deeper, at `.rlp-desk/logs/<slug>/runtime/omx-state/.omx/state/…`. oh-my-codex hooks read project-local `.omx/state/` by default; without isolation, stale interactive-session state (e.g. an unreleased input_lock, or a large pre-existing `.omx/state/sessions/` tree from the operator's own Claude Code sessions) can block/wedge a campaign codex worker. `--disable plugins` does NOT cover hooks.json native hooks, so env isolation is required (3 incidents 2026-08-09 — see failure-modes.md F1.18).
+- **`--disable plugins --disable hooks` on EVERY codex launch (worker, verifier, consensus) — see failure-modes.md F1.19.** `~/.codex/hooks.json` registers the oh-my-codex native hook on 7 lifecycle events globally (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, PreCompact, PostCompact, Stop), and `--disable plugins` does not cover native hooks. Its `UserPromptSubmit` **keyword-detector** scans the prompt of every codex launch and auto-activates deep-interview from ordinary prose in **our own** worker prompt (`Don't assume.`, seeded by the shared worker prompt); `PreToolUse` then blocks every write tool for the rest of that codex session — observed 2026-08-09, 11 blocks, worker aborted with zero files written. **This is NOT stale operator state**: it happens inside the campaign's own isolated `OMX_STATE_ROOT`, so `OMX_STATE_ROOT` cannot prevent it (keep it anyway — it still isolates an `omx` CLI a worker may invoke directly).
+- **Probe ONCE, before the first codex dispatch, and reuse the result for the whole campaign.** An unknown feature name is a hard error (`codex --disable bogus` → `Error: Unknown feature flag`), which on an older CLI would break every launch. Run `Bash("codex features list | awk '{print $1}' | grep -qx hooks && echo yes || echo no")` one time and remember the answer; if `no`, omit `--disable hooks` from every launch (keep `--disable plugins`). Do NOT re-probe per dispatch — it costs ~40ms on every worker/verifier/consensus leg for no benefit. Escape hatch: if the operator set `RLP_CODEX_HOOKS=1`, skip the probe and omit `--disable hooks`.
+- **If a codex dispatch fails with `Unknown feature flag`** (the probe went stale because the operator updated codex mid-campaign), retry that dispatch exactly once without `--disable hooks`, and omit the flag for the rest of the campaign. Do not retry a second time, and do not apply this to any other failure text.
+- Do NOT add `--dangerously-bypass-approvals-and-sandbox` to these `codex exec` launches. Native codex works under the default approval/sandbox posture; adding it here would be a silent posture change, not a parity fix.
 
 
 **⑥ Read memory.md again** (Worker updated it)
+
+*Channel A — memory.md **"Stop Status"** section.* This is the control-flow channel for step ⑥ and its value set is `continue|verify|blocked`. It is a **different channel** from `iter-signal.json`'s `status` field below; never carry a value across between them.
 - `stop=continue` → go to ⑧
 - `stop=verify` → go to ⑦
 - `stop=blocked` → write BLOCKED sentinel, stop
+
+*Channel B — `iter-signal.json`.* Written by the Worker, canonical key `status`, values `continue|verify|verify_partial|blocked`.
 - Also read `iter-signal.json` for `us_id` field (which US was just completed)
+- If `iter-signal.json` has `"status":"verify_partial"` → the Worker finished only part of `us_id`. Go to ⑦ and verify the completed part scoped to `us_id`, then return to ④ for the remainder — do NOT mark `us_id` complete and do NOT treat it as an unknown state. (The shared worker prompt authorizes `verify_partial`, so the leader must have a branch for it.)
 - If `--debug`: debug_log `[FLOW] iter=N phase=worker_done_signal engine=<engine> status=<stop_status> us_id=<us_id>`
 
 **CRITICAL: Immediately proceed to ⑦. Do NOT pause, do NOT ask the user, do NOT wait for confirmation. The loop is autonomous.**
@@ -602,7 +611,7 @@ Agent(
 
 If codex engine:
 ```
-Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> --reasoning-effort <codex_reasoning> <full verifier prompt text>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> --reasoning-effort <codex_reasoning> --disable plugins --disable hooks <full verifier prompt text>")
 ```
 - Same `OMX_STATE_ROOT` isolation as the Worker codex launch (④ above) — one shared campaign-scoped omx-state dir per campaign.
 
@@ -919,7 +928,7 @@ Run options:
         │     └── reads done-claim, runs checks, writes verdict
         │
   Bash() ───▶ [Worker/Verifier: codex CLI subprocess]
-              └── `codex exec --model <m> --reasoning-effort <r> <prompt>`
+              └── `codex exec --model <m> --reasoning-effort <r> --disable plugins --disable hooks <prompt>`
 ```
 
 ### Tmux Mode (`--mode tmux`)

@@ -118,6 +118,8 @@ fetch "$REPO_URL/docs/rlp-desk/multi-mission-orchestration.md" "$DESK_DIR/docs/r
 fetch "$REPO_URL/docs/rlp-desk/signal-protocol.md" "$DESK_DIR/docs/rlp-desk/signal-protocol.md"
 # 2026-08-09 owner standing rule: SV/dogfood verification ledger (append-only).
 fetch "$REPO_URL/docs/rlp-desk/verification-history.md" "$DESK_DIR/docs/rlp-desk/verification-history.md"
+# 2026-08-10: FMEA atlas — leader specs cite F1.x by name (US-001 F1.19).
+fetch "$REPO_URL/docs/rlp-desk/failure-modes.md" "$DESK_DIR/docs/rlp-desk/failure-modes.md"
 # Dev meta docs under docs/rlp-desk/internal/ are NOT fetched: the directory is
 # gitignored (local-only), so its raw URLs 404 and `fetch`'s curl -f would abort
 # the whole install (2026-08-10 dogfood finding — the curl channel was broken

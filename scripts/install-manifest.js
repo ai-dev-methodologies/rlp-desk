@@ -71,6 +71,8 @@ function runtimeSources(home) {
     ["docs/rlp-desk/signal-protocol.md", path.join(docsDir, "rlp-desk", "signal-protocol.md")],
     // 2026-08-09 owner standing rule: SV/dogfood verification ledger (append-only).
     ["docs/rlp-desk/verification-history.md", path.join(docsDir, "rlp-desk", "verification-history.md")],
+    // 2026-08-10: FMEA atlas — both leader specs cite F1.x entries by name (US-001 F1.19).
+    ["docs/rlp-desk/failure-modes.md", path.join(docsDir, "rlp-desk", "failure-modes.md")],
   ];
 }
 

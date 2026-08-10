@@ -45,7 +45,9 @@ test('US-002 AC2.2 happy: buildCodexCmd tui includes codex model and reasoning f
 
   assert.match(
     command,
-    /^codex -m 'gpt-5\.5' -c 'model_reasoning_effort="high"' --disable plugins --dangerously-bypass-approvals-and-sandbox$/,
+    // US-001: `--disable hooks` joins `--disable plugins` (F1.19 native-hook
+    // isolation). Node emits it unconditionally as dead-code parity.
+    /^codex -m 'gpt-5\.5' -c 'model_reasoning_effort="high"' --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox$/,
   );
 });
 
@@ -56,7 +58,8 @@ test('US-002 AC2.2 boundary: buildCodexCmd omits reasoning when it is undefined'
 
   assert.equal(
     command,
-    "codex -m 'gpt-5.5' --disable plugins --dangerously-bypass-approvals-and-sandbox",
+    // US-001: see the AC2.2 happy case above.
+    "codex -m 'gpt-5.5' --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox",
   );
 });
 

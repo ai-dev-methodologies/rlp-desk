@@ -101,9 +101,13 @@ _geo_style=$(grep -c '_CODEX_LAUNCH_FAIL_REASON="Worker codex update dialog\|_CO
 # are submit-anchored RE-dispatches inside poll loops (codex-only, or a claude
 # sibling of `|| true`) — legitimately best-effort. Count-pinned so a NEW
 # unguarded dispatch fails loud.
+# US-001: every codex dispatch now routes through the _codex_launch_with_hook_fallback
+# chokepoint (launch command first, launcher fn + its args after). The F-1 guard
+# invariant is unchanged — only the call form moved, so the detectors below match
+# the wrapper form. The wrapper propagates the launcher's rc verbatim.
 # (d.1) run_single_verifier initial — gated + durable reason + return 1.
 _disp=$(awk '/"verifier-dispatch"/,/Verifier.suffix codex TUI dispatched/' "$RUN")
-{ grep -qE 'if ! launch_verifier_codex "\$VERIFIER_PANE" "\$prompt_file" "\$iter" "\$verifier_launch"; then' <<< "$_disp" \
+{ grep -qE 'if ! _codex_launch_with_hook_fallback "\$verifier_launch" launch_verifier_codex "\$VERIFIER_PANE" "\$prompt_file" "\$iter"; then' <<< "$_disp" \
   && grep -qE 'VERIFIER_ABORT_REASON="\$\{_CODEX_LAUNCH_FAIL_REASON' <<< "$_disp" \
   && grep -qE '^[[:space:]]*return 1' <<< "$_disp" ; } \
   && ok "(d.1) run_single_verifier codex dispatch guarded (if ! → durable reason + return 1)" \
@@ -111,25 +115,25 @@ _disp=$(awk '/"verifier-dispatch"/,/Verifier.suffix codex TUI dispatched/' "$RUN
 
 # (d.2) _final_verify_one_us — BOTH the initial dispatch and the D-4 retry relaunch
 #       use `|| { … return 2 }` (mirrors the claude `|| { return 2 }` / `|| return 2`).
-_fv_guards=$(grep -cE 'launch_verifier_codex "\$VERIFIER_PANE" "\$verifier_prompt" "\$iter" "\$verifier_launch" \|\| \{' "$RUN")
+_fv_guards=$(grep -cE '_codex_launch_with_hook_fallback "\$verifier_launch" launch_verifier_codex "\$VERIFIER_PANE" "\$verifier_prompt" "\$iter" \|\| \{' "$RUN")
 { [[ "$_fv_guards" == 2 ]] } \
   && ok "(d.2) _final_verify_one_us codex dispatch + D-4 retry both guarded (|| { return 2 }) ($_fv_guards)" \
   || no "(d.2) expected 2 guarded final-verify codex dispatches, got $_fv_guards"
 
 # (d.3) consensus-parallel initial — gated (mirrors claude `return 1`).
-grep -qE 'if ! launch_verifier_codex "\$CONSENSUS_PANE" "\$codex_prompt" "\$iter" "\$codex_launch"; then' "$RUN" \
+grep -qE 'if ! _codex_launch_with_hook_fallback "\$codex_launch" launch_verifier_codex "\$CONSENSUS_PANE" "\$codex_prompt" "\$iter"; then' "$RUN" \
   && ok "(d.3) consensus-parallel codex dispatch guarded (if ! → return 1)" \
   || no "(d.3) consensus-parallel codex dispatch NOT guarded"
 
 # (d.4) inline verifier-relaunch initial — gated (mirrors claude update_status+continue).
-grep -qE 'if ! launch_verifier_codex "\$VERIFIER_PANE" "\$verifier_prompt" "\$ITERATION" "\$verifier_launch"; then' "$RUN" \
+grep -qE 'if ! _codex_launch_with_hook_fallback "\$verifier_launch" launch_verifier_codex "\$VERIFIER_PANE" "\$verifier_prompt" "\$ITERATION"; then' "$RUN" \
   && ok "(d.4) inline verifier-relaunch codex dispatch guarded (if ! → update_status + continue)" \
   || no "(d.4) inline verifier-relaunch codex dispatch NOT guarded"
 
 # (d.5) count guard — total=8, propagating-guarded=5 (3×`if !` + 2×`|| {`),
 #       best-effort re-dispatches=3. A new unguarded dispatch bumps the delta and fails.
 _lvc_total=$(grep -c 'launch_verifier_codex "' "$RUN")
-_lvc_ifguard=$(grep -c 'if ! launch_verifier_codex' "$RUN")
+_lvc_ifguard=$(grep -c 'if ! _codex_launch_with_hook_fallback .* launch_verifier_codex' "$RUN")
 _lvc_orguard=$(grep -cE 'launch_verifier_codex .*\|\| \{' "$RUN")
 _lvc_guarded=$(( _lvc_ifguard + _lvc_orguard ))
 _lvc_unguarded=$(( _lvc_total - _lvc_guarded ))

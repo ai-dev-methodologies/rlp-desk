@@ -675,9 +675,10 @@ Agent(
 If `--worker-model` or `--verifier-model` uses codex format (e.g., `spark:high`, `gpt-5.5:high`) (opt-in):
 ```
 # Worker or Verifier (codex engine)
-Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex -m <codex_model> -c model_reasoning_effort=<codex_reasoning> --dangerously-bypass-approvals-and-sandbox <prompt>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex -m <codex_model> -c model_reasoning_effort=<codex_reasoning> --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox <prompt>")
 ```
 - `OMX_STATE_ROOT` isolates every codex launch from the operator's interactive omx state (a campaign-scoped root — actual state lands at `<root>/.omx/state/…`, disjoint from the project's own `.omx/state/`); see F1.18 in `docs/rlp-desk/failure-modes.md`.
+- `--disable plugins --disable hooks` is on every campaign codex launch; see F1.19 in `docs/rlp-desk/failure-modes.md`. `~/.codex/hooks.json` registers the oh-my-codex native hook globally and `--disable plugins` does not cover it: its `UserPromptSubmit` keyword-detector auto-activates deep-interview from prose in the campaign's *own* worker prompt, after which `PreToolUse` blocks every write tool for that codex session. `OMX_STATE_ROOT` does not prevent this — the capture happens inside the campaign's own isolated root. `--disable hooks` is **probe-gated**: probe once per campaign for name presence of `hooks` in column 1 of `codex features list` (never the state column) and omit the flag if absent, because an unknown feature name is a hard error. If a launch fails with `Unknown feature flag`, retry once without the flag and omit it for the rest of the run. Escape hatch: `RLP_CODEX_HOOKS=1`.
 - Codex runs as a subprocess via `Bash()`, not `Agent()` — the Agent tool is Claude-specific.
 - Each `Bash()` call = fresh context for codex.
 - Claude is the default engine. Codex is explicitly opt-in.
@@ -737,10 +738,11 @@ When `WORKER_ENGINE=codex` or `VERIFIER_ENGINE=codex`, the `codex` CLI is used i
 # codex engine (opt-in)
 OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex -m gpt-5.5 \
   -c model_reasoning_effort="high" \
+  --disable plugins --disable hooks \
   --dangerously-bypass-approvals-and-sandbox \
   "$(cat /path/to/prompt.md)"
 ```
-The codex CLI is only required when an engine is set to `codex`. Claude remains the default engine throughout. `OMX_STATE_ROOT` is prefixed at every codex launch — see F1.18.
+The codex CLI is only required when an engine is set to `codex`. Claude remains the default engine throughout. `OMX_STATE_ROOT` is prefixed at every codex launch — see F1.18. `--disable plugins --disable hooks` is applied at every campaign codex launch — see F1.19; the `hooks` half is probe-gated (`RLP_CODEX_HOOKS=1` opts out) and stripped-and-retried once if the CLI rejects it.
 
 **Security implication:** Both `--dangerously-skip-permissions` (claude) and `--dangerously-bypass-approvals-and-sandbox` (codex) allow the CLI to execute code without user confirmation. The tmux runner requires this because there is no interactive user to approve each action. Only run tmux mode in trusted environments with trusted prompts.
 

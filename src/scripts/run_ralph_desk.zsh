@@ -131,6 +131,41 @@ if [[ "${RLP_CODEX_UPDATE_CHECK:-0}" == "1" ]]; then
 else
   _CODEX_NO_UPDATE_FLAG=" -c check_for_update_on_startup=false"
 fi
+# US-001 (failure-modes.md F1.19): codex NATIVE-HOOK isolation, probe-gated.
+# `~/.codex/hooks.json` registers oh-my-codex's native hook on all 8 lifecycle
+# events GLOBALLY. Its UserPromptSubmit keyword-detector scans the campaign's
+# OWN worker prompt, hits seeded prose like "Don't assume.", and auto-activates
+# deep-interview; PreToolUse then blocks every write tool for the rest of that
+# codex session (observed 2026-08-09 sv-oracle-nv: 11 blocks, worker aborted).
+# This is NOT stale operator state — it happens inside the campaign's own
+# isolated OMX_STATE_ROOT — and `--disable plugins` does not cover native
+# hooks, so only `--disable hooks` removes the surface.
+# Probe-gated because an unknown feature name is a HARD error (`codex --disable
+# bogus` → "Error: Unknown feature flag"), which would break EVERY launch on an
+# older CLI. Predicate = NAME PRESENCE in column 1 of `codex features list`,
+# never the state column: `apply_patch_freeform` is listed "removed false" yet
+# `codex --disable apply_patch_freeform` still exits 0, so a stable/true parse
+# would wrongly drop the flag on a future CLI. Probed against the `command -v
+# codex` absolute path — the same binary the pane runs (~40ms, no auth, no
+# network). Escape hatch: RLP_CODEX_HOOKS=1 leaves codex's native hooks
+# enabled (mirrors RLP_CODEX_UPDATE_CHECK=1 above).
+# Runtime staleness (an operator running `codex update` mid-campaign) is
+# handled by the _codex_launch_with_hook_fallback chokepoint in
+# lib_ralph_desk.zsh, which strips the flag and clears this global after one
+# "Unknown feature flag" launch failure.
+typeset -g _CODEX_NO_HOOKS_FLAG=""
+_probe_codex_hooks_flag() {
+  _CODEX_NO_HOOKS_FLAG=""
+  [[ "${RLP_CODEX_HOOKS:-0}" == "1" ]] && return 0
+  local _cx_probe_bin
+  _cx_probe_bin=$(command -v codex 2>/dev/null) || return 0
+  [[ -n "$_cx_probe_bin" ]] || return 0
+  if "$_cx_probe_bin" features list 2>/dev/null | awk '{print $1}' | grep -qx 'hooks'; then
+    _CODEX_NO_HOOKS_FLAG=" --disable hooks"
+  fi
+  return 0
+}
+_probe_codex_hooks_flag
 # Single canonical detector for the codex update dialog, shared by
 # _dismiss_codex_update_prompt and the durable-reason checks (belt-and-suspenders
 # if the dialog still appears — RLP_CODEX_UPDATE_CHECK=1 or a future CLI). 0.145.0
@@ -870,6 +905,7 @@ launch_worker_codex() {
 
   log "  Launching Worker codex TUI in pane $pane_id..."
   _CODEX_LAUNCH_FAIL_REASON=""   # F-1: fresh per launch (durable-reason convention)
+  _CODEX_LAUNCH_FAIL_TEXT=""     # US-001: raw failure text for _codex_launch_with_hook_fallback
   # Clean pane before launch: kill any lingering process, ensure fresh shell
   local _pre_cmd
   _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
@@ -934,6 +970,9 @@ launch_worker_codex() {
     # caller's BLOCKED sentinel names it (not a generic "not ready" text).
     local _final_pane
     _final_pane=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    # US-001 (F1.19): publish the raw capture so _codex_launch_with_hook_fallback
+    # can spot a stale-probe "Unknown feature flag: hooks" rejection and retry once.
+    _CODEX_LAUNCH_FAIL_TEXT="$_final_pane"
     if print -r -- "$_final_pane" | grep -qiE "$_RLP_CODEX_UPDATE_RE" 2>/dev/null; then
       _CODEX_LAUNCH_FAIL_REASON="Worker codex update dialog could not be dismissed within 30s (attempted ${_codex_update_attempts}x) — run 'codex update' to clear it, or keep the check_for_update_on_startup=false injection enabled (do not set RLP_CODEX_UPDATE_CHECK=1)"
       log_error "$_CODEX_LAUNCH_FAIL_REASON"
@@ -1082,6 +1121,7 @@ launch_verifier_codex() {
 
   log "  Launching Verifier codex TUI in pane $pane_id..."
   _CODEX_LAUNCH_FAIL_REASON=""   # F-1: fresh per launch (durable-reason convention)
+  _CODEX_LAUNCH_FAIL_TEXT=""     # US-001: raw failure text for _codex_launch_with_hook_fallback
   # Clean pane before launch: kill any lingering process, ensure fresh shell
   local _pre_cmd
   _pre_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || echo "")
@@ -1133,6 +1173,9 @@ launch_verifier_codex() {
     # dispatch guard threads it into VERIFIER_ABORT_REASON (not "not ready").
     local _final_pane
     _final_pane=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    # US-001 (F1.19): publish the raw capture so _codex_launch_with_hook_fallback
+    # can spot a stale-probe "Unknown feature flag: hooks" rejection and retry once.
+    _CODEX_LAUNCH_FAIL_TEXT="$_final_pane"
     if print -r -- "$_final_pane" | grep -qiE "$_RLP_CODEX_UPDATE_RE" 2>/dev/null; then
       _CODEX_LAUNCH_FAIL_REASON="Verifier codex update dialog could not be dismissed within 30s (attempted ${_codex_update_attempts}x) — run 'codex update' to clear it, or keep the check_for_update_on_startup=false injection enabled (do not set RLP_CODEX_UPDATE_CHECK=1)"
       log_error "$_CODEX_LAUNCH_FAIL_REASON"
@@ -2898,7 +2941,7 @@ restart_worker() {
   # Re-launch worker (tmux interactive pattern)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
     _require_codex_effort "$WORKER_CODEX_REASONING" "worker-restart"
-    safe_send_keys "$pane_id" "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
+    safe_send_keys "$pane_id" "$(_codex_launch_with_hook_fallback "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox")"
   else
     safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
   fi
@@ -3093,11 +3136,11 @@ write_worker_trigger() {
   # Engine-specific launch command (expanded at write time)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
     _require_codex_effort "$WORKER_CODEX_REASONING" "worker-trigger"
-    local engine_cmd="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} \\
+    local engine_cmd=$(_codex_launch_with_hook_fallback "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} \\
   -m $WORKER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\"${_CODEX_NO_UPDATE_FLAG} \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
-  \"\$(cat $prompt_file)\""
+  \"\$(cat $prompt_file)\"")
     local engine_comment="# Run codex with fresh context (fallback trigger — TUI primary launch via launch_worker_codex)"
   else
     local engine_cmd
@@ -3265,11 +3308,11 @@ write_verifier_trigger() {
   # Engine-specific launch command (expanded at write time)
   if [[ "$verifier_engine" = "codex" ]]; then
     _require_codex_effort "$VERIFIER_CODEX_REASONING" "verifier-trigger"
-    local engine_cmd="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
+    local engine_cmd=$(_codex_launch_with_hook_fallback "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
   -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\"${_CODEX_NO_UPDATE_FLAG} \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\" \\
-  > >(tee $output_log) 2>&1"
+  > >(tee $output_log) 2>&1")
     local engine_comment="# Run codex with fresh context (governance.md s7 step 7) — process substitution preserves tty"
   else
     local engine_cmd
@@ -4012,7 +4055,7 @@ run_single_verifier() {
     # window + 2 re-dispatches before dying with a misleading "never started"
     # (incident 2026-07-22). Thread the durable launch reason so the persisted
     # BLOCKED names the true cause + remedy.
-    if ! launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"; then
+    if ! _codex_launch_with_hook_fallback "$verifier_launch" launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter"; then
       VERIFIER_ABORT_REASON="${_CODEX_LAUNCH_FAIL_REASON:-Verifier$suffix codex failed to start}"
       log_error "$VERIFIER_ABORT_REASON"
       return 1
@@ -4122,7 +4165,7 @@ run_single_verifier() {
               (( _redispatch_count++ ))
               log "  Codex verifier$suffix: no execution-start signal within ${SUBMISSION_TIMEOUT}s (banner-delayed / prompt unsubmitted) — re-dispatching (${_redispatch_count}/${SUBMISSION_MAX_REDISPATCH})."
               log_debug "[FLOW] iter=$iter codex verifier$suffix submission_failure redispatch=$_redispatch_count"
-              launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter" "$verifier_launch"
+              _codex_launch_with_hook_fallback "$verifier_launch" launch_verifier_codex "$VERIFIER_PANE" "$prompt_file" "$iter"
               codex_poll_start=$(date +%s)   # reset the submit window for the re-dispatch
               _banner_reinject_done=0        # request-g: fresh dispatch → allow one more early re-inject
             else
@@ -4267,7 +4310,7 @@ _final_verify_one_us() {
     # F-1 (v0.22.21): guard the return like the claude branch below (return 2 hard-
     # fail) — an unchecked launch let a stuck update dialog fall through to verdict
     # polling. Thread the durable launch reason (cf. :3898).
-    launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
+    _codex_launch_with_hook_fallback "$verifier_launch" launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" || {
       log_error "${_CODEX_LAUNCH_FAIL_REASON:-Failed to launch final verifier for $us}"
       return 2
     }
@@ -4312,7 +4355,7 @@ _final_verify_one_us() {
       # F-1 (v0.22.21): mirror the claude branch's `|| return 2` on this D-4 retry
       # relaunch — same claude-guarded / codex-unguarded asymmetry as the initial
       # dispatch above; an unchecked relaunch would re-mask a stuck update dialog.
-      launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" "$verifier_launch" || {
+      _codex_launch_with_hook_fallback "$verifier_launch" launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$iter" || {
         log_error "${_CODEX_LAUNCH_FAIL_REASON:-Failed to relaunch final verifier for $us (D-4 retry)}"
         return 2
       }
@@ -4651,7 +4694,7 @@ run_consensus_verification_parallel() {
   # F-1 (v0.22.21): guard the return like the claude branch above (return 1) — an
   # unchecked launch let a stuck update dialog fall through to the both-verdict
   # poll. Thread the durable launch reason (cf. :3898).
-  if ! launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter" "$codex_launch"; then
+  if ! _codex_launch_with_hook_fallback "$codex_launch" launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter"; then
     VERIFIER_ABORT_REASON="${_CODEX_LAUNCH_FAIL_REASON:-Parallel consensus: codex verifier failed to start}"
     log_error "$VERIFIER_ABORT_REASON"
     return 1
@@ -4760,7 +4803,7 @@ run_consensus_verification_parallel() {
           (( _cx_redisp++ ))
           log "  Parallel consensus codex: no execution-start signal within ${SUBMISSION_TIMEOUT}s — re-dispatching (${_cx_redisp}/${SUBMISSION_MAX_REDISPATCH})."
           log_debug "[FLOW] iter=$iter consensus_parallel codex submission_failure redispatch=$_cx_redisp"
-          launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter" "$codex_launch"
+          _codex_launch_with_hook_fallback "$codex_launch" launch_verifier_codex "$CONSENSUS_PANE" "$codex_prompt" "$iter"
           _cx_disp=$(date +%s)
         else
           VERIFIER_ABORT_REASON="Parallel consensus codex never started (no start signal after ${SUBMISSION_MAX_REDISPATCH} re-dispatches) — submission failure"
@@ -5497,7 +5540,7 @@ main() {
       if [[ "$WORKER_ENGINE" = "codex" ]]; then
         _require_codex_effort "$WORKER_CODEX_REASONING" "worker-dispatch"
         worker_launch="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
-        if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
+        if ! _codex_launch_with_hook_fallback "$worker_launch" launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION"; then
           log "  Worker codex failed to start — replacing pane and retrying once (F-11)."
           log_debug "[GOV] iter=$ITERATION worker_start_failed=true action=replace_retry engine=codex"
           # ② request-j: a replace hard-fail already wrote the BLOCKED sentinel and
@@ -5508,7 +5551,7 @@ main() {
             return 1
           fi
           WORKER_PANE=$(jq -r '.panes.worker' "$SESSION_CONFIG")
-          if ! launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION" "$worker_launch"; then
+          if ! _codex_launch_with_hook_fallback "$worker_launch" launch_worker_codex "$WORKER_PANE" "$worker_prompt" "$ITERATION"; then
             write_blocked_sentinel "Worker codex failed to start in pane after replace+retry" "" "infra_failure"
             update_status "blocked" "worker_start_failed"
             return 1
@@ -6021,7 +6064,7 @@ main() {
             # F-1 (v0.22.21): guard the return like the claude branch (update_status
             # + continue) — an unchecked launch let a stuck update dialog fall
             # through to the strike poll loop. Thread the durable reason (cf. :3898).
-            if ! launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"; then
+            if ! _codex_launch_with_hook_fallback "$verifier_launch" launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION"; then
               log_error "${_CODEX_LAUNCH_FAIL_REASON:-Verifier codex failed to start}"
               update_status "verifier" "start_failed"
               continue
@@ -6070,7 +6113,7 @@ main() {
             fi
             VERIFIER_PANE=$(jq -r '.panes.verifier' "$SESSION_CONFIG")
             if [[ "$_v_eng" = "codex" ]]; then
-              launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch"
+              _codex_launch_with_hook_fallback "$verifier_launch" launch_verifier_codex "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION"
             else
               launch_verifier_claude "$VERIFIER_PANE" "$verifier_prompt" "$ITERATION" "$verifier_launch" || true
             fi

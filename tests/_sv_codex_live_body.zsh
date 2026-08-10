@@ -32,7 +32,7 @@ print "  session=$SESSION_NAME"
 PF="$ROOT/sv_prompt.md"
 print "Respond in the chat with exactly the single token SELFVERIFY_OK and then stop. Do NOT modify, create, or delete any files, and do NOT run any shell commands." > "$PF"
 
-worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --dangerously-bypass-approvals-and-sandbox"
+worker_launch="${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox"
 print "  launch cmd: $worker_launch"
 
 print "▶ calling REAL launch_worker_codex (30s ready budget + 15-round submit)…"

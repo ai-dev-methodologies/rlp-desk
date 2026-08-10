@@ -4,7 +4,12 @@
 # Each test isolates pane state via tmux clear-history + clear.
 set -uo pipefail
 
-SRC=/Users/kyjin/dev/own/ai-dev-methodologies/ai-dev-methodologies-hq/workspace/rlp-desk
+# 2026-08-10: SRC was a hardcoded absolute path to the original author's machine
+# (/Users/kyjin/...), so on any other box the sed extraction below read a
+# nonexistent file, TMP_LIB came out EMPTY, and every harness check failed with
+# "command not found" — the full gate was unrunnable off that machine. Derive
+# from the script's own location instead (same ${0:A:h} idiom as sv-gate-full.sh).
+SRC="${0:A:h:h}"
 RUN="$SRC/src/scripts/run_ralph_desk.zsh"
 
 TMP_LIB=$(mktemp -t e2e-real-tmux.XXXXXX)
