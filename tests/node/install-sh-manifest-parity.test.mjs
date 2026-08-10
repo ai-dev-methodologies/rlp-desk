@@ -2,9 +2,11 @@
 //
 // TEXT-ONLY parity check between install.sh's `fetch` targets and the shared
 // scripts/install-manifest.js runtimeSources() list — in both directions.
-// This file performs no network access and never executes install.sh; the
-// only child_process use here is a plain `bash -n` syntax check (never a
-// real run). Campaign sv-oracle-nv, US-001.
+// This file performs no network access and never executes install.sh. Its
+// only child_process uses are read-only: a plain `bash -n` syntax check
+// (never a real run) and `git ls-files` to determine which files under a
+// shipped-in-full markdown directory are tracked (never mutates state).
+// Campaign sv-oracle-nv, US-001, US-005.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -148,7 +150,114 @@ function fullGuardIsClean(content, sourcePaths, prefixes, allowlist, repoRootFor
   return { missing, unexplained, unparsable };
 }
 
+// ---------------------------------------------------------------------------
+// US-005a — markdown-directory shipping decision pin (AC1-AC6).
+//
+// Dated decision (2026-08-10, US-005a of manifest-followup-wave.md, Option
+// A — "curl = user-facing minimum"): npm/postinstall ships every markdown
+// directory in full (postinstall.js consumes markdownDirectories()
+// directly); the curl channel (install.sh) is the user-facing minimum and
+// ships blueprints in full while explicitly excluding plans + internal:
+//   - docs/rlp-desk/internal is gitignored (0 tracked files) — a fetch line
+//     for a file under it 404s, and `curl -f` aborts the WHOLE install.
+//     That is exactly the 2026-08-10 break this exclusion set pins as a
+//     decision, not an accident (the fetch lines were deleted in 251f766).
+//   - docs/rlp-desk/plans is maintainer-facing planning history, not needed
+//     for a fresh curl install; npm/postinstall ships plans, curl does not.
+// A directory added to markdownDirectories() later must be added to one of
+// the two sets below, or the AC1 test FAILS naming it (never silently
+// defaults into either bucket).
+// ---------------------------------------------------------------------------
+const MARKDOWN_DIR_CURL_EXCLUSIONS = new Set(['docs/rlp-desk/plans', 'docs/rlp-desk/internal']);
+const MARKDOWN_DIR_SHIPPED_IN_FULL = new Set(['docs/rlp-desk/blueprints']);
+
+function classifyMarkdownDirs(prefixes, excluded, shippedInFull) {
+  const unclassified = prefixes.filter((dir) => !excluded.has(dir) && !shippedInFull.has(dir));
+  return { unclassified };
+}
+
+// AC2/AC3: for a shipped-in-full directory, every git-tracked file (never
+// readdir — the directory may hold untracked local scratch in normal
+// maintainer use) must have a literal fetch line in install.sh. This is a
+// read-only, non-mutating `git ls-files` query — see US-005b below for why
+// this does not conflict with the no-exec property that file guards.
+function gitTrackedFiles(repoRootPath, relativeDir) {
+  const output = execFileSync('git', ['ls-files', relativeDir], { cwd: repoRootPath, encoding: 'utf8' });
+  return output.split('\n').filter(Boolean);
+}
+
+function shippedInFullCoverage(relativeDir, entries, repoRootPath) {
+  const tracked = gitTrackedFiles(repoRootPath, relativeDir);
+  const fetchedPaths = new Set(entries.filter((e) => !e.dynamic).map((e) => e.path));
+  const missing = tracked.filter((p) => !fetchedPaths.has(p));
+  return { tracked, missing };
+}
+
+// AC4: exclusion is bidirectional — any fetch line under an excluded dir
+// (plans/internal) is itself a failure, not merely a non-requirement.
+function exclusionViolations(entries, excludedPrefixes) {
+  return entries.filter(
+    (e) => !e.dynamic && excludedPrefixes.some((prefix) => e.path === prefix || e.path.startsWith(`${prefix}/`))
+  );
+}
+
+// ---------------------------------------------------------------------------
+// US-005b — no-exec broadening (AC7-AC10).
+//
+// Enumerates every node:child_process API name so a future spawnSync/
+// execSync/exec/fork/execFile call — or an execFileSync call that runs
+// bash/install.sh outside the one sanctioned syntax-check shape — is
+// caught, not just the single narrow shape the original AC4-boundary
+// regex covered (see that regex a few hundred lines below).
+//
+// Scope: this predicate flags occurrences that could EXECUTE bash or
+// install.sh specifically — the concrete risk US-005b's problem statement
+// names ("any of which would run the installer"). It does not forbid other
+// child_process targets such as `git` (used strictly read-only above, for
+// AC2's git-tracked-file check) — AC8's import-binding check is the
+// separate, unconditional guard: only execFileSync may ever be imported
+// here, regardless of target.
+// ---------------------------------------------------------------------------
+const CHILD_PROCESS_EXEC_APIS = ['exec', 'execSync', 'execFile', 'execFileSync', 'spawn', 'spawnSync', 'fork'];
+
+function findForbiddenExecCalls(source, apiNames) {
+  const forbidden = [];
+  for (const name of apiNames) {
+    const callRe = new RegExp(`\\b${name}\\s*\\(`, 'g');
+    let match;
+    while ((match = callRe.exec(source))) {
+      const snippet = source.slice(match.index, match.index + 200);
+      const isSanctioned = name === 'execFileSync' && /^execFileSync\(\s*['"]bash['"]\s*,\s*\[\s*['"]-n['"]/.test(snippet);
+      if (isSanctioned) continue;
+      const argsSnippet = snippet.split(')')[0] + ')';
+      // Catches both a bare 'bash' argument (execFileSync/spawnSync-style
+      // argv) and 'bash' as a word inside a larger single-string command
+      // (execSync/exec-style, e.g. 'bash install.sh').
+      const targetsBash = /['"][^'"]*\bbash\b[^'"]*['"]/.test(argsSnippet);
+      const targetsInstallShPath = /\binstallShPath\b/.test(argsSnippet);
+      if (targetsBash || targetsInstallShPath) {
+        forbidden.push({ api: name, snippet: snippet.split('\n')[0].trim() });
+      }
+    }
+  }
+  return forbidden;
+}
+
+// AC8: the sole permitted node:child_process import binding is execFileSync
+// — a future spawnSync/exec/... import fails at the import site, before any
+// call-site regex is needed.
+function childProcessImportBindings(source) {
+  const importMatch = /import\s*\{([^}]*)\}\s*from\s*['"]node:child_process['"]/.exec(source);
+  if (!importMatch) return [];
+  return importMatch[1].split(',').map((s) => s.trim()).filter(Boolean);
+}
+// --- SELF-SCAN BOUNDARY (test bodies below intentionally embed
+// forbidden-shaped strings as AC9 negative-test data; the US-005b no-exec
+// self-scan is deliberately scoped to source ABOVE this line) ---
+
 const SELF_SOURCE = fs.readFileSync(selfPath, 'utf8');
+const SELF_SCAN_BOUNDARY_MARKER = '// --- SELF-SCAN BOUNDARY';
+const GUARD_IMPLEMENTATION_SOURCE = SELF_SOURCE.slice(0, SELF_SOURCE.indexOf(SELF_SCAN_BOUNDARY_MARKER));
 const PKG = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
 
 const { entries: realEntries, unparsable: realUnparsable } = parseDownloads(installShContent);
@@ -351,4 +460,114 @@ test('AC5 negative: the parity guard is fully green end-to-end — zero missing,
   assert.deepEqual(result.missing, []);
   assert.deepEqual(result.unexplained, []);
   assert.deepEqual(result.unparsable, []);
+});
+
+// ---------------------------------------------------------------------------
+// US-005a — markdown-directory shipping decision pin.
+// ---------------------------------------------------------------------------
+
+test('US-005a AC1 happy: every markdownDirectories() dir is classified shipped-in-full or excluded', () => {
+  const { unclassified } = classifyMarkdownDirs(dirPrefixes, MARKDOWN_DIR_CURL_EXCLUSIONS, MARKDOWN_DIR_SHIPPED_IN_FULL);
+  assert.deepEqual(unclassified, [], `unclassified markdown directories: ${unclassified.join(', ')}`);
+});
+
+test('US-005a AC1/AC5 negative: a new directory added to markdownDirectories() without a decision FAILS naming it', () => {
+  const injected = dirPrefixes.concat(['docs/rlp-desk/totally-new-unclassified-dir']);
+  const { unclassified } = classifyMarkdownDirs(injected, MARKDOWN_DIR_CURL_EXCLUSIONS, MARKDOWN_DIR_SHIPPED_IN_FULL);
+  assert.deepEqual(unclassified, ['docs/rlp-desk/totally-new-unclassified-dir']);
+});
+
+test('US-005a AC6: the exclusion constant carries the dated, 2026-08-10 curl-abort rationale in its comment', () => {
+  const anchor = GUARD_IMPLEMENTATION_SOURCE.indexOf('MARKDOWN_DIR_CURL_EXCLUSIONS = new Set');
+  assert.ok(anchor > -1, 'sanity: the exclusion constant must exist in the guard implementation');
+  const commentBlock = GUARD_IMPLEMENTATION_SOURCE.slice(Math.max(0, anchor - 1200), anchor);
+  assert.ok(commentBlock.includes('2026-08-10'), 'must carry the decision date');
+  assert.ok(commentBlock.toLowerCase().includes('user-facing minimum'), 'must state the curl-channel = user-facing-minimum rule');
+  assert.ok(commentBlock.toLowerCase().includes('npm/postinstall ships'), 'must contrast with the npm/postinstall channel');
+  assert.ok(commentBlock.toLowerCase().includes('gitignored'), 'must explain internal/ is gitignored');
+  assert.ok(commentBlock.includes('404'), 'must explain the 404-abort break');
+  assert.ok(commentBlock.toLowerCase().includes('curl -f'), 'must explain curl -f aborts the whole install');
+});
+
+test('US-005a AC2 happy: every git-tracked file under docs/rlp-desk/blueprints has a fetch line', () => {
+  const { tracked, missing } = shippedInFullCoverage('docs/rlp-desk/blueprints', realEntries, repoRoot);
+  assert.deepEqual(missing, [], `blueprints files missing a fetch line: ${missing.join(', ')}`);
+  assert.equal(tracked.length, 4, 'sanity: matches the evidence table (git ls-files docs/rlp-desk/blueprints = 4)');
+});
+
+test('US-005a AC3 negative (mutation, non-vacuity): a synthetic tracked-but-unfetched blueprints file is reported missing by path', () => {
+  const { tracked } = shippedInFullCoverage('docs/rlp-desk/blueprints', realEntries, repoRoot);
+  const injectedTracked = tracked.concat(['docs/rlp-desk/blueprints/injected-untracked-by-test.md']);
+  const fetchedPaths = new Set(realEntries.filter((e) => !e.dynamic).map((e) => e.path));
+  const missing = injectedTracked.filter((p) => !fetchedPaths.has(p));
+  assert.deepEqual(missing, ['docs/rlp-desk/blueprints/injected-untracked-by-test.md']);
+});
+
+test('US-005a AC4 happy: install.sh has zero fetch lines under the excluded dirs (plans, internal) — exclusion is real, not vacuous', () => {
+  assert.ok(MARKDOWN_DIR_CURL_EXCLUSIONS.size >= 2, 'sanity: the exclusion set must be non-empty');
+  const violations = exclusionViolations(realEntries, [...MARKDOWN_DIR_CURL_EXCLUSIONS]);
+  assert.deepEqual(violations.map((e) => e.path), []);
+});
+
+test('US-005a AC4 negative: a fetch line injected under an excluded dir (plans) is reported — exclusion is bidirectional', () => {
+  const syntheticContent = `${installShContent}\nfetch "$REPO_URL/docs/rlp-desk/plans/rogue-plan.md" "$DESK_DIR/rogue-plan.md"\n`;
+  const { entries } = parseDownloads(syntheticContent);
+  const violations = exclusionViolations(entries, [...MARKDOWN_DIR_CURL_EXCLUSIONS]);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].path, 'docs/rlp-desk/plans/rogue-plan.md');
+});
+
+// ---------------------------------------------------------------------------
+// US-005b — no-exec broadening.
+// ---------------------------------------------------------------------------
+
+test('US-005b AC7 happy: the guard-implementation source has zero forbidden bash/install.sh exec occurrences', () => {
+  assert.ok(CHILD_PROCESS_EXEC_APIS.length === 7, 'sanity: all 7 node:child_process exec APIs must be enumerated');
+  const forbidden = findForbiddenExecCalls(GUARD_IMPLEMENTATION_SOURCE, CHILD_PROCESS_EXEC_APIS);
+  assert.deepEqual(forbidden, [], `forbidden exec occurrences: ${JSON.stringify(forbidden)}`);
+});
+
+test('US-005b AC10 boundary: the sanctioned execFileSync("bash", ["-n", shPath]) call is present and NOT flagged (non-vacuous)', () => {
+  assert.ok(
+    /execFileSync\(\s*['"]bash['"]\s*,\s*\[\s*['"]-n['"]/.test(GUARD_IMPLEMENTATION_SOURCE),
+    'sanity: the sanctioned call must actually exist in the guard implementation'
+  );
+  const forbidden = findForbiddenExecCalls(GUARD_IMPLEMENTATION_SOURCE, CHILD_PROCESS_EXEC_APIS);
+  assert.equal(forbidden.some((f) => f.api === 'execFileSync'), false);
+});
+
+test('US-005b AC10 trap: the forbidden-API name array/regex machinery does not false-positive against itself (same trap-handling as the AC4 network-module check)', () => {
+  // CHILD_PROCESS_EXEC_APIS declares these names as plain strings in an
+  // array literal, never as `name(...)` call syntax — this must not be
+  // mistaken for a real occurrence, mirroring how the AC4-negative test
+  // requires import/require syntax context so its own forbidden-module
+  // array doesn't self-trigger.
+  const forbidden = findForbiddenExecCalls(GUARD_IMPLEMENTATION_SOURCE, CHILD_PROCESS_EXEC_APIS);
+  assert.deepEqual(forbidden, []);
+});
+
+test('US-005b AC9 negative: spawnSync("bash", [installSh]) is rejected by name', () => {
+  const synthetic = "spawnSync('bash', [installSh]);";
+  const forbidden = findForbiddenExecCalls(synthetic, CHILD_PROCESS_EXEC_APIS);
+  assert.equal(forbidden.length, 1);
+  assert.equal(forbidden[0].api, 'spawnSync');
+});
+
+test('US-005b AC9 negative: execSync("bash install.sh") is rejected by name', () => {
+  const synthetic = "execSync('bash install.sh');";
+  const forbidden = findForbiddenExecCalls(synthetic, CHILD_PROCESS_EXEC_APIS);
+  assert.equal(forbidden.length, 1);
+  assert.equal(forbidden[0].api, 'execSync');
+});
+
+test('US-005b AC9 negative: execFileSync(installShPath) (no bash, no -n) is rejected by name', () => {
+  const synthetic = 'execFileSync(installShPath);';
+  const forbidden = findForbiddenExecCalls(synthetic, CHILD_PROCESS_EXEC_APIS);
+  assert.equal(forbidden.length, 1);
+  assert.equal(forbidden[0].api, 'execFileSync');
+});
+
+test('US-005b AC8 happy: the sole node:child_process import binding is execFileSync', () => {
+  const bindings = childProcessImportBindings(SELF_SOURCE);
+  assert.deepEqual(bindings, ['execFileSync']);
 });
