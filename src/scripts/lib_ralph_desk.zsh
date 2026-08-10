@@ -2870,11 +2870,18 @@ _pregate_register_fail_doneclaim_lint() {
 # mirror (oracle) — a shared-fixture parity matrix drives both (AC1.6).
 
 # _commit_oracle_tracked_dirty(): worker-attributable tracked-dirty files.
-# Mirrors Bug #8 Gate 3 semantics EXACTLY (run_ralph_desk.zsh): `git diff
+# Mirrors Bug #8 Gate 3's DIFF semantics (run_ralph_desk.zsh): `git diff
 # --name-only <_git_dirty_base>` of TRACKED files, MINUS the
 # CAMPAIGN_PREEXISTING_DIRTY set and MINUS untracked cruft. NOT `git status
 # --porcelain` (which counts untracked and would false-fail). Echoes one
 # worker-dirty file per line (empty when the tracked tree is clean).
+# US-002A divergence (deliberate): Gate 3's F-8 recovery now subtracts the UNION
+# of CAMPAIGN_PREEXISTING_DIRTY and the per-dispatch ITER_PREEXISTING_DIRTY. The
+# oracle keeps the campaign-only baseline: F-8 WRITES (it stages and commits), so
+# a mis-attributed file there is destructive; the oracle only READS, and a wider
+# dirty set makes it assert LESS — i.e. it fails safe toward "claim not
+# corroborated" → the fix loop. Widening the oracle's exclusion would weaken a
+# release gate for no correctness gain, so it was left alone.
 # Globals read: ROOT, CAMPAIGN_PREEXISTING_DIRTY.
 # Returns: 0 (ok — clean tree or worker-dirty list on stdout) / 2 (GIT-FC infra:
 # the git snapshot itself failed — a git error must NEVER be read as a clean
@@ -3557,6 +3564,10 @@ derive_verification_mode() {
   # re-verification while claude passed — the asymmetry was mode MISCLASSIFICATION,
   # not prompt divergence (the confirmation clause is already shared by both
   # engines via VERIFIER_PROMPT_BASE + write_verifier_trigger).
+  # US-002A note: F-8's exclusion is now (campaign ∪ per-dispatch) while this gate
+  # stays campaign-only — same read-vs-write rationale as
+  # _commit_oracle_tracked_dirty above (a narrower exclusion here only pins build
+  # mode, which is the safe direction).
   # Known caveat (accepted, mirrors Bug#8 D-25): CAMPAIGN_PREEXISTING_DIRTY
   # re-captures at each process start, so on a RELAUNCH a prior segment's
   # uncommitted file counts as preexisting and is excluded here. This is safe

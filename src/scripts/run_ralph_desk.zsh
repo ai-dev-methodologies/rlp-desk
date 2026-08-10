@@ -1437,8 +1437,10 @@ _bug8_check_synth_allowed() {
     # TERMINATED the campaign, stranding completed work — the #1 weak-model "never
     # completes" cause. Instead auto-commit the Worker's edits and proceed — but
     # scope the commit to the Worker's OWN files: exclude any tracked file ALREADY
-    # dirty before the campaign (CAMPAIGN_PREEXISTING_DIRTY) so an operator's
-    # pre-existing uncommitted work is NEVER swept into a Worker-recovery commit.
+    # dirty before the campaign (CAMPAIGN_PREEXISTING_DIRTY) OR before THIS
+    # iteration's worker dispatch (ITER_PREEXISTING_DIRTY) so an operator's — or a
+    # foreign editor's — uncommitted work is NEVER swept into a Worker-recovery
+    # commit.
     # The Verifier (test-spec) is the real correctness gate, so a genuine mid-write
     # bail still FAILs verify → fix loop; Bug #8's "no false PASS" intent is
     # preserved by the Verifier, not by abort.
@@ -1452,16 +1454,34 @@ _bug8_check_synth_allowed() {
     # excluded — that file is then re-done/committed by the fresh-context Worker, so
     # it is benign; and on relaunch HEAD already exists, so NEW-4's empty-tree path is
     # not even taken. Tracked as D-25 report-only, not a NEW-4 regression.)
+    #
+    # US-002A: the campaign snapshot alone is a PROCESS-START baseline, so a tracked
+    # file dirtied by a FOREIGN editor AFTER the campaign started reads as Worker
+    # output and gets swept in (field incident: an out-of-band `install.sh` edit
+    # landed in leader-recovery commit dd0e6d9). The foreign editor is a human or a
+    # NATIVE-mode leader — zsh-vs-zsh is already impossible via the per-ROOT_HASH
+    # exclusive runner lock, while the native leader takes no lock at all. So the
+    # exclusion is the UNION of the campaign baseline and ITER_PREEXISTING_DIRTY,
+    # re-snapshotted at every worker dispatch, which narrows the exposure window
+    # from the whole campaign to a single worker window. The union is folded INTO
+    # this `comm -23`, BEFORE the `-z` guard below, and MUST stay here: filtering
+    # `_bug8_add` after the array build instead would hit the zsh `(@f)` hazard the
+    # D-20 comment guards (an empty string through `"${(@f)var}"` yields ONE EMPTY
+    # element, so `${#_bug8_add}` is 1 — the empty-list BLOCK never fires and
+    # execution falls into `git diff --quiet HEAD -- ''`).
+    # Residual (documented in docs/rlp-desk/failure-modes.md, not fixed here): an
+    # edit made DURING the worker window is still attributed to the Worker.
     local _bug8_worker_files
     _bug8_worker_files=$(comm -23 \
       <(printf '%s\n' "$_bug8_dirty" | sort -u) \
-      <(printf '%s\n' "${CAMPAIGN_PREEXISTING_DIRTY:-}" | sort -u) \
+      <(printf '%s\n' "${CAMPAIGN_PREEXISTING_DIRTY:-}" "${ITER_PREEXISTING_DIRTY:-}" | sort -u) \
       | grep -v '^[[:space:]]*$')
     if [[ -z "$_bug8_worker_files" ]]; then
-      # Every dirty tracked file was already dirty BEFORE the campaign — the Worker
-      # committed its own work (or made no tracked change). Nothing to recover; do
-      # NOT commit the operator's pre-existing edits. Allow synthesis to proceed.
-      log "  Bug #8 F-8: only operator's pre-existing edits are dirty — Worker work already committed; proceeding without auto-commit."
+      # Every dirty tracked file was already dirty BEFORE the campaign, or before
+      # this iteration's worker dispatch — the Worker committed its own work (or
+      # made no tracked change). Nothing to recover; do NOT commit the operator's
+      # (or a foreign editor's) edits. Allow synthesis to proceed.
+      log "  Bug #8 F-8: only pre-existing edits are dirty (campaign ∪ iteration baseline) — Worker work already committed; proceeding without auto-commit."
       log_debug "[GOV] iter=$iter bug8=preexisting_only_no_commit us_id=$us_id"
     else
       local _bug8_first5
@@ -5181,6 +5201,15 @@ main() {
     exit 1
   fi
 
+  # US-002A: the SECOND half of the F-8 exclusion set — re-snapshotted at every
+  # worker dispatch (see the capture just after write_worker_trigger) so a file
+  # dirtied by a foreign editor mid-campaign is excluded too. Empty until the
+  # first dispatch, and on a relaunch it restarts empty by design: the campaign
+  # snapshot above is re-captured at the new process start and already covers
+  # everything dirty at that moment (D-25). Union-only, so it can never WIDEN
+  # the set of files F-8 stages.
+  typeset -g ITER_PREEXISTING_DIRTY=""
+
   # v0.22.3 (AC6 dogfood finding): resume finalize. If the durable ledger
   # already PROVES completion (the confirmation basis: full coverage, SHA
   # resolves and matches HEAD, PRD hash matches, tree clean), dispatching a
@@ -5528,6 +5557,29 @@ main() {
       # --- governance.md s7 step 4: Build worker prompt + trigger ---
       write_worker_trigger "$ITERATION"
       local worker_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-prompt.md"
+
+      # US-002A: per-iteration pre-existing-dirty baseline for the Bug #8 F-8
+      # leader-recovery scoping. CAMPAIGN_PREEXISTING_DIRTY is captured once at
+      # process start, so anything a FOREIGN editor (a human, or a native-mode
+      # leader — native registers no runner lock) dirties later reads as Worker
+      # output and gets auto-committed. Re-snapshot here — the LAST statement
+      # before the Worker can touch the tree — so Gate 3 subtracts the union and
+      # the exposure window shrinks from the whole campaign to one worker window.
+      # Dispatch-only on purpose: a SKIP_NEXT_WORKER recovery/finalize iteration
+      # dispatches no Worker, so it keeps the prior baseline (which can only
+      # narrow the staged set, never widen it).
+      # GIT-FC (IMP-09 idiom): a snapshot failure must NEVER clear the baseline —
+      # collapsing the exclusion to ∅ is the fail-OPEN direction and is exactly
+      # how F-8 sweeps operator files. Retain the prior baseline and log; if git
+      # is still broken at recovery time, Gate 3's own fail-closed dirty check
+      # BLOCKs the iteration anyway.
+      local _iter_pre
+      if _iter_pre=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)"); then
+        ITER_PREEXISTING_DIRTY="$_iter_pre"
+      else
+        log_error "  [GIT-FC] per-iteration preexisting-dirty snapshot failed (iter $ITERATION) — retaining the prior baseline (never clearing it)."
+        log_debug "[GOV] iter=$ITERATION bug8=iter_preexisting_snapshot_failed retained_prior=1"
+      fi
 
       update_status "worker" "running"
 
