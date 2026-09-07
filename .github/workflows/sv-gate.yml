@@ -108,3 +108,45 @@ jobs:
           path: |
             tests/**/*.log
           if-no-files-found: ignore
+
+  # A-6 (reaudit wave 1): both jobs above run on macos-latest only, so a
+  # BSD-only shell construct (e.g. `sed -i ''`) never surfaced in CI — it
+  # silently broke on GNU sed (Ubuntu) while exiting 0. This job runs the
+  # Node suite plus the init data-safety regression test on ubuntu-latest so
+  # that class of defect is caught here instead of in a real GNU sed install.
+  ubuntu-compat:
+    name: Ubuntu compat (test:node + init data-safety)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install zsh + tmux
+        run: sudo apt-get update && sudo apt-get install -y zsh tmux
+
+      - name: Verify zsh + tmux + GNU sed available
+        run: |
+          zsh --version
+          tmux -V
+          sed --version | head -1
+
+      - name: Run init data-safety regression test (A-6 sed portability + A-7 PRD data loss)
+        run: bash tests/test_init_data_safety.sh
+
+      - name: Run Node suite (test:node)
+        continue-on-error: true   # FLIP to blocking after one clean CI cycle (GAP-1)
+        run: npm run test:node
+
+      - name: Upload logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-compat-logs
+          path: |
+            tests/**/*.log
+          if-no-files-found: ignore

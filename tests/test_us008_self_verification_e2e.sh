@@ -335,19 +335,36 @@ echo ""
 # ============================================================
 echo "--- AC4: runtime init --mode fresh ---"
 
+# reaudit wave 1 (A-7) note: all three AC4 tests below previously wrote a
+# junk PRD line directly (e.g. "ORIGINAL_PRD_AC4_MARKER", no `### US-NNN:`
+# heading) with NO prior real init run, and asserted it vanished after
+# --mode fresh. Under the OLD single-regex `_prd_is_authored`, any content
+# lacking that exact heading pattern was blindly classified "not authored"
+# and bare-`rm`'d with no backup — so the junk line happened to get
+# silently destroyed too, which is what these tests measured as success.
+# The new byte-exact detector (init_ralph_desk.zsh `_prd_is_authored`,
+# objective-masked — see init_ralph_desk.zsh:191-286) correctly treats that
+# same junk line as authored (it is not byte-identical to the live
+# scaffold) and PRESERVES it instead — the deliberate A-7 fix, not a
+# regression: silently destroying unrecognized PRD content with no recovery
+# copy was exactly the data-loss bug being fixed. Each fixture below now
+# runs a real first-run init to create the genuine, untouched scaffold PRD
+# (the true positive for "should be reset on fresh"), and asserts the reset
+# via the versioned-backup contract, exactly as
+# tests/test_us004_self_verification.sh AC4-runtime-happy does.
 test_ac4_happy() {
   local tmpdir
   tmpdir=$(mktemp -d)
   local desk="$tmpdir/.rlp-desk"
-  mkdir -p "$desk/plans"
-  echo "ORIGINAL_PRD_AC4_MARKER" > "$desk/plans/prd-test-slug.md"
+  ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" >/dev/null 2>&1
   ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" --mode fresh >/dev/null 2>&1
-  # After fresh mode, old PRD is deleted and replaced with template
+  # After fresh mode, an untouched scaffold PRD is regenerated AND the
+  # original is versioned (recoverable), never bare-deleted.
   if [[ -f "$desk/plans/prd-test-slug.md" ]] && \
-     ! grep -qF "ORIGINAL_PRD_AC4_MARKER" "$desk/plans/prd-test-slug.md"; then
-    pass "AC4-happy: fresh mode deletes original PRD (replaced with template)"
+     [[ -f "$desk/plans/prd-test-slug-v1.md" ]]; then
+    pass "AC4-happy: fresh mode resets an untouched scaffold PRD (regenerated + versioned backup)"
   else
-    fail "AC4-happy: original PRD content still present after fresh mode"
+    fail "AC4-happy: untouched scaffold PRD not reset after fresh mode (backup_exists=$( [[ -f "$desk/plans/prd-test-slug-v1.md" ]] && echo yes || echo no ))"
   fi
   rm -rf "$tmpdir"
 }
@@ -356,14 +373,19 @@ test_ac4_negative() {
   local tmpdir
   tmpdir=$(mktemp -d)
   local desk="$tmpdir/.rlp-desk"
-  mkdir -p "$desk/plans"
-  echo "MARKER_AC4_NEG" > "$desk/plans/prd-test-slug.md"
+  # Same fixture as AC4-happy, checked here for the output MESSAGE rather
+  # than the filesystem effect. The old message this test pinned was
+  # "Deleted: prd-test-slug.md" (bare-delete, pre-A-7); the deliberate new
+  # message for the same scaffold-reset path is "Reset:     prd-test-slug.md
+  # (scaffold template — backed up, regenerating)" — matches the
+  # --reset-plans branch's message shape in init_ralph_desk.zsh.
+  ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" >/dev/null 2>&1
   local output
   output=$(ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" --mode fresh 2>&1)
-  if echo "$output" | grep -qF "Deleted: prd-test-slug.md"; then
-    pass "AC4-negative: fresh mode outputs PRD deletion message"
+  if echo "$output" | grep -qF "Reset:     prd-test-slug.md"; then
+    pass "AC4-negative: fresh mode outputs the scaffold Reset message (not Preserved)"
   else
-    fail "AC4-negative: no PRD deletion message in output"
+    fail "AC4-negative: no scaffold Reset message in output"
   fi
   rm -rf "$tmpdir"
 }
@@ -372,15 +394,15 @@ test_ac4_boundary() {
   local tmpdir
   tmpdir=$(mktemp -d)
   local desk="$tmpdir/.rlp-desk"
-  mkdir -p "$desk/plans"
-  echo "MARKER_AC4_BND" > "$desk/plans/prd-test-slug.md"
-  # Use --mode=fresh (= form) instead of --mode fresh
+  # Same fixture as AC4-happy, verifying --mode=fresh (= form) CLI parsing
+  # triggers the identical reset path as the space form.
+  ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" >/dev/null 2>&1
   ROOT="$tmpdir" zsh -f "$INIT" test-slug "test objective" --mode=fresh >/dev/null 2>&1
   if [[ -f "$desk/plans/prd-test-slug.md" ]] && \
-     ! grep -qF "MARKER_AC4_BND" "$desk/plans/prd-test-slug.md"; then
-    pass "AC4-boundary: --mode=fresh (= form) works correctly (original PRD replaced)"
+     [[ -f "$desk/plans/prd-test-slug-v1.md" ]]; then
+    pass "AC4-boundary: --mode=fresh (= form) resets an untouched scaffold PRD (regenerated + versioned backup)"
   else
-    fail "AC4-boundary: --mode=fresh form failed"
+    fail "AC4-boundary: --mode=fresh form did not reset the untouched scaffold PRD"
   fi
   rm -rf "$tmpdir"
 }

@@ -132,13 +132,157 @@ detect_next_version() {
   echo "$n"
 }
 
+# A-6 fix (reaudit wave 1): `sed -i '' "script" file` (a bare empty-string
+# backup-suffix argument) is BSD/macOS-only. On GNU sed (Ubuntu CI) the
+# empty '' is consumed as the sed script itself (not the suffix), and the
+# real script is then read as a second script argument that GNU's `-i`
+# option-parsing rejects — sed exits 2, and `set -euo pipefail` aborts init
+# right after the heredoc has already written the prompt file, so the
+# `[[ ! -f "$F" ]]` idempotency guard skips the block forever on re-run
+# while placeholders like {DESK}/{SLUG} stay unexpanded and init exits 0.
+# `sed -i.bak ... && rm -f "$file.bak"` (already used elsewhere in this file
+# for the .gitignore edit) is the portable form: the suffix is attached
+# directly to -i with no space, which both BSD and GNU sed parse the same way.
+_sed_escape_repl() {
+  # Escape characters special to sed's replacement side (backslash, the `|`
+  # delimiter used at both call sites, and `&` which means "whole match") so
+  # a DESK/SLUG value containing one of them substitutes literally instead
+  # of corrupting or truncating the sed script. Done with zsh's own pattern
+  # substitution (not sed -e) to sidestep any BSD/GNU disagreement over
+  # backslash handling inside bracket expressions. Order matters: backslash
+  # must be escaped first, or the backslashes this function inserts for `|`
+  # and `&` would themselves get re-escaped by the following passes.
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//|/\\|}"
+  s="${s//&/\\&}"
+  printf '%s' "$s"
+}
+
+# Renders the {DESK}/{SLUG} placeholders left by a prompt-template heredoc,
+# portably, and self-heals on any failure: a partial or failed substitution
+# deletes the file instead of leaving it half-rendered, so the caller's
+# `[[ ! -f "$F" ]]` idempotency guard regenerates it correctly on next run.
+_render_prompt_placeholders() {
+  local f="$1"
+  local desk_esc slug_esc
+  desk_esc="$(_sed_escape_repl "$DESK")"
+  slug_esc="$(_sed_escape_repl "$SLUG")"
+  if ! sed -i.bak "s|{DESK}|$desk_esc|g; s|{SLUG}|$slug_esc|g" "$f"; then
+    rm -f "$f" "$f.bak"
+    echo "  ERROR: sed substitution failed on $f — removed so init regenerates it on next run" >&2
+    return 1
+  fi
+  rm -f "$f.bak"
+  if grep -qE '\{DESK\}|\{SLUG\}' "$f" 2>/dev/null; then
+    rm -f "$f"
+    echo "  ERROR: {DESK}/{SLUG} placeholder left unexpanded in $f — removed so init regenerates it on next run" >&2
+    return 1
+  fi
+  return 0
+}
+
+# A-7 fix (reaudit wave 1): the pristine PRD template, emitted by a function
+# so the fresh-mode authored detector can compare the WHOLE file against
+# exactly what the scaffold would generate — no marker heuristics. Mirrors
+# _emit_testspec_template below. $SLUG/$OBJECTIVE are the only variables the
+# scaffold interpolates, so both the writer (PRD generation, further below)
+# and the detector call this same function to stay byte-for-byte in sync.
+_emit_prd_template() {
+  local SLUG="$1"
+  local OBJECTIVE="$2"
+  cat <<EOF
+# PRD: $SLUG
+
+## Objective
+$OBJECTIVE
+
+## 위임 규칙 (Delegated Decisions) — REQUIRED
+<!--
+  request-d ①-a: a campaign runs with ZERO owner/user interaction. Every
+  decision the loop could meet at runtime MUST be pre-decided here at plan time.
+  A PRD that leaves a runtime decision to "ask the owner" is NOT complete — the
+  brainstorm 무인-완주 (unattended-completion) gate REJECTS it.
+  Fill each rule below with the concrete policy the worker follows without asking.
+  Delete a line only if you can prove the campaign can never meet that decision.
+-->
+- **신규 표면/산출물 등록 관례** (new surfaces/artifacts): [e.g. "register every new file under src/ in MANIFEST.txt; no owner sign-off needed"]
+- **원장·레지스트리 갱신 규칙** (ledger/registry updates): [e.g. "append to registry.json in sorted order; regenerate the derived index in the same commit"]
+- **fixture·합성데이터 처분** (fixtures / synthetic data): [e.g. "generate deterministic fixtures under tests/fixtures/; commit them; never call external services"]
+- **알려진 baseline 처분** (known baselines): [e.g. "rebaseline provenance fingerprints in-place when the source changed intentionally; document the delta in memory.md"]
+- (add any other decision class this campaign will meet — the goal is: the worker never needs an owner mid-run)
+
+## User Stories
+
+### US-001: [Title]
+- **Priority**: P0
+- **Size**: S|M|L
+- **Type**: code|visual|content|integration|infra
+- **Risk**: LOW|MEDIUM|HIGH|CRITICAL (governance §1c)
+- **Depends on**: []
+- **Acceptance Criteria** (Given/When/Then — domain language only):
+  - AC1:
+    - Given: [precondition in domain language]
+    - When: [action in domain language]
+    - Then: [expected outcome with quantitative criteria]
+  - AC2:
+    - Given: [precondition]
+    - When: [action]
+    - Then: [expected outcome with quantitative criteria]
+- **Boundary Cases**: [edge cases — empty input, max values, error conditions, concurrent access]
+- **Verification Layers**: [Fill per Risk level — LOW: L1+L3, MEDIUM: L1+L2(if ext deps)+L3, HIGH: L1+L2+L3+L4, CRITICAL: L1+L2+L3+L4+mutation (governance §1c)]
+- **Status**: not started
+
+## Non-Goals
+## Technical Constraints
+## Done When
+- All acceptance criteria pass with quantitative evidence
+- All boundary cases covered
+- All required verification layers executed (no TODO remaining)
+- Independent verifier confirms via Evidence Gate (governance §1b)
+EOF
+}
+
+# A-7 fix (reaudit wave 1, review follow-up): the byte-exact diff below
+# compares against _emit_prd_template rendered with the CURRENT $OBJECTIVE —
+# but a never-edited scaffold created with objective X, re-run via
+# `--mode fresh` with a different objective Y (the common flow:
+# `init <slug>` first with no objective, then
+# `init <slug> "<real objective>" --mode fresh`), would then differ from the
+# live-rendered template on the Objective line ALONE and get misclassified
+# as "authored" — preserving the stale objective while memory.md moves on to
+# the new one. Mask the Objective section (the span from the `## Objective`
+# heading up to, but not including, the next `##` heading — content, not
+# just the OBJECTIVE var, in case it spans multiple lines) to a fixed token
+# in BOTH sides before diffing, so an objective-only edit still counts as
+# "unauthored scaffold" (safe: still gets a versioned backup, never a bare
+# delete) while ANY other edit still counts as authored (safe: preserved).
+_normalize_prd_objective() {
+  awk '
+    /^## Objective$/ { print; print "<OBJECTIVE-MASKED-FOR-COMPARISON>"; in_obj=1; next }
+    in_obj && /^##/ { in_obj=0 }
+    in_obj { next }
+    { print }
+  '
+}
+
 # v0.22.3 US-002: per-file authored-plan detection. Fail-open toward
 # PRESERVE (misclassification is non-destructive: --reset-plans backs up
 # before any wipe, and a preserved template is merely regenerated content).
+# A-7 fix (reaudit wave 1): previously used a single regex
+# (^### US-[0-9]+: excluding [Title]) that did not match the dash heading
+# form _extract_prd_us_list officially accepts (### US-001 - Title), and
+# also missed an authored body sitting under an untouched placeholder
+# heading. Byte-exact diff against the live scaffold (same technique as
+# _testspec_is_authored) catches ANY edit, matching lib_ralph_desk.zsh's
+# broader heading acceptance and removing the false-negative class entirely.
+# Both sides are run through _normalize_prd_objective first (see above) so
+# an objective-only drift does not itself trigger a false "authored" verdict.
 _prd_is_authored() {
   local f="$1"
   [[ -f "$f" ]] || return 1
-  grep -E '^### US-[0-9]+:' "$f" 2>/dev/null | grep -vq '\[Title\]'
+  ! diff -q <(_emit_prd_template "$SLUG" "$OBJECTIVE" | _normalize_prd_objective) \
+            <(_normalize_prd_objective < "$f") >/dev/null 2>&1
 }
 # v0.22.3 (final-review P1-3): the pristine test-spec template, emitted by a
 # function so the fresh-mode authored detector can compare the WHOLE file
@@ -334,8 +478,27 @@ split_prd_by_us() {
 
   [[ -f "$prd_file" ]] || return 0
 
+  # reaudit wave 1 (SV-gate finding, follow-up) + correction: the loose gate
+  # uses the EXACT SAME regex (grep -E) as the strict boundary pattern
+  # below, so gate and splitter can never disagree. PRD story headings are
+  # 3-hash ONLY by committed contract — see
+  # tests/test_us001_prd_splitting.sh AC1-L3-neg: a PRD whose headings are
+  # `## US-001: Title` (2-hash) MUST produce ZERO split files, because
+  # `### US-NNN` is the PRD story level and `## US-NNN` is the TEST-SPEC
+  # section level (split_test_spec_by_us below) — a 2-hash line inside a
+  # PRD is not a story heading. An earlier revision of this fix briefly
+  # widened this to `#{2,3}` (2-or-3 hash) to mirror
+  # lib_ralph_desk.zsh's _extract_prd_us_list, which broke that contract
+  # (AC1-L3-neg went from 0 to 2 split files) — reverted. Note
+  # _extract_prd_us_list is DELIBERATELY more permissive than this
+  # splitter: it feeds the US-022 stale-signal quarantine scope check,
+  # where treating a 2-hash mention as "in scope" is the safer
+  # (non-destructive) direction, unlike splitting, which creates new
+  # per-US files an operator did not ask for. The real fix for the
+  # dash-form bug this round addressed is the separator alternation
+  # (colon/dash/space/end-of-line), not the hash count — kept below.
   local us_count
-  us_count=$(grep -c "^### US-" "$prd_file" 2>/dev/null) || us_count=0
+  us_count=$(grep -cE '^###[[:space:]]+US-[0-9]+([[:space:]:-]|$)' "$prd_file" 2>/dev/null) || us_count=0
   if [[ "$us_count" -eq 0 ]]; then
     echo "  WARNING: No US markers (### US-NNN:) found in PRD — falling back to full PRD injection" >&2
     # Clean up any stale per-US split files from previous runs to prevent stale artifacts
@@ -347,18 +510,94 @@ split_prd_by_us() {
     return 0
   fi
 
-  awk -v dir="$plans_dir" -v slug="$slug" '
-    /^### US-[0-9]+:/ {
-      if (out != "") close(out)
+  # reaudit wave 1 (SV-gate finding, MEDIUM+CRITICAL-scenario) + correction:
+  # - boundary regex accepts colon/dash/space/end-of-line after `US-NNN` —
+  #   was colon-only, which produced ZERO split files for a dash-form
+  #   heading (### US-001 - Title) even though us_count (the loose grep
+  #   above) correctly saw >=1 US. STILL 3-HASH ONLY, by contract — see the
+  #   loose-gate comment above (tests/test_us001_prd_splitting.sh
+  #   AC1-L3-neg): a 2-hash `## US-NNN` line is the test-spec section level
+  #   (split_test_spec_by_us below), not a PRD story heading, and must
+  #   never be split here even though it matches lib_ralph_desk.zsh's
+  #   _extract_prd_us_list (deliberately `#{2,3}` there — see the loose-gate
+  #   comment for why that function's broader acceptance is correct for its
+  #   own purpose and not a precedent for this one). init does not source
+  #   lib_ralph_desk.zsh (stays standalone by design), so the regex text is
+  #   duplicated here rather than the function; keep the two in sync by hand.
+  # - plans_dir goes through ENVIRON, not -v: POSIX awk -v applies C-style
+  #   backslash-escape processing to its value, so a project root path
+  #   containing a literal backslash silently corrupts the split target path
+  #   (verified: `awk -v dir='a\with\backslash'` prints `awithackslash`;
+  #   ENVIRON performs no such processing).
+  # - reaudit wave 1 (SV-gate review, MEDIUM, follow-up): `close(out)` then a
+  #   later `print > out` on the SAME filename REOPENS it in TRUNCATE mode
+  #   (verified: two `print > f` blocks separated by `close(f)` leave only
+  #   the second block's content). A PRD appendix/TOC line reusing an
+  #   earlier us_id (e.g. "### US-001 rationale", still 3-hash — a 2-hash
+  #   mention does not match this boundary at all, per the contract above)
+  #   used to silently wipe the real ### US-001 body written earlier. Fixed
+  #   the mechanism, not the regex: track which target files have been
+  #   opened this run (seen[]) — `>` (truncate) only the first time a given
+  #   us_id is written, `>>` (append) every time after, so a repeated
+  #   heading for the SAME us_id accumulates instead of destroying prior
+  #   content, while normal contiguous body lines between two DIFFERENT
+  #   headings behave exactly as before (this is the observably-identical
+  #   case verified byte-exact against git HEAD's split output — see test
+  #   case n).
+  PLANS_DIR="$plans_dir" awk -v slug="$slug" '
+    /^###[[:space:]]+US-[0-9]+([[:space:]:-]|$)/ {
       match($0, /US-[0-9]+/)
       us_id = substr($0, RSTART, RLENGTH)
-      out = dir "/prd-" slug "-" us_id ".md"
+      out = ENVIRON["PLANS_DIR"] "/prd-" slug "-" us_id ".md"
     }
-    out != "" { print > out }
+    out != "" {
+      if (out in seen) { print >> out } else { print > out; seen[out] = 1 }
+    }
   ' "$prd_file"
 
-  local count
-  count=$(ls "$plans_dir"/prd-"$slug"-US-*.md 2>/dev/null | wc -l | tr -d ' ')
+  # Count via a zsh array, not `ls glob(N) | wc -l`: with (N) nullglob and
+  # zero matches, the glob token vanishes entirely, so `ls` would receive NO
+  # argument at all and fall back to listing the current directory instead
+  # of reporting zero files — silently corrupting the precondition check
+  # below with an unrelated file count. An array assignment has no such
+  # pitfall: zero matches is simply an empty array.
+  local -a split_files
+  split_files=("$plans_dir"/prd-"$slug"-US-*.md(N))
+  local count=${#split_files}
+  # Loud, non-destructive precondition: the loose grep above saw >=1
+  # US-looking marker, but if the split above still produced ZERO files,
+  # fail clearly instead of silently proceeding with an empty per-US split
+  # set (which would starve the Worker of any US-scoped context), or, as
+  # the unguarded `ls` glob used to do without the `(N)` qualifier above,
+  # crashing on a NOMATCH error under `set -e`. Now that the loose gate
+  # above and this boundary regex are the identical pattern, they can only
+  # disagree via a hand-edit drift between the two copies (duplicated, not
+  # shared, since this file stays standalone — see the comment above) or
+  # duplicate US ids in the PRD; this check is kept as a defensive
+  # invariant for both. The caller (split_prd_by_us "$DESK/plans/prd-..."
+  # further below) restores test-spec on this failure, since this call
+  # sits between the PRD write and the Test Spec write and a fresh-mode
+  # run may have already version_file'd the old test-spec away by this
+  # point.
+  if [[ "$count" -eq 0 ]]; then
+    echo "  ERROR: PRD has $us_count US-looking marker(s) but none matched a" >&2
+    echo "         recognized heading form (### US-NNN: or ### US-NNN - Title," >&2
+    echo "         exactly 3 leading #). Fix the PRD heading(s) and re-run init." >&2
+    return 1
+  elif [[ "$count" -lt "$us_count" ]]; then
+    # Partial mismatch (SV-gate review, follow-up): more markers matched
+    # than distinct split files resulted — a later heading reused an
+    # earlier US id (the case (n) appendix/TOC scenario: two headings,
+    # same us_id, so the seen[]/append fix above correctly preserves BOTH
+    # bodies in one file rather than truncating, but that still collapses
+    # 2 markers into 1 file). Not an error — content is never lost — but
+    # worth flagging so an unintended duplicate heading doesn't go unnoticed.
+    echo "  WARNING: PRD has $us_count US-looking marker(s) but only $count" >&2
+    echo "           distinct per-US file(s) resulted — likely a duplicate or" >&2
+    echo "           reused US id. Content from every matching heading is" >&2
+    echo "           preserved (appended, not lost); check for an unintended" >&2
+    echo "           duplicate heading if this count was not expected." >&2
+  fi
   echo "  Split PRD: $count per-US files"
 }
 
@@ -370,8 +609,16 @@ split_test_spec_by_us() {
 
   [[ -f "$ts_file" ]] || return 0
 
+  # reaudit wave 1 (SV-gate finding, HIGH, follow-up to split_prd_by_us —
+  # identical bug class): loose gate now uses the EXACT SAME regex as the
+  # strict boundary pattern below (same fix, same rationale as
+  # split_prd_by_us above — "make the loose gate use the same regex in both
+  # functions so gate and splitter can never disagree"). Test-spec headings
+  # are 2-hash only — matches lib_ralph_desk.zsh's _lint_3doc_consistency
+  # advisory scan of the test-spec (`^##[[:space:]]+US-[0-9]+`) — so this
+  # widens colon-vs-dash acceptance only, not the hash count.
   local us_count
-  us_count=$(grep -c "^## US-" "$ts_file" 2>/dev/null) || us_count=0
+  us_count=$(grep -cE '^##[[:space:]]+US-[0-9]+([[:space:]:-]|$)' "$ts_file" 2>/dev/null) || us_count=0
   if [[ "$us_count" -eq 0 ]]; then
     echo "  WARNING: No US section markers (## US-NNN:) in test-spec — skipping split" >&2
     # Clean up any stale per-US test-spec files from previous runs
@@ -381,30 +628,78 @@ split_test_spec_by_us() {
     return 0
   fi
 
-  # Extract global header (everything before first ## US- section, e.g. Verification Commands)
-  local header_tmp="${plans_dir}/test-spec-${slug}-header.tmp.$$"
-  awk '/^## US-[0-9]+:/{exit} {print}' "$ts_file" > "$header_tmp"
+  # Extract global header (everything before the first ## US- section, e.g.
+  # Verification Commands) into a VARIABLE, not a tmp file on disk. A tmp
+  # file here (test-spec-$slug-header.tmp.$$) previously risked being
+  # orphaned in plans/ if anything between its creation and its `rm -f`
+  # below aborted the script — exactly what the unguarded NOMATCH crash
+  # this whole fix addresses used to do. Capturing into a variable removes
+  # the class of risk entirely: there is no file to leak on any exit path.
+  # Captured via a NUL-terminated `read`, not `header_content=$(awk ...)`:
+  # plain `$(...)` command substitution unconditionally strips ALL trailing
+  # newlines, which silently ate the blank line that normally separates the
+  # header from the first heading — a real byte-level difference from
+  # lib_ralph_desk.zsh's tmp-file-based `cat header_tmp split_file`, not
+  # just cosmetic (verified: byte-diffed the two outputs for the same
+  # fixture — the blank line was missing). The NUL-delimited `read` and the
+  # `printf '%s'` below preserve the captured bytes exactly, so init and lib
+  # produce byte-identical split output (see test case l's parity check).
+  local header_content
+  IFS= read -r -d '' header_content < <(awk '/^##[[:space:]]+US-[0-9]+([[:space:]:-]|$)/{exit} {print}' "$ts_file"; printf '\0') || true
 
-  awk -v dir="$plans_dir" -v slug="$slug" '
-    /^## US-[0-9]+:/ {
-      if (out != "") close(out)
+  # Same ENVIRON fix as split_prd_by_us: POSIX awk -v applies C-style
+  # backslash-escape processing to its value, corrupting a plans_dir
+  # containing a literal backslash. Same seen[]/append fix as split_prd_by_us
+  # too: `close(out)` then a later `print > out` on the same filename
+  # reopens it in TRUNCATE mode, so a repeated ## US-001 mention later in
+  # the test-spec would wipe the real section's body.
+  PLANS_DIR="$plans_dir" awk -v slug="$slug" '
+    /^##[[:space:]]+US-[0-9]+([[:space:]:-]|$)/ {
       match($0, /US-[0-9]+/)
       us_id = substr($0, RSTART, RLENGTH)
-      out = dir "/test-spec-" slug "-" us_id ".md"
+      out = ENVIRON["PLANS_DIR"] "/test-spec-" slug "-" us_id ".md"
     }
-    out != "" { print > out }
+    out != "" {
+      if (out in seen) { print >> out } else { print > out; seen[out] = 1 }
+    }
   ' "$ts_file"
 
-  # Prepend global header (Verification Commands etc.) to each split file
-  for split_file in "$plans_dir"/test-spec-"$slug"-US-*.md; do
-    [[ -f "$split_file" ]] || continue
-    local tmp="${split_file}.tmp.$$"
-    cat "$header_tmp" "$split_file" > "$tmp" && mv "$tmp" "$split_file"
-  done
-  rm -f "$header_tmp"
+  # Count via a zsh array, not `ls glob(N) | wc -l` — see split_prd_by_us
+  # above for why: with (N) nullglob and zero matches, the glob vanishes
+  # entirely and `ls` falls back to listing the current directory.
+  local -a split_files
+  split_files=("$plans_dir"/test-spec-"$slug"-US-*.md(N))
 
-  local count
-  count=$(ls "$plans_dir"/test-spec-"$slug"-US-*.md 2>/dev/null | wc -l | tr -d ' ')
+  # Prepend the captured header to each split file. printf '%s' (not
+  # `print -r --`, which appends its own trailing newline) writes exactly
+  # the bytes captured above — no added or dropped newline at the boundary.
+  for split_file in "${split_files[@]}"; do
+    local tmp="${split_file}.tmp.$$"
+    { printf '%s' "$header_content"; cat "$split_file"; } > "$tmp" && mv "$tmp" "$split_file"
+  done
+
+  local count=${#split_files}
+  # Loud, non-destructive precondition — same rationale as split_prd_by_us:
+  # kept as a defensive invariant now that gate and splitter share the
+  # identical regex (see split_prd_by_us for the remaining disagreement
+  # cases this still guards against).
+  if [[ "$count" -eq 0 ]]; then
+    echo "  ERROR: test-spec has $us_count US-looking marker(s) but none matched a" >&2
+    echo "         recognized heading form (## US-NNN: or ## US-NNN - Title)." >&2
+    echo "         Fix the test-spec heading(s) and re-run init." >&2
+    return 1
+  elif [[ "$count" -lt "$us_count" ]]; then
+    # Partial mismatch — same rationale as split_prd_by_us: a later heading
+    # reused an earlier US id, so the seen[]/append fix above correctly
+    # preserves both bodies in one file rather than truncating, but that
+    # still collapses multiple markers into fewer distinct files. Not an
+    # error — content is never lost — but worth flagging.
+    echo "  WARNING: test-spec has $us_count US-looking marker(s) but only $count" >&2
+    echo "           distinct per-US file(s) resulted — likely a duplicate or" >&2
+    echo "           reused US id. Content from every matching heading is" >&2
+    echo "           preserved (appended, not lost); check for an unintended" >&2
+    echo "           duplicate heading if this count was not expected." >&2
+  fi
   echo "  Split test-spec: $count per-US files (with global header)"
 }
 
@@ -628,6 +923,11 @@ if [[ -n "$MODE" ]]; then
     "$DESK/prompts/$SLUG.flywheel-guard.prompt.md"; do
     [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
   done
+  # A-7-class fix (reaudit wave 1 follow-up): the scaffold branch used a bare
+  # `rm` with no backup, same as the PRD branch (see above) — and the same
+  # risk, since .rlp-desk/ is gitignored so a misclassification was permanent.
+  # Route it through version_file for the same reason: a false "not authored"
+  # verdict is recoverable, never destructive.
   local _ts_file="$DESK/plans/test-spec-$SLUG.md"
   if [[ "$MODE" == "fresh" && -f "$_ts_file" ]]; then
     if (( RESET_PLANS )); then
@@ -636,7 +936,8 @@ if [[ -n "$MODE" ]]; then
     elif _testspec_is_authored "$_ts_file"; then
       echo "  Preserved: test-spec-$SLUG.md (authored — use --reset-plans to wipe)"
     else
-      rm "$_ts_file"; (( ++DELETED_COUNT ))
+      version_file "$_ts_file"; (( ++DELETED_COUNT ))
+      echo "  Reset:     test-spec-$SLUG.md (scaffold template — backed up, regenerating)"
     fi
   fi
 
@@ -644,9 +945,14 @@ if [[ -n "$MODE" ]]; then
   rm -f "$DESK/memos/$SLUG-memory.md" "$DESK/context/$SLUG-latest.md"
 
   # PRD handling (v0.22.3 US-002): --mode fresh preserves an AUTHORED PRD
-  # (any ### US-NNN: heading with a real title); only scaffold templates are
-  # deleted. --reset-plans restores the wipe with a versioned backup first.
-  # --mode improve preserves the PRD in-place as before.
+  # (byte-exact diff against the live scaffold — see _prd_is_authored); only
+  # scaffold templates are touched. --reset-plans restores the wipe with a
+  # versioned backup first. --mode improve preserves the PRD in-place as before.
+  # A-7 fix (reaudit wave 1): the scaffold branch used a bare `rm` with no
+  # backup, and `.rlp-desk/` is gitignored — a misclassification meant
+  # permanent, unrecoverable loss. Route it through version_file (same
+  # backup-before-touch helper the --reset-plans branch already uses) so a
+  # false "not authored" verdict is recoverable, never destructive.
   if [[ "$MODE" == "fresh" && -f "$PRD_FILE" ]]; then
     if (( RESET_PLANS )); then
       version_file "$PRD_FILE"; (( ++DELETED_COUNT ))
@@ -654,8 +960,8 @@ if [[ -n "$MODE" ]]; then
     elif _prd_is_authored "$PRD_FILE"; then
       echo "  Preserved: prd-$SLUG.md (authored — use --reset-plans to wipe)"
     else
-      rm "$PRD_FILE"; (( ++DELETED_COUNT ))
-      echo "  Deleted: prd-$SLUG.md (scaffold template — regenerating fresh)"
+      version_file "$PRD_FILE"; (( ++DELETED_COUNT ))
+      echo "  Reset:     prd-$SLUG.md (scaffold template — backed up, regenerating)"
     fi
   fi
   # Stale per-US splits never survive fresh: they are derived artifacts and
@@ -1083,7 +1389,7 @@ Based on your decision, update campaign memory:
 FLYWHEEL_EOF
 
   # Replace placeholders with actual paths
-  sed -i '' "s|{DESK}|$DESK|g; s|{SLUG}|$SLUG|g" "$F"
+  _render_prompt_placeholders "$F"
 
   echo "  + $F"
 else echo "  · $F"; fi
@@ -1157,7 +1463,7 @@ Rules:
 GUARD_EOF
 
   # Replace placeholders with actual paths
-  sed -i '' "s|{DESK}|$DESK|g; s|{SLUG}|$SLUG|g" "$F"
+  _render_prompt_placeholders "$F"
 
   echo "  + $F"
 else echo "  · $F"; fi
@@ -1219,61 +1525,29 @@ else echo "  · $F"; fi
 # --- PRD ---
 F="$DESK/plans/prd-$SLUG.md"
 if [[ ! -f "$F" ]]; then
-  cat > "$F" <<EOF
-# PRD: $SLUG
-
-## Objective
-$OBJECTIVE
-
-## 위임 규칙 (Delegated Decisions) — REQUIRED
-<!--
-  request-d ①-a: a campaign runs with ZERO owner/user interaction. Every
-  decision the loop could meet at runtime MUST be pre-decided here at plan time.
-  A PRD that leaves a runtime decision to "ask the owner" is NOT complete — the
-  brainstorm 무인-완주 (unattended-completion) gate REJECTS it.
-  Fill each rule below with the concrete policy the worker follows without asking.
-  Delete a line only if you can prove the campaign can never meet that decision.
--->
-- **신규 표면/산출물 등록 관례** (new surfaces/artifacts): [e.g. "register every new file under src/ in MANIFEST.txt; no owner sign-off needed"]
-- **원장·레지스트리 갱신 규칙** (ledger/registry updates): [e.g. "append to registry.json in sorted order; regenerate the derived index in the same commit"]
-- **fixture·합성데이터 처분** (fixtures / synthetic data): [e.g. "generate deterministic fixtures under tests/fixtures/; commit them; never call external services"]
-- **알려진 baseline 처분** (known baselines): [e.g. "rebaseline provenance fingerprints in-place when the source changed intentionally; document the delta in memory.md"]
-- (add any other decision class this campaign will meet — the goal is: the worker never needs an owner mid-run)
-
-## User Stories
-
-### US-001: [Title]
-- **Priority**: P0
-- **Size**: S|M|L
-- **Type**: code|visual|content|integration|infra
-- **Risk**: LOW|MEDIUM|HIGH|CRITICAL (governance §1c)
-- **Depends on**: []
-- **Acceptance Criteria** (Given/When/Then — domain language only):
-  - AC1:
-    - Given: [precondition in domain language]
-    - When: [action in domain language]
-    - Then: [expected outcome with quantitative criteria]
-  - AC2:
-    - Given: [precondition]
-    - When: [action]
-    - Then: [expected outcome with quantitative criteria]
-- **Boundary Cases**: [edge cases — empty input, max values, error conditions, concurrent access]
-- **Verification Layers**: [Fill per Risk level — LOW: L1+L3, MEDIUM: L1+L2(if ext deps)+L3, HIGH: L1+L2+L3+L4, CRITICAL: L1+L2+L3+L4+mutation (governance §1c)]
-- **Status**: not started
-
-## Non-Goals
-## Technical Constraints
-## Done When
-- All acceptance criteria pass with quantitative evidence
-- All boundary cases covered
-- All required verification layers executed (no TODO remaining)
-- Independent verifier confirms via Evidence Gate (governance §1b)
-EOF
+  # A-7 fix (reaudit wave 1): generate via the same _emit_prd_template
+  # function _prd_is_authored diffs against, so the writer and the
+  # authored-detector can never drift out of byte-for-byte sync.
+  _emit_prd_template "$SLUG" "$OBJECTIVE" > "$F"
   echo "  + $F"
 else echo "  · $F"; fi
 
 # Split PRD into per-US files (no-op with warning if no US markers)
-split_prd_by_us "$DESK/plans/prd-$SLUG.md" "$SLUG"
+if ! split_prd_by_us "$DESK/plans/prd-$SLUG.md" "$SLUG"; then
+  # reaudit wave 1 (SV-gate finding, point c): this call sits between the
+  # PRD write above and the Test Spec write further below. A fresh-mode run
+  # may already have version_file'd the old test-spec away by this point,
+  # so a hard failure here would otherwise leave test-spec-$SLUG.md missing
+  # entirely (versioned backup exists, but nothing live) on top of the PRD
+  # failure that already needs the operator's attention. Restore it before
+  # exiting so init never leaves the campaign directory in that half-reset
+  # state.
+  if [[ ! -f "$DESK/plans/test-spec-$SLUG.md" ]]; then
+    _emit_testspec_template "$SLUG" > "$DESK/plans/test-spec-$SLUG.md"
+    echo "  Restored: test-spec-$SLUG.md (split failure left it missing — regenerated)" >&2
+  fi
+  exit 1
+fi
 
 # request-d ①-b: init-time gate-receipt drift check. Mirror of lib_ralph_desk.zsh
 # compute_prd_content_hash / src/node/util/gate-receipt.mjs computePrdContentHash
@@ -1327,7 +1601,20 @@ if [[ ! -f "$F" ]]; then
 else echo "  · $F"; fi
 
 # Split test-spec into per-US files (no-op with warning if no US section markers)
-split_test_spec_by_us "$DESK/plans/test-spec-$SLUG.md" "$SLUG"
+if ! split_test_spec_by_us "$DESK/plans/test-spec-$SLUG.md" "$SLUG"; then
+  # reaudit wave 1 (SV-gate finding, round 3): symmetric with
+  # split_prd_by_us's guard above. Unlike the PRD case, this call sits
+  # AFTER the Test Spec write block, so test-spec-$SLUG.md is already
+  # guaranteed to exist by this point (preserved-as-authored or freshly
+  # regenerated) — there is nothing this call's own failure could leave
+  # missing that needs restoring. Still fail loudly and explicitly rather
+  # than letting a bare statement's `set -e` abort silently skip everything
+  # downstream (mechanical pre-gate template, .gitignore, permissions,
+  # post-init validation, PRD lint) with no explanation.
+  echo "  ERROR: split_test_spec_by_us failed — see the message above. Fix the" >&2
+  echo "         test-spec heading(s) and re-run init." >&2
+  exit 1
+fi
 
 # --- Mechanical pre-gate template (Feature 1) ---
 # Optional deterministic checks the LEADER runs before each LLM verification.

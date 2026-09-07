@@ -312,16 +312,34 @@ else
 fi
 rm -rf "$TMPD"
 
-# AC4-runtime-happy: --mode fresh deletes old PRD content (fresh PRD created from template)
-_run_init "$SLUG_T" "obj"  # create initial PRD
-echo "old-unique-prd-marker-abc123" > "$TMPD/.rlp-desk/plans/prd-$SLUG_T.md"
+# AC4-runtime-happy: --mode fresh resets an untouched (scaffold) PRD from a
+# prior campaign attempt.
+#
+# reaudit wave 1 (A-7) note: this test previously overwrote the PRD with an
+# arbitrary junk line ("old-unique-prd-marker-abc123", no `### US-NNN:`
+# heading) and asserted it vanished after --mode fresh. Under the OLD
+# single-regex `_prd_is_authored` (init_ralph_desk.zsh, pre-reaudit-wave-1),
+# ANY PRD content lacking that exact heading pattern was blindly classified
+# "not authored" and bare-`rm`'d with no backup — so that junk line happened
+# to get silently destroyed too, which is what this test measured as
+# success. The new byte-exact detector (`_prd_is_authored` diffing against
+# `_emit_prd_template`, objective-masked — see init_ralph_desk.zsh:191-286)
+# correctly treats that same junk line as authored (it is not byte-identical
+# to the live scaffold) and PRESERVES it instead. That is the deliberate
+# A-7 fix, not a regression: silently destroying unrecognized PRD content
+# with no recovery copy was exactly the data-loss bug being fixed. The
+# fixture below now tests the real AC4 intent — an untouched, byte-exact
+# scaffold PRD (the true positive for "should be reset on fresh") — and
+# asserts it via the versioned backup + regenerated file, the same
+# recoverable-reset contract AC2's version_file assertions already use.
+_run_init "$SLUG_T" "obj"  # create initial PRD (pristine scaffold, untouched)
 ROOT="$TMPD" zsh "$INIT" "$SLUG_T" "obj" --mode fresh >/dev/null 2>&1
 RC4=$?
-PRESERVED=$(grep -c 'old-unique-prd-marker-abc123' "$TMPD/.rlp-desk/plans/prd-$SLUG_T.md" 2>/dev/null) || PRESERVED=0
-if [[ $RC4 -eq 0 ]] && [[ $PRESERVED -eq 0 ]]; then
-  pass "AC4-runtime-happy: --mode fresh exits 0 and removes old PRD content"
+BACKUP4="$TMPD/.rlp-desk/plans/prd-$SLUG_T-v1.md"
+if [[ $RC4 -eq 0 ]] && [[ -f "$BACKUP4" ]] && [[ -f "$TMPD/.rlp-desk/plans/prd-$SLUG_T.md" ]]; then
+  pass "AC4-runtime-happy: --mode fresh exits 0 and resets an untouched scaffold PRD (versioned backup + regenerated)"
 else
-  fail "AC4-runtime-happy: --mode fresh exits 0 and removes old PRD content (exit=$RC4, old_marker_count=$PRESERVED)"
+  fail "AC4-runtime-happy: --mode fresh exits 0 and resets an untouched scaffold PRD (exit=$RC4, backup_exists=$( [[ -f "$BACKUP4" ]] && echo yes || echo no ))"
 fi
 rm -rf "$TMPD"
 

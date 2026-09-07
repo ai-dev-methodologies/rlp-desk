@@ -419,8 +419,10 @@ Rules:
 - Include specific evidence for every check. No "seems fine" or "probably ok."
 GUARD_EOF
 
-  # Replace placeholders with actual paths
-  sed -i '' "s|{DESK}|$DESK|g; s|{SLUG}|$SLUG|g" "$F"
+  # Replace placeholders with actual paths (portable form — see
+  # _render_prompt_placeholders in init_ralph_desk.zsh, which both other
+  # prompt templates already call for this same substitution)
+  _render_prompt_placeholders "$F"
 
   echo "  + $F"
 else echo "  · $F"; fi
