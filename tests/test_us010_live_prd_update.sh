@@ -290,6 +290,11 @@ log_debug() {
 HARNESS_HEAD
 
   # Extract required functions
+  # reaudit wave 1 (queued after A-5): count_prd_us now references the
+  # shared RLP_US_HEADING_ERE_PRD constant instead of an inline literal —
+  # the harness must source it too, or count_prd_us silently gets an
+  # empty pattern.
+  grep '^RLP_US_HEADING_ERE_PRD=' "$LIB" >> "$harness"
   extract_fn "compute_prd_hash" >> "$harness"
   extract_fn "count_prd_us" >> "$harness"
   extract_fn "check_prd_update" >> "$harness"
@@ -361,6 +366,11 @@ log_debug() {
 }
 HARNESS_HEAD
 
+  # reaudit wave 1 (queued after A-5): count_prd_us now references the
+  # shared RLP_US_HEADING_ERE_PRD constant instead of an inline literal —
+  # the harness must source it too, or count_prd_us silently gets an
+  # empty pattern.
+  grep '^RLP_US_HEADING_ERE_PRD=' "$LIB" >> "$harness"
   extract_fn "compute_prd_hash" >> "$harness"
   extract_fn "count_prd_us" >> "$harness"
   extract_fn "check_prd_update" >> "$harness"

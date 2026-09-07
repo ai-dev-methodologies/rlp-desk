@@ -2,6 +2,35 @@
 set -uo pipefail
 # NOTE: We use set -u (undefined var check) and pipefail, but NOT set -e
 # because the main loop uses explicit error checks throughout.
+#
+# A-5 fix (reaudit wave 1, independent-review round 2): zsh's DEFAULT (non-POSIX)
+# EXIT-trap semantics are that a FUNCTION-SCOPED trap triggered by an actual
+# `exit` call (as opposed to the function returning normally) runs ONLY its
+# FIRST command, silently dropping the rest — e.g. `trap 'a; b; c' EXIT` set
+# inside main() only runs `a` when something calls `exit` from inside (or
+# below) main(), whether that exit is the new _on_signal()'s `exit
+# $((128+signum))` or any of main()'s own pre-existing bare `exit 1` calls.
+# Verified empirically (mirrors the shape used at run_ralph_desk.zsh's own
+# trap-arm site): a compound `trap '_emit_a; _emit_b; cleanup' EXIT` set
+# inside a function, interrupted by `exit` from a signal handler, ran only
+# _emit_a — _emit_b and cleanup never fired. `setopt POSIX_TRAPS` switches to
+# POSIX EXIT-trap semantics: the WHOLE trap command runs on `exit`, and `$?`
+# inside it is preserved as the exit() argument (130 for SIGINT, verified).
+# grep -n "trap '" across run/lib/init confirms EXIT/INT/TERM/HUP (armed at
+# main(), see below) are the ONLY trap statements in this codebase, so no
+# other trap relies on the old truncating behavior this option changes.
+# Net-positive side effect (unpinned until tests/test_signal_trap.sh's
+# "epilogue exit code" case): this ALSO changes WHEN the EXIT trap fires.
+# Without POSIX_TRAPS, a function-scoped EXIT trap fires the moment the
+# function RETURNS (capturing that `return`'s own code), not at the
+# process's actual final exit — main() is full of internal `return 1`s, so
+# the pre-POSIX-TRAPS trap fired on the FIRST of those, never reaching the
+# authoritative sentinel-based `exit 0`/`exit "$_main_rc"` pinning at the
+# bottom of this file (COMPLETE→0, BLOCKED→non-zero, etc). With
+# POSIX_TRAPS, the trap fires at that real, pinned final exit instead, so
+# _emit_launch_record_outcome's exit_code now reflects the AUTHORITATIVE
+# terminal status, not whichever internal return happened to fire first.
+setopt POSIX_TRAPS
 
 # D-19: validate an env-overridable INTEGER knob. A non-integer value (operator
 # typo, or a bad CLI arg like `--max-iter abc` threaded into the env) otherwise
@@ -314,6 +343,20 @@ _write_launch_record_t0() {
 LAUNCH_RECORD_OUTCOME_WRITTEN=0
 _emit_launch_record_outcome() {
   local exit_code="$?"
+  # Round-2 independent review: when called from _on_signal (explicitly, or
+  # via the EXIT trap after _on_signal's `exit`), do NOT trust ambient `$?` —
+  # by the time this runs it may reflect an unrelated prior command (observed
+  # yielding a bogus -3), not the signal-driven exit status. SIGNAL_RECEIVED
+  # is set unconditionally before _on_signal calls this, so its presence is
+  # an unambiguous signal-path marker; derive the conventional 128+signum
+  # value directly instead.
+  if [[ -n "${SIGNAL_RECEIVED:-}" ]]; then
+    case "$SIGNAL_RECEIVED" in
+      INT)  exit_code=130 ;;
+      TERM) exit_code=143 ;;
+      HUP)  exit_code=129 ;;
+    esac
+  fi
   if [[ "${LAUNCH_RECORD_OUTCOME_WRITTEN:-0}" -ne 0 ]]; then
     return 0
   fi
@@ -425,6 +468,12 @@ _block_with_grace() {
 # claude models (haiku/sonnet/opus) with :effort → claude engine + effort
 # codex models (gpt-*/spark) with :reasoning → codex engine + reasoning
 # plain name → claude engine (no effort/reasoning)
+# F-1: allowed effort/reasoning vocabularies, used to VALIDATE level_part below
+# (not just to pick a code path). CLAUDE_EFFORT mirrors the `--effort` values
+# documented at lib_ralph_desk.zsh build_claude_cmd ("low|medium|high|max") plus
+# xhigh (handled explicitly by the ITER_TIMEOUT multiplier case in lib). CODEX
+# REASONING mirrors the vocabulary already validated inline elsewhere in this
+# file (~4169, ~4786): minimal|low|medium|high|xhigh|max|ultra.
 _auto_detect_engine() {
   local model_var="$1" engine_var="$2" codex_model_var="$3" codex_reasoning_var="$4" effort_var="${5:-}"
   local model_val="${(P)model_var}"
@@ -438,9 +487,25 @@ _auto_detect_engine() {
         # versioned ids (claude-opus-4-8, claude-fable-5, claude-opus-4-8[1m]).
         # The `claude-*` glob also covers the bracket+effort combo
         # (claude-opus-4-8[1m]:high → model=claude-opus-4-8[1m], effort=high).
-        eval "$engine_var=claude"
-        eval "$model_var=$model_part"
-        [[ -n "$effort_var" ]] && eval "$effort_var=$level_part"
+        # F-1: typeset -g (not eval) — level_part/model_part come from an
+        # unvalidated env var (WORKER_MODEL et al) on this path, and eval'ing
+        # unquoted user input let a value like 'opus:high;touch pwned' execute
+        # arbitrary shell commands. typeset -g "$var=$val" assigns the literal
+        # string with no re-parsing, so it is injection-safe regardless of
+        # $val's content.
+        typeset -g "$engine_var=claude"
+        typeset -g "$model_var=$model_part"
+        if [[ -n "$effort_var" ]]; then
+          case "$level_part" in
+            low|medium|high|max|xhigh)
+              typeset -g "$effort_var=$level_part"
+              ;;
+            *)
+              print -u2 "[rlp-desk] ERROR: invalid effort '$level_part' in $model_var='$model_val' (expected one of: low|medium|high|max|xhigh)."
+              return 1
+              ;;
+          esac
+        fi
         ;;
       *)
         # Codex model with reasoning
@@ -452,10 +517,20 @@ _auto_detect_engine() {
         # Warn (stderr) when the name — after alias expansion above — is not even
         # a gpt-* slug: a likely typo being silently routed to codex.
         [[ "$model_part" != gpt-* ]] && print -u2 "[rlp-desk] note: model '$model_part' is not a claude id or known codex model — routing to codex engine. Verify this is intended."
-        eval "$engine_var=codex"
-        eval "$model_var=$model_part"
-        [[ -n "$codex_model_var" ]] && eval "$codex_model_var=$model_part"
-        [[ -n "$codex_reasoning_var" ]] && eval "$codex_reasoning_var=$level_part"
+        typeset -g "$engine_var=codex"
+        typeset -g "$model_var=$model_part"
+        [[ -n "$codex_model_var" ]] && typeset -g "$codex_model_var=$model_part"
+        if [[ -n "$codex_reasoning_var" ]]; then
+          case "$level_part" in
+            minimal|low|medium|high|xhigh|max|ultra)
+              typeset -g "$codex_reasoning_var=$level_part"
+              ;;
+            *)
+              print -u2 "[rlp-desk] ERROR: invalid reasoning '$level_part' in $model_var='$model_val' (expected one of: minimal|low|medium|high|xhigh|max|ultra)."
+              return 1
+              ;;
+          esac
+        fi
         ;;
     esac
   fi
@@ -482,10 +557,12 @@ FINAL_VERIFY_MAX_ATTEMPTS="${FINAL_VERIFY_MAX_ATTEMPTS:-3}"
 # per-knob fix into one validator used by every numeric knob).
 _validate_int_knob FINAL_VERIFY_MAX_ATTEMPTS 3 1 10
 
-# Auto-detect engine from model format for env var path (CLI path uses parse_model_flag)
-_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT
-_auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING VERIFIER_EFFORT
-_auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE FINAL_VERIFIER_CODEX_MODEL FINAL_VERIFIER_CODEX_REASONING FINAL_VERIFIER_EFFORT
+# Auto-detect engine from model format for env var path (CLI path uses parse_model_flag).
+# F-1: `|| exit 1` — an invalid effort/reasoning level is a fatal misconfiguration
+# (the alternative was silently continuing with an empty/stale effort variable).
+_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT || exit 1
+_auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING VERIFIER_EFFORT || exit 1
+_auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE FINAL_VERIFIER_CODEX_MODEL FINAL_VERIFIER_CODEX_REASONING FINAL_VERIFIER_EFFORT || exit 1
 WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.5}"
 WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high
 VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.5}"
@@ -1321,7 +1398,21 @@ _bug8_autocommit() {
     # ONLY the pre-scoped worker files — same list, never broadened.
     git --literal-pathspecs -C "$root" add -f -- "${files[@]}" 2>/dev/null || return 1
   fi
-  git -C "$root" commit -q -m "$msg" 2>/dev/null || return 1
+  # A-3 (reaudit wave 1): `commit` WITHOUT a pathspec commits the whole index,
+  # not just what was just `add`-ed above. If the operator (or a foreign
+  # leader — see the US-002B Option D downgrade just above the caller) had
+  # ALREADY staged an unrelated file before recovery ran, a bare `commit -q`
+  # sweeps it into this Worker-recovery commit, defeating the US-002A
+  # comm -23 exclusion and the Option D downgrade — both only constrain
+  # `add`, never `commit`. Scope the commit to the SAME pre-scoped file list
+  # (`--literal-pathspecs` for the same glob-metacharacter reason as `add`
+  # above) so a foreign staged file is left untouched in the index.
+  # Note: `commit -- <paths>` is refused ("cannot do a partial commit during
+  # a merge") mid-merge/rebase — that failure falls through to `return 1`
+  # here exactly like any other commit failure, and the caller already
+  # treats ANY `_bug8_autocommit` failure as warn+carryover+continue (never
+  # a hard BLOCK), so no separate handling is needed for that case.
+  git --literal-pathspecs -C "$root" commit -q -m "$msg" -- "${files[@]}" 2>/dev/null || return 1
   return 0
 }
 
@@ -1340,6 +1431,15 @@ _bug8_record_carryover() {
     printf '%s\n' "$files"
   } >> "$dest" 2>/dev/null || true
 }
+
+# _git_dirty_names(): moved to lib_ralph_desk.zsh (LIB quoting fix, reaudit
+# wave 1) so both lib consumers (_commit_oracle_tracked_dirty,
+# the build-vs-confirmation classifier) can reuse this NUL-delimited,
+# unquoted-path git-diff snapshot instead of each reimplementing a raw
+# `git diff --name-only` that mis-handles core.quotePath-quoted paths. Same
+# helper this file's own call sites below (Bug #8 Gate 3, campaign t0
+# snapshot, per-iteration snapshot) still call by name — see
+# lib_ralph_desk.zsh next to _git_snapshot for the definition.
 
 # Bug #8 PR-B (codex critic P1.2 fix): shared 4-way gate used by both
 # handle_worker_exit_codex and the inline-polling A4 path. Returns:
@@ -1427,7 +1527,7 @@ _bug8_check_synth_allowed() {
   # read as "clean" ([[ -n ]] false → gate passes → synthesis proceeds on an
   # unverified tree). Keep the `local` declaration separate so the assignment rc
   # is not eaten.
-  if ! _bug8_dirty=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)"); then
+  if ! _bug8_dirty=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)"); then
     log_error "  Bug #8: Gate 3 dirty-check failed (git error). Refusing synthesis."
     log_debug "[GOV] iter=$iter bug8=block_git_dirty_check_failed us_id=$us_id"
     write_blocked_sentinel \
@@ -1506,7 +1606,13 @@ _bug8_check_synth_allowed() {
         write_blocked_sentinel "worker_incomplete_uncommitted: empty file list at auto-commit" "$us_id" "metric_failure"
         return 1
       fi
-      if git -C "$ROOT" diff --quiet HEAD -- "${_bug8_add[@]}" 2>/dev/null; then
+      # --literal-pathspecs: same reason as _bug8_autocommit's add/commit below
+      # — _bug8_add comes verbatim from git diff --name-only, so a worker file
+      # whose name contains a glob metacharacter (`*`, `?`, `[`) must not
+      # re-glob here either, or this "already committed?" check could silently
+      # match (or miss) an unrelated file instead of the exact one it's
+      # scoped to.
+      if git --literal-pathspecs -C "$ROOT" diff --quiet HEAD -- "${_bug8_add[@]}" 2>/dev/null; then
         # D-20: the Worker committed these files itself in the window between the
         # dirty-detection above and now (a reap/commit race) — the working tree is
         # already clean vs HEAD for them, i.e. the work IS committed. The old code
@@ -3399,6 +3505,39 @@ TRIGGER_EOF
 # Cleanup (trap handler)
 # =============================================================================
 
+# A-5: bare signal handler for INT/TERM/HUP. In zsh, a trap that returns
+# normally (exit status 0) marks the signal as handled and RESUMES execution
+# at the interruption point instead of terminating the process — so the
+# previous combined `trap '...; cleanup' EXIT INT TERM HUP` ran cleanup() on
+# Ctrl-C (releasing the runner lock, deregistering the leader, killing panes)
+# and then kept the main loop running; only SIGKILL actually stopped it, and
+# a re-run after Ctrl-C could race a second leader onto the just-freed lock.
+# This handler exits with the conventional 128+signum status so the process
+# actually terminates; the EXIT-only trap (armed separately in main(), below)
+# then fires exactly once and runs the (idempotent) cleanup chain.
+typeset -g SIGNAL_RECEIVED=""
+_on_signal() {
+  local sig="$1"
+  local signum
+  case "$sig" in
+    INT)  signum=2  ;;
+    TERM) signum=15 ;;
+    HUP)  signum=1  ;;
+    *)    signum=1  ;;
+  esac
+  SIGNAL_RECEIVED="$sig"
+  # Round-2 independent review: run the cleanup chain explicitly HERE, before
+  # `exit`, as defense in depth alongside `setopt POSIX_TRAPS` above — do not
+  # rely solely on the EXIT trap picking it up. All three are individually
+  # idempotent-guarded (CLEANUP_DONE / *_WRITTEN), so this explicit call and
+  # the EXIT trap's own (now POSIX-complete) run of the same chain never
+  # double-execute the real work.
+  _emit_launch_record_outcome
+  _emit_final_cost_log
+  cleanup
+  exit $(( 128 + signum ))
+}
+
 cleanup() {
   # D-8: re-entrancy guard. The trap is armed on EXIT INT TERM HUP, so a TERM (cleanup
   # runs) immediately followed by process exit (EXIT fires cleanup AGAIN) would
@@ -3469,11 +3608,39 @@ cleanup() {
   setopt local_options nonomatch 2>/dev/null
   rm -f "$LOGS_DIR"/*.tmp.* "$MEMOS_DIR"/*.tmp.* 2>/dev/null
 
-  # AC4: Generate campaign report on all terminal states (always-on)
-  generate_campaign_report
+  # Round-2 follow-up (trap-arm relocation review): a duplicate-runner exit
+  # (another leader already holds RUNNER_LOCKFILE_PATH or LOCKFILE_PATH) now
+  # reaches this trap too, since the trap is armed before either lock
+  # acquisition — that is the whole point (see main(), above). But THIS
+  # process never actually ran a campaign: LOCKFILE_ACQUIRED is 0, and
+  # $LOGS_DIR/$ANALYTICS_DIR are whatever the SAME-SLUG incumbent already
+  # created. Without this guard, the duplicate's cleanup() would write a
+  # spurious campaign-report.md into the LIVE campaign's log dir (AC9
+  # versioning then rotates the incumbent's real report to -v1.md) and
+  # overwrite the incumbent's metadata.json campaign_status with a status
+  # describing the DUPLICATE's (non-)run, not the incumbent's actual state.
+  # Skip these three campaign-artifact writes on that path; still release
+  # whatever lock/registry entry THIS process itself acquired (already
+  # ownership-gated, above) and still let _emit_launch_record_outcome's own
+  # launch-record.json update through (that record is per-PID, keyed by
+  # THIS process's own launch, so it is never shared with the incumbent).
+  # A genuine lock-owning run that times out or is interrupted still writes
+  # normally (LOCKFILE_ACQUIRED=1 there); the sentinel check is defense in
+  # depth for the (should-never-happen) case of a COMPLETE/BLOCKED sentinel
+  # existing without LOCKFILE_ACQUIRED having been set.
+  local _skip_campaign_artifacts=0
+  if (( ! ${LOCKFILE_ACQUIRED:-0} )) && [[ ! -f "$COMPLETE_SENTINEL" && ! -f "$BLOCKED_SENTINEL" ]]; then
+    _skip_campaign_artifacts=1
+    log_debug "cleanup: LOCKFILE_ACQUIRED=0 and no terminal sentinel — this process never ran a campaign (duplicate-runner exit); skipping campaign-report/SV-report/metadata writes"
+  fi
 
-  # US-001: Generate SV report after campaign report (tmux mode)
-  generate_sv_report
+  if (( ! _skip_campaign_artifacts )); then
+    # AC4: Generate campaign report on all terminal states (always-on)
+    generate_campaign_report
+
+    # US-001: Generate SV report after campaign report (tmux mode)
+    generate_sv_report
+  fi
 
   # Print summary
   local end_time
@@ -3485,10 +3652,15 @@ cleanup() {
   local final_status="UNKNOWN"
   if [[ -f "$COMPLETE_SENTINEL" ]]; then final_status="COMPLETE"
   elif [[ -f "$BLOCKED_SENTINEL" ]]; then final_status="BLOCKED"
+  # A-5: distinguish an INT/TERM/HUP-driven exit (SIGNAL_RECEIVED, set by
+  # _on_signal) from a natural TIMEOUT (max_iter reached, no signal involved)
+  # — both previously landed on TIMEOUT, which misreported an interrupted
+  # campaign as having exhausted its iteration budget.
+  elif [[ -n "${SIGNAL_RECEIVED:-}" ]]; then final_status="INTERRUPTED"
   else final_status="TIMEOUT"; fi
 
   # --- Update metadata.json with final status ---
-  if [[ -f "$METADATA_FILE" ]]; then
+  if (( ! _skip_campaign_artifacts )) && [[ -f "$METADATA_FILE" ]]; then
     jq --arg status "$final_status" --arg end_time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '.campaign_status = $status | .end_time = $end_time' \
       "$METADATA_FILE" > "${METADATA_FILE}.tmp" && mv "${METADATA_FILE}.tmp" "$METADATA_FILE"
@@ -3514,7 +3686,12 @@ cleanup() {
         # D-23: heading-anchored (a US story is a `### US-NNN:` heading, not a
         # prose/dependency mention) — matches US_LIST + count_prd_us so the
         # coverage count is not inflated by phantom cross-referenced US ids.
-        expected_us=$(grep -oE '^### US-[0-9]+' "$prd_file" | sed 's/^### //' | sort -u | tr '\n' ',' | sed 's/,$//')
+        # reaudit wave 1 (queued after A-5): unified onto RLP_US_HEADING_ERE_PRD
+        # (lib_ralph_desk.zsh) — was still the narrower colon-only 3-hash form,
+        # which this DEBUG-only diagnostic (per_us_coverage logging) missed when
+        # US_LIST/count_prd_us were widened, so a dash-form or 2-hash PRD would
+        # log a false per_us_coverage=INCOMPLETE even on a fully-covered campaign.
+        expected_us=$(grep -oE "$RLP_US_HEADING_ERE_PRD" "$prd_file" | grep -oE 'US-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//')
       fi
       local verified_count=$(echo "$VERIFIED_US" | tr ',' '\n' | grep -c 'US-' 2>/dev/null || echo 0)
       local expected_count=$(echo "$expected_us" | tr ',' '\n' | grep -c 'US-' 2>/dev/null || echo 0)
@@ -3570,8 +3747,10 @@ cleanup() {
     echo "  Final State: COMPLETE"
   elif [[ -f "$BLOCKED_SENTINEL" ]]; then
     echo "  Final State: BLOCKED"
+  elif [[ -n "${SIGNAL_RECEIVED:-}" ]]; then
+    echo "  Final State: INTERRUPTED (signal $SIGNAL_RECEIVED)"
   else
-    echo "  Final State: STOPPED (interrupted or timeout)"
+    echo "  Final State: TIMEOUT"
   fi
 
   echo ""
@@ -4999,6 +5178,45 @@ run_consensus_verification() {
 # =============================================================================
 
 main() {
+  # US-023 R11 P2-K: chain `_emit_final_cost_log` so cost-log.jsonl is never silently empty on exit.
+  # US-004 AC4.2: chain `_emit_launch_record_outcome` FIRST (so `$?` still reflects the
+  # status that triggered the trap) for the best-effort launch-record.json outcome
+  # update; HUP is added because tmux teardown delivers SIGHUP, which otherwise skips
+  # this EXIT-only trap (SIGKILL remains untrappable — the t0 write above is the real
+  # durability guarantee, not this trap).
+  # A-5: the chain above is armed on EXIT only. INT/TERM/HUP each go through
+  # _on_signal (defined above cleanup()), which calls exit(128+signum) — that
+  # exit triggers this EXIT trap exactly once, so cleanup/_emit_* (all
+  # individually idempotent) run once regardless of whether the process ended
+  # naturally or via signal. Do NOT re-add INT/TERM/HUP to this trap: zsh
+  # resumes execution after a normal-return signal trap, which is what let
+  # Ctrl-C run cleanup and then keep looping (see _on_signal comment).
+  # Round-2 follow-up: armed FIRST, before the runner-lock/registry acquisition
+  # below (was armed AFTER both — a SIGINT/SIGTERM/SIGHUP in that window, or the
+  # window's own `exit 1` on a duplicate-runner detection, bypassed this trap
+  # entirely under the OLD ordering, leaking the just-acquired lock/registry
+  # entry until a later kill -0 prune). Confirmed safe to move: cleanup()'s lock
+  # release is gated on exact ownership (LOCKFILE_ACQUIRED flag, defaulted to 0
+  # at top-level before main() ever runs; the runner-lock removal separately
+  # re-reads the lock file's own recorded pid and compares to $$ — never
+  # trusts a flag alone) and unregister_leader() only ever targets this
+  # process's own $$.json entry (a no-op if register_leader was never
+  # reached) — so an EARLY exit, signal-driven or the plain `exit 1` on a
+  # duplicate-runner detection below, cannot release a lock this process
+  # doesn't own or unregister another leader's entry, regardless of how early
+  # it fires. Every OTHER global cleanup()/generate_campaign_report() reads
+  # (LOGS_DIR, START_TIME, ITERATION, MAX_ITER, COMPLETE_SENTINEL,
+  # BLOCKED_SENTINEL, CONSECUTIVE_FAILURES, BASELINE_COMMIT, VERIFIED_US,
+  # CAMPAIGN_REPORT_GENERATED, SV_REPORT_GENERATED) is a top-level assignment
+  # that runs before main() is ever invoked, so all of them still exist this
+  # early. generate_campaign_report() now `mkdir -p`s its own LOGS_DIR (see
+  # lib_ralph_desk.zsh) since this move means the campaign-report write can
+  # now happen before main()'s own later `mkdir -p "$LOGS_DIR" ...` below.
+  trap '_emit_launch_record_outcome; _emit_final_cost_log; cleanup' EXIT
+  trap '_on_signal INT'  INT
+  trap '_on_signal TERM' TERM
+  trap '_on_signal HUP'  HUP
+
   # --- US-026 R14 P0: project-scoped runner lock (per-ROOT, regardless of slug) ---
   # D-9: delegate to acquire_slug_lock — the F-20-proven, race-safe primitive where
   # the PID *is* the lock (`set -C` atomic create writes the pid in one redirect),
@@ -5037,13 +5255,6 @@ main() {
     log_error "Another instance is already running or won the lock race (PID ${lock_pid:-unknown}). Kill it or rm $LOCKFILE_PATH"
     exit 1
   fi
-  # US-023 R11 P2-K: chain `_emit_final_cost_log` so cost-log.jsonl is never silently empty on exit.
-  # US-004 AC4.2: chain `_emit_launch_record_outcome` FIRST (so `$?` still reflects the
-  # status that triggered the trap) for the best-effort launch-record.json outcome
-  # update; HUP is added because tmux teardown delivers SIGHUP, which otherwise skips
-  # this EXIT-only trap (SIGKILL remains untrappable — the t0 write above is the real
-  # durability guarantee, not this trap).
-  trap '_emit_launch_record_outcome; _emit_final_cost_log; cleanup' EXIT INT TERM HUP
   mkdir -p "$LOGS_DIR" "$RUNTIME_DIR" "$OMX_STATE_DIR" 2>/dev/null
 
   # --- Analytics directory: always create (campaign.jsonl + metadata.json are always-on) ---
@@ -5153,7 +5364,11 @@ main() {
       # armed. It also DISAGREED with the live re-split (count_prd_us, anchored),
       # so the first PRD edit silently changed the tracked US set. Use the SAME
       # heading-anchored extraction as count_prd_us so initial == live.
-      US_LIST=$(grep -oE '^### US-[0-9]+' "$prd_file" | sed 's/^### //' | sort -u | tr '\n' ',' | sed 's/,$//')
+      # reaudit wave 1 (queued after A-5): count_prd_us widened to
+      # RLP_US_HEADING_ERE_PRD (lib_ralph_desk.zsh, sourced above at ~594) —
+      # was colon-only 3-hash, disagreeing with a dash-form or 2-hash PRD
+      # heading that count_prd_us/split_prd_us now accept. Match it here too.
+      US_LIST=$(grep -oE "$RLP_US_HEADING_ERE_PRD" "$prd_file" | grep -oE 'US-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//')
     fi
 
   # F-14 + status.json promotion (Item-4): VERIFIED_US restore precedence,
@@ -5227,7 +5442,7 @@ main() {
   # baseline to ∅ — that would let F-8 auto-commit SWEEP operator files into a
   # worker-recovery commit. Every downstream F-8/①b/oracle exclusion consumes this
   # baseline, so a broken git at t0 is a startup hard-stop, not a clean tree.
-  if ! CAMPAIGN_PREEXISTING_DIRTY=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)"); then
+  if ! CAMPAIGN_PREEXISTING_DIRTY=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)"); then
     log_error "Preexisting-dirty t0 snapshot failed — cannot establish the F-8 operator-file exclusion baseline. Refusing to start."
     write_blocked_sentinel "preexisting-dirty t0 snapshot failed (git error, not a clean tree) — F-8 exclusion baseline unavailable" "" "infra_failure"
     exit 1
@@ -5606,7 +5821,7 @@ main() {
       # is still broken at recovery time, Gate 3's own fail-closed dirty check
       # BLOCKs the iteration anyway.
       local _iter_pre
-      if _iter_pre=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)"); then
+      if _iter_pre=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)"); then
         ITER_PREEXISTING_DIRTY="$_iter_pre"
       else
         log_error "  [GIT-FC] per-iteration preexisting-dirty snapshot failed (iter $ITERATION) — retaining the prior baseline (never clearing it)."

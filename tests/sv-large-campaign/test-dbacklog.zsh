@@ -322,13 +322,14 @@ vint(){ local v="$1" def="$2" min="${3:-0}" max="${4:-0}" bad=0; if ! [[ "$v" ==
 # own files between dirty-detection and the leader's commit (reap race), `git commit`
 # exited non-zero ("nothing to commit") → the campaign BLOCKED despite the work being
 # fully committed + correct (observed in the D-19 dogfood: f9d1fff committed, pytest 5/5).
-grep -qF 'if git -C "$ROOT" diff --quiet HEAD -- "${_bug8_add[@]}" 2>/dev/null; then' "$RUN" \
+grep -qF 'if git --literal-pathspecs -C "$ROOT" diff --quiet HEAD -- "${_bug8_add[@]}" 2>/dev/null; then' "$RUN" \
   && grep -qF 'bug8=autocommit_noop_already_committed' "$RUN" \
   && ok "D-20: auto-commit checks 'already committed' (diff --quiet HEAD) FIRST → proceeds, not BLOCK" || no "D-20: already-committed guard missing"
-# the genuine-commit path (add+commit) is the elif, and a real failure still BLOCKs
-grep -qF 'elif git -C "$ROOT" add -- "${_bug8_add[@]}" && git -C "$ROOT" commit' "$RUN" \
-  && grep -qF 'leader-recovery auto-commit failed' "$RUN" \
-  && ok "D-20: genuine-uncommitted → add+commit (elif); real commit failure still BLOCKs" || no "D-20: commit/block paths drifted"
+# the genuine-commit path is the elif (now via the scoped _bug8_autocommit
+# helper, A-3 — was inline `add -- ... && commit`), and a real failure still BLOCKs
+grep -qF 'elif _bug8_autocommit "$ROOT" "chore(leader-recovery): commit' "$RUN" \
+  && grep -qF 'bug8=autocommit_failed_continue' "$RUN" \
+  && ok "D-20: genuine-uncommitted → _bug8_autocommit (elif); real commit failure still BLOCKs" || no "D-20: commit/block paths drifted"
 # logic mirror: git diff --quiet HEAD distinguishes committed (race→proceed) vs uncommitted (commit)
 _d20=$(mktemp -d); ( cd "$_d20"; git init -q; git config user.email t@t; git config user.name t
   echo a>a; git add -A; git commit -q -m i
@@ -365,9 +366,9 @@ finalpath(){ local m="$1"; if suc "$m" ALL; then print CONSENSUS; else print SEQ
 # ids from prose/dependencies inflated the list + coverage and made _all_us_verified
 # (D-16) require a never-verifiable phantom (D-16 never armed). Now heading-anchored,
 # matching count_prd_us (the live re-split). (Independently flagged: codex audit NEW-3.)
-grep -qF "US_LIST=\$(grep -oE '^### US-[0-9]+' \"\$prd_file\" | sed 's/^### //'" "$RUN" \
-  && grep -qF "expected_us=\$(grep -oE '^### US-[0-9]+' \"\$prd_file\" | sed 's/^### //'" "$RUN" \
-  && ok "D-23: initial US_LIST + expected_us heading-anchored (^### US-), matching count_prd_us" || no "D-23: extraction not anchored"
+grep -qF 'US_LIST=$(grep -oE "$RLP_US_HEADING_ERE_PRD" "$prd_file" | grep -oE' "$RUN" \
+  && grep -qF 'expected_us=$(grep -oE "$RLP_US_HEADING_ERE_PRD" "$prd_file" | grep -oE' "$RUN" \
+  && ok "D-23: initial US_LIST + expected_us heading-anchored (RLP_US_HEADING_ERE_PRD), matching count_prd_us" || no "D-23: extraction not anchored"
 grep -qF 'if [[ -n "$current_us_list" ]]; then' "$LIB" && grep -qF 'no blank-overwrite' "$LIB" \
   && ok "D-23: check_prd_update keeps prior US_LIST when re-split empty (no blank-overwrite)" || no "D-23: blank-overwrite guard missing"
 grep -qF 'refusing vacuous pass' "$RUN" \
@@ -376,7 +377,14 @@ anchored(){ grep -oE '^### US-[0-9]+' <<<"$1" | sed 's/^### //' | sort -u | tr '
 [[ "$(anchored $'### US-001: a\n- builds on US-009\n### US-002: b')" == 'US-001,US-002,' ]] \
   && ok "D-23: prose 'US-009' mention NOT counted as a story (only ### headings)" || no "D-23: phantom-US logic"
 # D-24: _extract_prd_us_list matches BOTH 2-hash (## test-spec) and 3-hash (### PRD)
-grep -qF "grep -oE '^#{2,3}[[:space:]]+US-[0-9]+" "$LIB" \
+# reaudit wave 1: the 2-or-3-hash ERE is now the shared RLP_US_HEADING_ERE_PRD_LIST
+# constant (deliberately separate from the STRICT 3-hash-only
+# RLP_US_HEADING_ERE_PRD used by split_prd_by_us — see the constants'
+# comment in lib for why: _extract_prd_us_list stays permissive for the
+# US-022 quarantine scope check, while splitting a PRD on a 2-hash heading
+# would violate the pinned test_us001_prd_splitting.sh AC1-L3-neg contract).
+grep -qF "RLP_US_HEADING_ERE_PRD_LIST='^#{2,3}[[:space:]]+US-[0-9]+" "$LIB" \
+  && grep -qF 'grep -oE "$RLP_US_HEADING_ERE_PRD_LIST"' "$LIB" \
   && ok "D-24: _extract_prd_us_list matches ## and ### (was ## only → empty on canonical ### PRD)" || no "D-24: extractor not 2-3 hash"
 ext2v3(){ grep -oE '^#{2,3}[[:space:]]+US-[0-9]+([[:space:]:-]|$)' <<<"$1" | grep -oE 'US-[0-9]+' | sort -u | tr '\n' ','; }
 [[ "$(ext2v3 $'### US-001: a\n## US-002: b')" == 'US-001,US-002,' && "$(ext2v3 '### US-005: x')" == 'US-005,' ]] \
@@ -416,11 +424,14 @@ ln_w=$(grep -n 'if handle_worker_exit_claude "\$pane_id" "\$ITERATION" "\$trigge
 # `git diff --name-only HEAD` fails in a repo with no commits → Bug#8 Gate 3 misses a
 # Worker that staged-but-never-committed → F-8 auto-commit recovery skipped. Fix: a
 # HEAD-or-empty-tree base so staged files are detected even before the first commit.
-grep -qF '_git_dirty_base()' "$RUN" && grep -qF 'rev-parse --verify HEAD' "$RUN" \
-  && grep -qF 'hash-object -t tree /dev/null' "$RUN" \
+# _git_dirty_base lives in lib_ralph_desk.zsh (moved there in v0.22.7, well
+# before this suite's own anchor drift) — was checking $RUN, which never had
+# this function's definition at all.
+grep -qF '_git_dirty_base()' "$LIB" && grep -qF 'rev-parse --verify HEAD' "$LIB" \
+  && grep -qF 'hash-object -t tree /dev/null' "$LIB" \
   && ok "NEW-4: _git_dirty_base() defined (HEAD if present, else git empty-tree)" || no "NEW-4: helper missing"
-grep -qF '_bug8_dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)"' "$RUN" \
-  && grep -qF 'CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)"' "$RUN" \
+grep -qF '_bug8_dirty=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)")' "$RUN" \
+  && grep -qF 'CAMPAIGN_PREEXISTING_DIRTY=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)")' "$RUN" \
   && ok "NEW-4: Gate 3 dirty-check + CAMPAIGN_PREEXISTING_DIRTY both use _git_dirty_base (same base)" || no "NEW-4: sites not wired to helper"
 # logic mirror: empty-tree base catches a staged file in a no-HEAD repo (real git)
 n4=$(mktemp -d); ( cd "$n4"; git init -q; git config user.email t@t; git config user.name t
@@ -506,10 +517,19 @@ grep -qF 'CONSENSUS_ROUND=1' "$RUN" \
 awk '/^run_consensus_verification\(\) \{/{p=1} p&&/return 0/{r0=1} p&&/return 2/{r2=1} p&&/^\}/{print (r0&&r2)?"BOTH":"MISSING"; exit}' "$RUN" | grep -qx BOTH \
   && ok "D-22: both return paths intact (both-pass→0, disagreement→2)" || no "D-22: a return path was lost"
 # ---- redundant EXIT trap removed (CLEANUP_DONE-idempotent; EXIT INT TERM arm covers it) ----
-traps=$(grep -cE "trap '_emit_final_cost_log; cleanup'" "$RUN")
+# reaudit wave 1 (A-5, round 2): the surviving trap is no longer one combined
+# `trap '...; cleanup' EXIT INT TERM` — a function-scoped EXIT trap triggered
+# by an actual `exit` runs ONLY its first command under zsh's default trap
+# semantics, silently dropping _emit_final_cost_log/cleanup on a signal-driven
+# exit. Now: exactly ONE `trap '...cleanup' EXIT` (armed as an actual
+# statement, anchored on leading whitespace so this doesn't match the prose
+# mentions of the old form in nearby comments), plus INT/TERM/HUP each routed
+# through _on_signal (which explicitly runs the chain before exit).
+traps=$(grep -cE "^[[:space:]]*trap '.*cleanup' EXIT$" "$RUN")
 [[ "$traps" -eq 1 ]] && ok "D-22 batch: exactly one cleanup trap arm (redundant 2nd EXIT trap removed)" || no "D-22 batch: $traps trap arms (want 1)"
-grep -qF "trap '_emit_final_cost_log; cleanup' EXIT INT TERM" "$RUN" \
-  && ok "D-22 batch: surviving trap covers EXIT INT TERM" || no "D-22 batch: trap arm not EXIT INT TERM"
+grep -qF "trap '_emit_launch_record_outcome; _emit_final_cost_log; cleanup' EXIT" "$RUN" \
+  && grep -qF "trap '_on_signal INT'" "$RUN" && grep -qF "trap '_on_signal TERM'" "$RUN" && grep -qF "trap '_on_signal HUP'" "$RUN" \
+  && ok "D-22 batch: surviving trap covers EXIT INT TERM (HUP too, via _on_signal)" || no "D-22 batch: trap arm not EXIT INT TERM"
 
 # ---- D-25 (ralplan consensus, test-only): F-19 cross-relaunch invariant guard ----
 # F-19 invariant: operator pre-existing edits are NEVER swept into a Worker-recovery
@@ -531,7 +551,18 @@ f8_scope=$(awk '/_bug8_worker_files=\$\(comm -23/{f=1} f{print} f&&/grep -v/{exi
   && ok "D-25: F-8 worker-file scoping subtracts CAMPAIGN_PREEXISTING_DIRTY via comm -23 (anchored to the F-8 block)" \
   || no "D-25: F-8 block no longer subtracts CAMPAIGN_PREEXISTING_DIRTY (out=$f8_scope)"
 D25=$(mktemp -d)
-awk '/^_git_dirty_base\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUN" > "$D25/gdb.zsh"
+# _git_dirty_base lives in lib_ralph_desk.zsh (moved there in v0.22.7, well
+# before this suite's own D-20/NEW-4/A-4/A-5 anchor drift) — extracting from
+# $RUN here always produced an empty gdb.zsh, so _git_dirty_base was
+# "command not found" at runtime below. Also extract _git_snapshot +
+# _git_dirty_names (both lib_ralph_desk.zsh, A-4) so the two direct
+# `git diff --name-only` calls below can be routed through the same
+# unquoted-path-safe helper production now uses.
+awk '/^_git_dirty_base\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$LIB" > "$D25/gdb.zsh"
+{
+  awk '/^_git_snapshot\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$LIB"
+  awk '/^_git_dirty_names\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$LIB"
+} > "$D25/gdn.zsh"
 print -r -- "$f8_scope" > "$D25/f8scope.zsh"   # the REAL extracted F-8 scoping line, sourced below
 mkdir "$D25/repo"
 # behavioral: RELAUNCH sim, then SOURCE the real extracted F-8 comm -23 line to compute
@@ -539,6 +570,7 @@ mkdir "$D25/repo"
 d25_out=$(zsh -c '
   log(){ :; }; log_debug(){ :; }; log_error(){ :; }
   source "'"$D25"'/gdb.zsh"
+  source "'"$D25"'/gdn.zsh"
   cd "'"$D25"'/repo" || exit 9
   git init -q; git config user.email t@t.local; git config user.name t
   printf base > op.txt; printf base > prior.py; printf base > fresh.py
@@ -547,9 +579,9 @@ d25_out=$(zsh -c '
   printf "\noperator-edit" >> op.txt      # operator pre-existing dirty (tracked)
   printf "\nprior-worker" >> prior.py     # prior-segment Worker file left uncommitted
   # RELAUNCH: snapshot re-captured at new process start → holds BOTH op.txt and prior.py
-  CAMPAIGN_PREEXISTING_DIRTY=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)")
+  CAMPAIGN_PREEXISTING_DIRTY=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)")
   printf "\nfresh-worker" >> fresh.py     # fresh post-relaunch Worker work
-  _bug8_dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)")
+  _bug8_dirty=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)")
   source "'"$D25"'/f8scope.zsh"           # REAL F-8 comm -23 → sets _bug8_worker_files
   printf "%s\n" "$_bug8_worker_files" | grep -qx fresh.py && print FRESH_IN_WF
   printf "%s\n" "$_bug8_worker_files" | grep -qx op.txt && print OP_IN_WF
@@ -564,7 +596,9 @@ d25_out=$(zsh -c '
 mkdir "$D25/repo2"
 # negative control: feed the SAME real F-8 line an EMPTY snapshot → operator file IS scoped in
 d25_neg=$(zsh -c '
+  log(){ :; }; log_debug(){ :; }; log_error(){ :; }
   source "'"$D25"'/gdb.zsh"
+  source "'"$D25"'/gdn.zsh"
   cd "'"$D25"'/repo2" || exit 9
   git init -q; git config user.email t@t.local; git config user.name t
   printf base > op.txt; printf base > fresh.py; git add -A; git commit -qm base
@@ -572,7 +606,7 @@ d25_neg=$(zsh -c '
   printf "\noperator-edit" >> op.txt
   CAMPAIGN_PREEXISTING_DIRTY=""           # exclusion DISABLED
   printf "\nfresh-worker" >> fresh.py
-  _bug8_dirty=$(git -C "$ROOT" diff --name-only "$(_git_dirty_base)")
+  _bug8_dirty=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)")
   source "'"$D25"'/f8scope.zsh"
   printf "%s\n" "$_bug8_worker_files" | grep -qx op.txt && print OP_IN_WF
 ')

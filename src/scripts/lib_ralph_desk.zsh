@@ -85,6 +85,41 @@ _git_snapshot() {
   return $_rc
 }
 
+# A-4 (reaudit wave 1): NUL-delimited variant of the `git diff --name-only`
+# dirty-file snapshot shared by every F-8 exclusion-baseline capture (Gate 3
+# below, the campaign t0 snapshot, and the per-iteration snapshot). Plain
+# `--name-only` is DISPLAY-formatted: a path containing a backslash, a
+# double quote, or — with `core.quotePath` at git's own default of true — a
+# non-ASCII byte comes back C-quoted (e.g. `"\303\244.txt"`). Fed back as a
+# pathspec anywhere downstream (the `comm -23` exclusion, `git diff --quiet
+# --  <path>`, `_bug8_autocommit`'s `git add --`) that quoted string matches
+# NOTHING, so `git diff --quiet -- <nonmatching>` reads 0 ("clean") and the
+# D-20 "already committed" gate wrongly concludes the work is committed —
+# skipping both auto-commit and carryover while the file sits uncommitted.
+# `-z` NUL-terminates each name UNQUOTED. zsh command substitution preserves
+# embedded NULs (verified: `$(printf 'a\0b\0c')` round-trips at length 5,
+# unlike bash which truncates at the first NUL), so `_git_snapshot`'s
+# `$(...)` capture survives intact. Split on `${(@0)}`, drop the empty
+# elements the trailing (or, for a clean tree, the ONLY) NUL always
+# produces — the same one-empty-element hazard the D-20 comment above notes
+# for `${(@f)}` on an empty string — and rejoin with newlines so every
+# existing consumer (`comm -23`, `sort -u`, `printf '%s\n'`, `${(@f)}`
+# array-ization) keeps working unchanged for plain (non-quoted) paths.
+# Contract: identical to `_git_snapshot -C "$root" diff --name-only <base>`
+# — same rc, same "prints nothing on failure" fail-closed behavior (the
+# underlying `_git_snapshot` already logs the git error itself).
+_git_dirty_names() {
+  local root="$1" base="$2"
+  local _raw
+  _raw=$(_git_snapshot -C "$root" diff --name-only -z "$base")
+  local _rc=$?
+  (( _rc != 0 )) && return $_rc
+  local -a _arr=("${(@0)_raw}")
+  _arr=("${_arr[@]:#}")
+  print -rn -- "${(F)_arr}"
+  return 0
+}
+
 # build_claude_cmd() — centralized claude CLI command builder
 # Single source of truth for all claude invocation flags (--mcp-config, DISABLE_OMC, --effort, etc.)
 # Inspired by codex-plugin-cc companion pattern: CLI abstraction in one place.
@@ -492,7 +527,19 @@ check_model_upgrade() {
   # Upgrade when same US fails >= 2 consecutive times
   if (( _SAME_US_FAIL_COUNT >= 2 )); then
     local current_model_str
-    current_model_str=$(get_model_string "$WORKER_ENGINE" "${WORKER_CODEX_MODEL:-$WORKER_MODEL}" "${WORKER_CODEX_REASONING:-}")
+    # Engine-aware ladder key (mirrors the WORKER_ENGINE branch below and the
+    # _ceiling_model_str pattern in run_ralph_desk.zsh). run_ralph_desk.zsh:489
+    # unconditionally defaults WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.5}"
+    # regardless of engine, so a claude campaign always has WORKER_CODEX_MODEL
+    # set. The old `${WORKER_CODEX_MODEL:-$WORKER_MODEL}` fallback therefore
+    # ALWAYS preferred WORKER_CODEX_MODEL for claude campaigns too, keying the
+    # ladder lookup off the literal "gpt-5.5" (no bare key in models.json) and
+    # silently returning already_max — the claude ladder never fired.
+    if [[ "$WORKER_ENGINE" = "codex" ]]; then
+      current_model_str=$(get_model_string "$WORKER_ENGINE" "${WORKER_CODEX_MODEL:-$WORKER_MODEL}" "${WORKER_CODEX_REASONING:-}")
+    else
+      current_model_str=$(get_model_string "$WORKER_ENGINE" "$WORKER_MODEL" "")
+    fi
 
     local next_model
     next_model=$(get_next_model "$current_model_str")
@@ -1699,6 +1746,38 @@ _verify_session_alive() {
   tmux has-session -t "$session" 2>/dev/null
 }
 
+# Single source of truth for what counts as a PRD/test-spec "US-NNN" heading —
+# used by every gate/count/split site below AND by run_ralph_desk.zsh's
+# US_LIST derivation (lib is sourced into the same process, so this global is
+# visible there too). init_ralph_desk.zsh cannot source lib (stays standalone
+# by design) and keeps its own literal copy of the PRD-level ERE — cross-
+# reference RLP_US_HEADING_ERE_PRD in a comment there if either changes.
+#
+# TWO deliberately different PRD-level constants — do not merge them:
+#   - RLP_US_HEADING_ERE_PRD (STRICT, 3-hash only): the PRD story-heading
+#     level. `### US-NNN` is a PRD story; `## US-NNN` is the TEST-SPEC
+#     section level (RLP_US_HEADING_ERE_TESTSPEC below), not a PRD story. A
+#     prior "unify everything" pass widened this to 2-OR-3 hash and broke a
+#     pinned contract: tests/test_us001_prd_splitting.sh AC1-L3-neg asserts
+#     that a PRD whose headings are 2-hash (`## US-001: ...`) produces ZERO
+#     split files — a 2-hash line in a PRD is not a story heading, and
+#     split_prd_by_us must not treat it as one. Used by split_prd_by_us
+#     (gate + splitter), count_prd_us, _prd_us_set, run_ralph_desk.zsh's
+#     US_LIST derivation, and its per-US-coverage expected_us diagnostic.
+#   - RLP_US_HEADING_ERE_PRD_LIST (PERMISSIVE, 2-OR-3 hash): used ONLY by
+#     _extract_prd_us_list below, which feeds the US-022 quarantine scope
+#     check. Its own pre-existing 2-or-3-hash permissiveness is intentional
+#     and not narrowed by this wave — but run_ralph_desk.zsh's US_LIST
+#     derivation is NOT a consumer of this constant; US_LIST uses the STRICT
+#     RLP_US_HEADING_ERE_PRD above (see that bullet). Do not "fix" US_LIST
+#     to reference this one — that would silently re-widen story splitting.
+# Both accept US-NNN followed by whitespace, colon, dash, or end-of-line —
+# NOT colon-only, which silently produced zero matches for a dash-form
+# heading ("### US-001 - Title") even though it is a valid, common form.
+RLP_US_HEADING_ERE_PRD='^###[[:space:]]+US-[0-9]+([[:space:]:-]|$)'
+RLP_US_HEADING_ERE_PRD_LIST='^#{2,3}[[:space:]]+US-[0-9]+([[:space:]:-]|$)'
+RLP_US_HEADING_ERE_TESTSPEC='^##[[:space:]]+US-[0-9]+([[:space:]:-]|$)'
+
 # --- US-022 (R10 P2-J): Normalized PRD US-list extractor ---
 # Recognises `### US-005:`, `## US-005:`, `## US-005 -`, and bare headings.
 # Returns one US-NNN per line, sorted unique.
@@ -1709,10 +1788,13 @@ _verify_session_alive() {
 # → keep it" preservation guard never matched → every leftover signal, including a
 # legitimate same-mission one, was quarantined/mv'd at init) and the PRD/test-spec
 # lint (skipped). Accept 2 OR 3 leading hashes so it matches canonical PRDs.
+# Deliberately PERMISSIVE (RLP_US_HEADING_ERE_PRD_LIST, not the strict
+# RLP_US_HEADING_ERE_PRD split-level constant) — see the constants' own
+# comment above for why the two must stay separate.
 _extract_prd_us_list() {
   local prd_file="$1"
   [[ -f "$prd_file" ]] || return 0
-  grep -oE '^#{2,3}[[:space:]]+US-[0-9]+([[:space:]:-]|$)' "$prd_file" 2>/dev/null \
+  grep -oE "$RLP_US_HEADING_ERE_PRD_LIST" "$prd_file" 2>/dev/null \
     | grep -oE 'US-[0-9]+' \
     | sort -u
 }
@@ -2214,7 +2296,24 @@ generate_campaign_report() {
     blocked_category=$(grep -m1 -E '^[Cc]ategory:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
       | sed -E 's/^[Cc]ategory:[[:space:]]*//' \
       || true)
+  # A-5 (reaudit wave 1, round 2): SIGNAL_RECEIVED (run_ralph_desk.zsh global,
+  # shared into this sourced-in process) is set by _on_signal before it calls
+  # the cleanup chain — distinguishes an INT/TERM/HUP-driven exit from a
+  # genuine TIMEOUT (max_iter reached, no signal involved). Both previously
+  # landed on TIMEOUT, mislabeling an interrupted campaign as having
+  # exhausted its iteration budget.
+  elif [[ -n "${SIGNAL_RECEIVED:-}" ]]; then final_status="INTERRUPTED"
   else final_status="TIMEOUT"; fi
+
+  # Round-2 follow-up (A-5): the EXIT/INT/TERM/HUP trap in main() is now armed
+  # before main()'s own `mkdir -p "$LOGS_DIR" ...` runs (moved earlier so an
+  # interrupt during runner-lock/registry acquisition still cleans up), so an
+  # early-enough interrupt can reach this function before LOGS_DIR exists on
+  # disk. atomic_write does not create its target's parent directory, so
+  # without this the write below would fail silently (log line below would
+  # then be inaccurate). Idempotent/harmless on every other call path where
+  # LOGS_DIR already exists.
+  mkdir -p "$LOGS_DIR" 2>/dev/null
 
   local report_file="$LOGS_DIR/campaign-report.md"
 
@@ -2482,6 +2581,10 @@ ${untracked}"
       echo "- Increase --max-iter to allow more iterations for completion"
       echo "- Reduce scope by splitting remaining US into a follow-up campaign"
       echo "- Review last iteration done-claim for partial progress"
+    elif [[ "$final_status" == "INTERRUPTED" ]]; then
+      echo "- Campaign was interrupted by signal ${SIGNAL_RECEIVED:-unknown} (e.g. Ctrl-C) — not a completion, block, or timeout"
+      echo "- Check the working tree and last iteration's committed state before resuming"
+      echo "- Re-run with the same slug to resume the campaign from where it left off"
     fi
   } | atomic_write "$report_file"
 
@@ -3049,7 +3152,13 @@ _pregate_register_fail_doneclaim_lint() {
 # tree, which would let the oracle corroborate a claim whose tree is dirty).
 _commit_oracle_tracked_dirty() {
   local dirty
-  dirty=$(_git_snapshot -C "$ROOT" diff --name-only "$(_git_dirty_base)") || return 2
+  # LIB quoting fix: routed through _git_dirty_names (unquotes `--name-only -z`
+  # output) instead of a bare `_git_snapshot ... diff --name-only`, whose
+  # C-quoted paths (backslash/quote/non-ASCII under core.quotePath=true) fail
+  # to match the comm/grep pathspec filtering below and get silently dropped.
+  # Same rc contract (0 success / non-zero on git failure), so `|| return 2`
+  # is unchanged.
+  dirty=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)") || return 2
   [[ -n "$dirty" ]] || return 0
   comm -23 \
     <(printf '%s\n' "$dirty" | sort -u) \
@@ -3611,7 +3720,11 @@ _append_verified_ledger_all() {
 
 # Full PRD US set via the anchored extractor (### US-NNN:), sorted unique.
 _prd_us_set() {
-  grep -oE '^### US-[0-9]+' "$1" 2>/dev/null | sed 's/^### //' | sort -u
+  # Unified with the STRICT RLP_US_HEADING_ERE_PRD (3-hash only — see its
+  # definition comment near _extract_prd_us_list for why it is deliberately
+  # separate from that function's own permissive constant) — was a narrower
+  # colon-only form that disagreed with split_prd_by_us's gate.
+  grep -oE "$RLP_US_HEADING_ERE_PRD" "$1" 2>/dev/null | grep -oE 'US-[0-9]+' | sort -u
 }
 
 # derive_verification_mode <ledger> <prd> <root>
@@ -3736,8 +3849,15 @@ derive_verification_mode() {
   # full-suite re-run plus the committed-deliverable SHA anchor — not this
   # working-tree check. (HEAD resolves here: the SHA-anchor checks above already
   # proved a committed verified state.)
+  # LIB quoting fix: was a bare `git diff --name-only HEAD`, whose C-quoted
+  # paths (backslash/quote/non-ASCII under core.quotePath=true) don't match
+  # the comm subtraction below against CAMPAIGN_PREEXISTING_DIRTY (which holds
+  # unquoted names) — a resident dirty file with such a name would then look
+  # like NEW campaign-era dirt and wrongly block confirmation mode. Routed
+  # through _git_dirty_names with the same "HEAD" base; still checks $? the
+  # same way immediately after.
   local _tracked_dirty
-  _tracked_dirty=$(git -C "$root" diff --name-only HEAD 2>/dev/null)
+  _tracked_dirty=$(_git_dirty_names "$root" HEAD)
   if (( $? != 0 )); then
     print -r -- "build|git status failed (not a repo?)"; return 0
   fi
@@ -3988,7 +4108,11 @@ count_prd_us() {
     prd_file="$DESK/plans/prd-$SLUG.md"
   fi
   if [[ -f "$prd_file" ]]; then
-    grep -oE '^### US-[0-9]+' "$prd_file" 2>/dev/null | sed 's/^### //' | sort -u | tr '\n' ',' | sed 's/,$//'
+    # Unified with the STRICT RLP_US_HEADING_ERE_PRD (3-hash only — see its
+    # definition comment near _extract_prd_us_list for why it is deliberately
+    # separate from that function's own permissive constant) — was a narrower
+    # colon-only form that disagreed with split_prd_by_us's gate.
+    grep -oE "$RLP_US_HEADING_ERE_PRD" "$prd_file" 2>/dev/null | grep -oE 'US-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//'
   else
     echo ""
   fi
@@ -4253,19 +4377,58 @@ split_prd_by_us() {
   [[ -f "$prd_file" ]] || return 0
 
   local us_count
-  us_count=$(grep -oE '^### US-' "$prd_file" 2>/dev/null | wc -l | tr -d ' ') || us_count=0
+  # Uses the shared RLP_US_HEADING_ERE_PRD (STRICT, 3-hash only — see its
+  # definition comment near _extract_prd_us_list) so the loose pre-check
+  # gate and the actual splitter below can never disagree with each other
+  # (gate says "US markers present", splitter produces zero files for a form
+  # the gate accepted).
+  us_count=$(grep -cE "$RLP_US_HEADING_ERE_PRD" "$prd_file" 2>/dev/null) || us_count=0
   if [[ "$us_count" -eq 0 ]]; then
     return 0
   fi
 
-  awk -v dir="$plans_dir" -v slug="$slug" '
-    /^### US-[0-9]+:/ {
-      if (out != "") close(out)
+  # reaudit wave 1 (queued after A-5): defects init_ralph_desk.zsh's
+  # split_prd_by_us already had fixed, plus a follow-up review finding —
+  # - boundary regex is the shared RLP_US_HEADING_ERE_PRD (STRICT, 3-hash
+  #   only — `### US-NNN` is the PRD story level; `## US-NNN` is the
+  #   test-spec section level, see RLP_US_HEADING_ERE_TESTSPEC and is NOT a
+  #   PRD story heading): whitespace/colon/dash/end-of-line accepted after
+  #   US-NNN. Was colon-only 3-hash, which produced ZERO split files for a
+  #   dash-form heading (### US-001 - Title) mid-campaign even though a
+  #   dash-form PRD is now accepted at init time.
+  # - plans_dir goes through ENVIRON, not -v: POSIX awk -v applies
+  #   C-style backslash-escape processing to its value, so a project root
+  #   path containing a literal backslash silently corrupts the split
+  #   target path (verified: `awk -v dir='a\with\backslash'` prints
+  #   `awithackslash`; ENVIRON performs no such processing). The ERE itself
+  #   has no backslashes, so passing it via -v is safe.
+  # - append-mode, not close()-then-reopen-with->: a duplicate/appendix
+  #   heading for an ALREADY-SEEN us_id (e.g. a later "### US-001 rationale"
+  #   section) reassigns `out` back to a filename already opened earlier.
+  #   The old `if (out != "") close(out)` + `print > out` pattern
+  #   RE-TRUNCATES that file on the second open (POSIX awk: `>` truncates on
+  #   the first open of a given target since its last close; closing and
+  #   reopening resets that), silently discarding the body written for the
+  #   first section. Fix: truncate each target file EXACTLY ONCE, the first
+  #   time its name is seen (tracked in `seen[]`), then append (`>>`) for
+  #   every line after that — regardless of how many times the same
+  #   heading/us_id recurs later in the file. For a PRD with no duplicate
+  #   headings (the common case) this produces byte-identical output to the
+  #   old close()/`>` form.
+  # ere goes through ENVIRON too, not -v: today's ERE has no backslash, so
+  # -v's C-style escape processing is a byte-exact no-op for it, but that
+  # would silently break the moment either constant ever gains a `\.` or
+  # `\\` — ENVIRON is immune to this class of corruption regardless of the
+  # ERE's future content, same rationale as PLANS_DIR above.
+  RLP_ERE="$RLP_US_HEADING_ERE_PRD" PLANS_DIR="$plans_dir" awk -v slug="$slug" '
+    $0 ~ ENVIRON["RLP_ERE"] {
       match($0, /US-[0-9]+/)
       us_id = substr($0, RSTART, RLENGTH)
-      out = dir "/prd-" slug "-" us_id ".md"
+      out = ENVIRON["PLANS_DIR"] "/prd-" slug "-" us_id ".md"
     }
-    out != "" { print > out }
+    out != "" {
+      if (out in seen) { print >> out } else { print > out; seen[out] = 1 }
+    }
   ' "$prd_file"
 }
 
@@ -4278,30 +4441,60 @@ split_test_spec_by_us() {
   [[ -f "$ts_file" ]] || return 0
 
   local us_count
-  us_count=$(grep -oE '^## US-' "$ts_file" 2>/dev/null | wc -l | tr -d ' ') || us_count=0
+  # Uses the shared RLP_US_HEADING_ERE_TESTSPEC (2-hash test-spec level —
+  # see its definition comment near _extract_prd_us_list; NOT the same
+  # constant _extract_prd_us_list itself uses, which is PRD-level) so the
+  # loose pre-check gate and the actual splitter/header-boundary below can
+  # never disagree with each other.
+  us_count=$(grep -cE "$RLP_US_HEADING_ERE_TESTSPEC" "$ts_file" 2>/dev/null) || us_count=0
   if [[ "$us_count" -eq 0 ]]; then
     return 0
   fi
 
-  local header_tmp="${plans_dir}/test-spec-${slug}-header.tmp.$$"
-  awk '/^## US-[0-9]+:/{exit} {print}' "$ts_file" > "$header_tmp"
+  # reaudit wave 1 (queued after A-5), follow-up review round: same defects
+  # as split_prd_by_us above at the test-spec's `##` heading level, plus two
+  # more caught in review —
+  # - header captured into a VARIABLE (NUL-terminated `read`, matching
+  #   init_ralph_desk.zsh's own fix), not a tmp file on disk: the old
+  #   `header_tmp` was a real leak risk — an abort between its creation and
+  #   its `rm -f` (e.g. the NOMATCH crash the (N) fix below closes) orphaned
+  #   it in plans/ permanently, since run's own tmp sweep only covers
+  #   LOGS_DIR/MEMOS_DIR. Plain `$(awk ...)` strips ALL trailing newlines
+  #   (would silently eat the blank line separating header from the first
+  #   heading — a real byte-level diff, not cosmetic); the NUL-delimited
+  #   `read` + `printf '%s'` below preserve the captured bytes exactly, so
+  #   this produces byte-identical output to the old tmp-file form for a
+  #   PRD/test-spec with no duplicate headings.
+  # - append-mode, not close()-then-reopen-with->: same duplicate-heading
+  #   truncation bug as split_prd_by_us (see there for the full mechanism).
+  # - the per-file loop below now globs with (N) (nullglob) instead of a
+  #   bare glob: with zero split files (gate/splitter now agree, so this is
+  #   the graceful "nothing matched" path, not an error), a bare glob with
+  #   no (N) is a NOMATCH under zsh's default options and ABORTS the
+  #   function — skipping the header-prepend loop is fine (nothing to
+  #   prepend to), but skipping it via a crash rather than a normal empty
+  #   loop is not.
+  # ere via ENVIRON, not -v — same rationale as split_prd_by_us above.
+  local header_content
+  IFS= read -r -d '' header_content < <(RLP_ERE="$RLP_US_HEADING_ERE_TESTSPEC" awk '$0 ~ ENVIRON["RLP_ERE"]{exit} {print}' "$ts_file"; printf '\0') || true
 
-  awk -v dir="$plans_dir" -v slug="$slug" '
-    /^## US-[0-9]+:/ {
-      if (out != "") close(out)
+  RLP_ERE="$RLP_US_HEADING_ERE_TESTSPEC" PLANS_DIR="$plans_dir" awk -v slug="$slug" '
+    $0 ~ ENVIRON["RLP_ERE"] {
       match($0, /US-[0-9]+/)
       us_id = substr($0, RSTART, RLENGTH)
-      out = dir "/test-spec-" slug "-" us_id ".md"
+      out = ENVIRON["PLANS_DIR"] "/test-spec-" slug "-" us_id ".md"
     }
-    out != "" { print > out }
+    out != "" {
+      if (out in seen) { print >> out } else { print > out; seen[out] = 1 }
+    }
   ' "$ts_file"
 
-  for split_file in "$plans_dir"/test-spec-"$slug"-US-*.md; do
-    [[ -f "$split_file" ]] || continue
+  local -a split_files
+  split_files=("$plans_dir"/test-spec-"$slug"-US-*.md(N))
+  for split_file in "${split_files[@]}"; do
     local tmp="${split_file}.tmp.$$"
-    cat "$header_tmp" "$split_file" > "$tmp" && mv "$tmp" "$split_file"
+    { printf '%s' "$header_content"; cat "$split_file"; } > "$tmp" && mv "$tmp" "$split_file"
   done
-  rm -f "$header_tmp"
 }
 
 check_prd_update() {

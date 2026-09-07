@@ -110,13 +110,15 @@ run_runner() {
   build_tmux_stub "$root"
   local stub_bin="$root/.a18-stub-bin"
 
+  # -f: skip user rc files (.zshenv) so a developer's dotfiles PATH does not
+  # re-prepend real dirs ahead of $stub_bin, defeating the tmux stub above.
   PATH="$stub_bin:$PATH" \
   TMUX=tmux-active \
   LOOP_NAME="$SLUG" \
   ROOT="$root" \
   MAX_ITER=1 \
   ITER_TIMEOUT=2 \
-  zsh "$RUN" >"$out" 2>&1
+  zsh -f "$RUN" >"$out" 2>&1
   return $?
 }
 
@@ -297,14 +299,25 @@ test_ac3_happy() {
 
 test_ac3_negative() {
   # US-023 R11 P2-K chained `_emit_final_cost_log` ahead of `cleanup` in the
-  # trap body, so the exact old literal 'trap cleanup EXIT INT TERM' is gone;
-  # cleanup is still trapped on EXIT/INT/TERM, just via a compound command.
+  # trap body. A-5 (reaudit wave 1) then split the single combined
+  # `trap '...; cleanup' EXIT INT TERM HUP` into an EXIT-only cleanup chain
+  # plus a dedicated `_on_signal` handler trapped separately on INT/TERM/HUP:
+  # in zsh, a signal trap that returns normally (status 0) marks the signal
+  # "handled" and RESUMES execution at the interruption point instead of
+  # terminating the process, so the old combined form let Ctrl-C run
+  # cleanup() and then keep looping. `_on_signal` now calls
+  # `exit $((128+signum))`, which fires the EXIT trap exactly once. Cleanup
+  # is therefore still reached on every terminal path (EXIT directly, or via
+  # _on_signal -> exit -> EXIT) — just no longer via one compound trap.
   local body
   body=$(extract_fn "main")
-  if echo "$body" | grep -E "trap '.*cleanup' EXIT INT TERM" >/dev/null 2>&1; then
-    pass "AC3-negative: cleanup trap includes EXIT, INT, TERM"
+  if echo "$body" | grep -E "trap '.*cleanup' EXIT$" >/dev/null 2>&1 \
+    && echo "$body" | grep -qF "trap '_on_signal INT'  INT" \
+    && echo "$body" | grep -qF "trap '_on_signal TERM' TERM" \
+    && echo "$body" | grep -qF "trap '_on_signal HUP'  HUP"; then
+    pass "AC3-negative: EXIT-only cleanup chain present, INT/TERM/HUP each trapped to _on_signal"
   else
-    fail "AC3-negative: cleanup trap missing EXIT/INT/TERM"
+    fail "AC3-negative: cleanup trap missing EXIT-only chain or INT/TERM/HUP _on_signal traps"
   fi
 }
 

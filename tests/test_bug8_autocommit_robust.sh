@@ -134,11 +134,28 @@ print -r -- "$autoblk" | grep -q 'autocommit_failed_continue' \
 LIB="$ROOT_DIR/src/scripts/lib_ralph_desk.zsh"
 [[ -f "$LIB" ]] || { print -u2 "FAIL: lib script not found"; exit 1; }
 
-awk '/^_bug8_check_synth_allowed\(\)/,/^}$/' "$RUN" >  "$EXTRACT/gate.zsh"
+awk '/^_git_dirty_names\(\)/,/^}$/'         "$LIB" >  "$EXTRACT/gate.zsh"
+awk '/^_bug8_check_synth_allowed\(\)/,/^}$/' "$RUN" >> "$EXTRACT/gate.zsh"
 awk '/^_git_dirty_base\(\)/,/^}$/'          "$LIB" >> "$EXTRACT/gate.zsh"
 awk '/^_git_snapshot\(\)/,/^}$/'            "$LIB" >> "$EXTRACT/gate.zsh"
-grep -q '_bug8_check_synth_allowed' "$EXTRACT/gate.zsh" || { print -u2 "FAIL: gate not extracted"; exit 1; }
-grep -q '_git_dirty_base'           "$EXTRACT/gate.zsh" || { print -u2 "FAIL: _git_dirty_base not extracted"; exit 1; }
+# A-4 follow-on: the gate now calls _git_dirty_names (run_ralph_desk.zsh),
+# which wraps _git_snapshot's `-z` output. Also extract _leader_registry_dir
+# + _leader_registry_foreign_live (lib) — the gate's F-8 branch calls the
+# latter, and leaving it unextracted produced a `command not found:
+# _leader_registry_foreign_live` stderr line on every scenario (harmless:
+# the fixtures below have no registry dir, so _leader_registry_dir/-d always
+# misses and the intended rc=1 "no foreign leader" path is reached either
+# way — verified live below in test M) but it is silent noise worth removing.
+awk '/^_leader_registry_dir\(\)/,/^}$/'        "$LIB" >> "$EXTRACT/gate.zsh"
+awk '/^_leader_registry_foreign_live\(\)/,/^}$/' "$LIB" >> "$EXTRACT/gate.zsh"
+# Definition-anchored (^fn()), not a bare substring match — a substring check
+# also matches a CALL SITE (e.g. _bug8_check_synth_allowed calling
+# _git_dirty_names), so a missing DEFINITION could still pass the guard and
+# only surface as a runtime "command not found" deep in the scenarios below.
+grep -q '^_bug8_check_synth_allowed()'   "$EXTRACT/gate.zsh" || { print -u2 "FAIL: gate not extracted"; exit 1; }
+grep -q '^_git_dirty_base()'             "$EXTRACT/gate.zsh" || { print -u2 "FAIL: _git_dirty_base not extracted"; exit 1; }
+grep -q '^_git_dirty_names()'            "$EXTRACT/gate.zsh" || { print -u2 "FAIL: _git_dirty_names not extracted"; exit 1; }
+grep -q '^_leader_registry_foreign_live()' "$EXTRACT/gate.zsh" || { print -u2 "FAIL: _leader_registry_foreign_live not extracted"; exit 1; }
 source "$EXTRACT/gate.zsh"
 
 # Capturing stubs for the gate's collaborators (override the no-ops above).
@@ -306,7 +323,11 @@ print -r -- "$f8blk" | grep -q 'comm -23' \
   && print -r -- "$f8blk" | grep -q 'ITER_PREEXISTING_DIRTY' \
   && ok "K(AC1): F-8 subtracts the campaign ∪ iteration union via comm -23" \
   || no "K(AC1): F-8 does not subtract ITER_PREEXISTING_DIRTY in the comm -23"
-comm_line=$(grep -n 'comm -23' "$RUN" | awk -F: '$1>1400 && $1<1500 {print $1; exit}')
+# Anchor on the actual assignment (`_bug8_worker_files=$(comm -23`), not a
+# hardcoded numeric line range — A-4's new _git_dirty_names helper (with its
+# own prose mentions of "comm -23") shifted the real code down and made the
+# old 1400-1500 window stale.
+comm_line=$(grep -n '_bug8_worker_files=\$(comm -23' "$RUN" | head -1 | cut -d: -f1)
 zguard_line=$(grep -n '\[\[ -z "\$_bug8_worker_files" \]\]' "$RUN" | head -1 | cut -d: -f1)
 iter_ref_line=$(awk 'NR>'"${comm_line:-0}"' && NR<'"${zguard_line:-0}"' && /ITER_PREEXISTING_DIRTY/ {print NR; exit}' "$RUN")
 [[ -n "$comm_line" && -n "$zguard_line" && -n "$iter_ref_line" ]] \
@@ -323,6 +344,46 @@ print -r -- "$f8blk" | grep -q 'empty worker-file list at auto-commit' \
   && ok "K(AC1): the D-20 empty-array BLOCK is still present as the fail-safe" \
   || no "K(AC1): the D-20 empty-array BLOCK was removed"
 
+# --- M (extraction hygiene): the gate harness must not emit "command not
+#     found" noise for the F-8 branch's _leader_registry_foreign_live call —
+#     the fixtures below have no registry dir, so it resolves to rc=1 (no
+#     foreign leader) on its own merits, not because the call is missing. ---
+RM="$TMP/m"; mkrepo2 "$RM"
+print -r -- "worker work" >> "$RM/b.txt"
+M_STDERR="$TMP/m-stderr.txt"
+( run_gate "$RM" "" "" ) 2>"$M_STDERR" >/dev/null
+grep -q 'command not found: _leader_registry_foreign_live' "$M_STDERR" \
+  && no "M: _leader_registry_foreign_live still unresolved (extraction gap)" \
+  || ok "M: no 'command not found: _leader_registry_foreign_live' noise"
+
+# ===========================================================================
+# A-3 (reaudit wave 1) — _bug8_autocommit's `git commit` must be scoped to the
+# pre-scoped worker-file list, exactly like `git add`. A bare `commit -q -m`
+# (no pathspec) commits the WHOLE index, so a file the operator (or a foreign
+# leader) had ALREADY staged before recovery ran got swept into the recovery
+# commit — defeating the comm -23 exclusion and the Option D downgrade, which
+# both only constrain `add`.
+# ===========================================================================
+RN="$TMP/n"; mkrepo "$RN"
+print -r -- "worker change" >> "$RN/normal.txt"   # the ONLY file in the scoped recovery list
+print -r -- "foreign seed"  > "$RN/foreign.txt"
+git -C "$RN" add foreign.txt; git -C "$RN" commit -qm 'track foreign.txt'
+print -r -- "operator staged this BEFORE recovery ran" >> "$RN/foreign.txt"
+git -C "$RN" add foreign.txt                       # already staged, NOT in the scoped list
+( cd "$RN" && _bug8_autocommit "$RN" "recover N" normal.txt ); rcN=$?
+(( rcN == 0 )) && ok "N(A-3): scoped recovery commit succeeds (rc 0)" \
+  || no "N(A-3): expected rc 0, got $rcN"
+committedN=$(git -C "$RN" show --pretty=format: --name-only HEAD | grep -v '^$')
+[[ "$committedN" == "normal.txt" ]] \
+  && ok "N(A-3): recovery commit contains ONLY the scoped file (foreign.txt excluded)" \
+  || no "N(A-3): recovery commit swept in extra files: '$(print -r -- "$committedN" | tr '\n' ' ')'"
+[[ -n "$(git -C "$RN" status --porcelain -- foreign.txt)" ]] \
+  && ok "N(A-3): the pre-staged foreign.txt is left pending, not committed away" \
+  || no "N(A-3): foreign.txt was swept into the commit"
+grep -q -- '--literal-pathspecs -C "\$root" commit -q -m "\$msg" -- "\${files\[@\]}"' "$RUN" \
+  && ok "N(A-3 structural): commit is literal-pathspec + scoped to the worker-file list" \
+  || no "N(A-3 structural): scoped literal-pathspec commit not found in $RUN"
+
 # --- L (capture-site structural): the iteration baseline is captured at worker
 #     dispatch via the SAME snapshot helper + diff base as Gate 3, and a snapshot
 #     failure must never CLEAR the baseline (that is the fail-OPEN direction). ---
@@ -330,8 +391,8 @@ grep -q 'typeset -g ITER_PREEXISTING_DIRTY' "$RUN" \
   && ok "L: ITER_PREEXISTING_DIRTY is declared global" || no "L: no typeset -g declaration"
 grep -q 'ITER_PREEXISTING_DIRTY="\$_iter_pre"' "$RUN" \
   && ok "L: baseline assigned only from a successful snapshot" || no "L: no guarded assignment found"
-grep -q '_iter_pre=\$(_git_snapshot -C "\$ROOT" diff --name-only "\$(_git_dirty_base)")' "$RUN" \
-  && ok "L: capture uses _git_snapshot + _git_dirty_base (same base as Gate 3)" \
+grep -q '_iter_pre=\$(_git_dirty_names "\$ROOT" "\$(_git_dirty_base)")' "$RUN" \
+  && ok "L: capture uses _git_dirty_names + _git_dirty_base (same base as Gate 3)" \
   || no "L: capture does not reuse the Gate 3 snapshot helper/base"
 [[ "$(grep -c 'ITER_PREEXISTING_DIRTY=""' "$RUN")" == "1" ]] \
   && ok "L: exactly one initialization to empty (the t0 declaration) — no failure-path clear" \
@@ -340,6 +401,118 @@ dispatch_blk=$(awk '/if \(\( ! SKIP_NEXT_WORKER \)\); then/,/update_status "work
 print -r -- "$dispatch_blk" | grep -q 'ITER_PREEXISTING_DIRTY' \
   && ok "L: capture sits inside the worker-dispatch block (per iteration, dispatch-only)" \
   || no "L: capture is not in the worker-dispatch block"
+
+# ===========================================================================
+# A-4 (reaudit wave 1) — `git diff --name-only` C-quotes any path containing a
+# backslash, a double quote, or (core.quotePath=true, git's OWN default — this
+# machine's global config sets it off, so the test sets it explicitly) a
+# non-ASCII byte. Fed back as a pathspec that quoted string matches NOTHING,
+# so the D-20 "already committed?" gate (`git diff --quiet -- <quoted>`) reads
+# 0/clean and skips BOTH auto-commit and carryover while the file sits
+# uncommitted. _git_dirty_names (the -z + unquote fix) must recover both a
+# non-ASCII-named and a quote-named file end-to-end through the real gate.
+# ===========================================================================
+RO="$TMP/o"; mkrepo2 "$RO"
+git -C "$RO" config core.quotePath true   # force on; this sandbox's global default is off
+NONASCII_NAME=$'\xc3\xa4.txt'             # ä.txt (non-ASCII byte)
+QUOTE_NAME='quote"file.txt'               # embedded double quote
+print -r -- seed > "$RO/$NONASCII_NAME"
+print -r -- seed > "$RO/$QUOTE_NAME"
+git -C "$RO" add -- "$NONASCII_NAME" "$QUOTE_NAME"
+git -C "$RO" commit -qm 'track quoted-name files'
+print -r -- "worker edit" >> "$RO/$NONASCII_NAME"
+print -r -- "worker edit" >> "$RO/$QUOTE_NAME"
+run_gate "$RO" "" ""; rcO=$?
+(( rcO == 0 )) && ok "O(A-4): gate allows synthesis with quoted-path dirty files" \
+  || no "O(A-4): expected rc 0, got $rcO (BLOCKED='$BLOCKED')"
+# Verify the WORKER'S EDIT actually landed in HEAD — not just that the path
+# exists in HEAD (both files were already tracked from the setup commit
+# BEFORE the worker edit, so a presence-only check like `cat-file -e
+# HEAD:<path>` would trivially pass even if recovery silently failed to
+# commit the edit and left it stranded in the working tree). `git diff
+# --quiet HEAD -- <path>` (--literal-pathspecs, exact raw name — no shell
+# quoting needed, it is passed as one argv element) returns 0 only when the
+# working tree for that path is now byte-identical to HEAD, i.e. the edit
+# was actually committed.
+git --literal-pathspecs -C "$RO" diff --quiet HEAD -- "$NONASCII_NAME" \
+  && ok "O(A-4): the non-ASCII-named file's worker edit was recovered/committed" \
+  || no "O(A-4): non-ASCII file's worker edit is NOT in HEAD (still dirty)"
+git --literal-pathspecs -C "$RO" diff --quiet HEAD -- "$QUOTE_NAME" \
+  && ok "O(A-4): the double-quote-named file's worker edit was recovered/committed" \
+  || no "O(A-4): quote-named file's worker edit is NOT in HEAD (still dirty)"
+[[ -z "$(git -c core.quotePath=false -C "$RO" status --porcelain)" ]] \
+  && ok "O(A-4): working tree fully clean after recovery (nothing left uncommitted)" \
+  || no "O(A-4): tree still dirty: $(git -c core.quotePath=false -C "$RO" status --porcelain | tr '\n' '|')"
+
+# ===========================================================================
+# P (reaudit wave 1 follow-up) — D-20's "already committed?" pre-check
+# (`git diff --quiet HEAD -- "${_bug8_add[@]}"`) lacked --literal-pathspecs,
+# unlike _bug8_autocommit's add/commit (N above). Empirically confirmed
+# mechanism on this git (git ls-files -- '[z].txt' returns BOTH '[z].txt'
+# AND 'z.txt' — the bracket pathspec is matched literally AND as an fnmatch
+# character class simultaneously, not one or the other): with
+# _bug8_add=('[z].txt'), a non-literal `git diff --quiet HEAD --
+# "${_bug8_add[@]}"` is contaminated by an UNRELATED z.txt's dirt even when
+# the scoped `[z].txt` itself is perfectly clean. Concretely this hits the
+# D-20 commit-race branch: if `[z].txt` was already committed (by the Worker
+# itself, or a prior recovery) but any unrelated z.txt is dirty, the
+# non-literal check wrongly reads "still dirty" instead of "already
+# committed" — D-20 then falls through to _bug8_autocommit, which finds
+# nothing to add/commit for the already-clean `[z].txt` and fails ("nothing
+# to commit"), producing a spurious auto-commit-failure/carryover for a file
+# that was never actually a problem.
+# ===========================================================================
+
+# Mutation control, at the raw git level (the exact D-20 command), isolated
+# from timing/race concerns: '[z].txt' is tracked and CLEAN; the UNRELATED
+# z.txt is tracked and DIRTY. Proves the pathspec bleed is real on this git,
+# independent of the gate.
+RPM="$TMP/pm"
+mkdir -p "$RPM"; git -C "$RPM" init -q
+git -C "$RPM" config user.email t@t.t; git -C "$RPM" config user.name t
+print -r -- "z base"       > "$RPM/z.txt"
+print -r -- "bracket base" > "$RPM/[z].txt"
+git -C "$RPM" add -- z.txt "[z].txt"
+git -C "$RPM" commit -qm 'track z.txt and [z].txt'
+print -r -- "unrelated dirt" >> "$RPM/z.txt"   # dirty ONLY the unrelated z.txt; [z].txt stays clean
+if ! git -C "$RPM" diff --quiet HEAD -- '[z].txt' 2>/dev/null; then
+  ok "P mutation control: confirmed — bare (non-literal) 'git diff --quiet HEAD -- [z].txt' is contaminated by the UNRELATED z.txt's dirt and misreports [z].txt as dirty even though [z].txt itself is clean (the pre-fix bug — D-20 would wrongly skip the already-committed fast path)"
+else
+  no "P mutation control: non-literal pathspec did not bleed onto the unrelated z.txt on this git — this fixture would not exercise the pre-fix bug"
+fi
+if git --literal-pathspecs -C "$RPM" diff --quiet HEAD -- '[z].txt' 2>/dev/null; then
+  ok "P sanity: --literal-pathspecs correctly scopes to [z].txt alone and reads it as clean (ignores the unrelated z.txt)"
+else
+  no "P sanity: --literal-pathspecs also read [z].txt as dirty — fixture is not actually clean"
+fi
+
+# End-to-end: the gate correctly auto-commits a NEW worker edit to a
+# glob-metachar-named file, alongside a clean, untouched z.txt (so a
+# resurfaced regression that re-scopes the D-20 check too broadly would
+# still be exercised, even though it can no longer misfire here since z.txt
+# never goes dirty in this fixture).
+RP="$TMP/p"; mkrepo2 "$RP"
+print -r -- "z base"       > "$RP/z.txt"
+print -r -- "bracket base" > "$RP/[z].txt"
+git -C "$RP" add -- z.txt "[z].txt"
+git -C "$RP" commit -qm 'track z.txt and [z].txt'
+print -r -- "worker edit" >> "$RP/[z].txt"   # dirty ONLY the bracket-named file; z.txt stays clean
+
+run_gate "$RP" "" ""; rcP=$?
+(( rcP == 0 )) && ok "P(literal-pathspecs): gate allows synthesis with a glob-metachar worker filename" \
+  || no "P(literal-pathspecs): expected rc 0, got $rcP (BLOCKED='$BLOCKED')"
+[[ "$(committed_files "$RP")" == '[z].txt' ]] \
+  && ok "P(literal-pathspecs): [z].txt was actually committed (not silently skipped as 'already committed')" \
+  || no "P(literal-pathspecs): recovery commit wrong or missing: '$(committed_files "$RP" | tr '\n' ' ')'"
+git --literal-pathspecs -C "$RP" diff --quiet HEAD -- '[z].txt' \
+  && ok "P(literal-pathspecs): [z].txt's worker edit landed in HEAD (still dirty otherwise)" \
+  || no "P(literal-pathspecs): [z].txt is NOT in HEAD (edit lost)"
+[[ -z "$(git -C "$RP" status --porcelain)" ]] \
+  && ok "P(literal-pathspecs): working tree fully clean after recovery" \
+  || no "P(literal-pathspecs): tree still dirty: $(git -C "$RP" status --porcelain | tr '\n' '|')"
+grep -q 'git --literal-pathspecs -C "\$ROOT" diff --quiet HEAD -- "\${_bug8_add\[@\]}"' "$RUN" \
+  && ok "P structural: D-20 already-committed check is --literal-pathspecs" \
+  || no "P structural: D-20 diff --quiet check is missing --literal-pathspecs in $RUN"
 
 print ""
 print "PASS=$PASS FAIL=$FAIL"

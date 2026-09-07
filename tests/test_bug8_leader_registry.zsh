@@ -54,6 +54,7 @@ trap 'rm -rf "$TMP" "$EXTRACT"' EXIT
   awk '/^_bug8_autocommit\(\)/,/^}$/'           "$RUN"
   awk '/^_bug8_carryover_file\(\)/{print}'      "$RUN"
   awk '/^_bug8_record_carryover\(\)/,/^}$/'     "$RUN"
+  awk '/^_git_dirty_names\(\)/,/^}$/'           "$LIB"
   awk '/^_bug8_check_synth_allowed\(\)/,/^}$/'  "$RUN"
   awk '/^_git_dirty_base\(\)/,/^}$/'            "$LIB"
   awk '/^_git_snapshot\(\)/,/^}$/'              "$LIB"
@@ -63,7 +64,7 @@ trap 'rm -rf "$TMP" "$EXTRACT"' EXIT
   awk '/^unregister_leader\(\)/,/^}$/'          "$LIB"
   awk '/^_leader_registry_foreign_live\(\)/,/^}$/' "$LIB"
 } > "$EXTRACT/h.zsh"
-for fn in _bug8_check_synth_allowed _git_dirty_base atomic_write \
+for fn in _bug8_check_synth_allowed _git_dirty_base _git_dirty_names atomic_write \
           _leader_registry_dir register_leader unregister_leader \
           _leader_registry_foreign_live; do
   grep -q "^$fn()" "$EXTRACT/h.zsh" \
@@ -353,7 +354,7 @@ print -r -- "$f8blk" | grep -q '_leader_registry_foreign_live' \
   || no "S6(AC7e): the registry read is not in the F-8 branch"
 dg_line=$(grep -n '_leader_registry_foreign_live' "$RUN" | head -1 | cut -d: -f1)
 ac_line=$(grep -n '_bug8_autocommit "\$ROOT"' "$RUN" | head -1 | cut -d: -f1)
-d20_line=$(grep -n 'git -C "\$ROOT" diff --quiet HEAD -- "\${_bug8_add\[@\]}"' "$RUN" | head -1 | cut -d: -f1)
+d20_line=$(grep -n 'git --literal-pathspecs -C "\$ROOT" diff --quiet HEAD -- "\${_bug8_add\[@\]}"' "$RUN" | head -1 | cut -d: -f1)
 [[ -n "$dg_line" && -n "$ac_line" && -n "$d20_line" ]] && (( d20_line < dg_line && dg_line < ac_line )) \
   && ok "S7(AC7e): read order is D-20 no-op (L$d20_line) → registry (L$dg_line) → auto-commit (L$ac_line)" \
   || no "S7(AC7e): wrong ordering (d20=$d20_line registry=$dg_line autocommit=$ac_line)"

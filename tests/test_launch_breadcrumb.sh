@@ -114,10 +114,24 @@ kill -9 "$LEADER_PID" 2>/dev/null || true
 wait "$LEADER_JOB" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-print -r -- "-- structural: the production trap is armed on EXIT INT TERM HUP, with the outcome update chained first"
-grep -q "trap '_emit_launch_record_outcome; _emit_final_cost_log; cleanup' EXIT INT TERM HUP" "$RUN" \
-  && ok "production trap includes HUP and chains _emit_launch_record_outcome first" \
-  || no "production trap missing HUP or the outcome-update chain"
+# A-5 (reaudit wave 1, round 2): the production trap is no longer one combined
+# `trap '...' EXIT INT TERM HUP` — a function-scoped EXIT trap triggered by an
+# actual `exit` call runs ONLY its first command under zsh's default trap
+# semantics, so the old combined form silently dropped _emit_final_cost_log
+# and cleanup on a signal-driven exit. The chain is now armed on EXIT only
+# (still chaining _emit_launch_record_outcome first), with INT/TERM/HUP each
+# routed through _on_signal, which explicitly runs the full chain before
+# calling exit(128+signum) — the same outcome-update guarantee this test
+# checks, just reached via a different (fixed) mechanism.
+print -r -- "-- structural: the production trap chains _emit_launch_record_outcome first (EXIT), with INT/TERM/HUP routed through _on_signal"
+if grep -q "trap '_emit_launch_record_outcome; _emit_final_cost_log; cleanup' EXIT$" "$RUN" \
+  && grep -q "trap '_on_signal INT'" "$RUN" \
+  && grep -q "trap '_on_signal TERM'" "$RUN" \
+  && grep -q "trap '_on_signal HUP'" "$RUN"; then
+  ok "production trap chains _emit_launch_record_outcome first (EXIT) and routes INT/TERM/HUP through _on_signal"
+else
+  no "production trap missing the EXIT outcome-update chain or the INT/TERM/HUP _on_signal routing"
+fi
 
 print ""
 print "PASS=$PASS FAIL=$FAIL"

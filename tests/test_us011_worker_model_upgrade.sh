@@ -424,6 +424,137 @@ test_e2e_restore() {
   fi
 }
 
+# E2E-claude-production-shape (A-1 regression): reproduces the REAL production
+# variable shape for a claude-engine campaign. run_ralph_desk.zsh:489-490
+# unconditionally default WORKER_CODEX_MODEL/WORKER_CODEX_REASONING regardless
+# of WORKER_ENGINE, so a claude campaign always has WORKER_CODEX_MODEL=gpt-5.5
+# set alongside WORKER_ENGINE=claude. The 55 pre-existing tests here never set
+# WORKER_CODEX_MODEL, so they passed even while check_model_upgrade's
+# engine-blind `${WORKER_CODEX_MODEL:-$WORKER_MODEL}` lookup silently resolved
+# every claude campaign's ladder key to "gpt-5.5" (no bare "gpt-5.5" key in
+# models.json -> get_next_model returns "" -> already_max, never upgrades).
+test_e2e_claude_engine_production_shape() {
+  local cmu_body gnm_body gms_body
+  cmu_body=$(extract_fn "check_model_upgrade")
+  gnm_body=$(extract_fn "get_next_model")
+  gms_body=$(extract_fn "get_model_string")
+  if [[ -z "$cmu_body" || -z "$gnm_body" ]]; then
+    fail "E2E-claude-prod-shape: check_model_upgrade or get_next_model not found"
+    return
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d)
+
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo 'log_debug() { : ; }'
+    echo 'log() { : ; }'
+    # Production shape: run_ralph_desk.zsh:464/486/489-490 for a claude campaign.
+    echo 'WORKER_ENGINE="claude"'
+    echo 'WORKER_MODEL="haiku"'
+    echo 'WORKER_CODEX_MODEL="gpt-5.5"'
+    echo 'WORKER_CODEX_REASONING="high"'
+    echo '_ORIGINAL_WORKER_MODEL=""'
+    echo '_ORIGINAL_WORKER_CODEX_REASONING=""'
+    echo '_LAST_FAILED_US=""'
+    echo '_SAME_US_FAIL_COUNT=0'
+    echo '_MODEL_UPGRADED=0'
+    echo '_MODEL_LADDER_WARNED=0'
+    echo "LIB_DIR=\"$REPO_ROOT/src/scripts\""
+    echo 'RLP_DESK_MODELS_FILE="/nonexistent-hermetic-test-guard/rlp-desk-models.json"'
+    echo "$gms_body"
+    echo "$gnm_body"
+    echo "$cmu_body"
+    echo ''
+    echo '# Simulate 2 consecutive fails on same US (production var shape)'
+    echo 'check_model_upgrade "US-001"'
+    echo 'check_model_upgrade "US-001"'
+    echo ''
+    echo 'if [[ "$WORKER_MODEL" != "sonnet" ]]; then'
+    echo '  echo "FAIL: claude engine did not upgrade haiku->sonnet (WORKER_MODEL=$WORKER_MODEL)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'if (( _MODEL_UPGRADED != 1 )); then'
+    echo '  echo "FAIL: _MODEL_UPGRADED not set" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'exit 0'
+  } > "$tmpdir/harness.zsh"
+
+  local out
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  local rc=$?
+  rm -rf "$tmpdir"
+
+  if (( rc == 0 )); then
+    pass "E2E-claude-prod-shape: claude engine upgrades haiku->sonnet even with WORKER_CODEX_MODEL set (production shape)"
+  else
+    fail "E2E-claude-prod-shape: $out"
+  fi
+}
+
+# E2E-codex-engine-shape: codex path must keep behaving exactly as before —
+# ladder keyed off WORKER_CODEX_MODEL:WORKER_CODEX_REASONING.
+test_e2e_codex_engine_shape() {
+  local cmu_body gnm_body gms_body
+  cmu_body=$(extract_fn "check_model_upgrade")
+  gnm_body=$(extract_fn "get_next_model")
+  gms_body=$(extract_fn "get_model_string")
+  if [[ -z "$cmu_body" || -z "$gnm_body" ]]; then
+    fail "E2E-codex-shape: check_model_upgrade or get_next_model not found"
+    return
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d)
+
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo 'log_debug() { : ; }'
+    echo 'log() { : ; }'
+    echo 'WORKER_ENGINE="codex"'
+    echo 'WORKER_MODEL="gpt-5.5"'
+    echo 'WORKER_CODEX_MODEL="gpt-5.5"'
+    echo 'WORKER_CODEX_REASONING="medium"'
+    echo '_ORIGINAL_WORKER_MODEL=""'
+    echo '_ORIGINAL_WORKER_CODEX_REASONING=""'
+    echo '_LAST_FAILED_US=""'
+    echo '_SAME_US_FAIL_COUNT=0'
+    echo '_MODEL_UPGRADED=0'
+    echo '_MODEL_LADDER_WARNED=0'
+    echo "LIB_DIR=\"$REPO_ROOT/src/scripts\""
+    echo 'RLP_DESK_MODELS_FILE="/nonexistent-hermetic-test-guard/rlp-desk-models.json"'
+    echo "$gms_body"
+    echo "$gnm_body"
+    echo "$cmu_body"
+    echo ''
+    echo 'check_model_upgrade "US-001"'
+    echo 'check_model_upgrade "US-001"'
+    echo ''
+    echo 'if [[ "$WORKER_CODEX_REASONING" != "high" ]]; then'
+    echo '  echo "FAIL: codex engine did not upgrade medium->high (WORKER_CODEX_REASONING=$WORKER_CODEX_REASONING)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'if [[ "$WORKER_CODEX_MODEL" != "gpt-5.5" || "$WORKER_MODEL" != "gpt-5.5" ]]; then'
+    echo '  echo "FAIL: codex model should stay gpt-5.5 (WORKER_CODEX_MODEL=$WORKER_CODEX_MODEL WORKER_MODEL=$WORKER_MODEL)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'exit 0'
+  } > "$tmpdir/harness.zsh"
+
+  local out
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  local rc=$?
+  rm -rf "$tmpdir"
+
+  if (( rc == 0 )); then
+    pass "E2E-codex-shape: codex engine upgrades gpt-5.5:medium->gpt-5.5:high (unchanged behavior)"
+  else
+    fail "E2E-codex-shape: $out"
+  fi
+}
+
 # E2E-syntax: zsh -n syntax check on full source
 test_e2e_syntax() {
   if zsh -n "$RUN" 2>/dev/null; then
@@ -435,6 +566,8 @@ test_e2e_syntax() {
 
 test_e2e_upgrade
 test_e2e_restore
+test_e2e_claude_engine_production_shape
+test_e2e_codex_engine_shape
 test_e2e_syntax
 
 # ============================================================
