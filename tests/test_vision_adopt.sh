@@ -199,7 +199,9 @@ STUB
   chmod +x "$ST/bin/codex"
   # Real codex/claude live under /opt/homebrew/bin; a PATH of stub:/usr/bin:/bin
   # makes `codex` resolve to the failing stub and `claude` genuinely absent.
-  out=$(PATH="$ST/bin:/usr/bin:/bin" ROOT="$ST/root" zsh "$INIT" stubdemo "obj" 2>&1); rc=$?
+  # -f: skip .zshenv so a developer's dotfiles PATH does not re-prepend
+  # /opt/homebrew/bin ahead of the stub, which would resolve the real codex.
+  out=$(PATH="$ST/bin:/usr/bin:/bin" ROOT="$ST/root" zsh -f "$INIT" stubdemo "obj" 2>&1); rc=$?
   STUBSTAMP="$ST/root/.rlp-desk/logs/stubdemo/init-env.json"
   if [[ "$rc" -eq 0 && -f "$STUBSTAMP" ]]; then
     cv=$(jq -r '.cli_versions.codex' "$STUBSTAMP" 2>/dev/null)

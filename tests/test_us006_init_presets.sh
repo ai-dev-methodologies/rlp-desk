@@ -246,7 +246,9 @@ test_l3_e2e_1() {
   printf '#!/bin/sh\nexit 0\n' > "$bin_dir/codex"
   chmod +x "$bin_dir/codex"
   local output
-  output=$(ROOT="$test_dir" PATH="$bin_dir:$PATH" zsh "$INIT" "testslug-e2e" 2>/dev/null)
+  # -f: skip user rc files (.zshenv) so a developer's dotfiles PATH does not
+  # re-prepend real dirs ahead of $bin_dir, defeating the codex stub above.
+  output=$(ROOT="$test_dir" PATH="$bin_dir:$PATH" zsh -f "$INIT" "testslug-e2e" 2>/dev/null)
   if echo "$output" | grep -qF 'gpt-5.6-luna:high' && \
      echo "$output" | grep -qF -- '--worker-model gpt-5.6-sol:high --consensus all'; then
     pass "L3-E2E-1: full init with codex → luna (recommended) + sol/all (critical) presets present"

@@ -9,7 +9,7 @@
     "verify:sync": "node scripts/verify-install-sync.js",
     "prepublishOnly": "node scripts/build-node-manifest.js --check",
     "test:node": "node --test 'tests/node/*.mjs' 'tests/node/*.test.mjs'",
-    "test:zsh": "for f in tests/test_*.sh tests/test_*.zsh; do [ -f \"$f\" ] || continue; echo \"=== $f ===\"; case \"$(head -1 \"$f\")\" in *zsh*) zsh \"$f\";; *) bash \"$f\";; esac || exit 1; done",
+    "test:zsh": "FAILED=; for f in tests/test_*.sh tests/test_*.zsh; do [ -f \"$f\" ] || continue; echo \"=== $f ===\"; case \"$(head -1 \"$f\")\" in *zsh*) zsh \"$f\";; *) bash \"$f\";; esac || FAILED=\"$FAILED $f\"; done; if [ -n \"$FAILED\" ]; then echo \"FAILING FILES:$FAILED\"; exit 1; fi",
     "test:fast": "npm run test:node",
     "test:full": "npm run test:fast && npm run test:zsh",
     "sv-gate:fast": "zsh tests/sv-gate-fast.sh",

@@ -75,7 +75,7 @@ BASE_CMD='codex -m gpt-5.6-luna --disable plugins --dangerously-bypass-approvals
 ARGV_LOG_A="$TMPD/argv-a.log"; : > "$ARGV_LOG_A"
 OUT_A="$TMPD/out-a.txt"
 
-CODEX_STUB_ARGV_LOG="$ARGV_LOG_A" PATH="$STUB_A:$PATH" zsh -c '
+CODEX_STUB_ARGV_LOG="$ARGV_LOG_A" PATH="$STUB_A:$PATH" zsh -f -c '
   source "'"$LIB"'" 2>/dev/null
   log(){ :; }; log_debug(){ :; }; log_error(){ :; }
 
@@ -160,7 +160,7 @@ fi
 ARGV_LOG_B="$TMPD/argv-b.log"; : > "$ARGV_LOG_B"
 OUT_B="$TMPD/out-b.txt"
 
-CODEX_STUB_ARGV_LOG="$ARGV_LOG_B" PATH="$STUB_B:$PATH" zsh -c '
+CODEX_STUB_ARGV_LOG="$ARGV_LOG_B" PATH="$STUB_B:$PATH" zsh -f -c '
   source "'"$LIB"'" 2>/dev/null
   log(){ :; }; log_debug(){ :; }; log_error(){ :; }
   typeset -g _CODEX_NO_HOOKS_FLAG=" --disable hooks"
@@ -201,7 +201,7 @@ fi
 # This is the mode the send-keys / trigger-script assembly sites use (the
 # leader does not own those processes, so there is no rc to retry on).
 # ---------------------------------------------------------------------------
-_dec=$(zsh -c '
+_dec=$(zsh -f -c '
   source "'"$LIB"'" 2>/dev/null
   log(){ :; }; log_debug(){ :; }; log_error(){ :; }
   typeset -g _CODEX_NO_HOOKS_FLAG=" --disable hooks"
@@ -213,7 +213,7 @@ else
   no "(f) decorate-only mode wrong: [$_dec]"
 fi
 
-_dec_off=$(zsh -c '
+_dec_off=$(zsh -f -c '
   source "'"$LIB"'" 2>/dev/null
   log(){ :; }; log_debug(){ :; }; log_error(){ :; }
   typeset -g _CODEX_NO_HOOKS_FLAG=""
