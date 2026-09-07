@@ -76,22 +76,110 @@ async function readJsonIfExists(targetPath) {
   return JSON.parse(await fs.readFile(targetPath, 'utf8'));
 }
 
+// C-1: the zsh leader (production `--mode tmux` backend) writes campaign.jsonl
+// rows shaped differently from the Node native leader — `claude_verdict` /
+// `codex_verdict` instead of `verdict`, and `duration_worker_s` /
+// `duration_verifier_s` instead of `duration` (see write_campaign_jsonl in
+// lib_ralph_desk.zsh). Node-native rows already carry `verdict`/`duration`
+// directly and pass through unchanged. Derived ONCE here at the shared
+// ingestion boundary so the 4 render sites (campaign report + SV report) never
+// see `undefined` for a zsh-produced row.
+function deriveZshVerdict(record) {
+  const claudeVerdict = record.claude_verdict;
+  if (claudeVerdict === undefined) {
+    return undefined;
+  }
+
+  // consensus_mode "off" (or codex_verdict absent/"N/A", the writer's own
+  // no-consensus sentinel) means claude_verdict IS the final verdict. When
+  // consensus actually ran and codex disagreed, surface both sides rather
+  // than silently picking one — dropping codex's dissent would misrepresent
+  // a real split decision as a clean pass/fail.
+  const codexVerdict = record.codex_verdict;
+  const consensusRan = record.consensus_mode !== undefined && record.consensus_mode !== 'off';
+  if (consensusRan && codexVerdict !== undefined && codexVerdict !== '' && codexVerdict !== 'N/A') {
+    return codexVerdict === claudeVerdict ? claudeVerdict : `${claudeVerdict}/codex:${codexVerdict}`;
+  }
+
+  return claudeVerdict;
+}
+
+function deriveZshDuration(record) {
+  if (record.duration_worker_s === undefined && record.duration_verifier_s === undefined) {
+    return undefined;
+  }
+
+  return Number(record.duration_worker_s ?? 0) + Number(record.duration_verifier_s ?? 0);
+}
+
 async function readAnalytics(analyticsFile) {
   if (!(await exists(analyticsFile))) {
-    return [];
+    // Same shape as the populated-file return path below: malformedCount is
+    // always a number, never absent, so `analytics.malformedCount` (and the
+    // `malformed_count` sidecar field derived from it) is 0 here rather than
+    // undefined — a missing campaign.jsonl is not itself a malformed row.
+    const empty = [];
+    empty.malformedCount = 0;
+    return empty;
   }
 
   const content = await fs.readFile(analyticsFile, 'utf8');
-  return content
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
+  const rawLines = content.split('\n').filter(Boolean);
+
+  // C-2: one corrupt line used to throw out of the whole read, silently
+  // zeroing BOTH generateCampaignReport and generateSVReport (readAnalytics
+  // is their only shared reader). Skip unparsable lines instead, count them,
+  // and let callers surface the count so data loss is visible, not silent.
+  const records = [];
+  let malformedCount = 0;
+  for (const line of rawLines) {
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      malformedCount += 1;
+      continue;
+    }
+
+    // A line can be syntactically valid JSON while still being useless as an
+    // analytics row — `null`, or a bare scalar (`42`, `"hello"`, `true`), or
+    // an array. `null`/scalars would throw reading `record.verdict` below;
+    // arrays would silently pass through and render as `| undefined | ...`
+    // rows while still inflating "Iteration records". Treat anything that
+    // isn't a plain object the same as a parse failure: count it, skip it.
+    if (record === null || typeof record !== 'object' || Array.isArray(record)) {
+      malformedCount += 1;
+      continue;
+    }
+
+    // C-1: derive verdict/duration from the zsh field names when the
+    // Node-native fields are absent. Rows that already carry `verdict` /
+    // `duration` (Node-native producer) pass through untouched.
+    const verdict = record.verdict !== undefined ? record.verdict : deriveZshVerdict(record);
+    const duration = record.duration !== undefined ? record.duration : deriveZshDuration(record);
+
+    let normalized = record;
     // IMP-06: normalize the verdict field at the analytics ingestion boundary so
     // every downstream consumer (verification list, SV validation table) sees the
-    // canonical string. Rows without a verdict field pass through byte-identical.
-    .map((record) => (record.verdict === undefined
-      ? record
-      : { ...record, verdict: normalizeVerdictString(record.verdict) }));
+    // canonical string. Rows without a resolvable verdict pass through byte-identical.
+    if (verdict !== undefined) {
+      normalized = { ...normalized, verdict: normalizeVerdictString(verdict) };
+    }
+    if (duration !== undefined && duration !== record.duration) {
+      normalized = { ...normalized, duration };
+    }
+
+    records.push(normalized);
+  }
+
+  // Attached as a non-array-index property so `records` still behaves as a
+  // plain array (length/map/filter/reduce) for every existing call site.
+  records.malformedCount = malformedCount;
+  return records;
+}
+
+function malformedRowsLine(records) {
+  return records.malformedCount > 0 ? [`- ${records.malformedCount} malformed row(s) skipped`] : [];
 }
 
 function extractObjective(prdContent) {
@@ -137,7 +225,7 @@ function _resolveCostFactor(costFactors, workerModel) {
 
 function summarizeCost(records, costFactors = loadCostFactors()) {
   if (records.length === 0) {
-    return ['- No cost data available', '- Total duration: 0s'];
+    return ['- No cost data available', '- Total duration: 0s', ...malformedRowsLine(records)];
   }
 
   const totalDuration = records.reduce((sum, record) => sum + Number(record.duration ?? 0), 0);
@@ -200,6 +288,8 @@ function summarizeCost(records, costFactors = loadCostFactors()) {
   if (unattributed.length > 0) {
     lines.push(`- (${unattributed.length} iteration(s) unattributed)`);
   }
+
+  lines.push(...malformedRowsLine(records));
 
   return lines;
 }
@@ -621,8 +711,9 @@ export async function generateSVReport({
     ? [
       `- Iteration records: ${analytics.length}`,
       `- Total duration: ${analytics.reduce((sum, r) => sum + Number(r.duration ?? 0), 0)}s`,
+      ...malformedRowsLine(analytics),
     ]
-    : ['- No cost data available.'];
+    : ['- No cost data available.', ...malformedRowsLine(analytics)];
 
   // Build report
   const now = new Date().toISOString();
@@ -695,6 +786,11 @@ export async function generateSVReport({
     patterns,
     recommendations,
     analytics_count: analytics.length,
+    // C-2 follow-up: the Markdown report already surfaces this as a
+    // "N malformed row(s) skipped" line; expose it in the machine-readable
+    // sidecar too so a consumer parsing this JSON (not the Markdown) can
+    // also tell data loss occurred instead of reading a silently low count.
+    malformed_count: analytics.malformedCount,
   }, null, 2)}\n`, 'utf8');
 
   // Build summary for campaign report

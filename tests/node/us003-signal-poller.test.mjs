@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const testFile = fileURLToPath(import.meta.url);
@@ -110,6 +109,8 @@ test('US-003 AC3.2 happy: pollForSignal in codex mode waits for valid JSON and p
     timeoutMs: 300,
     readFile: async () => JSON.stringify(payload),
     getPaneCommand: async () => paneStates.shift() ?? 'zsh',
+    capturePane: async () => '',
+    sendKeys: async () => {},
   });
 
   assert.deepEqual(result, payload);
@@ -132,6 +133,8 @@ test('US-003 AC3.2 boundary: pollForSignal in codex mode resolves immediately wh
       paneChecks += 1;
       return 'zsh';
     },
+    capturePane: async () => '',
+    sendKeys: async () => {},
   });
 
   assert.deepEqual(result, payload);
@@ -157,6 +160,8 @@ test('US-003 AC3.2 negative: pollForSignal tolerates transient pane-read errors 
       }
       return next;
     },
+    capturePane: async () => '',
+    sendKeys: async () => {},
   });
 
   assert.deepEqual(result, payload);
@@ -211,6 +216,8 @@ test('US-003 AC3.3 negative: pollForSignal in codex mode times out when the pane
         timeoutMs: 50,
         readFile: async () => JSON.stringify({ verdict: 'pass' }),
         getPaneCommand: async () => 'codex',
+        capturePane: async () => '',
+        sendKeys: async () => {},
       }),
     (error) => error instanceof TimeoutError && /pane %45/i.test(error.message),
   );
@@ -265,6 +272,8 @@ test('US-003 AC3.4 negative: pollForSignal does not start codex exit checks unti
       paneChecks += 1;
       return 'zsh';
     },
+    capturePane: async () => '',
+    sendKeys: async () => {},
   });
 
   assert.deepEqual(result, payload);

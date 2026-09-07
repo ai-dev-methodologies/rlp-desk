@@ -643,3 +643,122 @@ test('RUN_DEFAULTS: consensus models are the 5.6 generation (terra/sol)', async 
   assert.equal(RUN_DEFAULTS.consensusModel, 'gpt-5.6-terra:high');
   assert.equal(RUN_DEFAULTS.finalConsensusModel, 'gpt-5.6-sol:xhigh');
 });
+
+// --- --worker-model / --verifier-model / --final-verifier-model validation ---
+//
+// buildZshEnv (run.mjs) forwards these three flags to the zsh leader as
+// WORKER_MODEL/VERIFIER_MODEL/FINAL_VERIFIER_MODEL, where _auto_detect_engine
+// in src/scripts/run_ralph_desk.zsh validates the model:level syntax. Before
+// this, run.mjs's own parser did zero validation, so a bad value would only
+// fail after the zsh leader was already spawned. These tests pin the mirrored
+// Node-side validation (parseRunOptions / validateModelFlag).
+
+test('parseRunOptions rejects a --worker-model value crafted to break the model:level split (semicolon injection shape)', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  assert.throws(
+    () => parseRunOptions(['--worker-model', 'opus:high;touch x'], '/tmp'),
+    /invalid effort 'high;touch x' in --worker-model='opus:high;touch x'/,
+  );
+});
+
+test('parseRunOptions rejects a --verifier-model value with a stray space in the effort level', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  assert.throws(
+    () => parseRunOptions(['--verifier-model', 'opus:high max'], '/tmp'),
+    /invalid effort 'high max' in --verifier-model='opus:high max'/,
+  );
+});
+
+test('parseRunOptions accepts a valid claude model:effort value', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  const options = parseRunOptions(['--final-verifier-model', 'opus:high'], '/tmp');
+  assert.equal(options.finalVerifierModel, 'opus:high');
+});
+
+test('parseRunOptions accepts a bare model name with no effort/reasoning suffix', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  const options = parseRunOptions(['--worker-model', 'haiku'], '/tmp');
+  assert.equal(options.workerModel, 'haiku');
+});
+
+test('parseRunOptions accepts a valid codex model:reasoning value', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  const options = parseRunOptions(['--worker-model', 'gpt-5.5:medium'], '/tmp');
+  assert.equal(options.workerModel, 'gpt-5.5:medium');
+});
+
+test('parseRunOptions rejects an invalid codex reasoning level the same way as an invalid claude effort', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  assert.throws(
+    () => parseRunOptions(['--worker-model', 'gpt-5.5:extreme'], '/tmp'),
+    /invalid reasoning 'extreme' in --worker-model='gpt-5.5:extreme'/,
+  );
+});
+
+test('main run command rejects a malicious --worker-model value with exit 1 and does not spawn the zsh leader', async () => {
+  const { main } = await import('../../src/node/run.mjs');
+  let spawned = false;
+  let stderr = '';
+
+  const exitCode = await main(
+    ['run', 'demo', '--mode', 'tmux', '--worker-model', 'opus:high;touch x'],
+    {
+      cwd: repoRoot,
+      stdout: { write() {} },
+      stderr: { write: (chunk) => { stderr += chunk; } },
+      fileExists: () => true,
+      zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+      spawnZsh: async () => { spawned = true; return 0; },
+    },
+  );
+
+  assert.equal(exitCode, 1);
+  assert.equal(spawned, false, 'an invalid --worker-model must be rejected before the zsh leader is spawned');
+  assert.match(stderr, /invalid effort/);
+});
+
+test('main run command forwards accepted --worker-model/--verifier-model/--final-verifier-model values to the zsh env unchanged', async () => {
+  const { main } = await import('../../src/node/run.mjs');
+  let capturedEnv = null;
+
+  const exitCode = await main(
+    [
+      'run', 'demo', '--mode', 'tmux',
+      '--worker-model', 'gpt-5.5:medium',
+      '--verifier-model', 'opus:high',
+      '--final-verifier-model', 'haiku',
+    ],
+    {
+      cwd: repoRoot,
+      stdout: { write() {} },
+      stderr: { write() {} },
+      fileExists: () => true,
+      zshRunnerPath: () => '/fake/run_ralph_desk.zsh',
+      spawnZsh: async (_path, env) => { capturedEnv = env; return 0; },
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.ok(capturedEnv, 'spawnZsh must have been called with an env object');
+  assert.equal(capturedEnv.WORKER_MODEL, 'gpt-5.5:medium');
+  assert.equal(capturedEnv.VERIFIER_MODEL, 'opus:high');
+  assert.equal(capturedEnv.FINAL_VERIFIER_MODEL, 'haiku');
+});
+
+// Parity: the Node vocabulary must not silently drift from the zsh source it
+// mirrors. Extract the exact `case "$level_part" in ...)` pattern lines from
+// src/scripts/run_ralph_desk.zsh and assert the Node lists equal them.
+test('CLAUDE_EFFORT_VALUES / CODEX_REASONING_VALUES match the vocabulary encoded in run_ralph_desk.zsh _auto_detect_engine', async () => {
+  const { CLAUDE_EFFORT_VALUES, CODEX_REASONING_VALUES } = await import('../../src/node/run.mjs');
+  const zshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/run_ralph_desk.zsh'), 'utf8');
+
+  // "            low|medium|high|max|xhigh)" — the claude-effort case pattern,
+  // immediately followed (next case arm) by the codex-reasoning one.
+  const claudeMatch = zshSource.match(/^\s+(low\|medium\|high\|max\|xhigh)\)$/m);
+  assert.ok(claudeMatch, 'could not find the claude effort case-pattern line in run_ralph_desk.zsh — has _auto_detect_engine moved/changed?');
+  assert.deepEqual(claudeMatch[1].split('|'), CLAUDE_EFFORT_VALUES);
+
+  const codexMatch = zshSource.match(/^\s+(minimal\|low\|medium\|high\|xhigh\|max\|ultra)\)$/m);
+  assert.ok(codexMatch, 'could not find the codex reasoning case-pattern line in run_ralph_desk.zsh — has _auto_detect_engine moved/changed?');
+  assert.deepEqual(codexMatch[1].split('|'), CODEX_REASONING_VALUES);
+});

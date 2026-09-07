@@ -90,10 +90,10 @@ function buildHelpText() {
     '',
     'Run Options:',
     '  --mode tmux|agent|native       (CLI: tmux=production [default], agent=hard-errors (ADR-001), native=errors with redirect to slash command)',
-    '  --worker-model MODEL',
+    `  --worker-model MODEL[:level]    (":level" only needed for claude/codex models that take one; claude effort: ${CLAUDE_EFFORT_VALUES.join('|')}; codex reasoning: ${CODEX_REASONING_VALUES.join('|')})`,
     '  --lock-worker-model',
-    '  --verifier-model MODEL',
-    '  --final-verifier-model MODEL',
+    '  --verifier-model MODEL[:level]  (same accepted levels as --worker-model)',
+    '  --final-verifier-model MODEL[:level]  (same accepted levels as --worker-model)',
     '  --consensus off|all|final-only',
     '  --consensus-model MODEL',
     '  --final-consensus-model MODEL',
@@ -135,6 +135,61 @@ function parseInteger(value, flag) {
   return parsed;
 }
 
+// Mirrors _auto_detect_engine in src/scripts/run_ralph_desk.zsh (~:429-492),
+// which buildZshEnv (below) hands --worker-model/--verifier-model/
+// --final-verifier-model to via WORKER_MODEL/VERIFIER_MODEL/
+// FINAL_VERIFIER_MODEL env vars. Without this, an invalid effort/reasoning
+// level (or a value crafted to break the zsh case-statement parse) would
+// only be caught after spawning the zsh leader — this rejects it here,
+// before spawn.
+//
+// Vocabularies pinned to the exact zsh `case "$level_part" in ...)` lines —
+// tests/node/us008-cli-entrypoint.test.mjs asserts these match the source
+// so the two cannot silently drift.
+export const CLAUDE_EFFORT_VALUES = ['low', 'medium', 'high', 'max', 'xhigh'];
+export const CODEX_REASONING_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+
+// zsh: `haiku|sonnet|opus|claude|claude-*)` (run_ralph_desk.zsh:441) — any
+// other model_part (gpt-*, spark, sol/terra/luna aliases, or an unrecognized
+// name) falls to the codex branch and is validated against the reasoning
+// vocabulary instead.
+function isClaudeFamily(modelPart) {
+  return modelPart === 'haiku' || modelPart === 'sonnet' || modelPart === 'opus'
+    || modelPart === 'claude' || modelPart.startsWith('claude-');
+}
+
+export function validateModelFlag(value, flagName) {
+  // zsh only enters the effort/reasoning-validating branch when the value
+  // contains ':' at all (`[[ "$model_val" == *:* ]]`) — a bare model name
+  // (e.g. "haiku") has nothing to validate and passes through untouched.
+  if (!value.includes(':')) {
+    return;
+  }
+
+  // zsh splits asymmetrically: model_part = "${model_val%%:*}" (up to the
+  // FIRST colon), level_part = "${model_val##*:}" (after the LAST colon).
+  // For a value with exactly one colon (the normal case, including
+  // "opus:high;touch x" and "opus:high max") both halves of the split agree
+  // with a naive single split, so the asymmetry itself does nothing there —
+  // it is the vocabulary check below that rejects them, because
+  // "high;touch x" / "high max" is not "high". The asymmetry only matters
+  // for a value with MULTIPLE colons ("opus:high:medium"): model_part is
+  // still "opus" but level_part becomes "medium" (the LAST segment, not
+  // "high:medium") — both this implementation and zsh ACCEPT that and
+  // resolve to "medium", they do not reject it.
+  const modelPart = value.slice(0, value.indexOf(':'));
+  const levelPart = value.slice(value.lastIndexOf(':') + 1);
+
+  const claude = isClaudeFamily(modelPart);
+  const vocabulary = claude ? CLAUDE_EFFORT_VALUES : CODEX_REASONING_VALUES;
+  if (!vocabulary.includes(levelPart)) {
+    const kind = claude ? 'effort' : 'reasoning';
+    throw new Error(
+      `invalid ${kind} '${levelPart}' in ${flagName}='${value}' (expected one of: ${vocabulary.join('|')}).`,
+    );
+  }
+}
+
 export function parseRunOptions(args, cwd) {
   const options = {
     rootDir: cwd,
@@ -159,6 +214,7 @@ export function parseRunOptions(args, cwd) {
         break;
       case '--worker-model':
         options.workerModel = consumeValue(args, index, token);
+        validateModelFlag(options.workerModel, token);
         index += 1;
         break;
       case '--lock-worker-model':
@@ -166,10 +222,12 @@ export function parseRunOptions(args, cwd) {
         break;
       case '--verifier-model':
         options.verifierModel = consumeValue(args, index, token);
+        validateModelFlag(options.verifierModel, token);
         index += 1;
         break;
       case '--final-verifier-model':
         options.finalVerifierModel = consumeValue(args, index, token);
+        validateModelFlag(options.finalVerifierModel, token);
         index += 1;
         break;
       case '--consensus':
