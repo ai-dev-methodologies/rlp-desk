@@ -23,14 +23,9 @@ Below: the native-mode dispatch (`--mode native`, via `Agent()`). `--mode tmux` 
               └── reads done-claim → runs checks → writes verdict
 ```
 
-## What's new in v0.23.0
+## What's new
 
-- **Luna-first cost routing.** Workers use evidence-gated escalation: `luna:high → luna:max → terra:max → sol:xhigh`.
-- **Effort-aware iteration timeout.** Worker budgets scale with `:xhigh` and `:max` efforts.
-- **Campaign cost summary.** Reports include estimated sol-equivalent Codex costs, escalation counts, and the final model.
-- **Environment failure category.** Harness, tooling, capacity, and safety-refusal failures no longer climb the model ladder.
-
-See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+See [CHANGELOG.md](CHANGELOG.md) for the complete, version-by-version release notes.
 
 ## Deterministic Pre-Gates
 
@@ -184,15 +179,16 @@ If the PRD hash is unchanged, `prd_changed=false` is logged and no re-split is t
 
 If the PRD file is missing, the process degrades gracefully and continues without failing the campaign loop.
 
-### Verification Policy (v0.3.0)
+### Verification Policy
 
-RLP Desk enforces a comprehensive verification policy defined in `governance.md`:
+RLP Desk enforces a comprehensive verification policy defined in `governance.md` — see §1a for the current count and full text; the list below is a summary, not the source of truth.
 
-**Iron Laws (§1a)** — 4 absolute rules that cannot be violated:
+**Iron Laws (§1a)** — absolute rules that cannot be violated:
 - **IL-1**: No completion claims without fresh verification evidence
 - **IL-2**: No init without AC quality score ≥ 6 (Ambiguity Gate)
 - **IL-3**: No pass with TODO in any required verification layer
 - **IL-4**: No pass without test count ≥ AC count × 3
+- **IL-5**: No pass when tests are skipped or not executed
 
 **Evidence Gate (§1b)** — 5-step protocol: IDENTIFY → RUN → READ → VERIFY → ONLY THEN claim
 
@@ -291,7 +287,7 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 /rlp-desk run   <slug> [--opts]        Run the loop (this session = leader)
 /rlp-desk status <slug>                Show loop status
 /rlp-desk logs  <slug> [N]             Show iteration logs
-/rlp-desk clean <slug> [--kill-session]  Reset for re-run
+/rlp-desk clean <slug> [--kill-session] [--remove-worktree]  Reset for re-run
 ```
 
 ### Run Options
@@ -314,6 +310,10 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 | `--max-iter N` | 100 | Max iterations → TIMEOUT |
 | `--iter-timeout N` | 600 | Per-iteration timeout seconds (tmux only); effort-aware — effective worker budget ×1.5 for `:xhigh` and ×2.0 for `:max` (worker only; verifier/consensus waits use the base value) |
 | `--debug` | off | Debug logging |
+| `--autonomous` | off | Don't stop on ambiguity — PRD is authoritative |
+| `--lane-strict` | off | Enforce lane/scope violations as BLOCK instead of WARN |
+| `--test-density-strict` | off | Enforce test-density violations as BLOCK instead of WARN |
+| `--worktree` | off | Isolate the campaign in a dedicated git worktree |
 | `--with-self-verification` | off | Post-campaign SV report |
 
 #### Per-US vs Final Verification

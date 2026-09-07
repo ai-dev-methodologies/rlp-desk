@@ -1,15 +1,17 @@
 #!/bin/zsh
 # SV gate — P1 (native-agent-revert plan v7): slash-command mode-label contract.
 #
-# Six grep/awk guards verify that `src/commands/rlp-desk.md` preserves the
-# canonical slash-command mode contract:
+# 16 grep/awk guards (G1-G7, some looped per-file) verify that
+# `src/commands/rlp-desk.md` preserves the canonical slash-command mode
+# contract:
 #   - `--mode native` is the default Native Agent() leader path.
 #   - `--mode tmux` is the zsh leader (production) path.
 #   - Legacy `--mode agent` redirects to native (deprecation prose only).
 #   - Direct Node CLI `--mode agent` lives in its own contrast paragraph.
 #   - Native Agent() Safety Contract block holds 4 sentinel phrases.
 #   - Worker dispatch snippets retain `Agent(... mode="bypassPermissions" ...)`
-#     and `Bash("codex exec ...")`.
+#     and `Bash("OMX_STATE_ROOT='...' codex exec ...")`.
+#   - No `subagent_type=` leaks back into governance.md/rlp-desk.md/docs (G7).
 #
 # Pattern mirrored from tests/sv-gate-fast.sh.
 
@@ -78,8 +80,15 @@ guard "G3a claude worker dispatch retains Agent( call" \
   grep -q 'Agent(' "$DISP_CLAUDE"
 guard "G3b claude worker dispatch retains bypassPermissions" \
   grep -q 'mode="bypassPermissions"' "$DISP_CLAUDE"
-guard "G3c codex worker dispatch retains Bash codex exec" \
-  grep -q 'Bash("codex exec' "$DISP_CODEX"
+# Pin re-derived 2026-09-04: every real codex dispatch template in rlp-desk.md
+# is `Bash("OMX_STATE_ROOT='...' codex exec ...")`, not a bare `Bash("codex exec`
+# — the OMX_STATE_ROOT prefix isolates the campaign's codex launch from the
+# operator's interactive omx state (F1.18, docs/rlp-desk/failure-modes.md) and
+# has been present on every template since before this pin was written, so the
+# old bare-prefix grep never matched (verified failing on HEAD too, not a
+# regression from any single change) — reviewed decision, updated to match.
+guard "G3c codex worker dispatch retains Bash OMX_STATE_ROOT codex exec" \
+  grep -q 'Bash("OMX_STATE_ROOT=.*codex exec' "$DISP_CODEX"
 
 # 4. Options block exact match
 guard "G4a Options block --mode line is the exact native|tmux form" \
@@ -96,6 +105,19 @@ guard "G5 stale 'always invokes node' contradiction is gone (got ${ALWAYS_HIT} h
 # 6. Legacy redirect prose present
 guard "G6 deprecation+redirect prose present" \
   grep -q 'Legacy.*--mode agent.*redirect' "$FILE"
+
+# 7. D-2 regression guard: subagent_type must never reappear in Agent() examples
+# (commit 920a31c removed it from rlp-desk.md; governance.md + docs must stay in sync).
+# rlp-desk.md keeps exactly one reference — the prohibition prose itself — so it is
+# excluded here and checked separately with an allow-count of 1.
+for DOC in src/governance.md docs/rlp-desk/architecture.md docs/rlp-desk/protocol-reference.md; do
+  HIT=$(grep -c 'subagent_type=' "$DOC" 2>/dev/null || true)
+  guard "G7 no subagent_type= in ${DOC} (got ${HIT:-0})" \
+    test "${HIT:-0}" -eq 0
+done
+RLP_DESK_MD_HITS=$(grep -c 'subagent_type=' "$FILE")
+guard "G7 rlp-desk.md has exactly 1 subagent_type= mention (prohibition prose only, got ${RLP_DESK_MD_HITS})" \
+  test "$RLP_DESK_MD_HITS" -eq 1
 
 print ""
 bold "─────────────────────────────────────────────────"

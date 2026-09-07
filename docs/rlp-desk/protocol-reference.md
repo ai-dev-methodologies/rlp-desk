@@ -32,7 +32,7 @@ for iteration in 1..max_iter:
      - Write audit copy to logs/<slug>/iter-NNN.worker-prompt.md
 
   ⑤ Execute Worker
-     Agent(subagent_type="executor", model=selected, prompt=prompt)
+     Agent(model=selected, prompt=prompt)
      - Synchronous return — wait for completion
      - Each Agent() = fresh context (new subprocess)
 
@@ -43,7 +43,7 @@ for iteration in 1..max_iter:
 
   ⑦ Execute Verifier
      - Build verifier prompt → write to logs/<slug>/iter-NNN.verifier-prompt.md
-     - Agent(subagent_type="executor", model=selected, prompt=prompt)
+     - Agent(model=selected, prompt=prompt)
      - Read verify-verdict.json:
        • verdict=pass + recommended=complete → write COMPLETE sentinel, stop
        • verdict=fail + recommended=continue → go to ⑧
@@ -300,7 +300,8 @@ Updated by the Worker each iteration to reflect the current frontier:
 | Stale context | `context-latest.md` hash unchanged for 3 consecutive iterations | Write BLOCKED sentinel |
 | Repeated criterion failure | Same acceptance criterion fails in 2 consecutive Verifier verdicts | Upgrade Worker model (ladder per §4 Model Routing), retry once; still failing → BLOCKED |
 | Persistent diverse failures | 3 consecutive **fail** verdicts on 3 unique acceptance criterion IDs | Upgrade Worker model to the ladder ceiling, retry once; still failing → BLOCKED |
-| Timeout | Iteration count reaches `max_iter` | Write TIMEOUT status, report to user |
+| Timeout | Iteration count reaches `max_iter` with no operator signal received | Write TIMEOUT status, report to user |
+| Operator interrupt | Ctrl-C / SIGTERM / SIGHUP received (`_on_signal`, `run_ralph_desk.zsh`) | Run cleanup exactly once, write `metadata.json campaign_status=INTERRUPTED`, exit `128 + signum` (A-5) |
 
 ### Stale Context Detection
 

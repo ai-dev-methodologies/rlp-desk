@@ -156,8 +156,8 @@ Ask about these items one by one (or in small groups):
 After all items are confirmed:
 
 0. **SV Report Feedback** — If a prior campaign's self-verification report exists:
-   a. Scan `~/.claude/ralph-desk/analytics/` for directories matching this project (by slug or project root)
-   b. Read the latest `self-verification-report.md` from each matching directory
+   a. Scan `.rlp-desk/analytics/` in this project for slug directories (v0.12.0+: analytics is project-local, so no cross-project/root matching is needed — every directory found here belongs to this project)
+   b. Read the latest SV report for each matching slug — there are two real writers, both in the same `.rlp-desk/analytics/<slug>--<hash8>/` directory, check both: `self-verification-report.md` (`--mode tmux`; the Node post-pass's fixed filename — older reports are moved aside to `self-verification-report-v{N}.md` when a new one generates; `generateSVReport()` in `src/node/reporting/campaign-reporting.mjs`) and the highest-numbered `self-verification-report-NNN.md` (`--mode native`; the Leader writes this by hand per step ⑨ below). Use whichever is most recent. (These two writers are not unified — a real parity gap for a later wave. A third writer, `lib_ralph_desk.zsh`'s `generate_sv_report()`, is dead code — it can never produce a file, see "Analytics Directory" below — so do not look for anything under `.rlp-desk/logs/<slug>/`.)
    c. Extract from §7 (Patterns) and §8 (Recommendations):
       - Which US types/sizes failed most frequently
       - Which AC quality dimensions scored lowest
@@ -254,6 +254,10 @@ Tell the user:
    #   --pre-gate-timeout N                   mechanical pre-gate soft timeout, seconds (default: 300)
    #   --pre-gate-cmd-timeout N               layer-2 replay per-command timeout, seconds (default: 120)
    #   --debug                                debug logging
+   #   --autonomous                           don't stop on ambiguity — PRD is authoritative (default: off)
+   #   --lane-strict                          enforce lane/scope violations as BLOCK instead of WARN (default: off; governance §7¾)
+   #   --test-density-strict                  enforce test-density violations as BLOCK instead of WARN (default: off; governance §7f)
+   #   --worktree                             isolate the campaign in a dedicated git worktree (default: off)
    #   --with-self-verification               post-campaign SV report
    #   --flywheel off|on-fail                 direction review on fail (default: off)
    #   --flywheel-model MODEL                 flywheel reviewer model (default: opus)
@@ -289,6 +293,10 @@ Tell the user:
    #   --pre-gate-timeout N                   mechanical pre-gate soft timeout, seconds (default: 300)
    #   --pre-gate-cmd-timeout N               layer-2 replay per-command timeout, seconds (default: 120)
    #   --debug                                debug logging
+   #   --autonomous                           don't stop on ambiguity — PRD is authoritative (default: off)
+   #   --lane-strict                          enforce lane/scope violations as BLOCK instead of WARN (default: off; governance §7¾)
+   #   --test-density-strict                  enforce test-density violations as BLOCK instead of WARN (default: off; governance §7f)
+   #   --worktree                             isolate the campaign in a dedicated git worktree (default: off)
    #   --with-self-verification               post-campaign SV report
    #   --flywheel off|on-fail                 direction review on fail (default: off)
    #   --flywheel-model MODEL                 flywheel reviewer model (default: opus)
@@ -328,24 +336,25 @@ Options (parse from `$ARGUMENTS`):
 - `--pre-gate-timeout N` — overall soft timeout in seconds for the mechanical pre-gate, bounding layer 1 (gate script) + layer 2 (execution_steps replay) combined (default: 300). See the pre-gate convention below.
 - `--pre-gate-cmd-timeout N` — per-command soft timeout in seconds for the layer-2 execution_steps replay (default: 120). A per-command timeout counts as a replay mismatch (fail).
 - `--waivers-sha256 HASH` — out-of-band authorization for `.rlp-desk/plans/waivers.json` (fail-closed campaign waiver channel — see the "Campaign waivers" preparation step below). Must equal `shasum -a 256 .rlp-desk/plans/waivers.json`; a present waivers.json whose hash this flag does not authorize has every waiver in it rejected.
-- `--debug` — enable debug logging (writes to ~/.claude/ralph-desk/analytics/<slug>/debug.log)
+- `--debug` — enable debug logging (writes to .rlp-desk/analytics/<slug>--<hash8>/debug.log)
 - `--with-self-verification` — enable campaign-level self-verification analysis. After COMPLETE, Leader analyzes all iteration records (done-claims + verdicts) and generates a campaign self-verification summary with patterns and recommendations for next planning cycle. (Note: execution_steps and reasoning are ALWAYS recorded per governance §1f — this flag adds post-campaign analysis.)
 
-### Analytics Directory (`~/.claude/ralph-desk/analytics/<slug>/`)
-When `--debug` or `--with-self-verification` is active, analytics data is written to a user-level directory for cross-project aggregation. Contents:
+### Analytics Directory (`.rlp-desk/analytics/<slug>--<hash8>/`)
+When `--debug` or `--with-self-verification` is active, analytics data is written to a project-local directory (v0.12.0+; was `~/.claude/ralph-desk/analytics/<slug>--<hash8>/` pre-v0.12.0). `<hash8>` is an 8-char hash of the absolute project root (intra-machine only); a hash-free pointer file `.rlp-desk/analytics/<slug>.current` resolves to this dir for cross-leader lookup. Contents:
 - `metadata.json` — campaign metadata: slug, project_root, campaign_status, start_time, end_time
 - `debug.log` — debug output (versioned: `debug-v{N}.log` on re-execution)
 - `campaign.jsonl` — per-iteration structured data (versioned: `campaign-v{N}.jsonl` on re-execution). Schema: iter, us_id, worker_model, worker_engine, verifier_model, verifier_engine, consensus_mode, claude_verdict, codex_verdict, duration_worker_s, duration_verifier_s, project_root, slug, timestamp
-- `self-verification-data.json` — cumulative SV records (agent-mode only, when `--with-self-verification`)
-- `self-verification-report-NNN.md` — versioned SV reports (when `--with-self-verification`)
+- `self-verification-data.json` — SV records for the most recent campaign run (overwritten each run — not cumulative across runs; when `--with-self-verification`)
+- `self-verification-report.md` — `--mode tmux`: the current SV report (unversioned filename; older reports are moved aside to `self-verification-report-v{N}.md` on the next generation). Written by `generateSVReport()` in `src/node/reporting/campaign-reporting.mjs`, run as a Node post-pass after `--mode tmux --with-self-verification` campaigns.
+- `self-verification-report-NNN.md` — `--mode native`: the current SV report, written by hand by the Leader (LLM) per step ⑨ below (NNN = auto-increment). A separate, un-unified writer from the Node one above — same directory, different filename.
 
-Cross-project aggregation: scan `~/.claude/ralph-desk/analytics/` and read each slug's `metadata.json` to discover project_root, campaign_status, and timestamps. Slug directories use `<slug>--<root_hash>` format to prevent collision across projects.
+There is a third SV report writer, but it is dead code: `lib_ralph_desk.zsh`'s `generate_sv_report()` writes its own versioned `self-verification-report-NNN.md` to `.rlp-desk/logs/<slug>/` — a different directory from the two above — but it early-returns under `$TMUX`. `run_ralph_desk.zsh`'s `main()` requires `$TMUX` to be set and exits early otherwise ("tmux mode requires running inside a tmux session"), *before* the campaign loop that eventually calls `generate_sv_report()`. So by the time that call happens, `$TMUX` is always set, the early return always fires, and no file is ever produced at that path. Retained pending removal/unification with the two real writers above — do not instruct anyone to read it.
 
 ### Mode Selection
 
 Parse the `--mode` flag. Slash command canonical labels:
 
-- `--mode native` (default): **Native Agent() path** below. The slash command IS the leader. It calls `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)` for claude workers/verifiers and `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> --reasoning-effort <r> --disable plugins --disable hooks <prompt>")` for codex workers/verifiers. `OMX_STATE_ROOT` isolates every codex launch from the operator's interactive omx state (`.rlp-desk/logs/<slug>/runtime/omx-state`, mkdir -p'd before first use) — stale interactive-session state can otherwise block/wedge campaign codex workers (stale-lock incident 2026-08-09).
+- `--mode native` (default): **Native Agent() path** below. The slash command IS the leader. It calls `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)` for claude workers/verifiers and `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> -c model_reasoning_effort=\"<r>\" --disable plugins --disable hooks <prompt>")` for codex workers/verifiers. `OMX_STATE_ROOT` isolates every codex launch from the operator's interactive omx state (`.rlp-desk/logs/<slug>/runtime/omx-state`, mkdir -p'd before first use) — stale interactive-session state can otherwise block/wedge campaign codex workers (stale-lock incident 2026-08-09).
 - `--mode tmux`: **zsh runner path** below. The slash command shells out to `node ~/.claude/ralph-desk/node/run.mjs run --mode tmux …` which spawns `run_ralph_desk.zsh` as a subprocess.
 
 Legacy `--mode agent` typed against this slash command emits a deprecation notice and redirects to `--mode native`. **Do NOT confuse `/rlp-desk run --mode agent`** (slash command, redirects to Native Agent()) **with** `node run.mjs run --mode agent` (deprecated Node-leader alpha, direct CLI invocation, unrelated code path — see "Direct Node CLI invocation" below).
@@ -416,7 +425,7 @@ node ~/.claude/ralph-desk/node/run.mjs run '<slug>' \
 
 #### Native Agent() Mode (`--mode native` or default)
 
-The slash command IS the leader. Workers/Verifiers are spawned via `Agent(model=…, mode="bypassPermissions", prompt=…)` (claude) or `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> --reasoning-effort <r> --disable plugins --disable hooks <prompt>")` (codex) — the `OMX_STATE_ROOT` prefix isolates the codex launch from the operator's interactive omx state (see §"Execute Worker" below).
+The slash command IS the leader. Workers/Verifiers are spawned via `Agent(model=…, mode="bypassPermissions", prompt=…)` (claude) or `Bash("OMX_STATE_ROOT='<campaign runtime dir>/omx-state' codex exec --model <m> -c model_reasoning_effort=\"<r>\" --disable plugins --disable hooks <prompt>")` (codex) — the `OMX_STATE_ROOT` prefix isolates the codex launch from the operator's interactive omx state (see §"Execute Worker" below).
 
 ### Native Agent() Safety Contract
 
@@ -457,7 +466,7 @@ External wrappers calling `--mode agent` must migrate to `--mode tmux` by 0.17.0
    - **Capture recipe 2 (authorization)** — bind `waivers.json` to this (re)start out-of-band: `shasum -a 256 .rlp-desk/plans/waivers.json` → pass as `--waivers-sha256 <hash>`. Both recipes are operator-side, out-of-band — a Worker cannot forge either.
 4. Clean previous `done-claim.json`, `verify-verdict.json`.
 5. **Always**: write baseline log entry to `.rlp-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
-6. If `--debug`: also create/clear `~/.claude/ralph-desk/analytics/<slug>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> ~/.claude/ralph-desk/analytics/<slug>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.
+6. If `--debug`: also create/clear `.rlp-desk/analytics/<slug>--<hash8>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> .rlp-desk/analytics/<slug>--<hash8>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.
    - **4-category log system**: all debug_log entries use exactly one of: `[GOV]` (governance checks: IL enforcement, CB triggers, scope lock, verdict evaluation), `[DECIDE]` (leader decisions: model selection, fix contracts, escalation), `[OPTION]` (configuration snapshot at loop start: thresholds, modes, models), `[FLOW]` (execution progress: worker/verifier dispatch, signal reads, phase transitions)
    - **Re-execution versioning**: If `debug.log` already exists at `--debug` start, rename it to `debug-v{N}.log` (N = next available integer ≥ 1) before creating a fresh `debug.log`.
    - **baseline.log lifecycle**: baseline.log is deleted on re-execution (when `init --mode improve` or `init --mode fresh` is run).
@@ -551,7 +560,7 @@ Agent(
 
 If codex engine:
 ```
-Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> --reasoning-effort <codex_reasoning> --disable plugins --disable hooks <full worker prompt text>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> -c model_reasoning_effort=\"<codex_reasoning>\" --disable plugins --disable hooks <full worker prompt text>")
 ```
 - Codex runs as a subprocess via Bash(), not Agent().
 - Each Bash() call = fresh context for codex.
@@ -619,7 +628,7 @@ Agent(
 
 If codex engine:
 ```
-Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> --reasoning-effort <codex_reasoning> --disable plugins --disable hooks <full verifier prompt text>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> -c model_reasoning_effort=\"<codex_reasoning>\" --disable plugins --disable hooks <full verifier prompt text>")
 ```
 - Same `OMX_STATE_ROOT` isolation as the Worker codex launch (④ above) — one shared campaign-scoped omx-state dir per campaign.
 
@@ -675,24 +684,24 @@ After reading the verdict, archive to `logs/<slug>/`:
 - Write `status.json`
 - Report via tool call: `Bash("echo 'Iter N | US-NNN | verdict | model | next_action'")` — NEVER plain text. This keeps the turn alive for the next iteration.
 - **Always**: append to baseline.log: `[timestamp] iter=N verdict=<pass|fail|continue> us=<us_id> model=<worker_model>`
-- **Always**: append JSONL to `~/.claude/ralph-desk/analytics/<slug>/campaign.jsonl`: `{"iter":N,"us_id":"US-NNN","verdict":"pass|fail","worker_model":"...","worker_engine":"...","verifier_model":"...","verifier_engine":"...","consensus_mode":"off|all|final-only","duration_worker_s":N,"duration_verifier_s":N,"timestamp":"ISO8601"}`
+- **Always**: append JSONL to `.rlp-desk/analytics/<slug>--<hash8>/campaign.jsonl`: `{"iter":N,"us_id":"US-NNN","verdict":"pass|fail","worker_model":"...","worker_engine":"...","verifier_model":"...","verifier_engine":"...","consensus_mode":"off|all|final-only","duration_worker_s":N,"duration_verifier_s":N,"timestamp":"ISO8601"}`
 - If `--debug`: debug_log `[FLOW] iter=N phase=result status=<result> consecutive_failures=<N> verified_us=<list>`
 
-At loop end (COMPLETE, BLOCKED, or TIMEOUT):
-- **Always: deregister from the advisory leader registry** (governance §3c) using the pid recorded at preparation step 7a — best-effort, never fatal, and it must run on every exit path (COMPLETE, BLOCKED, and TIMEOUT alike):
+At loop end (COMPLETE, BLOCKED, TIMEOUT, or INTERRUPTED — tmux mode only, operator Ctrl-C/SIGTERM/SIGHUP; see "Circuit Breakers" in protocol-reference.md):
+- **Always: deregister from the advisory leader registry** (governance §3c) using the pid recorded at preparation step 7a — best-effort, never fatal, and it must run on every exit path (COMPLETE, BLOCKED, TIMEOUT, and INTERRUPTED alike):
 ```
 Bash("R=$(git rev-parse --show-toplevel) && H=$(printf '%s' \"$R\" | { shasum 2>/dev/null || sha1sum 2>/dev/null || cksum; } | awk '{print substr($1,1,8)}') && rm -f \"$R/${RLP_DESK_RUNTIME_DIR:-.rlp-desk}/logs/.rlp-desk-leaders-$H.d/$PPID.json\"; true")
 ```
   Skipping this leaves a live-PID entry behind for the rest of the Claude Code session, which would keep downgrading a later tmux leader's F-8 to carryover. That is graceful (carryover, never a BLOCK), but it is still wrong — remove the entry.
-- If `--debug`: debug_log `[FLOW] result=<COMPLETE|BLOCKED|TIMEOUT> iterations=<N> verified_us=<list>`
+- If `--debug`: debug_log `[FLOW] result=<COMPLETE|BLOCKED|TIMEOUT|INTERRUPTED> iterations=<N> verified_us=<list>`
 
 **⑨ Campaign Self-Verification** (when `--with-self-verification` is enabled):
 
 After the loop ends, the Leader performs post-campaign analysis:
 
 1. **Collect data**: Read all archived `iter-NNN.result.md`, done-claim.json (with execution_steps), and verify-verdict.json (with reasoning) from `logs/<slug>/`
-2. **Write cumulative data**: `~/.claude/ralph-desk/analytics/<slug>/self-verification-data.json` — normalized iteration records (agent-mode only artifact)
-3. **Generate versioned report**: `~/.claude/ralph-desk/analytics/<slug>/self-verification-report-NNN.md` (NNN = auto-increment from existing reports)
+2. **Write SV data**: `.rlp-desk/analytics/<slug>--<hash8>/self-verification-data.json` — normalized iteration records for this run (overwritten each run, not cumulative across runs). In native mode the Leader writes this by hand, following this template; the equivalent data for a `--mode tmux` campaign is produced by the Node post-pass's `generateSVReport()` at the same path.
+3. **Generate versioned report**: `.rlp-desk/analytics/<slug>--<hash8>/self-verification-report-NNN.md` (NNN = auto-increment from existing reports) — the Leader writes this by hand, following the template below. A `--mode tmux` campaign instead gets its report from the Node post-pass (`generateSVReport()`, fixed `self-verification-report.md` in the same analytics dir) — NOT unified with this one. See "Analytics Directory" above; unifying them is a follow-up.
 4. **Report to user**: Display the full report content
 
 Report template (10 sections):
@@ -750,12 +759,12 @@ or explicitly marked as "[source-inspection]" with justification.
 
 **⑩ Campaign Report** (always — independent of `--debug` and `--with-self-verification`)
 
-After the loop ends (COMPLETE, BLOCKED, or TIMEOUT), generate `logs/<slug>/campaign-report.md`:
+After the loop ends (COMPLETE, BLOCKED, TIMEOUT, or INTERRUPTED), generate `logs/<slug>/campaign-report.md`:
 
 1. If `campaign-report.md` already exists, rename it to `campaign-report-v{N}.md` (N = next available integer ≥ 1) before writing new.
 2. Generate report with 8 required sections:
    - **Objective**: From PRD
-   - **Execution Summary**: Iterations run, terminal state (COMPLETE/BLOCKED/TIMEOUT), elapsed time
+   - **Execution Summary**: Iterations run, terminal state (COMPLETE/BLOCKED/TIMEOUT/INTERRUPTED), elapsed time
    - **US Status**: Each US with final verified/failed/pending status (from `status.json`)
    - **Verification Results**: Per-US and final verify outcomes (from archived iter artifacts)
    - **Issues Encountered**: Fix contracts and failure verdicts from campaign
@@ -833,7 +842,7 @@ Read the last `verify-verdict.json` to show the most recent verdict summary and 
 - No N: show latest `iter-*.worker-prompt.md` summary
 - With N: read `iter-N.worker-prompt.md` and `iter-N.verifier-prompt.md`
 
-## `clean <slug> [--kill-session]`
+## `clean <slug> [--kill-session] [--remove-worktree]`
 Remove:
 - `.rlp-desk/memos/<slug>-complete.md`
 - `.rlp-desk/memos/<slug>-blocked.md`
@@ -845,7 +854,7 @@ Remove:
 - `.rlp-desk/logs/<slug>/runtime/worker-heartbeat.json`
 - `.rlp-desk/logs/<slug>/runtime/verifier-heartbeat.json`
 - `.rlp-desk/memos/<slug>-escalation.md`
-Note: `campaign-report.md`, `campaign-report-v{N}.md`, `iter-NNN-done-claim.json`, and `iter-NNN-verify-verdict.json` are intentionally preserved across clean for historical comparison. Analytics files (`debug.log`, `campaign.jsonl`, `self-verification-data.json`, `self-verification-report-NNN.md`) at `~/.claude/ralph-desk/analytics/<slug>/` are NOT affected by project-level clean.
+Note: `campaign-report.md`, `campaign-report-v{N}.md`, `iter-NNN-done-claim.json`, and `iter-NNN-verify-verdict.json` are intentionally preserved across clean for historical comparison. Analytics files (`debug.log`, `campaign.jsonl`, `self-verification-data.json`, `self-verification-report.md` / `self-verification-report-v{N}.md`, `self-verification-report-NNN.md`) at `.rlp-desk/analytics/<slug>--<hash8>/` are NOT affected by project-level clean — see "Analytics Directory" above.
 
 If `--kill-session` is passed, clean up Worker/Verifier tmux panes using session-config.json:
 ```bash
@@ -874,12 +883,14 @@ fi
 ```
 **CRITICAL: NEVER use `grep -i 'claude\|codex'` to find panes to kill.** The user's own Claude Code session matches those patterns. Always use the specific pane IDs from session-config.json.
 
+If `--remove-worktree` is passed, tear down the dedicated campaign worktree (created under `<deskRoot>/worktrees/<slug>` when the campaign was launched with `--worktree`): run `git worktree remove <worktree-path> --force`, which also prunes the worktree's admin metadata. Best-effort — a missing or already-removed worktree is a no-op, never an error.
+
 ## `analytics [slug]`
 
-Cross-project analytics dashboard. Scans `~/.claude/ralph-desk/analytics/` for all campaign data.
+Project-local analytics dashboard. Scans `.rlp-desk/analytics/` in the current project for campaign data (v0.12.0+: analytics moved project-local — there is no central cross-project directory to aggregate from; see "Analytics Directory" above).
 
-- No slug: show summary across all projects (total campaigns, pass/fail rate, average iterations, total cost)
-- With slug: show detailed analytics for that project (per-US pass rate, model upgrade frequency, iteration distribution, cost per US)
+- No slug: show summary across all slugs found under `.rlp-desk/analytics/` in this project (total campaigns, pass/fail rate, average iterations, total cost)
+- With slug: show detailed analytics for that slug (per-US pass rate, model upgrade frequency, iteration distribution, cost per US)
 
 Data sources:
 - `campaign.jsonl` — per-iteration structured records
@@ -924,7 +935,7 @@ Run options:
   --max-iter N                         Max iterations (default: 100)
   --iter-timeout N                     Per-iteration timeout, tmux only (default: 600)
   --waivers-sha256 HASH                Out-of-band authorization for .rlp-desk/plans/waivers.json (fail-closed waiver channel)
-  --debug                              Debug logging (~/.claude/ralph-desk/analytics/<slug>/debug.log)
+  --debug                              Debug logging (.rlp-desk/analytics/<slug>--<hash8>/debug.log)
   --with-self-verification             Campaign self-verification analysis (post-loop report)
 ```
 
@@ -941,7 +952,7 @@ Run options:
         │     └── reads done-claim, runs checks, writes verdict
         │
   Bash() ───▶ [Worker/Verifier: codex CLI subprocess]
-              └── `codex exec --model <m> --reasoning-effort <r> --disable plugins --disable hooks <prompt>`
+              └── `codex exec --model <m> -c model_reasoning_effort="<r>" --disable plugins --disable hooks <prompt>`
 ```
 
 ### Tmux Mode (`--mode tmux`)

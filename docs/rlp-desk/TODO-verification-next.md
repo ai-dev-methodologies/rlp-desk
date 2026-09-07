@@ -11,11 +11,11 @@ Post-campaign analysis that reads all iteration artifacts and generates a versio
 
 ### Concept
 - Separate from `--debug` (which logs Leader decisions)
-- After COMPLETE/BLOCKED/TIMEOUT, Leader analyzes all done-claims and verdicts
-- Generates `logs/<slug>/self-verification-report-NNN.md` (versioned per run)
-- Cumulative data stored in `logs/<slug>/self-verification-data.json`
+- After COMPLETE/BLOCKED/TIMEOUT/INTERRUPTED (tmux-mode only), Leader analyzes all done-claims and verdicts
+- Generates `.rlp-desk/analytics/<slug>--<hash8>/self-verification-report.md` (unversioned, `--mode tmux`; older reports moved aside to `-v{N}.md` — Node writer, `generateSVReport()`) or `.rlp-desk/analytics/<slug>--<hash8>/self-verification-report-NNN.md` (versioned, `--mode native`; written by hand by the Leader per rlp-desk.md step ⑨) — two real, un-unified writers, same directory, different filenames; see rlp-desk.md "Analytics Directory". A third writer, `lib_ralph_desk.zsh`'s `generate_sv_report()`, is dead code (its `$TMUX` early return is always taken by the time its only caller — after the campaign loop — runs) and never produces a file — do not read it.
+- Per-run data stored in `.rlp-desk/analytics/<slug>--<hash8>/self-verification-data.json` (overwritten each run, not cumulative across runs)
 
-### Report Sections (9-section template defined in rlp-desk.md step 9)
+### Report Sections (10-section template defined in rlp-desk.md step ⑨; see also `generateSVReport()` in `src/node/reporting/campaign-reporting.mjs`)
 1. Automated Validation Summary
 2. Failure Deep Dive
 3. Worker Process Quality (§1f audit)
@@ -24,12 +24,13 @@ Post-campaign analysis that reads all iteration artifacts and generates a versio
 6. Test-Spec Adherence
 7. Patterns: Strengths & Weaknesses
 8. Recommendations for Next Cycle (Brainstorm / PRD / Test-Spec)
-9. Blind Spots
+9. Cost & Performance
+10. Blind Spots
 
 ### Open Design Items
-- [ ] Automated report generation (currently manual Leader analysis)
+- [x] Automated report generation — done for `--mode tmux` (ARCH Wave C-SV: `generateSVReport()` runs as a Node post-pass after the zsh leader exits). `--mode native` still relies on the Leader (LLM) authoring the report itself per the rlp-desk.md step ⑨ template — that path remains manual.
 - [ ] Cross-campaign trend analysis (compare report-001 vs report-002)
-- [ ] Integration with brainstorm (Leader reads previous report at brainstorm start)
+- [x] Integration with brainstorm — done (rlp-desk.md brainstorm step 0 "SV Report Feedback" reads the latest prior report; governance §8½)
 
 ---
 

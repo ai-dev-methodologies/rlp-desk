@@ -692,7 +692,6 @@ All environments (Claude Code, OpenCode) use the same Agent tool.
 ```
 # Worker (claude engine, default)
 Agent(
-  subagent_type="executor",
   model="sonnet",
   prompt=worker_prompt,
   mode="bypassPermissions"
@@ -700,7 +699,6 @@ Agent(
 
 # Verifier (claude engine, default)
 Agent(
-  subagent_type="executor",
   model="sonnet",
   prompt=verifier_prompt,
   mode="bypassPermissions"
@@ -710,7 +708,7 @@ Agent(
 If `--worker-model` or `--verifier-model` uses codex format (e.g., `spark:high`, `gpt-5.5:high`) (opt-in):
 ```
 # Worker or Verifier (codex engine)
-Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex -m <codex_model> -c model_reasoning_effort=<codex_reasoning> --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox <prompt>")
+Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> -c model_reasoning_effort=\"<codex_reasoning>\" --disable plugins --disable hooks <prompt>")
 ```
 - `OMX_STATE_ROOT` isolates every codex launch from the operator's interactive omx state (a campaign-scoped root — actual state lands at `<root>/.omx/state/…`, disjoint from the project's own `.omx/state/`); see F1.18 in `docs/rlp-desk/failure-modes.md`.
 - `--disable plugins --disable hooks` is on every campaign codex launch; see F1.19 in `docs/rlp-desk/failure-modes.md`. `~/.codex/hooks.json` registers the oh-my-codex native hook globally and `--disable plugins` does not cover it: its `UserPromptSubmit` keyword-detector auto-activates deep-interview from prose in the campaign's *own* worker prompt, after which `PreToolUse` blocks every write tool for that codex session. `OMX_STATE_ROOT` does not prevent this — the capture happens inside the campaign's own isolated root. `--disable hooks` is **probe-gated**: probe once per campaign for name presence of `hooks` in column 1 of `codex features list` (never the state column) and omit the flag if absent, because an unknown feature name is a hard error. If a launch fails with `Unknown feature flag`, retry once without the flag and omit it for the rest of the run. Escape hatch: `RLP_CODEX_HOOKS=1`.
@@ -796,13 +794,34 @@ Characteristics:
 
 ## 6. File Structure
 
-### User-level (central)
+### User-level (central, installed via `npm install` / `postinstall.js` — single source of truth: `scripts/install-manifest.js`)
 ```
+~/.claude/commands/
+└── rlp-desk.md                 # The slash command itself
+
 ~/.claude/ralph-desk/
-├── init_ralph_desk.zsh        # Scaffold generator (automation)
-├── governance.md              # This document
-└── templates/                 # Prompt templates
+├── governance.md               # This document
+├── model-upgrade-table.md
+├── README.md
+├── install.sh
+├── init_ralph_desk.zsh         # Scaffold generator (automation)
+├── run_ralph_desk.zsh          # Tmux runner — canonical --mode tmux backend (v0.14.0+)
+├── lib_ralph_desk.zsh          # Shared zsh library sourced by the runner
+├── node/                       # Recursive mirror of src/node (Node CLI + reporting)
+└── docs/rlp-desk/
+    ├── architecture.md
+    ├── getting-started.md
+    ├── protocol-reference.md
+    ├── TODO-verification-next.md
+    ├── multi-mission-orchestration.md
+    ├── signal-protocol.md
+    ├── verification-history.md
+    ├── failure-modes.md
+    ├── internal/                # recursive (markdown only)
+    ├── blueprints/               # recursive (markdown only)
+    └── plans/                    # recursive (markdown only)
 ```
+No install channel creates a `templates/` directory — prompt templates are generated inline by `init_ralph_desk.zsh`, not shipped as static files.
 
 ### Project-local
 ```
@@ -823,27 +842,31 @@ Characteristics:
 ├── plans/
 │   ├── prd-<slug>.md                # PRD (in-place: --mode improve | fresh preserves AUTHORED plans, template-only deleted; --reset-plans wipes with versioned backup)
 │   └── test-spec-<slug>.md          # Verification criteria (regenerated on re-execution)
-└── logs/<slug>/                          # Project-level operational data
-    ├── campaign-report.md           # Campaign summary (versioned: campaign-report-v{N}.md on re-execution)
-    ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy (archived to runs/ on re-execution)
-    ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy (archived to runs/ on re-execution)
-    ├── iter-NNN.result.md           # Iteration result (archived to runs/ on re-execution)
-    ├── iter-NNN-done-claim.json     # Archived done-claim per iteration (archived to runs/ on re-execution)
-    ├── iter-NNN-verify-verdict.json # Archived verdict per iteration (archived to runs/ on re-execution)
-    ├── iter-NNN-iter-signal.json    # Archived iter-signal per iteration (request-m ②; archived to runs/ on re-execution)
-    ├── runs/                        # request-m ②: run-scoped evidence archive (NEVER deleted — see below)
-    │   └── superseded-<ts>/         #   a prior run's iter-* + relocated memos/verified.jsonl, batched by superseding run's startup ts
-    ├── status.json                  # Leader's loop state (deleted on re-execution)
-    ├── baseline.log                 # Baseline capture (deleted on re-execution)
-    └── cost-log.jsonl               # Per-iteration cost log (deleted on re-execution)
-
-~/.claude/ralph-desk/analytics/<slug>--<root_hash>/  # User-level cross-project analytics
-    ├── metadata.json                # Campaign metadata (slug, project_root, status, times)
-    ├── debug.log                    # Debug output (versioned: debug-v{N}.log on re-execution)
-    ├── campaign.jsonl               # Per-iteration structured data (versioned: campaign-v{N}.jsonl)
-    ├── self-verification-data.json  # Cumulative SV data (agent-mode only, --with-self-verification)
-    └── self-verification-report-NNN.md  # Versioned SV report (--with-self-verification; NNN auto-increment)
+├── logs/<slug>/                          # Project-level operational data
+│   ├── campaign-report.md           # Campaign summary (versioned: campaign-report-v{N}.md on re-execution)
+│   ├── iter-NNN.worker-prompt.md    # Audit trail prompt copy (archived to runs/ on re-execution)
+│   ├── iter-NNN.verifier-prompt.md  # Audit trail prompt copy (archived to runs/ on re-execution)
+│   ├── iter-NNN.result.md           # Iteration result (archived to runs/ on re-execution)
+│   ├── iter-NNN-done-claim.json     # Archived done-claim per iteration (archived to runs/ on re-execution)
+│   ├── iter-NNN-verify-verdict.json # Archived verdict per iteration (archived to runs/ on re-execution)
+│   ├── iter-NNN-iter-signal.json    # Archived iter-signal per iteration (request-m ②; archived to runs/ on re-execution)
+│   ├── runs/                        # request-m ②: run-scoped evidence archive (NEVER deleted — see below)
+│   │   └── superseded-<ts>/         #   a prior run's iter-* + relocated memos/verified.jsonl, batched by superseding run's startup ts
+│   ├── status.json                  # Leader's loop state (deleted on re-execution)
+│   ├── baseline.log                 # Baseline capture (deleted on re-execution)
+│   └── cost-log.jsonl               # Per-iteration cost log (deleted on re-execution)
+└── analytics/                            # v0.12.0+: project-local (was ~/.claude/ralph-desk/analytics/ pre-v0.12.0)
+    ├── <slug>--<hash8>/              # <hash8> = 8-char hash of the absolute project root (intra-machine only)
+    │   ├── metadata.json                # Campaign metadata (slug, project_root, status, times)
+    │   ├── debug.log                    # Debug output (versioned: debug-v{N}.log on re-execution, --debug only)
+    │   ├── campaign.jsonl               # Per-iteration structured data (versioned: campaign-v{N}.jsonl, always-on)
+    │   ├── self-verification-data.json  # SV data for the most recent run (overwritten, not cumulative across runs; --with-self-verification)
+    │   ├── self-verification-report.md  # --mode tmux: the current SV report, unversioned filename (older ones moved aside to self-verification-report-v{N}.md). Written by generateSVReport() in src/node/reporting/campaign-reporting.mjs, run as a Node post-pass.
+    │   └── self-verification-report-NNN.md  # --mode native: the current SV report, written by hand by the Leader (LLM) per rlp-desk.md step ⑨ (NNN = auto-increment). A separate, un-unified writer from the Node one above — same directory, different filename.
+    └── <slug>.current                # Hash-free pointer file → the analytics dir above, for cross-leader lookup
 ```
+
+Dead code note: `lib_ralph_desk.zsh`'s `generate_sv_report()` also contains an SV report writer (its own `self-verification-report-NNN.md`, under `.rlp-desk/logs/<slug>/` — a third location), but it is unreachable: it early-returns under `$TMUX` (comment: "SV is Agent-mode only"), and `run_ralph_desk.zsh`'s `main()` requires `$TMUX` to be set and exits early otherwise (verified: `env -u TMUX zsh run_ralph_desk.zsh` exits 1 with "tmux mode requires running inside a tmux session"), before the campaign loop that eventually calls `generate_sv_report()`. So by the time that call happens, `$TMUX` is always set and the early return always fires. No file is ever produced at that path. Retained as dead code pending removal/unification with the two real writers above — a follow-up, not a current data source.
 
 ### Run-scoped evidence archive — `logs/<slug>/runs/` (request-m ②)
 
@@ -898,7 +921,7 @@ for iteration in 1..max_iter:
      - Base prompt + iteration number + contract from memory
      - Log to logs/<slug>/iter-NNN.worker-prompt.md
 
-  ⑤ Execute Worker: Agent(subagent_type="executor", model=selected, prompt=prompt)
+  ⑤ Execute Worker: Agent(model=selected, prompt=prompt)
      - Synchronous return, wait for completion
 
   ⑥ Read memory.md again → check Worker's updated state
@@ -939,7 +962,7 @@ for iteration in 1..max_iter:
        redispatch the Worker (go to ⑧); this happens on every signal path
        (normal, codex-exit fallback synth, operator recovery).
      - Build prompt (scoped to us_id if per-us mode) → log
-     - Agent(subagent_type="executor", model=selected, prompt=prompt)
+     - Agent(model=selected, prompt=prompt)
      - If --consensus is not off: run second verifier with alternate engine (see §7b)
      - Read verify-verdict.json:
        • pass + specific US → add to verified_us, Worker does next US
@@ -955,7 +978,7 @@ for iteration in 1..max_iter:
   ⑧ Write iter-NNN.result.md to logs/<slug>/ (result status + git diff --stat)
      Update status.json, report to user, continue to next iteration
 
-After loop end (COMPLETE, BLOCKED, TIMEOUT):
+After loop end (COMPLETE, BLOCKED, TIMEOUT, or INTERRUPTED — tmux mode only, operator Ctrl-C/SIGTERM/SIGHUP; `run_ralph_desk.zsh` `_on_signal`, A-5):
   ⑧½ Campaign Report (always — independent of --debug)
      - Generate logs/<slug>/campaign-report.md with 8 sections
      - Version existing report to campaign-report-v{N}.md before writing new

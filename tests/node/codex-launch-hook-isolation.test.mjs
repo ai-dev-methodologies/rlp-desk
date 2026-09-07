@@ -315,7 +315,7 @@ test('AC1b closure: NO launch-shaped codex line escapes the flag rule via a miss
   // fails — additions to this allowlist are a reviewed decision, not drift.
   const NON_TEMPLATE_ALLOWLIST = [
     /`codex exec \.\.\.`/,                                   // elided prose mention
-    /--reasoning-effort <r> --disable plugins --disable hooks <prompt>`$/, // help-block diagram (flag-correct, no env prefix by design)
+    /-c model_reasoning_effort="<r>" --disable plugins --disable hooks <prompt>`$/, // help-block diagram (flag-correct, no env prefix by design). Reviewed decision (reaudit-wave-1 D-1, 2026-09-04): re-derived from src/scripts/run_ralph_desk.zsh's `main()`, the "governance.md s7 step 5: Execute Worker" block that assembles `worker_launch` (its `restart_worker()` counterpart matches), both of which assemble `-c model_reasoning_effort="$WORKER_CODEX_REASONING"`. `--reasoning-effort` is not a real codex flag — installed codex-cli 0.151.0's `codex exec --help` has no such option — so the prior pin was stale.
     /Do NOT add `--dangerously-bypass-approvals-and-sandbox`/, // NON-GOAL prohibition line
     /codex --disable bogus/,                                  // probe hard-error illustration
     /codex features list/,                                    // probe instruction line

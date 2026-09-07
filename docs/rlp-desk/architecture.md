@@ -30,7 +30,6 @@ Claude Code's `Agent()` tool spawns a subprocess — a completely new context wi
 ```python
 # Each call = new process = fresh context = no prior conversation
 Agent(
-    subagent_type="executor",   # Worker or Verifier
     model="sonnet",             # Model selection per iteration
     prompt=full_prompt_text,    # Everything the agent needs
     mode="bypassPermissions"    # Autonomous execution

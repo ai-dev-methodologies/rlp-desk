@@ -19,10 +19,13 @@ Or without npm:
 curl -sSL https://raw.githubusercontent.com/ai-dev-methodologies/rlp-desk/main/install.sh | bash
 ```
 
-This installs three files:
+This installs the slash command, the runner scripts, and the reference docs (the full set is generated from `scripts/install-manifest.js` and kept in sync by `npm run verify:sync`):
 - `~/.claude/commands/rlp-desk.md` — the slash command
 - `~/.claude/ralph-desk/init_ralph_desk.zsh` — the scaffold generator
+- `~/.claude/ralph-desk/run_ralph_desk.zsh` / `lib_ralph_desk.zsh` — the tmux runner and its shared library
 - `~/.claude/ralph-desk/governance.md` — the protocol document
+- `~/.claude/ralph-desk/node/` — the Node CLI (used by `--mode tmux`)
+- `~/.claude/ralph-desk/docs/rlp-desk/` — the reference docs (this file included)
 
 ## Step 2: Create a Project
 
@@ -87,7 +90,7 @@ This creates the scaffold:
 
 ## Step 5: Customize the PRD
 
-Edit `.rlp-desk/plans/prd-loop-test.md` to define your user stories and acceptance criteria. See [`examples/calculator/`](../examples/calculator/.rlp-desk/plans/prd-loop-test.md) for a complete example.
+Edit `.rlp-desk/plans/prd-loop-test.md` to define your user stories and acceptance criteria. See [`examples/calculator/`](../../examples/calculator/.rlp-desk/plans/prd-loop-test.md) for a complete example (repo-only — `examples/` is not part of the npm install, so this link only resolves when reading this file inside a checkout of the source repo).
 
 Key sections:
 - **User Stories** with Given/When/Then acceptance criteria, Task Type, and Risk Level

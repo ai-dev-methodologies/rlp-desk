@@ -19,6 +19,91 @@ Entry template:
 
 ---
 
+## 2026-09-07 — Audit-remediation wave: 137-agent re-audit fix wave + 4-round SV gate (fix/reaudit-wave-1)
+
+- **Target**: audit-remediation wave from a 137-agent re-audit of v0.25.0 (8
+  HIGH / 24 MEDIUM confirmed findings). This wave fixed the top items: the
+  claude-engine worker model ladder was dead (an engine-blind key in
+  `check_model_upgrade`), F-8 auto-commit was committing the whole index and
+  the D-20 gate was false-reading C-quoted paths, signal traps let the leader
+  resume after cleanup instead of terminating, init's PRD/test-spec reset used
+  a BSD-only `sed -i ''` and a bare `rm` deletion, the zsh test harness was
+  only running 2 of 97 files locally, Node SV reports rendered `undefined`
+  over zsh-written analytics, `_auto_detect_engine` used an eval-assignment,
+  and seven documentation-vs-code drifts. Branch `fix/reaudit-wave-1` off
+  `main` @ 6d94518 (v0.25.0), not yet merged.
+- **Method**: parallel implement→independent-review pairs (executor + a
+  separate reviewer per item, mutation controls required), then the mandatory
+  3-scenario SV gate (LOW L1+L3, MEDIUM L1+L2+L3, CRITICAL
+  L1+L2+L3+security+error-path) run over four rounds — each round a fresh
+  Worker execution in throwaway sandboxes plus an independent Verifier that
+  re-executed the load-bearing assertions itself.
+- **Result**: Full suites: `npm run test:node` 720/720, `npm run test:zsh`
+  102 files exit 0, `zsh tests/sv-gate-fast.sh` 99/99, `npm run
+  manifest:check` in sync. SV gate: round 1 FAIL (see findings); rounds 2 and
+  3 returned PASS verdicts from their verifiers, but **the round-3 verdict
+  did not hold** — its state was subsequently shown to violate the committed
+  contract AC1-L3-neg, because the gate's scenario set did not include
+  `tests/test_us001_prd_splitting.sh`, so round 3's PASS was issued against an
+  incomplete assertion set. Round 4 **PASS (3/3)** after the correction, from
+  an independent verifier who re-executed every load-bearing assertion in 12
+  fresh sandboxes and killed 11 of 11 mutants (round-4 worker: 27/27
+  assertions). Whole-branch final review, run after the gate concluded:
+  **MERGE-READY**.
+- **Findings**:
+  - Round-1 gate found two **pre-existing** `split_prd_by_us` defects the
+    diff had not touched — a missing null-glob qualifier crashing `--mode
+    fresh` on dash-form US headings and leaving the test-spec missing, and
+    `awk -v` eating backslashes in project paths — **fixed**.
+  - Later rounds found the same defect class in `split_test_spec_by_us`, plus
+    a `close(out)`-then-reopen truncation that silently discarded a US body,
+    and a tmp-file leak — **fixed**.
+  - HIGH — a round-2 verifier found the first A-5 signal-trap fix was wrong:
+    a function-scoped `EXIT` trap runs only its first command when the
+    process is terminated by `exit`, so cleanup never ran — **fixed** with
+    `setopt POSIX_TRAPS` plus an explicit chain.
+  - HIGH — the team lead's own full `test:zsh` run caught that this wave's
+    heading-regex unification had broken the committed negative contract
+    AC1-L3-neg in `tests/test_us001_prd_splitting.sh` (a 2-hash `## US-NNN:`
+    PRD heading must not split) — neither per-item green suites, per-item
+    review, nor the round-3 gate itself had caught it, because the gate's own
+    scenario set never ran that file. **Fixed**: reverted to a strict 3-hash
+    PRD constant, with a separate permissive constant retained only for
+    `_extract_prd_us_list`.
+  - HIGH (process) — a gate whose scenario set omits an existing committed
+    contract test can return a **false PASS**: round 3 passed while that
+    exact contract was broken. `tests/test_us001_prd_splitting.sh` (and the
+    full `npm run test:zsh`) must be part of the gate's suite list for any
+    change touching the split/heading paths, not run only afterward by the
+    team lead.
+  - Round 4 (corrective) evidence: independent verifier **PASS 3/3**; mutant
+    kill table **11/11**, with `tests/test_init_data_safety.sh` (73
+    assertions) as the load-bearing net and `tests/test_us001_prd_splitting.sh`
+    killing the ERE-widening mutant specifically. Suites re-run by the
+    verifier itself: `test_us001_prd_splitting.sh` 19,
+    `test_init_data_safety.sh` 73, `test_us004_self_verification.sh` 46,
+    `test_us008_self_verification_e2e.sh` 33, `test_us006_init_presets.sh` 13,
+    `test_vision_adopt.sh` 21, `sv-gate-bug7-mode-prose.sh` 16,
+    `test_request_f_docs.sh` 13, `sv-gate-fast.sh` 99 — all passing.
+  - MEDIUM — one mutant (removal of the render self-heal) escaped the
+    committed suite in round 2 — **fixed**, now covered by new test cases.
+  - Lesson: per-item green suites and per-item reviews both missed the
+    cross-cutting contract break, and a scenario set that does not enumerate
+    every existing committed contract test can pass a gate round while that
+    contract is broken; only the full-suite run and the corrective round-4
+    re-verification caught and closed it. Mutation controls and `git show
+    HEAD:` oracles were required of every new test in this wave going
+    forward.
+- **Artifacts**: done-claims and per-round archives under the session
+  scratchpad `svgate/scenario-{low,medium,critical}.done-claim.json` (+
+  `.round1..round3.json`); new test files `tests/test_init_data_safety.sh`
+  (73 assertions), `tests/test_signal_trap.sh`,
+  `tests/test_auto_detect_engine_safety.sh`,
+  `tests/test_git_dirty_names_lib.sh`, `tests/test_lib_split_heading_forms.sh`,
+  `tests/node/c1c2-analytics-reader-hardening.test.mjs`.
+
+---
+
 ## 2026-08-09 — OMX_STATE_ROOT isolation: SV gate + fix wave (v0.24.1)
 
 - **Target**: campaign-launched codex sessions isolated from the operator's
