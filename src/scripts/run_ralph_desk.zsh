@@ -98,9 +98,9 @@ _validate_int_knob() {
 # and blocks (never auto-repairs) on drift.
 #
 # Per-role codex config:
-#   WORKER_CODEX_MODEL            - codex model for Worker (default: gpt-5.5)
+#   WORKER_CODEX_MODEL            - codex model for Worker (default: gpt-5.6-luna — luna-first cheap-tier start; NOT the ladder ceiling)
 #   WORKER_CODEX_REASONING        - codex reasoning for Worker (default: high)
-#   VERIFIER_CODEX_MODEL          - codex model for Verifier (default: gpt-5.5)
+#   VERIFIER_CODEX_MODEL          - codex model for Verifier (default: gpt-5.6-terra — mid rung, below final verification)
 #   VERIFIER_CODEX_REASONING      - codex reasoning for Verifier (default: high)
 #
 # Consensus scope:
@@ -122,7 +122,7 @@ ROOT="${ROOT:-$PWD}"
 MAX_ITER="${MAX_ITER:-20}"
 WORKER_MODEL="${WORKER_MODEL:-haiku}"
 VERIFIER_MODEL="${VERIFIER_MODEL:-sonnet}"
-FINAL_VERIFIER_MODEL="${FINAL_VERIFIER_MODEL:-opus}"
+FINAL_VERIFIER_MODEL="${FINAL_VERIFIER_MODEL:-claude-fable-5-1}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 ITER_TIMEOUT="${ITER_TIMEOUT:-600}"
 # ③/④ request-b: submit-anchored timeout. ITER_TIMEOUT is the TASK budget and
@@ -481,10 +481,13 @@ _auto_detect_engine() {
     local model_part="${model_val%%:*}"
     local level_part="${model_val##*:}"
     case "$model_part" in
-      haiku|sonnet|opus|claude|claude-*)
+      haiku|sonnet|opus|fable|claude|claude-*)
         # Claude model with effort — keep engine as claude, store effort.
-        # Matches short aliases (haiku/sonnet/opus), bare `claude`, AND full
-        # versioned ids (claude-opus-4-8, claude-fable-5, claude-opus-4-8[1m]).
+        # Matches short aliases (haiku/sonnet/opus/fable — `claude --help`
+        # documents `fable` as an alias for the latest model, same as
+        # opus/sonnet), bare `claude`, AND full versioned ids
+        # (claude-opus-4-8, claude-fable-5, claude-fable-5-1,
+        # claude-opus-4-8[1m]).
         # The `claude-*` glob also covers the bracket+effort combo
         # (claude-opus-4-8[1m]:high → model=claude-opus-4-8[1m], effort=high).
         # F-1: typeset -g (not eval) — level_part/model_part come from an
@@ -514,6 +517,8 @@ _auto_detect_engine() {
         [[ "$model_part" == "sol" ]]   && model_part="gpt-5.6-sol"
         [[ "$model_part" == "terra" ]] && model_part="gpt-5.6-terra"
         [[ "$model_part" == "luna" ]]  && model_part="gpt-5.6-luna"
+        # GPT-6 alias (codex 0.153) — same convention
+        [[ "$model_part" == "astra" ]] && model_part="gpt-6-astra"
         # Warn (stderr) when the name — after alias expansion above — is not even
         # a gpt-* slug: a likely typo being silently routed to codex.
         [[ "$model_part" != gpt-* ]] && print -u2 "[rlp-desk] note: model '$model_part' is not a claude id or known codex model — routing to codex engine. Verify this is intended."
@@ -523,6 +528,17 @@ _auto_detect_engine() {
         if [[ -n "$codex_reasoning_var" ]]; then
           case "$level_part" in
             minimal|low|medium|high|xhigh|max|ultra)
+              # Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave):
+              # gpt-6-astra's API rejects 'minimal' with an HTTP 400 that
+              # enumerates the supported set (low/medium/high/xhigh/max) —
+              # see src/model-upgrade-table.md "GPT-6 — Astra". Reject it
+              # HERE for THIS model only; 'minimal' remains valid for every
+              # other codex model (gpt-5.x, sol/terra/luna, spark) — never a
+              # blanket narrowing of the shared vocabulary.
+              if [[ "$model_part" == "gpt-6-astra" && "$level_part" == "minimal" ]]; then
+                print -u2 "[rlp-desk] ERROR: reasoning 'minimal' is not supported by gpt-6-astra in $model_var='$model_val' (server enumerates: low|medium|high|xhigh|max)."
+                return 1
+              fi
               typeset -g "$codex_reasoning_var=$level_part"
               ;;
             *)
@@ -531,6 +547,59 @@ _auto_detect_engine() {
               ;;
           esac
         fi
+        ;;
+    esac
+  else
+    # Bare (no-colon) value: check known codex aliases BEFORE leaving engine_var
+    # untouched. This function used to be a total no-op for a bare name (the
+    # whole body lives inside the `*:*` guard above), so a bare WORKER_MODEL=astra
+    # (or sol/terra/luna/spark) left WORKER_ENGINE at its "${WORKER_ENGINE:-claude}"
+    # default (set just above this function's call sites) and WORKER_MODEL
+    # unchanged at "astra" — the same misclassification bug as parse_model_flag's
+    # and parseModelFlag's bare branch, fixed alongside it. No reasoning value is
+    # available here; codex_reasoning_var is left unset so the module-wide
+    # "${*_CODEX_REASONING:-high}" defaults (a few lines below every call site)
+    # supply it, exactly as they already do for a bare colon-qualified codex model.
+    case "$model_val" in
+      spark|sol|terra|luna|astra)
+        local bare_model="$model_val"
+        [[ "$bare_model" == "spark" ]] && bare_model="gpt-5.3-codex-spark"
+        [[ "$bare_model" == "sol" ]]   && bare_model="gpt-5.6-sol"
+        [[ "$bare_model" == "terra" ]] && bare_model="gpt-5.6-terra"
+        [[ "$bare_model" == "luna" ]]  && bare_model="gpt-5.6-luna"
+        [[ "$bare_model" == "astra" ]] && bare_model="gpt-6-astra"
+        typeset -g "$engine_var=codex"
+        typeset -g "$model_var=$bare_model"
+        [[ -n "$codex_model_var" ]] && typeset -g "$codex_model_var=$bare_model"
+        ;;
+      gpt-*)
+        # A bare (no-colon) gpt-* id (e.g. WORKER_MODEL="gpt-5.5") is a real
+        # codex model name, not a claude one — fixing only the five known
+        # aliases and leaving an actual model id misclassified made the rule
+        # unguessable. No alias expansion needed; the value is already the
+        # real slug.
+        #
+        # DO NOT centralize this check into a shared zsh function with
+        # parse_model_flag's matching `gpt-*)` arm (lib_ralph_desk.zsh). This
+        # function's real call sites run at run_ralph_desk.zsh:619-621, BEFORE
+        # `source lib_ralph_desk.zsh` at :682 — a lib-defined helper called
+        # from here would fail with "command not found" (the exact ordering
+        # bug this wave already hit once for _validate_consensus_model_var).
+        # The Node side (command-builder.mjs's isBareCodexModelName) CAN be
+        # one function because it's one file with no such sourcing order.
+        # Duplicate + a parity test (test_bare_gpt_star_classification in
+        # tests/test_us011_worker_model_upgrade.sh) is correct here, matching
+        # how the sol/terra/luna/astra alias table already lives under the
+        # same constraint.
+        typeset -g "$engine_var=codex"
+        typeset -g "$model_var=$model_val"
+        [[ -n "$codex_model_var" ]] && typeset -g "$codex_model_var=$model_val"
+        ;;
+      *)
+        # Not a known codex alias or gpt-* id — leave untouched, matching
+        # the documented "model (no colon) = claude engine" contract (the
+        # "${WORKER_ENGINE:-claude}" default already applied above handles
+        # this case; nothing to do here).
         ;;
     esac
   fi
@@ -563,15 +632,31 @@ _validate_int_knob FINAL_VERIFY_MAX_ATTEMPTS 3 1 10
 _auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT || exit 1
 _auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING VERIFIER_EFFORT || exit 1
 _auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE FINAL_VERIFIER_CODEX_MODEL FINAL_VERIFIER_CODEX_REASONING FINAL_VERIFIER_EFFORT || exit 1
-WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.5}"
-WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high
-VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.5}"
-VERIFIER_CODEX_REASONING="${VERIFIER_CODEX_REASONING:-high}"   # low|medium|high
+
+# REVERTED off gpt-6-astra (owner correction): astra is now the ladder
+# ceiling (src/node/models.json "gpt-5.6-sol:xhigh" -> "gpt-6-astra:high").
+# Starting the Worker there breaks the luna-first concept three ways at once
+# — every iteration pays frontier price, check_model_upgrade returns
+# already_max from iteration 1 (no escalation headroom left), and the
+# circuit breaker loses its escalation signal. Derived from
+# src/commands/rlp-desk.md's cross-engine table (the LOW cost-lane Worker
+# start row: "gpt-5.6-luna:high") rather than picked by name.
+WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.6-luna}"
+WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high — paired with gpt-5.6-luna above = gpt-5.6-luna:high (doc's LOW cost-lane Worker start)
+# REVERTED off gpt-6-astra for the same reason — flattens the per-US
+# verifier tier, which src/governance.md's Consensus Model Routing table
+# keeps deliberately below final verification. Derived from that table's
+# per-US codex tiering (luna:max/terra:high/sol:medium/sol:high — a MEDIUM,
+# "balanced, everyday work" mid rung) and matches CONSENSUS_MODEL's own
+# default two lines below (gpt-5.6-terra:high) — the same "per-US codex
+# judgment, no explicit tier" role.
+VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.6-terra}"
+VERIFIER_CODEX_REASONING="${VERIFIER_CODEX_REASONING:-high}"   # low|medium|high — paired with gpt-5.6-terra above = gpt-5.6-terra:high (mid rung, below final)
 # D-1: FINAL verifier codex sub-vars (auto-detected above from FINAL_VERIFIER_MODEL,
 # default here when not codex). Wired so the FINAL (ALL) verify can run a stronger
 # model than the per-US verifier — the "final 엄격" knob (FINAL_VERIFIER_MODEL
-# defaults to opus). Distinct from the removed per-iteration verifier auto-upgrade.
-FINAL_VERIFIER_CODEX_MODEL="${FINAL_VERIFIER_CODEX_MODEL:-gpt-5.5}"
+# defaults to claude-fable-5-1). Distinct from the removed per-iteration verifier auto-upgrade.
+FINAL_VERIFIER_CODEX_MODEL="${FINAL_VERIFIER_CODEX_MODEL:-gpt-6-astra}"
 FINAL_VERIFIER_CODEX_REASONING="${FINAL_VERIFIER_CODEX_REASONING:-high}"   # low|medium|high
 CODEX_BIN=""  # resolved by check_dependencies when engine=codex
 
@@ -580,7 +665,12 @@ VERIFY_MODE="${VERIFY_MODE:-per-us}"        # per-us|batch
 # Consensus: off|all|final-only (replaces VERIFY_CONSENSUS + FINAL_CONSENSUS + CONSENSUS_SCOPE)
 CONSENSUS_MODE="${CONSENSUS_MODE:-off}"     # off|all|final-only
 CONSENSUS_MODEL="${CONSENSUS_MODEL:-gpt-5.6-terra:high}"       # per-US cross-verifier (lighter)
-FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.6-sol:xhigh}"  # final cross-verifier (stricter)
+FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-6-astra:xhigh}"  # final cross-verifier (stricter)
+# NOTE: env-var validation for these two (_validate_consensus_model_var) is
+# deferred to just after `source "$LIB_DIR/lib_ralph_desk.zsh"` below — that
+# function (and _validate_model_level, which it calls) is defined in the
+# sourced lib, not locally in this file, so calling it here would fail with
+# "command not found" before the source line runs.
 # Legacy compat: map old flags to CONSENSUS_MODE
 if [[ "${VERIFY_CONSENSUS:-0}" = "1" ]]; then
   CONSENSUS_MODE="${CONSENSUS_SCOPE:-all}"
@@ -603,6 +693,14 @@ _validate_int_knob _API_RETRY_INTERVAL_S 30 1  # D-19
 # before the worktree ROOT-switch and Derived Paths that follow).
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$LIB_DIR/lib_ralph_desk.zsh"
+
+# Validate + normalize CONSENSUS_MODEL/FINAL_CONSENSUS_MODEL (env-var path —
+# catches a directly-exported value, e.g. astra:minimal, before it can reach
+# the codex dispatch and 400 mid-campaign). Must run after the source above
+# (_validate_consensus_model_var and _validate_model_level live in the lib).
+# The CLI-flag path is covered by the matching calls after argv parsing below.
+_validate_consensus_model_var CONSENSUS_MODEL "CONSENSUS_MODEL" || exit 1
+_validate_consensus_model_var FINAL_CONSENSUS_MODEL "FINAL_CONSENSUS_MODEL" || exit 1
 
 # request-d ②: optional campaign worktree isolation. When run.mjs --worktree was
 # used it exports RLP_CAMPAIGN_WORKTREE=1. We create/switch to a dedicated git
@@ -794,6 +892,7 @@ _LAST_FAILED_US=""            # last failed US ID (same-US tracking for upgrade 
 _MODEL_UPGRADED=0             # 1 if Worker model was auto-upgraded during campaign
 _ORIGINAL_WORKER_MODEL=""     # WORKER_MODEL saved before first upgrade (for restore on pass)
 _ORIGINAL_WORKER_CODEX_REASONING=""  # WORKER_CODEX_REASONING saved before first upgrade
+_ORIGINAL_WORKER_EFFORT=""    # WORKER_EFFORT saved before first upgrade (claude ladder, Fable 5.1 wave — mirrors _ORIGINAL_WORKER_CODEX_REASONING)
 # --- Feature 1: leader-side mechanical pre-gate ---
 PREGATE_FAILURES=0            # same-US mechanical pre-gate fail counter (SEPARATE from
                              # CONSECUTIVE_FAILURES — a pre-gate fail never touches the CB)
@@ -2246,6 +2345,7 @@ create_session() {
     "verifier": "'"$VERIFIER_ENGINE"'",
     "worker_codex_model": "'"$WORKER_CODEX_MODEL"'",
     "worker_codex_reasoning": "'"$WORKER_CODEX_REASONING"'",
+    "worker_effort": "'"${WORKER_EFFORT:-}"'",
     "verifier_codex_model": "'"$VERIFIER_CODEX_MODEL"'",
     "verifier_codex_reasoning": "'"$VERIFIER_CODEX_REASONING"'"
   },
@@ -5527,7 +5627,7 @@ main() {
     local _status_mu
     _status_mu=$(jq -r '.model_upgraded // 0' "$STATUS_FILE" 2>/dev/null)
     if [[ "$_status_mu" == "1" ]]; then
-      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_owcr _s_sufc
+      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_owcr _s_sufc _s_wef _s_owef
       _s_wm=$(jq -r '.worker_model // empty' "$STATUS_FILE" 2>/dev/null)
       _s_we=$(jq -r '.worker_engine // empty' "$STATUS_FILE" 2>/dev/null)
       _s_wcm=$(jq -r '.worker_codex_model // empty' "$STATUS_FILE" 2>/dev/null)
@@ -5538,6 +5638,13 @@ main() {
       # (D-5b) copies _ORIGINAL_WORKER_CODEX_REASONING back into WORKER_CODEX_REASONING,
       # so if it stays "" from init the next codex dispatch assembles an empty flag.
       _s_owcr=$(jq -r '.original_worker_codex_reasoning // empty' "$STATUS_FILE" 2>/dev/null)
+      # Fable 5.1 wave: claude-side counterpart of _s_wcr/_s_owcr above, same
+      # mirror. Without this a crash-relaunch during a claude opus->fable
+      # upgrade would restore WORKER_MODEL but silently drop WORKER_EFFORT
+      # back to empty (not a hard BLOCK like the codex empty-reasoning case,
+      # but the campaign quietly resumes at the wrong effort level).
+      _s_wef=$(jq -r '.worker_effort // empty' "$STATUS_FILE" 2>/dev/null)
+      _s_owef=$(jq -r '.original_worker_effort // empty' "$STATUS_FILE" 2>/dev/null)
       _s_sufc=$(jq -r '.same_us_fail_count // 0' "$STATUS_FILE" 2>/dev/null)
       if [[ -n "$_s_wm" && -n "$_s_we" ]]; then
         _MODEL_UPGRADED=1
@@ -5546,8 +5653,10 @@ main() {
         [[ -n "$_s_wcr" ]] && WORKER_CODEX_REASONING="$_s_wcr"
         [[ -n "$_s_owm" ]] && _ORIGINAL_WORKER_MODEL="$_s_owm"
         [[ -n "$_s_owcr" ]] && _ORIGINAL_WORKER_CODEX_REASONING="$_s_owcr"
+        [[ -n "$_s_wef" ]] && WORKER_EFFORT="$_s_wef"
+        [[ -n "$_s_owef" ]] && _ORIGINAL_WORKER_EFFORT="$_s_owef"
         [[ "$_s_sufc" == <-> ]] && _SAME_US_FAIL_COUNT="$_s_sufc"
-        log "  Restored auto-upgraded Worker model: $WORKER_MODEL ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}, orig_effort=${_ORIGINAL_WORKER_CODEX_REASONING:-?}, same_us_fails=$_SAME_US_FAIL_COUNT (D-5b restore-priority)"
+        log "  Restored auto-upgraded Worker model: $WORKER_MODEL ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}, orig_effort=${_ORIGINAL_WORKER_CODEX_REASONING:-?}, worker_effort=${WORKER_EFFORT:-?}, same_us_fails=$_SAME_US_FAIL_COUNT (D-5b restore-priority)"
         log_debug "[FLOW] restored_model_upgrade=true worker_model=$WORKER_MODEL engine=$WORKER_ENGINE same_us_fail=$_SAME_US_FAIL_COUNT"
       fi
     fi
@@ -6499,6 +6608,12 @@ main() {
                   log "  [WARN] original codex reasoning effort empty on pass-restore — keeping current effort '$WORKER_CODEX_REASONING' (request-j ③ guard)"
                   log_debug "[DECIDE] iter=$ITERATION phase=model_select effort_restore_skipped_empty=1 kept=$WORKER_CODEX_REASONING"
                 fi
+              else
+                # Fable 5.1 wave: claude-side counterpart of the codex restore
+                # above. Unlike codex reasoning, an EMPTY claude effort is a
+                # normal state (buildClaudeCmd omits --effort entirely when
+                # empty), so no "keep current" guard is needed here.
+                WORKER_EFFORT="$_ORIGINAL_WORKER_EFFORT"
               fi
               _MODEL_UPGRADED=0
             fi
@@ -6816,7 +6931,7 @@ while (( _cli_i <= $# )); do
       WORKER_MODEL="${_cli_rest%% *}"
       if [[ "$WORKER_ENGINE" = "codex" ]]; then
         WORKER_CODEX_MODEL="$WORKER_MODEL"
-        WORKER_CODEX_REASONING="${_cli_rest##* }"
+        WORKER_CODEX_REASONING="${${_cli_rest##* }:-high}"  # bare codex alias (no :reasoning) falls back to the module default, matching line ~592
       elif [[ "$_cli_rest" == *" "* ]]; then
         WORKER_EFFORT="${_cli_rest##* }"
       fi
@@ -6829,7 +6944,7 @@ while (( _cli_i <= $# )); do
       VERIFIER_MODEL="${_cli_rest%% *}"
       if [[ "$VERIFIER_ENGINE" = "codex" ]]; then
         VERIFIER_CODEX_MODEL="$VERIFIER_MODEL"
-        VERIFIER_CODEX_REASONING="${_cli_rest##* }"
+        VERIFIER_CODEX_REASONING="${${_cli_rest##* }:-high}"  # bare codex alias (no :reasoning) falls back to the module default, matching line ~601
       elif [[ "$_cli_rest" == *" "* ]]; then
         VERIFIER_EFFORT="${_cli_rest##* }"
       fi
@@ -6858,7 +6973,7 @@ while (( _cli_i <= $# )); do
       FINAL_VERIFIER_MODEL="${_cli_rest%% *}"
       if [[ "$FINAL_VERIFIER_ENGINE" = "codex" ]]; then
         FINAL_VERIFIER_CODEX_MODEL="$FINAL_VERIFIER_MODEL"
-        FINAL_VERIFIER_CODEX_REASONING="${_cli_rest##* }"
+        FINAL_VERIFIER_CODEX_REASONING="${${_cli_rest##* }:-high}"  # bare codex alias (no :reasoning) falls back to the module default, matching line ~607
       elif [[ "$_cli_rest" == *" "* ]]; then
         FINAL_VERIFIER_EFFORT="${_cli_rest##* }"
       fi
@@ -6870,10 +6985,12 @@ while (( _cli_i <= $# )); do
     --consensus-model)
       (( _cli_i++ ))
       CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-terra:high}"
+      _validate_consensus_model_var CONSENSUS_MODEL "--consensus-model" || exit 1
       ;;
     --final-consensus-model)
       (( _cli_i++ ))
-      FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-sol:xhigh}"
+      FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-6-astra:xhigh}"
+      _validate_consensus_model_var FINAL_CONSENSUS_MODEL "--final-consensus-model" || exit 1
       ;;
     --final-consensus)
       # Legacy: map to new --consensus final-only

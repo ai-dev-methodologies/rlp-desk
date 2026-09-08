@@ -62,8 +62,12 @@ done
 ok "real lib ladder functions sourced from lib_ralph_desk.zsh"
 
 # ---- get_next_model: the documented ladders ----
-[[ "$(get_next_model haiku)" == sonnet && "$(get_next_model sonnet)" == opus && -z "$(get_next_model opus)" ]] \
-  && ok "claude ladder: haiku→sonnet→opus→ceiling" || no "claude ladder wrong"
+# Fable 5.1 wave: opus is no longer the claude ceiling — it escalates into
+# claude-fable-5-1:max, whose own bare key is the new real claude ceiling.
+[[ "$(get_next_model haiku)" == sonnet && "$(get_next_model sonnet)" == opus \
+   && "$(get_next_model opus)" == claude-fable-5-1:max \
+   && -z "$(get_next_model claude-fable-5-1)" ]] \
+  && ok "claude ladder: haiku→sonnet→opus→claude-fable-5-1:max→ceiling" || no "claude ladder wrong"
 [[ "$(get_next_model gpt-5.5:low)" == gpt-5.5:medium && "$(get_next_model gpt-5.5:medium)" == gpt-5.5:high && "$(get_next_model gpt-5.5:high)" == gpt-5.5:xhigh && -z "$(get_next_model gpt-5.5:xhigh)" ]] \
   && ok "codex gpt-5.5 ladder: low→medium→high→xhigh→ceiling" || no "codex gpt-5.5 ladder wrong"
 [[ "$(get_next_model gpt-5.3-codex-spark:high)" == gpt-5.3-codex-spark:xhigh && -z "$(get_next_model gpt-5.3-codex-spark:xhigh)" ]] \
@@ -75,12 +79,16 @@ ok "real lib ladder functions sourced from lib_ralph_desk.zsh"
    && "$(get_next_model gpt-5.6-luna:max)" == gpt-5.6-terra:max \
    && "$(get_next_model gpt-5.6-terra:max)" == gpt-5.6-sol:xhigh ]] \
   && ok "luna-first chain: luna:high→luna:max→terra:max→sol:xhigh" || no "luna-first chain wrong"
-[[ "$(get_next_model gpt-5.6-terra:xhigh)" == gpt-5.6-sol:high && -z "$(get_next_model gpt-5.6-sol:xhigh)" ]] \
-  && ok "terra:xhigh→sol:high jump and sol:xhigh ceiling unchanged" || no "unchanged entries regressed"
+# Fable 5.1 / Codex 6 Astra wave: sol:xhigh is no longer the ceiling — it
+# escalates into astra:high, whose own :xhigh is the new real ceiling.
+[[ "$(get_next_model gpt-5.6-terra:xhigh)" == gpt-5.6-sol:high \
+   && "$(get_next_model gpt-5.6-sol:xhigh)" == gpt-6-astra:high \
+   && -z "$(get_next_model gpt-6-astra:xhigh)" ]] \
+  && ok "terra:xhigh→sol:high jump; sol:xhigh→astra:high; astra:xhigh ceiling" || no "sol/astra chain regressed"
 
 # ---- check_model_upgrade: claude worker climbs on same-US double fail ----
-WORKER_ENGINE=claude; WORKER_MODEL=haiku; WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""
-LOCK_WORKER_MODEL=0; _MODEL_UPGRADED=0; _ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WORKER_CODEX_REASONING=""
+WORKER_ENGINE=claude; WORKER_MODEL=haiku; WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""; WORKER_EFFORT=""
+LOCK_WORKER_MODEL=0; _MODEL_UPGRADED=0; _ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WORKER_CODEX_REASONING=""; _ORIGINAL_WORKER_EFFORT=""
 _SAME_US_FAIL_COUNT=0; _LAST_FAILED_US=""
 check_model_upgrade US-001   # fail#1: count=1, no upgrade
 [[ "$WORKER_MODEL" == haiku && $_MODEL_UPGRADED -eq 0 ]] && ok "claude: 1st same-US fail → NO upgrade (haiku)" || no "claude 1st fail upgraded early (model=$WORKER_MODEL)"
@@ -90,8 +98,12 @@ check_model_upgrade US-001   # count=1 again (reset), no upgrade
 [[ "$WORKER_MODEL" == sonnet ]] && ok "claude: counter reset after upgrade (3rd fail → still sonnet)" || no "claude 3rd fail (model=$WORKER_MODEL)"
 check_model_upgrade US-001   # count=2 → upgrade sonnet→opus
 [[ "$WORKER_MODEL" == opus ]] && ok "claude: 4th same-US fail → upgrade sonnet→opus" || no "claude 4th fail (model=$WORKER_MODEL)"
-check_model_upgrade US-001; check_model_upgrade US-001   # count→2 at opus → ceiling, no upgrade
-[[ "$WORKER_MODEL" == opus ]] && ok "claude: at opus ceiling → NO further upgrade (CB will BLOCK)" || no "claude ceiling broke (model=$WORKER_MODEL)"
+# Fable 5.1 wave: opus is no longer the ceiling — 2 more same-US fails escalate
+# to claude-fable-5-1 (bare model, effort split into WORKER_EFFORT=max).
+check_model_upgrade US-001; check_model_upgrade US-001   # count→2 at opus → upgrade to fable
+[[ "$WORKER_MODEL" == claude-fable-5-1 && "$WORKER_EFFORT" == max ]] && ok "claude: at opus, 2 more fails → upgrade to claude-fable-5-1:max" || no "claude opus->fable upgrade broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
+check_model_upgrade US-001; check_model_upgrade US-001   # count→2 at fable → real ceiling, no upgrade
+[[ "$WORKER_MODEL" == claude-fable-5-1 && "$WORKER_EFFORT" == max ]] && ok "claude: at claude-fable-5-1 ceiling → NO further upgrade (CB will BLOCK)" || no "claude ceiling broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
 
 # ---- different US resets the same-US counter (no premature upgrade) ----
 WORKER_MODEL=haiku; _MODEL_UPGRADED=0; _ORIGINAL_WORKER_MODEL=""; _SAME_US_FAIL_COUNT=0; _LAST_FAILED_US=""
@@ -127,9 +139,14 @@ record_us_failure unknown; record_us_failure ""
 #      must be a field update_status WRITES (else a rename silently makes the
 #      crash-relaunch restore dead — model-upgrade state lost, CB reset to 0). ----
 RUN="${0:A:h:h:h}/src/scripts/run_ralph_desk.zsh"
-# The 9 fields the restore block (run_ralph_desk.zsh, D-5/D-5b) reads from status.json:
+# The 11 fields the restore block (run_ralph_desk.zsh, D-5/D-5b) reads from
+# status.json. worker_effort/original_worker_effort added in the Fable 5.1
+# wave — same class of gap as worker_codex_reasoning/original_worker_codex_reasoning
+# (request-j ③), now live on the claude side too since the ladder reaches
+# claude-fable-5-1:max.
 _restore_reads=(consecutive_blocks last_block_reason model_upgraded same_us_fail_count
-                original_worker_model worker_model worker_engine worker_codex_model worker_codex_reasoning)
+                original_worker_model worker_model worker_engine worker_codex_model worker_codex_reasoning
+                worker_effort original_worker_effort)
 _missing_write=""
 for _f in $_restore_reads; do
   # restore side actually reads it
@@ -137,7 +154,7 @@ for _f in $_restore_reads; do
   # write side (update_status in lib) must persist it
   grep -qE "\"$_f\":" "$LIB" || { no "D-5b contract: update_status does NOT write '$_f' → restore reads it as empty → restore SILENTLY DEAD"; _missing_write=1; }
 done
-[[ -z "$_missing_write" ]] && ok "D-5/D-5b restore contract: all 9 restore-read fields are persisted by update_status (no silent-dead restore)"
+[[ -z "$_missing_write" ]] && ok "D-5/D-5b restore contract: all 11 restore-read fields are persisted by update_status (no silent-dead restore)"
 # restore predicate logic mirror: model_upgraded==1 AND worker_model+worker_engine present → restore fires
 restore_fires(){ local mu="$1" wm="$2" we="$3"; [[ "$mu" == "1" && -n "$wm" && -n "$we" ]] && print FIRE || print SKIP }
 [[ "$(restore_fires 1 sonnet claude)" == FIRE && "$(restore_fires 0 sonnet claude)" == SKIP && "$(restore_fires 1 '' claude)" == SKIP && "$(restore_fires 1 sonnet '')" == SKIP ]] \

@@ -37,9 +37,10 @@
 #
 # This test extracts the REAL current implementation (never a mirror) via
 # the same brace-depth-aware extractor used elsewhere in this suite, and
-# the REAL pre-fix implementation via `git show HEAD:...` (HEAD still has
-# the colon-only/-v-dir/close-reopen/tmp-file form) as a live oracle proving
-# the mutations are real regressions, not vacuous.
+# the REAL pre-fix implementation via `git show $ORACLE_COMMIT:...` (see the
+# constant below — NOT HEAD; still has the colon-only/-v-dir/close-reopen/
+# tmp-file form) as a live oracle proving the mutations are real
+# regressions, not vacuous.
 set -uo pipefail
 
 SCRIPT_DIR="${0:A:h}"
@@ -51,6 +52,14 @@ INIT="$ROOT_DIR/src/scripts/init_ralph_desk.zsh"
 [[ -f "$RUN" ]] || { print -u2 "FAIL: run script not found: $RUN"; exit 1; }
 [[ -f "$INIT" ]] || { print -u2 "FAIL: init script not found: $INIT"; exit 1; }
 command -v git >/dev/null 2>&1 || { print -u2 "FAIL: git not installed"; exit 1; }
+# Oracle commit: a FIXED historical commit that predates this fix (still has
+# the pre-fix colon-only/-v-dir/close-reopen/tmp-file form), NOT "HEAD" —
+# HEAD moves, and once this reaudit-wave-1 branch's own fixes were
+# committed, HEAD stopped being a valid unfixed baseline. 6d94518 = "chore:
+# bump version to 0.25.0 + changelog", the last commit before ANY fix in
+# this wave landed (the commit this branch was cut from). Do not repoint
+# this at HEAD.
+ORACLE_COMMIT="6d94518"
 
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); print "  PASS $1"; }
@@ -155,15 +164,15 @@ _write_current_harness() {
 _write_current_harness "$CURRENT_PRD_FN" "$TMP/current_prd_fn.zsh"
 _write_current_harness "$CURRENT_TS_FN"  "$TMP/current_ts_fn.zsh"
 
-git -C "$ROOT_DIR" show HEAD:src/scripts/lib_ralph_desk.zsh > "$TMP/head_lib.zsh" 2>/dev/null \
-  || { print -u2 "FAIL: could not read HEAD:src/scripts/lib_ralph_desk.zsh"; exit 1; }
+git -C "$ROOT_DIR" show "$ORACLE_COMMIT":src/scripts/lib_ralph_desk.zsh > "$TMP/head_lib.zsh" 2>/dev/null \
+  || { print -u2 "FAIL: could not read $ORACLE_COMMIT:src/scripts/lib_ralph_desk.zsh"; exit 1; }
 ORACLE_PRD_FN=$(_extract_fn "split_prd_by_us" "$TMP/head_lib.zsh")
 ORACLE_TS_FN=$(_extract_fn "split_test_spec_by_us" "$TMP/head_lib.zsh")
-[[ -n "$ORACLE_PRD_FN" && -n "$ORACLE_TS_FN" ]] || { print -u2 "FAIL: could not extract oracle functions from HEAD"; exit 1; }
+[[ -n "$ORACLE_PRD_FN" && -n "$ORACLE_TS_FN" ]] || { print -u2 "FAIL: could not extract oracle functions from $ORACLE_COMMIT"; exit 1; }
 print -r -- "$ORACLE_PRD_FN" | grep -q 'ENVIRON\["PLANS_DIR"\]' \
-  && { print -u2 "FAIL: HEAD's split_prd_by_us already uses ENVIRON — oracle no longer reproduces the pre-fix bug"; exit 1; }
+  && { print -u2 "FAIL: \$ORACLE_COMMIT's split_prd_by_us already uses ENVIRON — oracle no longer reproduces the pre-fix bug; re-pin ORACLE_COMMIT"; exit 1; }
 print -r -- "$ORACLE_PRD_FN" | grep -q 'if (out != "") close(out)' \
-  || { print -u2 "FAIL: HEAD's split_prd_by_us no longer uses close()-then-reopen — oracle no longer reproduces the truncation bug"; exit 1; }
+  || { print -u2 "FAIL: \$ORACLE_COMMIT's split_prd_by_us no longer uses close()-then-reopen — oracle no longer reproduces the truncation bug; re-pin ORACLE_COMMIT"; exit 1; }
 
 print -r -- "$ORACLE_PRD_FN" > "$TMP/oracle_prd_fn.zsh"
 print -r -- "$ORACLE_TS_FN"  > "$TMP/oracle_ts_fn.zsh"

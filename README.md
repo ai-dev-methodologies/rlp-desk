@@ -221,9 +221,9 @@ RLP Desk enforces a comprehensive verification policy defined in `governance.md`
 - Per-US: lightweight verification after each user story (catches issues early)
 - Final: top-tier consensus gate before COMPLETE (quality guarantee)
 - Progressive upgrade: auto-upgrade models on consecutive failure (2-attempt windows)
-- Verifier minimum: claude sonnet (haiku cannot verify). Recommended per-US verifier is complexity-tiered (`claude-sonnet-5:high` up to `claude-opus-5:max` by risk) and final verifier `claude-fable-5:max` — version-pinned ids so the tier does not drift when aliases remap
+- Verifier minimum: claude sonnet (haiku cannot verify). Recommended per-US verifier is complexity-tiered (`claude-sonnet-5:high` up to `claude-opus-5:max` by risk) and final verifier `claude-fable-5-1:max` — version-pinned ids so the tier does not drift when aliases remap
 
-Tables below show the **recommended** config that `brainstorm` proposes per risk level (you can override any flag). Worker cells are the campaign-starting model; the Worker auto-upgrades on repeated failure per `src/model-upgrade-table.md`. Verifier cells are version-pinned ids so the tier does not drift when aliases remap. Unspecified flags fall back to their plain defaults (`--verifier-model sonnet`, `--final-verifier-model opus`).
+Tables below show the **recommended** config that `brainstorm` proposes per risk level (you can override any flag). Worker cells are the campaign-starting model; the Worker auto-upgrades on repeated failure per `src/model-upgrade-table.md`. Verifier cells are version-pinned ids so the tier does not drift when aliases remap. Unspecified flags fall back to their plain defaults (`--verifier-model sonnet`, `--final-verifier-model claude-fable-5-1`).
 
 #### 1. Claude-only (codex not installed)
 
@@ -231,12 +231,12 @@ Same-engine Worker and Verifier share blind spots — install codex for cross-en
 
 | Risk | Worker | Per-US Verifier | Final Verifier | Consensus |
 |------|--------|-----------------|----------------|-----------|
-| LOW | haiku | claude-sonnet-5:high | claude-fable-5:max | off |
-| MEDIUM | sonnet | claude-opus-5:low | claude-fable-5:max | off |
-| HIGH | opus | claude-opus-5:high | claude-fable-5:max | off |
-| CRITICAL | opus | claude-opus-5:max | claude-fable-5:max + human | off |
+| LOW | haiku | claude-sonnet-5:high | claude-fable-5-1:max | off |
+| MEDIUM | sonnet | claude-opus-5:low | claude-fable-5-1:max | off |
+| HIGH | opus | claude-opus-5:high | claude-fable-5-1:max | off |
+| CRITICAL | opus | claude-opus-5:max | claude-fable-5-1:max + human | off |
 
-Worker auto-upgrade ladder: haiku → sonnet → opus (ceiling). Final: **claude-fable-5:max solo** ⚠ same-engine warning displayed.
+Worker auto-upgrade ladder: haiku → sonnet → opus → claude-fable-5-1:max (ceiling). Final: **claude-fable-5-1:max solo** ⚠ same-engine warning displayed.
 
 #### 2. Cross-engine: GPT-5.6 (codex installed, recommended, luna-first)
 
@@ -244,23 +244,23 @@ Codex worker + claude verifier — different engines catch each other's blind sp
 
 | Risk | Worker (cost lane) | Per-US Verifier (claude) | Final Verifier (claude) | Consensus (per-US leg) |
 |------|----------------|--------------------------|-------------------------|-----------|
-| LOW | gpt-5.6-luna:high | claude-sonnet-5:high | claude-fable-5:max | final-only (gpt-5.6-luna:max) |
-| MEDIUM | gpt-5.6-luna:xhigh | claude-opus-5:low | claude-fable-5:max | final-only (gpt-5.6-terra:high) |
-| HIGH | gpt-5.6-luna:max | claude-opus-5:high | claude-fable-5:max | all (gpt-5.6-sol:medium) |
-| CRITICAL | gpt-5.6-sol:high | claude-opus-5:max | claude-fable-5:max + human | all (gpt-5.6-sol:high) |
+| LOW | gpt-5.6-luna:high | claude-sonnet-5:high | claude-fable-5-1:max | final-only (gpt-5.6-luna:max) |
+| MEDIUM | gpt-5.6-luna:xhigh | claude-opus-5:low | claude-fable-5-1:max | final-only (gpt-5.6-terra:high) |
+| HIGH | gpt-5.6-luna:max | claude-opus-5:high | claude-fable-5-1:max | all (gpt-5.6-sol:medium) |
+| CRITICAL | gpt-5.6-sol:high | claude-opus-5:max | claude-fable-5-1:max + human | all (gpt-5.6-sol:high) |
 
-HIGH-complexity campaigns also get a **speed lane** (`gpt-5.6-sol:medium` worker, skipping the terra quota hop) for time-sensitive work; `brainstorm` asks which lane to use whenever HIGH-complexity US are present (no question when all US are LOW/MEDIUM, none for CRITICAL — those are lane-independent). Final consensus (all complexities): **gpt-5.6-sol:xhigh**. Both engines must PASS → COMPLETE. Worker auto-upgrade — cost lane: `luna:high → luna:max → terra:max → sol:xhigh` (ceiling); speed lane HIGH: `sol:medium → sol:high → sol:xhigh`.
+HIGH-complexity campaigns also get a **speed lane** (`gpt-5.6-sol:medium` worker, skipping the terra quota hop) for time-sensitive work; `brainstorm` asks which lane to use whenever HIGH-complexity US are present (no question when all US are LOW/MEDIUM, none for CRITICAL — those are lane-independent). Final consensus (all complexities): **gpt-6-astra:xhigh**. Both engines must PASS → COMPLETE. Worker auto-upgrade — cost lane: `luna:high → luna:max → terra:max → sol:xhigh → astra:high → astra:xhigh` (ceiling); speed lane HIGH: `sol:medium → sol:high → sol:xhigh → astra:high → astra:xhigh`.
 
 > **Alternatives (still supported, not headline presets):** previous-generation codex models `gpt-5.5` and `gpt-5.4` / `gpt-5.4-mini` (low..xhigh ladders) if the account lacks GPT-5.6 access; and `spark` (`gpt-5.3-codex-spark`) — ultra-fast, but only for small tasks that fit its 100k context window (single-file, AC ≤ 4). See `src/model-upgrade-table.md` for the full catalog.
 
 #### Final Verify
 
-Recommended values shown; if the flags are left unset the final verifier defaults to `opus` and the final codex consensus leg to `gpt-5.6-sol:xhigh`.
+Recommended values shown; if the flags are left unset the final verifier defaults to `claude-fable-5-1` and the final codex consensus leg to `gpt-6-astra:xhigh`.
 
 | Environment | Engine 1 (claude) | Engine 2 (codex) | Rule |
 |-------------|-------------------|------------------|------|
-| Claude-only | claude-fable-5:max | — | Solo ⚠ |
-| Cross-engine | claude-fable-5:max | gpt-5.6-sol:xhigh | Both must PASS → COMPLETE |
+| Claude-only | claude-fable-5-1:max | — | Solo ⚠ |
+| Cross-engine | claude-fable-5-1:max | gpt-6-astra:xhigh | Both must PASS → COMPLETE |
 
 #### Progressive Upgrade (Worker Only)
 
@@ -298,13 +298,13 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--mode tmux\|native\|agent` | tmux | tmux=zsh Leader (production default); native=slash-command-only; agent=hard-errors (ADR-001) |
-| `--worker-model MODEL` | haiku | Worker model. Plain name or claude id incl. `:effort` = claude; any other `model:reasoning` = codex. A colon alone does NOT mean codex. E.g. `opus:max`, `claude-fable-5:max`, `spark:high` |
+| `--worker-model MODEL` | haiku | Worker model. Plain name or claude id incl. `:effort` = claude; any other `model:reasoning` = codex. A colon alone does NOT mean codex. E.g. `opus:max`, `claude-fable-5-1:max`, `spark:high` |
 | `--lock-worker-model` | off | Disable auto model upgrade on failure |
 | `--verifier-model MODEL` | sonnet | per-US verification model (lighter; recommended per complexity: `claude-sonnet-5:high`/`claude-opus-5:low`/`claude-opus-5:high`/`claude-opus-5:max`) |
-| `--final-verifier-model MODEL` | opus | final ALL verification model (stricter; recommended `claude-fable-5:max`) |
+| `--final-verifier-model MODEL` | claude-fable-5-1 | final ALL verification model (stricter; recommended `claude-fable-5-1:max`) |
 | `--consensus off\|all\|final-only` | off | Cross-engine consensus scope |
 | `--consensus-model MODEL` | gpt-5.6-terra:high | per-US cross-verifier — codex leg only (lighter) |
-| `--final-consensus-model MODEL` | gpt-5.6-sol:xhigh | final cross-verifier — codex leg only (stricter) |
+| `--final-consensus-model MODEL` | gpt-6-astra:xhigh | final cross-verifier — codex leg only (stricter) |
 | `--verify-mode per-us\|batch` | per-us | per-us: verify each US → final ALL |
 | `--cb-threshold N` | 6 | Consecutive failures → BLOCKED |
 | `--max-iter N` | 100 | Max iterations → TIMEOUT |
@@ -321,7 +321,7 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 RLP Desk runs two distinct verification passes:
 
 - **Per-US** (`--verifier-model`, default: sonnet) — runs after each user story completes. Lightweight and fast, catches issues early before later stories build on broken foundations.
-- **Final ALL** (`--final-verifier-model`, default: opus) — runs once after all user stories pass individually. Stricter and more thorough, catches cross-US integration issues and anything per-US missed.
+- **Final ALL** (`--final-verifier-model`, default: claude-fable-5-1) — runs once after all user stories pass individually. Stricter and more thorough, catches cross-US integration issues and anything per-US missed.
 
 When `--consensus` is enabled, a second cross-engine verifier runs alongside each pass: `--consensus-model` for per-US and `--final-consensus-model` for the final ALL gate. Both engines must pass.
 
@@ -332,7 +332,7 @@ After `brainstorm`, `init` detects your environment and presents run command pre
 - **Codex detected (recommended)** → cross-engine + final consensus, luna-first cost lane (`--worker-model gpt-5.6-luna:high --consensus final-only`)
 - **Codex detected (small tasks: single-file, AC <= 4)** → spark preset (`--worker-model spark:high --consensus final-only`; spark has a 100k context limit)
 - **Codex detected (critical)** → full consensus on every verify (`--worker-model gpt-5.6-sol:high --consensus all`)
-- **Claude-only** → defaults to `--debug` with haiku worker and opus final verifier
+- **Claude-only** → defaults to `--debug` with haiku worker and claude-fable-5-1 final verifier
 - **Basic** → minimal flags for quick iteration
 
 The brainstorm phase evaluates complexity (US count, file scope, logic, dependencies, code impact) and recommends a starting model. You can override any recommendation.
@@ -487,7 +487,7 @@ Each user story is verified independently, then a final full verification runs:
 Worker: US-001 → Verifier(per-US): US-001 only → pass
 Worker: US-002 → Verifier(per-US): US-002 only → pass
 ...
-Final Verify: claude-fable-5:max + gpt-5.6-sol:xhigh → both pass → COMPLETE
+Final Verify: claude-fable-5-1:max + gpt-6-astra:xhigh → both pass → COMPLETE
 ```
 
 Per-US catches issues early before later stories build on broken foundations.

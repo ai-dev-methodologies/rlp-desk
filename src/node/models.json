@@ -2,7 +2,8 @@
   "upgrades": {
     "haiku": "sonnet",
     "sonnet": "opus",
-    "opus": "",
+    "opus": "claude-fable-5-1:max",
+    "claude-fable-5-1": "",
     "gpt-5.3-codex-spark:low": "gpt-5.3-codex-spark:medium",
     "gpt-5.3-codex-spark:medium": "gpt-5.3-codex-spark:high",
     "gpt-5.3-codex-spark:high": "gpt-5.3-codex-spark:xhigh",
@@ -22,7 +23,7 @@
     "gpt-5.6-sol:low": "gpt-5.6-sol:medium",
     "gpt-5.6-sol:medium": "gpt-5.6-sol:high",
     "gpt-5.6-sol:high": "gpt-5.6-sol:xhigh",
-    "gpt-5.6-sol:xhigh": "",
+    "gpt-5.6-sol:xhigh": "gpt-6-astra:high",
     "gpt-5.6-sol:max": "",
     "gpt-5.6-sol:ultra": "",
     "gpt-5.6-terra:low": "gpt-5.6-terra:medium",
@@ -35,7 +36,13 @@
     "gpt-5.6-luna:medium": "gpt-5.6-luna:high",
     "gpt-5.6-luna:high": "gpt-5.6-luna:max",
     "gpt-5.6-luna:xhigh": "gpt-5.6-luna:max",
-    "gpt-5.6-luna:max": "gpt-5.6-terra:max"
+    "gpt-5.6-luna:max": "gpt-5.6-terra:max",
+    "gpt-6-astra:low": "gpt-6-astra:medium",
+    "gpt-6-astra:medium": "gpt-6-astra:high",
+    "gpt-6-astra:high": "gpt-6-astra:xhigh",
+    "gpt-6-astra:xhigh": "",
+    "gpt-6-astra:max": "",
+    "gpt-6-astra:ultra": ""
   },
   "cost_factors": {
     "gpt-5.6-sol": 1.0,

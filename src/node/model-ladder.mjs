@@ -5,7 +5,7 @@
 // 0444 postinstall-managed tree at
 // ${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json}.
 //
-// Precedence: override -> shipped -> emergency inline (identical 3-entry
+// Precedence: override -> shipped -> emergency inline (identical 4-entry
 // ladder to the zsh side, cross-checked by tests/node/models-ladder.test.mjs
 // and the zsh equivalence case in tests/test_us011_worker_model_upgrade.sh).
 // Malformed/unreadable JSON at any layer falls through to the next layer;
@@ -23,11 +23,12 @@ import { fileURLToPath } from 'node:url';
 export const CEILING_SENTINEL = 'BLOCKED';
 
 // Identical to the zsh emergency ladder (lib_ralph_desk.zsh get_next_model
-// fallback branch): haiku -> sonnet -> opus -> ceiling.
+// fallback branch): haiku -> sonnet -> opus -> claude-fable-5-1:max -> ceiling.
 export const EMERGENCY_LADDER = Object.freeze({
   haiku: 'sonnet',
   sonnet: 'opus',
-  opus: CEILING_SENTINEL,
+  opus: 'claude-fable-5-1:max',
+  'claude-fable-5-1': CEILING_SENTINEL,
 });
 
 // Every upgrades value must be a string (empty string = ceiling). A
@@ -107,7 +108,7 @@ export function loadModelLadder({
     warnOnce(`shipped defaults not found at '${shippedFile}'; falling through`);
   }
 
-  warnOnce('using emergency inline model ladder (haiku, sonnet, opus only)');
+  warnOnce('using emergency inline model ladder (haiku, sonnet, opus, claude-fable-5-1 only)');
   return { ...EMERGENCY_LADDER };
 }
 

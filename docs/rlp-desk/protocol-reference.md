@@ -338,14 +338,17 @@ HIGH lane question: `rlp-desk.md` Step 7 (mapping tables).
 - **Cross-engine defaults (codex installed)**: LOW → `gpt-5.6-luna:high`,
   MEDIUM → `gpt-5.6-luna:xhigh`, HIGH → lane choice (cost lane: `luna:max`,
   escalates via the quota-first `terra:max` hop; speed lane: `sol:medium`,
-  straight to the `sol:xhigh` ceiling), CRITICAL → `gpt-5.6-sol:high` (starts
+  climbing to `sol:xhigh` then one tier further into `astra:high` →
+  `astra:xhigh`, the real ceiling), CRITICAL → `gpt-5.6-sol:high` (starts
   above the ladder, exempt from luna-first).
 - **Claude-only fallback (codex absent)**: `haiku` (LOW) → `sonnet`
-  (MEDIUM/HIGH) → `opus` (CRITICAL); ladder is haiku → sonnet → opus on
-  failure.
+  (MEDIUM/HIGH) → `opus` (CRITICAL); ladder is haiku → sonnet → opus →
+  `claude-fable-5-1:max` on failure, the real ceiling of the claude-only
+  ladder.
 - **Effort before model, luna only**: within `luna` the ladder raises effort
-  to `:max` before jumping models; `terra`/`sol` keep their own `:xhigh`
-  ladder ceiling before any model jump.
+  to `:max` before jumping models; `terra` keeps its own `:xhigh` ladder
+  ceiling before jumping into `sol`, and `sol`'s `:xhigh` now escalates one
+  tier further into `gpt-6-astra:high` — the real ceiling of the whole ladder.
 - **Escalation trigger is `failure_category`, not vibes**: `spec` /
   `implementation` / `integration` failures upgrade the Worker model on
   retry (unless `--lock-worker-model`). `environment` / `flaky` failures —
@@ -353,7 +356,7 @@ HIGH lane question: `rlp-desk.md` Step 7 (mapping tables).
   SAME model; they never count toward escalation.
 - **Judging roles are campaign-fixed**: per-US Verifier and Final Verifier
   tiers scale with complexity at brainstorm time and never progressively
-  upgrade mid-campaign (Final Verifier is always `claude-fable-5:max`).
+  upgrade mid-campaign (Final Verifier is always `claude-fable-5-1:max`).
 - **User override always wins**: `--worker-model` / `--verifier-model` /
   `--lock-worker-model` take precedence over any default.
 
@@ -569,7 +572,7 @@ Unlike Agent() mode where the LLM Leader dynamically selects models, tmux mode u
 |----------|---------|-------------|
 | `WORKER_MODEL` | `haiku` | Model for Worker invocations |
 | `VERIFIER_MODEL` | `sonnet` | Model for per-US Verifier invocations |
-| `FINAL_VERIFIER_MODEL` | `opus` | Model for the final ALL-verify pass |
+| `FINAL_VERIFIER_MODEL` | `claude-fable-5-1` | Model for the final ALL-verify pass |
 
 ### Reliability Environment Overrides (v0.22.18+)
 

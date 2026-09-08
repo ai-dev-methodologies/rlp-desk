@@ -167,6 +167,110 @@ build_claude_cmd() {
   esac
 }
 
+# _validate_model_level() — SINGLE SOURCE OF TRUTH for claude effort / codex
+# reasoning vocabulary validation, shared by BOTH model-parsing entry points:
+# parse_model_flag() (below, the CLI --worker-model/--verifier-model/
+# --final-verifier-model flag path) and _auto_detect_engine()
+# (run_ralph_desk.zsh, the WORKER_MODEL/VERIFIER_MODEL/FINAL_VERIFIER_MODEL
+# env-var path). Factored out in the Fable 5.1 / Codex 6 Astra wave: an
+# SV-gate run found that parse_model_flag had NO reasoning validation at
+# all — every documented `/rlp-desk run` invocation in this repo uses the
+# CLI flag, never a pre-set env var, so a bad reasoning string (including
+# the model-specific gpt-6-astra:minimal rejection) silently passed through
+# on the path real users actually take, and only surfaced later as a
+# confusing raw codex API error. One function, two callers — cannot drift.
+#
+# Usage: _validate_model_level <claude|codex> <model> <level> <context>
+#   engine  - "claude" or "codex" (which vocabulary to check against)
+#   model   - the model name AFTER alias expansion (e.g. "gpt-6-astra", not
+#             "astra") so model-specific rules match on the resolved name
+#   level   - the effort/reasoning string to validate
+#   context - free text describing where this came from, for the error
+#             message (e.g. "--worker-model='astra:minimal'" or
+#             "WORKER_MODEL='astra:minimal'")
+# Output: nothing on success (return 0). On failure: one ERROR line on
+# stderr, return 1 — callers must check the return value.
+_validate_model_level() {
+  local engine="$1" model="$2" level="$3" context="$4"
+  if [[ "$engine" == "claude" ]]; then
+    case "$level" in
+      low|medium|high|max|xhigh) ;;
+      *)
+        print -u2 "[rlp-desk] ERROR: invalid effort '$level' in $context (expected one of: low|medium|high|max|xhigh)."
+        return 1
+        ;;
+    esac
+  else
+    case "$level" in
+      minimal|low|medium|high|xhigh|max|ultra)
+        # Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave): gpt-6-astra's
+        # API rejects 'minimal' with an HTTP 400 that enumerates the supported
+        # set (low/medium/high/xhigh/max) — see src/model-upgrade-table.md
+        # "GPT-6 — Astra". Reject it HERE for THIS model only; 'minimal'
+        # remains valid for every other codex model (gpt-5.x, sol/terra/luna,
+        # spark) — never a blanket narrowing of the shared vocabulary.
+        if [[ "$model" == "gpt-6-astra" && "$level" == "minimal" ]]; then
+          print -u2 "[rlp-desk] ERROR: reasoning 'minimal' is not supported by gpt-6-astra in $context (server enumerates: low|medium|high|xhigh|max)."
+          return 1
+        fi
+        ;;
+      *)
+        print -u2 "[rlp-desk] ERROR: invalid reasoning '$level' in $context (expected one of: minimal|low|medium|high|xhigh|max|ultra)."
+        return 1
+        ;;
+    esac
+  fi
+  return 0
+}
+
+# _validate_consensus_model_var() — validate + normalize CONSENSUS_MODEL /
+# FINAL_CONSENSUS_MODEL (always the codex side of a cross-verifier pair —
+# see run_consensus_verification_parallel / run_single_verifier's consensus
+# branch, which pair these with VERIFIER_MODEL/FINAL_VERIFIER_MODEL on the
+# claude side). Independent-review finding (MED): unlike --worker-model/
+# --verifier-model/--final-verifier-model, these two flags never called
+# ANY validator on either engine (Node: run.mjs never called
+# validateModelFlag for them; zsh: never routed through _auto_detect_engine
+# or parse_model_flag) — so `--final-consensus-model astra:minimal` was
+# accepted at parse time and only 400'd at the final consensus gate, the
+# worst point in a campaign to discover a typo. Also normalizes a known
+# codex alias (sol/terra/luna/astra/spark) to its full slug — the existing
+# runtime fallback logic in run_consensus_verification_parallel/
+# run_single_verifier passes the raw post-colon model straight to
+# `codex -m`, so an unexpanded alias like `--consensus-model astra:high`
+# would otherwise literally invoke `codex -m astra`, which the codex CLI
+# does not recognize.
+#
+# Usage: _validate_consensus_model_var <VAR_NAME> <context>
+#   VAR_NAME - name of the variable to read/normalize in place (CONSENSUS_MODEL
+#              or FINAL_CONSENSUS_MODEL)
+#   context  - free text for the error message (e.g. "--consensus-model")
+# A bare (no-colon) value is passed through untouched — CONSENSUS_MODEL is
+# codex-only, so there is no claude/codex ambiguity to resolve the way
+# parse_model_flag's bare branch has to, and the existing runtime fallback
+# already accepts a bare codex model with no reasoning override.
+# Output: nothing on success (return 0, VAR_NAME normalized in place). On
+# failure: one ERROR line on stderr, return 1 — callers must check the
+# return value.
+_validate_consensus_model_var() {
+  local var_name="$1" context="$2"
+  local value="${(P)var_name}"
+  [[ "$value" == *:* ]] || return 0
+
+  local model="${value%%:*}" level="${value##*:}"
+  case "$model" in
+    spark) model="gpt-5.3-codex-spark" ;;
+    sol)   model="gpt-5.6-sol" ;;
+    terra) model="gpt-5.6-terra" ;;
+    luna)  model="gpt-5.6-luna" ;;
+    astra) model="gpt-6-astra" ;;
+  esac
+
+  _validate_model_level codex "$model" "$level" "${context}='${value}'" || return 1
+  typeset -g "${var_name}=${model}:${level}"
+  return 0
+}
+
 # parse_model_flag() — parse unified --worker-model / --verifier-model value
 # Colon format: claude models (haiku/sonnet/opus) with effort → claude engine + effort
 #               codex models (gpt-*/spark) with reasoning → codex engine + reasoning
@@ -187,28 +291,46 @@ parse_model_flag() {
   if (( colon_count == 1 )); then
     local model="${value%%:*}"
     local level="${value##*:}"
+    local context="--${role}-model='${value}'"
     # Detect engine by model name
     case "$model" in
-      haiku|sonnet|opus|claude|claude-*)
-        # Short aliases (haiku/sonnet/opus), bare `claude`, AND full versioned
-        # claude ids (claude-opus-4-8, claude-fable-5, claude-opus-4-8[1m], ...)
+      haiku|sonnet|opus|fable|claude|claude-*)
+        # Short aliases (haiku/sonnet/opus/fable — `claude --help` documents
+        # `fable` as an alias for the latest model, same as opus/sonnet),
+        # bare `claude`, AND full versioned claude ids (claude-opus-4-8,
+        # claude-fable-5, claude-fable-5-1, claude-opus-4-8[1m], ...)
         # route to the claude engine. The `claude-*` glob also covers the
         # bracket+effort combo like claude-opus-4-8[1m]:high.
+        _validate_model_level claude "$model" "$level" "$context" || return 1
         echo "claude $model $level"
         ;;
       spark)
-        echo "codex gpt-5.3-codex-spark $level"
+        model="gpt-5.3-codex-spark"
+        _validate_model_level codex "$model" "$level" "$context" || return 1
+        echo "codex $model $level"
         ;;
       # GPT-5.6 family aliases (codex 0.144): sol=frontier, terra=balanced,
       # luna=fast/affordable. Same convention as the spark alias above.
       sol)
-        echo "codex gpt-5.6-sol $level"
+        model="gpt-5.6-sol"
+        _validate_model_level codex "$model" "$level" "$context" || return 1
+        echo "codex $model $level"
         ;;
       terra)
-        echo "codex gpt-5.6-terra $level"
+        model="gpt-5.6-terra"
+        _validate_model_level codex "$model" "$level" "$context" || return 1
+        echo "codex $model $level"
         ;;
       luna)
-        echo "codex gpt-5.6-luna $level"
+        model="gpt-5.6-luna"
+        _validate_model_level codex "$model" "$level" "$context" || return 1
+        echo "codex $model $level"
+        ;;
+      # GPT-6 alias (codex 0.153): astra=newest frontier. Same convention.
+      astra)
+        model="gpt-6-astra"
+        _validate_model_level codex "$model" "$level" "$context" || return 1
+        echo "codex $model $level"
         ;;
       *)
         # Catch-all: any colon-bearing name that is not a claude name or a known
@@ -216,11 +338,60 @@ parse_model_flag() {
         # result stays parseable) when it is not even a gpt-* slug — a likely
         # typo being silently routed to codex.
         [[ "$model" != gpt-* ]] && print -u2 "[rlp-desk] note: model '$model' is not a claude id or known codex model — routing to codex engine. Verify this is intended."
+        _validate_model_level codex "$model" "$level" "$context" || return 1
         echo "codex $model $level"
         ;;
     esac
   else
-    echo "claude $value"
+    # Bare (no-colon) name: check known codex aliases BEFORE defaulting to
+    # claude. Previously this branch echoed "claude $value" unconditionally,
+    # so `--worker-model astra` (or sol/terra/luna/spark, written without a
+    # `:reasoning` suffix) was silently misclassified as the claude engine
+    # and handed to `claude --model astra`, which is not a real claude id.
+    # A bare codex alias carries no reasoning value — echoed with an empty
+    # level field, mirroring parseModelFlag's `reasoning: undefined` for the
+    # same case (buildCodexCmd already treats an unset reasoning as "omit -c").
+    case "$value" in
+      spark)
+        echo "codex gpt-5.3-codex-spark "
+        ;;
+      sol)
+        echo "codex gpt-5.6-sol "
+        ;;
+      terra)
+        echo "codex gpt-5.6-terra "
+        ;;
+      luna)
+        echo "codex gpt-5.6-luna "
+        ;;
+      astra)
+        echo "codex gpt-6-astra "
+        ;;
+      gpt-*)
+        # A bare (no-colon) gpt-* id (e.g. "gpt-5.5") is a real codex model
+        # name, not a claude one — fixing only the five known aliases and
+        # leaving an actual model id misclassified made the rule unguessable.
+        # Same trailing-space-for-missing-reasoning shape as the alias
+        # branches above, so the caller's ${...:-high} default still applies.
+        #
+        # DO NOT centralize this check into a shared zsh function with
+        # _auto_detect_engine's matching `gpt-*)` arm below (run_ralph_desk.zsh).
+        # The Node side (command-builder.mjs's isBareCodexModelName) CAN be one
+        # function because it's one file; here it can't: _auto_detect_engine's
+        # real call sites run BEFORE `source lib_ralph_desk.zsh` executes
+        # (run_ralph_desk.zsh:619-621 vs :682), so a lib-defined helper called
+        # from inside it would fail with "command not found" — the exact
+        # ordering bug this wave already hit once for _validate_consensus_model_var.
+        # Duplicate + a parity test (test_bare_gpt_star_classification in
+        # tests/test_us011_worker_model_upgrade.sh) is correct here, matching
+        # how the sol/terra/luna/astra alias table already lives under the
+        # same constraint.
+        echo "codex $value "
+        ;;
+      *)
+        echo "claude $value"
+        ;;
+    esac
   fi
 }
 
@@ -250,9 +421,10 @@ get_model_string() {
 # US-001: single-sourced from src/node/models.json (shipped default ladder),
 # with an optional user override at
 # ${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json} (never touched
-# by postinstall). Precedence: override -> shipped -> a 3-entry emergency
-# inline ladder (identical to the Node emergency ladder in
-# src/node/model-ladder.mjs, cross-checked by an equivalence test).
+# by postinstall). Precedence: override -> shipped -> a 4-entry emergency
+# inline ladder (haiku/sonnet/opus/claude-fable-5-1, identical to the Node
+# emergency ladder in src/node/model-ladder.mjs, cross-checked by an
+# equivalence test).
 # Malformed/unreadable JSON at any layer falls through to the next layer with
 # exactly one logged warning per call (every call site invokes this via
 # command substitution, i.e. a subshell, so a cross-call "already warned"
@@ -292,12 +464,13 @@ get_next_model() {
     if [[ -z "$ladder_file" ]]; then
       if [[ "${_MODEL_LADDER_WARNED:-0}" != 1 ]]; then
         _MODEL_LADDER_WARNED=1
-        log_error "model ladder: shipped defaults not found under '$LIB_DIR'; using emergency inline ladder (haiku, sonnet, opus only)"
+        log_error "model ladder: shipped defaults not found under '$LIB_DIR'; using emergency inline ladder (haiku, sonnet, opus, claude-fable-5-1)"
       fi
       case "$current" in
         haiku)  echo "sonnet" ;;
         sonnet) echo "opus"   ;;
-        *)      echo ""       ;;  # opus / unknown → ceiling
+        opus)   echo "claude-fable-5-1:max" ;;
+        *)      echo ""       ;;  # claude-fable-5-1 / unknown → ceiling
       esac
       return 0
     fi
@@ -528,13 +701,15 @@ check_model_upgrade() {
   if (( _SAME_US_FAIL_COUNT >= 2 )); then
     local current_model_str
     # Engine-aware ladder key (mirrors the WORKER_ENGINE branch below and the
-    # _ceiling_model_str pattern in run_ralph_desk.zsh). run_ralph_desk.zsh:489
-    # unconditionally defaults WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.5}"
-    # regardless of engine, so a claude campaign always has WORKER_CODEX_MODEL
-    # set. The old `${WORKER_CODEX_MODEL:-$WORKER_MODEL}` fallback therefore
-    # ALWAYS preferred WORKER_CODEX_MODEL for claude campaigns too, keying the
-    # ladder lookup off the literal "gpt-5.5" (no bare key in models.json) and
-    # silently returning already_max — the claude ladder never fired.
+    # _ceiling_model_str pattern in run_ralph_desk.zsh). run_ralph_desk.zsh
+    # unconditionally defaults WORKER_CODEX_MODEL (gpt-6-astra as of the
+    # Fable 5.1 / Codex 6 Astra wave, was gpt-5.5) regardless of engine, so a
+    # claude campaign always has WORKER_CODEX_MODEL set. The old
+    # `${WORKER_CODEX_MODEL:-$WORKER_MODEL}` fallback therefore ALWAYS
+    # preferred WORKER_CODEX_MODEL for claude campaigns too, keying the
+    # ladder lookup off that bare codex-default literal (no bare key for it
+    # in models.json) and silently returning already_max — the claude ladder
+    # never fired.
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
       current_model_str=$(get_model_string "$WORKER_ENGINE" "${WORKER_CODEX_MODEL:-$WORKER_MODEL}" "${WORKER_CODEX_REASONING:-}")
     else
@@ -554,6 +729,7 @@ check_model_upgrade() {
     if (( _MODEL_UPGRADED == 0 )); then
       _ORIGINAL_WORKER_MODEL="$WORKER_MODEL"
       _ORIGINAL_WORKER_CODEX_REASONING="$WORKER_CODEX_REASONING"
+      _ORIGINAL_WORKER_EFFORT="$WORKER_EFFORT"
     fi
     _MODEL_UPGRADED=1
 
@@ -562,7 +738,18 @@ check_model_upgrade() {
       WORKER_CODEX_REASONING="${next_model##*:}"
       WORKER_MODEL="$WORKER_CODEX_MODEL"
     else
-      WORKER_MODEL="$next_model"
+      # Fable 5.1 wave: the claude ladder's terminal rung is effort-qualified
+      # ("opus" -> "claude-fable-5-1:max") — split it the same way the codex
+      # branch above splits model:reasoning, so WORKER_MODEL stays a bare id
+      # (what `claude --model` expects) and the effort reaches WORKER_EFFORT
+      # (what `--effort` expects). Earlier claude rungs (haiku/sonnet/opus)
+      # have no colon and fall through the else branch unchanged.
+      if [[ "$next_model" == *:* ]]; then
+        WORKER_MODEL="${next_model%%:*}"
+        WORKER_EFFORT="${next_model##*:}"
+      else
+        WORKER_MODEL="$next_model"
+      fi
     fi
 
     log "  Worker model upgraded: ${_ORIGINAL_WORKER_MODEL} → ${WORKER_MODEL} (same-US consecutive fail threshold)"
@@ -1561,7 +1748,7 @@ update_status() {
       _eff_block_reason="waiver rejections: ${WAIVER_REJECTION_SUMMARY}"
     fi
   fi
-  local _lbr_json _owm_json _owcr_json
+  local _lbr_json _owm_json _owcr_json _owe_json
   _lbr_json=$(printf '%s' "$_eff_block_reason" | jq -Rs . 2>/dev/null); [[ -z "$_lbr_json" ]] && _lbr_json='""'
   _owm_json=$(printf '%s' "${_ORIGINAL_WORKER_MODEL:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owm_json" ]] && _owm_json='""'
   # request-j ③: persist the ORIGINAL worker codex reasoning effort alongside
@@ -1571,6 +1758,14 @@ update_status() {
   # `-c model_reasoning_effort=""` → codex refuses to start ("reasoning_effort must
   # not be empty") → BLOCKED. jq-encoded like the other free-text restore fields.
   _owcr_json=$(printf '%s' "${_ORIGINAL_WORKER_CODEX_REASONING:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owcr_json" ]] && _owcr_json='""'
+  # Fable 5.1 wave: claude-side counterpart of _owcr_json above, same gap and
+  # same fix. Since the claude ladder now reaches claude-fable-5-1:max, an
+  # auto-upgraded claude Worker can carry a non-empty WORKER_EFFORT — without
+  # persisting it here, a leader-relaunch restore rehydrates WORKER_MODEL but
+  # drops WORKER_EFFORT back to empty (silently, not a hard BLOCK like the
+  # codex case, since an empty claude effort is not itself a runtime error —
+  # but the campaign quietly stops running at the upgraded effort level).
+  _owe_json=$(printf '%s' "${_ORIGINAL_WORKER_EFFORT:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owe_json" ]] && _owe_json='""'
 
   # Build consensus fields
   local consensus_json=""
@@ -1594,6 +1789,7 @@ update_status() {
   "verifier_engine": "'"$VERIFIER_ENGINE"'",
   "worker_codex_model": "'"$WORKER_CODEX_MODEL"'",
   "worker_codex_reasoning": "'"$WORKER_CODEX_REASONING"'",
+  "worker_effort": "'"${WORKER_EFFORT:-}"'",
   "verifier_codex_model": "'"$VERIFIER_CODEX_MODEL"'",
   "verifier_codex_reasoning": "'"$VERIFIER_CODEX_REASONING"'",
   "verify_mode": "'"$VERIFY_MODE"'",
@@ -1606,6 +1802,7 @@ update_status() {
   "same_us_fail_count": '"${_SAME_US_FAIL_COUNT:-0}"',
   "original_worker_model": '"$_owm_json"',
   "original_worker_codex_reasoning": '"$_owcr_json"',
+  "original_worker_effort": '"$_owe_json"',
   "verified_us": '"$verified_us_json"''"$consensus_json"',
   "iter_start_head": "'"${ITER_START_HEAD:-}"'",
   "gate_receipt": "'"${GATE_RECEIPT_STATUS:-none}"'",

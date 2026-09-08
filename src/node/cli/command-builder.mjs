@@ -3,15 +3,53 @@ import { ONE_MILLION_BETA, wantsOneMillionContext } from '../constants.mjs';
 
 const CLAUDE_BIN = 'claude';
 const CODEX_BIN = 'codex';
-const CLAUDE_MODELS = new Set(['haiku', 'sonnet', 'opus']);
+const CLAUDE_MODELS = new Set(['haiku', 'sonnet', 'opus', 'fable']);
+
+// Codex model aliases (spark, GPT-5.6 family, GPT-6 astra) — single module-scope
+// table shared by both the colon-bearing (`model:reasoning`) and bare
+// (no-colon) branches of parseModelFlag, so a bare `--worker-model astra` and
+// a colon-qualified `--worker-model astra:high` classify the same alias set.
+// Map (not a plain object) so inherited keys like 'constructor' are never
+// mistaken for aliases. Mirror of the zsh parse sites (parse_model_flag /
+// _auto_detect_engine in the .zsh scripts).
+const CODEX_MODEL_ALIASES = new Map([
+  ['spark', 'gpt-5.3-codex-spark'],
+  ['sol', 'gpt-5.6-sol'],
+  ['terra', 'gpt-5.6-terra'],
+  ['luna', 'gpt-5.6-luna'],
+  ['astra', 'gpt-6-astra'],
+]);
+
+// Single source of truth for "is this BARE (no-colon) name a codex model?":
+// either a known short alias (the Map above), or the real codex id shape
+// itself (gpt-*). Team-lead review follow-up: an earlier fix recognized
+// only the five aliases as bare codex names, so the short alias worked
+// (`--worker-model astra`) but the full canonical slug this whole wave
+// exists to add (`--worker-model gpt-6-astra`, exactly as it appears in
+// models.json and every doc table) still fell through to claude — the
+// least guessable possible state (alias fixed, real id still broken). One
+// function, one call site in parseModelFlag's bare branch below.
+//
+// The zsh equivalents (parse_model_flag in lib_ralph_desk.zsh,
+// _auto_detect_engine in run_ralph_desk.zsh) do NOT call a shared function
+// like this one — they duplicate a matching `gpt-*)` case arm each, on
+// purpose. _auto_detect_engine's real call sites run before its script
+// sources lib_ralph_desk.zsh, so a lib-defined helper called from inside it
+// would fail with "command not found" at startup. This file has no such
+// sourcing-order constraint, so centralizing here is correct; do not use
+// this as a reason to "helpfully" centralize the zsh side too.
+function isBareCodexModelName(value) {
+  return CODEX_MODEL_ALIASES.has(value) || value.startsWith('gpt-');
+}
 
 // Single source of truth for "is this bare model name a claude model?":
-// the short aliases (haiku/sonnet/opus), the bare `claude`, OR any full
-// versioned claude id (claude-opus-4-8, claude-fable-5, claude-opus-4-8[1m],
-// ...). The startsWith('claude-') branch also covers the bracket+effort combo
-// (claude-opus-4-8[1m] is the model part of claude-opus-4-8[1m]:high). Used by
-// both isClaudeEngine (which splits the flag first) and parseModelFlag so the
-// two never drift.
+// the short aliases (haiku/sonnet/opus/fable — `claude --help` documents
+// `fable` as an alias for the latest model, same as opus/sonnet), the bare
+// `claude`, OR any full versioned claude id (claude-opus-4-8, claude-fable-5,
+// claude-fable-5-1, claude-opus-4-8[1m], ...). The startsWith('claude-')
+// branch also covers the bracket+effort combo (claude-opus-4-8[1m] is the
+// model part of claude-opus-4-8[1m]:high). Used by both isClaudeEngine
+// (which splits the flag first) and parseModelFlag so the two never drift.
 function isClaudeModelName(model) {
   if (typeof model !== 'string' || model.length === 0) {
     return false;
@@ -126,6 +164,28 @@ export function parseModelFlag(value, role = 'worker') {
       throw new Error(`--${role}-model model is required`);
     }
 
+    // Bare (no-colon) name: check isBareCodexModelName (known alias OR
+    // gpt-* id shape) BEFORE defaulting to claude. Previously this branch
+    // returned `engine: 'claude'` unconditionally, so `--worker-model astra`
+    // was silently misclassified as claude, and a follow-up fix that only
+    // checked the alias table left the real canonical id
+    // (`--worker-model gpt-6-astra`) STILL misclassified — the least
+    // guessable possible state (alias works, real id does not). Both cases
+    // are now one predicate, one call site. `isClaudeEngine()` already got
+    // the alias case right (it checks `isClaudeModelName` on the pre-colon
+    // head regardless of whether a colon is present); this branch is now
+    // consistent with it for every bare codex name, alias or real id. A
+    // bare codex name carries no reasoning value — `reasoning` is left
+    // undefined, and buildCodexCmd already treats that as "omit -c". Any
+    // OTHER unrecognized bare name still defaults to claude (the documented
+    // fallback, unchanged and still tested below).
+    if (isBareCodexModelName(value)) {
+      return {
+        engine: 'codex',
+        model: CODEX_MODEL_ALIASES.get(value) ?? value,
+      };
+    }
+
     return {
       engine: 'claude',
       model: value,
@@ -145,26 +205,10 @@ export function parseModelFlag(value, role = 'worker') {
     };
   }
 
-  if (model === 'spark') {
+  if (CODEX_MODEL_ALIASES.has(model)) {
     return {
       engine: 'codex',
-      model: 'gpt-5.3-codex-spark',
-      reasoning: level,
-    };
-  }
-
-  // GPT-5.6 family aliases (codex 0.144) — mirror of the zsh parse sites.
-  // Map (not a plain object) so inherited keys like 'constructor' are never
-  // mistaken for aliases.
-  const GPT56_ALIASES = new Map([
-    ['sol', 'gpt-5.6-sol'],
-    ['terra', 'gpt-5.6-terra'],
-    ['luna', 'gpt-5.6-luna'],
-  ]);
-  if (GPT56_ALIASES.has(model)) {
-    return {
-      engine: 'codex',
-      model: GPT56_ALIASES.get(model),
+      model: CODEX_MODEL_ALIASES.get(model),
       reasoning: level,
     };
   }

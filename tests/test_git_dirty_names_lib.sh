@@ -28,8 +28,9 @@
 # _git_dirty_names would have produced at process start), and drives BOTH
 # consumers end to end against:
 #   - the CURRENT (fixed) lib_ralph_desk.zsh  -> must exclude/pass
-#   - the HEAD (pre-fix) lib_ralph_desk.zsh, via `git show`, as a live oracle
-#     -> must reproduce the false-positive (mutation control, non-vacuity)
+#   - the pre-fix lib_ralph_desk.zsh, via `git show $ORACLE_COMMIT:...` (see
+#     the constant below — NOT HEAD), as a live oracle -> must reproduce the
+#     false-positive (mutation control, non-vacuity)
 set -uo pipefail
 
 SCRIPT_DIR="${0:A:h}"
@@ -38,6 +39,14 @@ LIB="$ROOT_DIR/src/scripts/lib_ralph_desk.zsh"
 [[ -f "$LIB" ]] || { print -u2 "FAIL: lib script not found: $LIB"; exit 1; }
 command -v git >/dev/null 2>&1 || { print -u2 "FAIL: git not installed"; exit 1; }
 command -v jq  >/dev/null 2>&1 || { print -u2 "FAIL: jq not installed"; exit 1; }
+# Oracle commit: a FIXED historical commit that predates this fix (still has
+# the pre-fix bare _git_snapshot calls, no _git_dirty_names quoting wrapper),
+# NOT "HEAD" — HEAD moves, and once this reaudit-wave-1 branch's own fixes
+# were committed, HEAD stopped being a valid unfixed baseline. 6d94518 =
+# "chore: bump version to 0.25.0 + changelog", the last commit before ANY fix
+# in this wave landed (the commit this branch was cut from). Do not repoint
+# this at HEAD.
+ORACLE_COMMIT="6d94518"
 
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); print "  PASS $1"; }
@@ -88,12 +97,12 @@ grep -q '_git_dirty_names "\$ROOT"' "$TMP/current.zsh" \
 grep -q '_git_dirty_names "\$root" HEAD' "$TMP/current.zsh" \
   || { print -u2 "FAIL: derive_verification_mode in current lib does not call _git_dirty_names"; exit 1; }
 
-# ORACLE (pre-fix, HEAD) harness
-git -C "$ROOT_DIR" show HEAD:src/scripts/lib_ralph_desk.zsh > "$TMP/head_lib.zsh" 2>/dev/null \
-  || { print -u2 "FAIL: could not read HEAD:src/scripts/lib_ralph_desk.zsh"; exit 1; }
+# ORACLE (pre-fix, pinned to $ORACLE_COMMIT) harness
+git -C "$ROOT_DIR" show "$ORACLE_COMMIT":src/scripts/lib_ralph_desk.zsh > "$TMP/head_lib.zsh" 2>/dev/null \
+  || { print -u2 "FAIL: could not read $ORACLE_COMMIT:src/scripts/lib_ralph_desk.zsh"; exit 1; }
 _build_harness "$TMP/head_lib.zsh" "$TMP/oracle.zsh"
 grep -q '^_git_dirty_names() {' "$TMP/oracle.zsh" \
-  && { print -u2 "FAIL: HEAD's lib_ralph_desk.zsh already has _git_dirty_names — oracle is not a valid pre-fix baseline"; exit 1; }
+  && { print -u2 "FAIL: \$ORACLE_COMMIT's lib_ralph_desk.zsh already has _git_dirty_names — oracle is not a valid pre-fix baseline; re-pin ORACLE_COMMIT to a commit before this fix landed"; exit 1; }
 grep -q 'git -C "\$root" diff --name-only HEAD' "$TMP/oracle.zsh" \
   || { print -u2 "FAIL: HEAD's derive_verification_mode is not the bare-git-diff pre-fix form — oracle does not reproduce the bug"; exit 1; }
 

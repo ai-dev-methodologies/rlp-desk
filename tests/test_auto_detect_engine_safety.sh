@@ -17,9 +17,9 @@
 # error+non-zero-exit on an invalid value instead of a silent empty.
 #
 # This test extracts the REAL current implementation (never a mirror) from the
-# working tree, and the REAL pre-fix implementation via `git show HEAD:...` as
-# a live oracle for "what the bug actually did" (HEAD is the commit that
-# predates this fix). It asserts:
+# working tree, and the REAL pre-fix implementation via `git show
+# $ORACLE_COMMIT:...` (see the constant below — NOT HEAD) as a live oracle
+# for "what the bug actually did". It asserts:
 #   1. Injection payload does not execute + fails loudly (current impl)
 #   2. Injection payload DOES execute against the oracle (proves the oracle
 #      reproduces the vulnerability — mutation control, non-vacuity)
@@ -35,6 +35,17 @@ ROOT_DIR="${SCRIPT_DIR:h}"
 RUN="$ROOT_DIR/src/scripts/run_ralph_desk.zsh"
 [[ -f "$RUN" ]] || { print -u2 "FAIL: run script not found: $RUN"; exit 1; }
 command -v git >/dev/null 2>&1 || { print -u2 "FAIL: git not installed"; exit 1; }
+# Oracle commit: a FIXED historical commit that predates this fix (still has
+# the pre-fix eval() form), NOT "HEAD" — HEAD moves. Pinning to HEAD once
+# already broke this test: once this reaudit-wave-1 branch's own fixes were
+# committed, HEAD started containing the FIX too, so "HEAD still has the bug"
+# stopped being true and every oracle-dependent assertion here would either
+# fail loudly (as designed) or, worse, silently stop discriminating anything.
+# 6d94518 = "chore: bump version to 0.25.0 + changelog", the last commit
+# before ANY fix in this wave landed (the commit this branch was cut from).
+# Do not repoint this at HEAD; if a later wave needs a newer pre-fix floor,
+# pin a new fixed SHA here with the same reasoning, not a moving ref.
+ORACLE_COMMIT="6d94518"
 
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); print "  PASS $1"; }
@@ -64,12 +75,12 @@ CURRENT_BODY=$(_extract_fn "_auto_detect_engine" "$RUN")
 [[ -n "$CURRENT_BODY" ]] || { print -u2 "FAIL: _auto_detect_engine not found in $RUN"; exit 1; }
 print -r -- "$CURRENT_BODY" | grep -q 'eval "' && { print -u2 "FAIL: current _auto_detect_engine still uses eval — fix not present"; exit 1; }
 
-git -C "$ROOT_DIR" show HEAD:src/scripts/run_ralph_desk.zsh > "$TMP/head.zsh" 2>/dev/null \
-  || { print -u2 "FAIL: could not read HEAD:src/scripts/run_ralph_desk.zsh"; exit 1; }
+git -C "$ROOT_DIR" show "$ORACLE_COMMIT":src/scripts/run_ralph_desk.zsh > "$TMP/head.zsh" 2>/dev/null \
+  || { print -u2 "FAIL: could not read $ORACLE_COMMIT:src/scripts/run_ralph_desk.zsh"; exit 1; }
 ORACLE_BODY=$(_extract_fn "_auto_detect_engine" "$TMP/head.zsh")
-[[ -n "$ORACLE_BODY" ]] || { print -u2 "FAIL: _auto_detect_engine not found at HEAD"; exit 1; }
+[[ -n "$ORACLE_BODY" ]] || { print -u2 "FAIL: _auto_detect_engine not found at $ORACLE_COMMIT"; exit 1; }
 print -r -- "$ORACLE_BODY" | grep -q 'eval "' \
-  || { print -u2 "FAIL: HEAD's _auto_detect_engine no longer uses eval — oracle no longer reproduces the pre-fix bug (fix may already be committed at HEAD); this test needs an unfixed baseline to be a valid mutation control"; exit 1; }
+  || { print -u2 "FAIL: \$ORACLE_COMMIT's _auto_detect_engine no longer uses eval — oracle no longer reproduces the pre-fix bug; re-pin ORACLE_COMMIT to a commit before this fix landed"; exit 1; }
 
 print -r -- "$CURRENT_BODY" > "$TMP/current_fn.zsh"
 print -r -- "$ORACLE_BODY"  > "$TMP/oracle_fn.zsh"

@@ -108,7 +108,8 @@ fi
 echo ""
 echo "--- AC2: Ceiling then BLOCKED ---"
 
-# AC2-L1-1: get_next_model("opus") returns empty (claude ceiling)
+# AC2-L1-1: get_next_model("opus") escalates to claude-fable-5-1:max
+# (Fable 5.1 wave — opus is no longer the claude ceiling; claude-fable-5-1 is).
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-1: get_next_model() not found"
@@ -116,11 +117,27 @@ else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
 r=\$(get_next_model 'opus')
+[[ \"\$r\" == 'claude-fable-5-1:max' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
+  if (( $? == 0 )); then
+    pass "AC2-L1-1: get_next_model(opus) returns claude-fable-5-1:max (claude ladder reaches fable)"
+  else
+    fail "AC2-L1-1: get_next_model(opus) should return claude-fable-5-1:max, got: $result"
+  fi
+fi
+
+# AC2-L1-1b: get_next_model("claude-fable-5-1") returns empty (real claude ceiling now)
+fn_gnm=$(extract_fn "get_next_model")
+if [[ -z "$fn_gnm" ]]; then
+  fail "AC2-L1-1b: get_next_model() not found"
+else
+  result=$(run_harness "#!/usr/bin/env zsh -f
+${fn_gnm}
+r=\$(get_next_model 'claude-fable-5-1')
 [[ -z \"\$r\" ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-1: get_next_model(opus) returns empty (claude ceiling)"
+    pass "AC2-L1-1b: get_next_model(claude-fable-5-1) returns empty (real claude ceiling)"
   else
-    fail "AC2-L1-1: get_next_model(opus) should return empty, got: $result"
+    fail "AC2-L1-1b: get_next_model(claude-fable-5-1) should return empty, got: $result"
   fi
 fi
 
@@ -389,7 +406,9 @@ fi
 echo ""
 echo "--- L2: Upgrade path matches documented table ---"
 
-# L2-1: claude-only path: haiku→sonnet→opus→""
+# L2-1: claude-only path: haiku→sonnet→opus→claude-fable-5-1:max→""
+# (Fable 5.1 wave: the claude ladder now reaches fable — opus is a
+# mid-ladder rung, not the ceiling.)
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "L2-1: get_next_model() not found"
@@ -399,10 +418,11 @@ ${fn_gnm}
 a=\$(get_next_model 'haiku')
 b=\$(get_next_model 'sonnet')
 c=\$(get_next_model 'opus')
-if [[ \"\$a\" == 'sonnet' && \"\$b\" == 'opus' && -z \"\$c\" ]]; then exit 0; fi
-echo \"haiku->\$a sonnet->\$b opus->\$c\" >&2; exit 1" 2>&1)
+d=\$(get_next_model 'claude-fable-5-1')
+if [[ \"\$a\" == 'sonnet' && \"\$b\" == 'opus' && \"\$c\" == 'claude-fable-5-1:max' && -z \"\$d\" ]]; then exit 0; fi
+echo \"haiku->\$a sonnet->\$b opus->\$c fable->\$d\" >&2; exit 1" 2>&1)
   if (( $? == 0 )); then
-    pass "L2-1: claude path haiku→sonnet→opus→'' correct"
+    pass "L2-1: claude path haiku→sonnet→opus→claude-fable-5-1:max→'' correct"
   else
     fail "L2-1: claude path incorrect: $result"
   fi

@@ -28,7 +28,7 @@ PARSE_EXIT=0
 # Helper: extract parse_model_flag from run_ralph_desk.zsh or lib_ralph_desk.zsh and invoke it in a zsh subshell
 _run_parse() {
   local value="$1" role="${2:-worker}"
-  local func_body
+  local func_body validate_body
   func_body=$(sed -n '/^parse_model_flag() {$/,/^}$/p' "$RUN" 2>/dev/null)
   if [[ -z "$func_body" ]]; then
     func_body=$(sed -n '/^parse_model_flag() {$/,/^}$/p' "$LIB" 2>/dev/null)
@@ -39,10 +39,16 @@ _run_parse() {
     PARSE_EXIT=1
     return
   fi
+  # SV-gate CRITICAL fix (Fable 5.1 / Codex 6 Astra wave): parse_model_flag
+  # now calls the shared _validate_model_level (factored out so it and
+  # _auto_detect_engine cannot drift) — must be sourced alongside it or every
+  # colon-format call fails with "command not found" and returns 1 silently.
+  validate_body=$(sed -n '/^_validate_model_level() {$/,/^}$/p' "$LIB" 2>/dev/null)
   local tmp_script tmpout tmperr
   tmp_script=$(mktemp /tmp/us003_XXXXXX.zsh)
   tmpout=$(mktemp); tmperr=$(mktemp)
-  printf '%s\n' "$func_body" > "$tmp_script"
+  printf '%s\n' "$validate_body" > "$tmp_script"
+  printf '%s\n' "$func_body" >> "$tmp_script"
   printf "parse_model_flag '%s' '%s'\n" "$value" "$role" >> "$tmp_script"
   zsh "$tmp_script" > "$tmpout" 2> "$tmperr"
   PARSE_EXIT=$?
@@ -131,6 +137,17 @@ if _func_or_fail "AC1-L1-5g: luna:high alias → model=gpt-5.6-luna"; then
     "AC1-L1-5g: luna:high alias → model=gpt-5.6-luna"
 fi
 
+# astra alias (GPT-6, codex 0.153) — same convention as sol/terra/luna above.
+_run_parse "astra:high" "worker"
+if _func_or_fail "AC1-L1-5x: astra:high alias → model=gpt-6-astra"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "codex" \
+    "AC1-L1-5x: astra:high alias → engine=codex"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-6-astra" \
+    "AC1-L1-5y: astra:high alias → model=gpt-6-astra"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "high" \
+    "AC1-L1-5z: astra:high alias → reasoning=high"
+fi
+
 # Full versioned claude ids WITH effort → claude engine (parity with opus:max).
 # Any colon-bearing name that is NOT a claude short alias / claude-* id is codex,
 # so claude-opus-4-8:high / claude-fable-5:max must classify as claude.
@@ -154,6 +171,38 @@ if _func_or_fail "AC1-L1-5k: claude-fable-5:max → engine=claude"; then
     "AC1-L1-5m: claude-fable-5:max → effort=max"
 fi
 
+# claude-fable-5-1: same claude-* glob path as claude-fable-5, but with a
+# SECOND hyphenated numeric segment (5-1, not just 5). Guards that the glob
+# is a plain prefix match and not a pattern that only tolerates one trailing
+# numeric segment.
+_run_parse "claude-fable-5-1:max" "final-verifier"
+if _func_or_fail "AC1-L1-5q: claude-fable-5-1:max → engine=claude"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
+    "AC1-L1-5q: claude-fable-5-1:max → engine=claude"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "claude-fable-5-1" \
+    "AC1-L1-5r: claude-fable-5-1:max → model=claude-fable-5-1"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "max" \
+    "AC1-L1-5s: claude-fable-5-1:max → effort=max"
+fi
+
+# gpt-6-astra: brand-new codex model family, typed verbatim (no short alias
+# like sol/terra/luna). Must classify as codex with reasoning preserved, and
+# must NOT trip the "not a gpt-* slug" typo warning (it does match gpt-*).
+_run_parse "gpt-6-astra:high" "worker"
+if _func_or_fail "AC1-L1-5t: gpt-6-astra:high → engine=codex"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "codex" \
+    "AC1-L1-5t: gpt-6-astra:high → engine=codex"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-6-astra" \
+    "AC1-L1-5u: gpt-6-astra:high → model=gpt-6-astra"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "high" \
+    "AC1-L1-5v: gpt-6-astra:high → reasoning=high"
+  if [[ "$PARSE_STDERR" != *"is not a claude id or known codex model"* ]]; then
+    pass "AC1-L1-5w: gpt-6-astra:high → no spurious typo warning"
+  else
+    fail "AC1-L1-5w: gpt-6-astra:high incorrectly warned as unrecognized (stderr: $PARSE_STDERR)"
+  fi
+fi
+
 # Bracket+colon combo: the 1M context suffix [1m] must survive alongside effort,
 # and the claude-* glob must still classify it as claude (not codex). Guards the
 # zsh case-glob handling of the literal brackets in the input.
@@ -173,22 +222,50 @@ if _func_or_fail "AC1-L1-6: gpt-5.3-codex-spark:high → reasoning=high"; then
     "AC1-L1-6: gpt-5.3-codex-spark:high → reasoning=high"
 fi
 
-# AC1-L1-7 (boundary): colon format with empty reasoning still detected as codex
+# AC1-L1-7 (boundary, REVISED — SV-gate CRITICAL fix): colon format with an
+# empty reasoning ("gpt-5.5:", trailing colon, nothing after) must now be
+# REJECTED. Before the shared _validate_model_level unification,
+# parse_model_flag silently accepted this (no validation at all) while
+# _auto_detect_engine already rejected it (empty level_part falls through
+# its case statement's `*)` arm) — a real pre-existing asymmetry between the
+# CLI-flag path and the env-var path. The fix makes both paths call the same
+# validator, so both now reject an empty reasoning consistently; this test's
+# expectation is updated to match the corrected, unified contract rather
+# than pinning the old permissive (and inconsistent-with-env-path) behavior.
 _run_parse "gpt-5.5:" "worker"
-if _func_or_fail "AC1-L1-7: gpt-5.5: (empty reasoning) → engine=codex"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "codex" \
-    "AC1-L1-7: gpt-5.5: boundary (empty reasoning) → still engine=codex"
+assert_eq "$PARSE_EXIT" "1" \
+  "AC1-L1-7: gpt-5.5: boundary (empty reasoning) → rejected (exit 1), matching _auto_detect_engine's pre-existing stricter behavior"
+
+# AC1-L1-8 (REVISED — team-lead review follow-up): a bare gpt-* id (no
+# colon) IS the codex engine. Before this fix, only the bare CLAUDE aliases
+# (haiku/sonnet/opus/fable) and the five bare codex ALIASES (spark/sol/
+# terra/luna/astra) were classified correctly; an actual bare gpt-* model id
+# like "gpt-5.5" fell through to claude — leaving the rule unguessable
+# (aliases fixed, real ids still broken) and disagreeing with
+# isClaudeEngine('gpt-5.5') on the Node side, which already said "not
+# claude". This test used to pin the OLD (wrong) behavior; updated to match
+# the corrected, unified contract. Colon is still required to carry an
+# explicit reasoning level — it is NOT required to reach the codex engine.
+_run_parse "gpt-5.5" "worker"
+if _func_or_fail "AC1-L1-8: gpt-5.5 (no colon) → codex (bare gpt-* id, not a claude id or alias)"; then
+  engine="$(echo "$PARSE_STDOUT" | awk '{print $1}')"
+  model="$(echo "$PARSE_STDOUT" | awk '{print $2}')"
+  if [[ "$engine" == "codex" && "$model" == "gpt-5.5" ]]; then
+    pass "AC1-L1-8: gpt-5.5 (no colon) → engine=codex, model=gpt-5.5 (bare gpt-* id routes to codex directly)"
+  else
+    fail "AC1-L1-8: gpt-5.5 (no colon) should be engine=codex model=gpt-5.5, got engine=$engine model=$model"
+  fi
 fi
 
-# AC1-L1-8 (negative): identical model name without colon → NOT codex (proves colon is required)
-_run_parse "gpt-5.5" "worker"
-if _func_or_fail "AC1-L1-8: gpt-5.5 (no colon) → NOT codex"; then
-  engine="$(echo "$PARSE_STDOUT" | awk '{print $1}')"
-  if [[ "$engine" != "codex" ]]; then
-    pass "AC1-L1-8: gpt-5.5 (no colon) → engine=$engine, proves colon required for codex"
-  else
-    fail "AC1-L1-8: gpt-5.5 without colon must NOT be codex engine (colon is required)"
-  fi
+# AC1-L1-8b (regression): an unrecognized bare name — neither a claude id,
+# a known codex alias, nor a gpt-* id — still defaults to claude. The fix
+# narrows the codex exception to known aliases + gpt-* ids, it does not
+# flip the documented "model (no colon) = claude engine" default for every
+# other name.
+_run_parse "some-unknown-model" "worker"
+if _func_or_fail "AC1-L1-8b: some-unknown-model (no colon) → still claude"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
+    "AC1-L1-8b: some-unknown-model (no colon) → still claude (unrecognized bare name fallback unchanged)"
 fi
 
 echo ""
@@ -226,6 +303,29 @@ _run_parse "opus" "worker"
 if _func_or_fail "AC2-L1-5: opus → engine=claude"; then
   assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
     "AC2-L1-5: opus → engine=claude"
+fi
+
+# fable: bare short alias `claude --help` documents alongside opus/sonnet —
+# a REAL bug found and fixed in the Fable 5.1 wave: it was previously absent
+# from the claude-alias case pattern, so `--worker-model fable` was
+# misclassified as codex (only the versioned `claude-fable-5-1` id worked,
+# via the claude-* glob).
+_run_parse "fable" "worker"
+if _func_or_fail "AC2-L1-6: fable → engine=claude"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
+    "AC2-L1-6: fable → engine=claude"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "fable" \
+    "AC2-L1-7: fable → model=fable"
+fi
+
+_run_parse "fable:max" "final-verifier"
+if _func_or_fail "AC2-L1-8: fable:max → engine=claude"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
+    "AC2-L1-8: fable:max → engine=claude"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "fable" \
+    "AC2-L1-9: fable:max → model=fable"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "max" \
+    "AC2-L1-10: fable:max → effort=max"
 fi
 
 echo ""

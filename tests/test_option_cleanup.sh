@@ -52,11 +52,11 @@ else
   fail "D2: Verifier (per-US) default should be sonnet"
 fi
 
-# D3: Final Verifier default is opus
-if grep -q 'FINAL_VERIFIER_MODEL="${FINAL_VERIFIER_MODEL:-opus}"' "$RUN"; then
-  pass "D3: Final Verifier default is opus"
+# D3: Final Verifier default is claude-fable-5-1 (was opus; Fable 5.1 / Codex 6 Astra wave)
+if grep -q 'FINAL_VERIFIER_MODEL="${FINAL_VERIFIER_MODEL:-claude-fable-5-1}"' "$RUN"; then
+  pass "D3: Final Verifier default is claude-fable-5-1"
 else
-  fail "D3: FINAL_VERIFIER_MODEL default should be opus"
+  fail "D3: FINAL_VERIFIER_MODEL default should be claude-fable-5-1"
 fi
 
 # D4: CONSENSUS_MODE default is off
@@ -73,11 +73,13 @@ else
   fail "D5: CONSENSUS_MODEL default should be gpt-5.6-terra:high"
 fi
 
-# D6: FINAL_CONSENSUS_MODEL default is gpt-5.6-sol:xhigh (luna-first cost routing, 2026-08-03)
-if grep -q 'FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-5.6-sol:xhigh}"' "$RUN"; then
-  pass "D6: FINAL_CONSENSUS_MODEL default is gpt-5.6-sol:xhigh (final, stricter)"
+# D6: FINAL_CONSENSUS_MODEL default is gpt-6-astra:xhigh (was gpt-5.6-sol:xhigh
+# — Fable 5.1 / Codex 6 Astra wave: terminal judgment-heavy role moves to the
+# most capable model of the generation, same principle as FINAL_VERIFIER_MODEL)
+if grep -q 'FINAL_CONSENSUS_MODEL="${FINAL_CONSENSUS_MODEL:-gpt-6-astra:xhigh}"' "$RUN"; then
+  pass "D6: FINAL_CONSENSUS_MODEL default is gpt-6-astra:xhigh (final, stricter)"
 else
-  fail "D6: FINAL_CONSENSUS_MODEL default should be gpt-5.6-sol:xhigh"
+  fail "D6: FINAL_CONSENSUS_MODEL default should be gpt-6-astra:xhigh"
 fi
 
 # D5b/D6b: the CLI empty-value fallbacks match the env defaults (no drift)
@@ -86,10 +88,38 @@ if grep -qF 'CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-terra:high}"' "$RUN"; then
 else
   fail "D5b: --consensus-model CLI fallback drifted from gpt-5.6-terra:high"
 fi
-if grep -qF 'FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-5.6-sol:xhigh}"' "$RUN"; then
+if grep -qF 'FINAL_CONSENSUS_MODEL="${@[$_cli_i]:-gpt-6-astra:xhigh}"' "$RUN"; then
   pass "D6b: --final-consensus-model empty-value CLI fallback matches the default"
 else
-  fail "D6b: --final-consensus-model CLI fallback drifted from gpt-5.6-sol:xhigh"
+  fail "D6b: --final-consensus-model CLI fallback drifted from gpt-6-astra:xhigh"
+fi
+
+# D7: WORKER_CODEX_MODEL stays at the luna-first cheap-tier start
+# (gpt-5.6-luna, was gpt-5.5) — NOT the astra ladder ceiling. Owner
+# correction: raising the worker default to the ceiling breaks luna-first
+# (every iteration pays frontier price, no escalation headroom left).
+# Derived from src/commands/rlp-desk.md's cross-engine table LOW cost-lane
+# Worker start row.
+if grep -qF 'WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.6-luna}"' "$RUN"; then
+  pass "D7: WORKER_CODEX_MODEL default is gpt-5.6-luna (luna-first start, not the ceiling)"
+else
+  fail "D7: WORKER_CODEX_MODEL default should be gpt-5.6-luna"
+fi
+# D8: VERIFIER_CODEX_MODEL stays at a mid rung (gpt-5.6-terra, was gpt-5.5) —
+# per-US verification stays below final verification by design (governance.md
+# Consensus Model Routing); matches CONSENSUS_MODEL's own default.
+if grep -qF 'VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.6-terra}"' "$RUN"; then
+  pass "D8: VERIFIER_CODEX_MODEL default is gpt-5.6-terra (mid rung, below final)"
+else
+  fail "D8: VERIFIER_CODEX_MODEL default should be gpt-5.6-terra"
+fi
+# D9: FINAL_VERIFIER_CODEX_MODEL — the ONE codex-model-fallback role that DOES
+# move to gpt-6-astra (was gpt-5.5): final verification is the low-volume
+# judgment role — exactly where the generation's top model belongs.
+if grep -qF 'FINAL_VERIFIER_CODEX_MODEL="${FINAL_VERIFIER_CODEX_MODEL:-gpt-6-astra}"' "$RUN"; then
+  pass "D9: FINAL_VERIFIER_CODEX_MODEL default is gpt-6-astra"
+else
+  fail "D9: FINAL_VERIFIER_CODEX_MODEL default should be gpt-6-astra"
 fi
 
 # ============================================================

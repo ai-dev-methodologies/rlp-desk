@@ -14,7 +14,7 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 - **Worker must NEVER modify Claude Code settings** (settings.json, settings.local.json). Permission prompts must be reported as blocked, not bypassed by editing settings.
 - **Verifier is independent**: The Verifier judges based on evidence alone, without knowledge of the Worker's reasoning process.
 - **Sentinels are Leader-owned**: Only the Leader writes COMPLETE/BLOCKED sentinels.
-- **Supported engines**: claude (default; models: haiku, sonnet, opus) and codex (opt-in via `--worker-model spark:high` or `--worker-model gpt-5.5:high`).
+- **Supported engines**: claude (default; models: haiku, sonnet, opus, fable) and codex (opt-in via `--worker-model spark:high` or `--worker-model gpt-5.5:high`).
 
 ## 1a. Iron Laws
 
@@ -631,7 +631,9 @@ Every leader therefore registers a per-PID entry:
    complexity allows (see mapping in rlp-desk.md Step 7). Escalation requires
    an observed failure — never an assumption of difficulty.
 2. **Effort before model (luna only)**: within luna the ladder raises effort
-   to `max` before jumping models. Terra/sol keep the `xhigh` ladder ceiling.
+   to `max` before jumping models. Terra keeps its own `xhigh` ladder ceiling
+   before jumping into sol; sol's `xhigh` escalates one tier further into
+   `gpt-6-astra:high`, the real ceiling of the whole ladder.
 3. **Lanes**: campaigns with HIGH US choose at brainstorm time between the
    long-term/cost lane (HIGH starts `gpt-5.6-luna:max`; escalation passes the
    quota-first `terra:max` hop) and the speed lane (HIGH starts
@@ -642,7 +644,7 @@ Every leader therefore registers a per-PID entry:
    unlike coding aggregates) and are campaign-fixed — no progressive upgrade.
 5. **Environment failures don't climb the ladder**: `failure_category` of
    `environment` or `flaky` never counts toward model escalation. This
-   includes verifier safety-classifier refusals (opus-5/fable-5 cyber
+   includes verifier safety-classifier refusals (opus-5/fable-5.1 cyber
    safeguards can false-positive on benign security US) — a refusal is an
    environment failure, never a verdict.
 
@@ -650,15 +652,15 @@ Every leader therefore registers a per-PID entry:
 
 | Role | Default Model | Override Criteria |
 |------|---------------|-------------------|
-| Worker | haiku | Default; auto-upgrades on failure (sonnet → opus) |
+| Worker | haiku | Default; auto-upgrades on failure (sonnet → opus → claude-fable-5-1) |
 | Worker (locked) | haiku | `--lock-worker-model` disables auto-upgrade |
 | Verifier (per-US) | sonnet | Lightweight; campaign-fixed (no progressive upgrade) |
-| Verifier (final) | opus | Full rigor; independent of per-US model |
+| Verifier (final) | claude-fable-5-1 | Full rigor; independent of per-US model (was `opus` — Fable 5.1 wave) |
 
 These are the **CLI defaults** — what you get when no model flag is passed. They
 are not the same as the **recommended tiers**, which brainstorm injects per
 complexity as explicit `--verifier-model` / `--final-verifier-model` values
-(`claude-sonnet-5:high` … `claude-opus-5:max`, final `claude-fable-5:max` — see
+(`claude-sonnet-5:high` … `claude-opus-5:max`, final `claude-fable-5-1:max` — see
 §4 and the Consensus Model Routing table below). A campaign started through
 `/rlp-desk` therefore runs the tiers, not these defaults.
 
@@ -676,13 +678,13 @@ Worker ladder chain (data: `src/node/models.json`; reference view:
 `src/model-upgrade-table.md`):
 
 ```
-Cost lane:  luna:high → luna:max → terra:max → sol:xhigh (ceiling)
+Cost lane:  luna:high → luna:max → terra:max → sol:xhigh → astra:high → astra:xhigh (ceiling)
             (MEDIUM joins at luna:xhigh → luna:max → …)
-Speed lane: sol:medium → sol:high → sol:xhigh (ceiling)
+Speed lane: sol:medium → sol:high → sol:xhigh → astra:high → astra:xhigh (ceiling)
 ```
 
 `--worker-model spark:high` / `gpt-5.6-luna:max` format; `parse_model_flag()`
-auto-detects engine: plain names (haiku, sonnet, opus) = claude;
+auto-detects engine: plain names (haiku, sonnet, opus, fable) = claude;
 `name:reasoning` = codex unless the name is a claude alias/`claude-*` id.
 
 ## 5a. Execution: Agent() Approach (default) — "Smart Mode"
@@ -1039,8 +1041,8 @@ Worker completes US → signal verify
 |----------|-----------------|----------------|
 | per-US, primary=claude | `--verifier-model` (complexity-tiered: sonnet-5:high / opus-5:low / opus-5:high / opus-5:max) | `--consensus-model` (complexity-tiered: gpt-5.6-luna:max / gpt-5.6-terra:high / gpt-5.6-sol:medium / gpt-5.6-sol:high) |
 | per-US, primary=codex | `--verifier-model` | claude opus (fixed) |
-| final, primary=claude | `--final-verifier-model` (claude-fable-5:max) | `--final-consensus-model` (gpt-5.6-sol:xhigh) |
-| final, primary=codex | `--final-verifier-model` | claude opus (fixed) |
+| final, primary=claude | `--final-verifier-model` (claude-fable-5-1:max) | `--final-consensus-model` (gpt-6-astra:xhigh) |
+| final, primary=codex | `--final-verifier-model` | claude fable-5-1 (fixed) |
 
 - Both must pass. No engine priority.
 - The complexity tier (LOW/MEDIUM/HIGH/CRITICAL) is chosen once at brainstorm
@@ -1050,6 +1052,34 @@ Worker completes US → signal verify
 - Evidence basis for tiering: judgment tasks show large model-tier gaps
   (Internal Research Debugging sol 68.3 / terra 67.8 / luna 50.8; CodeRabbit
   review sol 69.7% vs terra 52.5%) — see the 2026-08-03 spec appendix.
+- **Fable 5.1 / Codex 6 Astra wave — final consensus moves with final verifier:**
+  `--final-consensus-model` moved from `gpt-5.6-sol:xhigh` to
+  `gpt-6-astra:xhigh`, the same "terminal, judgment-heavy role takes the most
+  capable model of the generation" principle that moved `--final-verifier-model`
+  from `opus` to `claude-fable-5-1`. Unlike the verifier gap, this wasn't a
+  pre-existing docs-vs-code drift (both agreed on `sol:xhigh` before `astra`
+  existed) — it's the SAME model-generation move applied consistently, so
+  leaving it at `sol:xhigh` would itself have created a new drift against the
+  stated principle. `:xhigh` (not `:max`) is kept as the effort, preserving
+  the pre-existing choice of "the model's own natural ceiling" for consensus
+  (distinct from the verifier's absolute `:max` — that asymmetry predates
+  this wave and wasn't changed). `primary=codex` cross-verifier moved from
+  "claude opus (fixed)" to "claude fable-5-1 (fixed)" in the FINAL row only —
+  the per-US row keeps opus (per-US verification stays lighter than final).
+- **`--consensus-model`'s single flat default is intentional, not a defect:**
+  `CONSENSUS_MODEL` defaults to a single `gpt-5.6-terra:high`
+  (`run_ralph_desk.zsh`) even though the per-US row above tiers it by
+  complexity (luna:max/terra:high/sol:medium/sol:high). This is the SAME
+  pattern every other role uses — `VERIFIER_MODEL` defaults to a single
+  `sonnet` even though its own row tiers it sonnet-5:high through opus-5:max;
+  `WORKER_MODEL` defaults to a single `haiku` even though luna-first tiers
+  worker starts by complexity too. In every case, the tiered values are not a
+  runtime conditional default — they are brainstorm-injected explicit CLI
+  flag values (rlp-desk.md Step 7), never encoded as code-level tiering. The
+  bare runtime default is the "no brainstorm, no explicit flag" plain
+  fallback, consistently across every role. Making `CONSENSUS_MODEL` alone
+  tier-aware in code would be a novel exception to this pattern, not a fix to
+  an inconsistency.
 
 **Key rules:**
 - Both claude and codex CLI must be installed

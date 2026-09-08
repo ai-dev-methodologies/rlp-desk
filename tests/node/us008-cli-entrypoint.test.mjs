@@ -638,10 +638,28 @@ test('US-008 P1.b: --mode tmux unaffected by P1.b banner changes', async (t) => 
 // v0.21.0: consensus defaults moved to the GPT-5.6 generation. Pinned here so
 // the Node RUN_DEFAULTS cannot drift from the zsh env defaults (test_option_cleanup D5/D6).
 // luna-first cost routing: bumped to terra:high / sol:xhigh (2026-08-03).
-test('RUN_DEFAULTS: consensus models are the 5.6 generation (terra/sol)', async () => {
+// Fable 5.1 / Codex 6 Astra wave: finalConsensusModel moved on to
+// gpt-6-astra:xhigh (was sol:xhigh) — terminal judgment-heavy role takes the
+// most capable model of the generation, same principle as
+// finalVerifierModel's opus->claude-fable-5-1 move. Per-US consensusModel is
+// UNCHANGED (terra:high) — per-US consensus stays lighter than final.
+test('RUN_DEFAULTS: consensus models — per-US stays terra:high, final moves to astra:xhigh', async () => {
   const { RUN_DEFAULTS } = await import('../../src/node/run.mjs');
   assert.equal(RUN_DEFAULTS.consensusModel, 'gpt-5.6-terra:high');
-  assert.equal(RUN_DEFAULTS.finalConsensusModel, 'gpt-5.6-sol:xhigh');
+  assert.equal(RUN_DEFAULTS.finalConsensusModel, 'gpt-6-astra:xhigh');
+});
+
+// Fable 5.1 / Codex 6 Astra wave: the final-verifier default moved to the
+// newest claude generation (was 'opus'), per owner direction to reflect the
+// newest models. Pinned so the Node RUN_DEFAULTS cannot drift from the zsh
+// FINAL_VERIFIER_MODEL default (mirrored assertion: test_option_cleanup.sh D3).
+// worker/verifierModel stay 'haiku'/'sonnet' — only the final-verifier role
+// moved, so those are pinned here too as a guard against an over-broad edit.
+test('RUN_DEFAULTS: finalVerifierModel is claude-fable-5-1 (worker/verifier unchanged)', async () => {
+  const { RUN_DEFAULTS } = await import('../../src/node/run.mjs');
+  assert.equal(RUN_DEFAULTS.finalVerifierModel, 'claude-fable-5-1');
+  assert.equal(RUN_DEFAULTS.workerModel, 'haiku');
+  assert.equal(RUN_DEFAULTS.verifierModel, 'sonnet');
 });
 
 // --- --worker-model / --verifier-model / --final-verifier-model validation ---
@@ -685,6 +703,82 @@ test('parseRunOptions accepts a valid codex model:reasoning value', async () => 
   const { parseRunOptions } = await import('../../src/node/run.mjs');
   const options = parseRunOptions(['--worker-model', 'gpt-5.5:medium'], '/tmp');
   assert.equal(options.workerModel, 'gpt-5.5:medium');
+});
+
+// claude-fable-5-1: isClaudeFamily is a plain startsWith('claude-') check, so
+// a versioned id with a SECOND hyphenated numeric segment must validate
+// against CLAUDE_EFFORT_VALUES exactly like claude-fable-5 or claude-opus-4-8.
+test('parseRunOptions accepts claude-fable-5-1:max as a valid claude model:effort value', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  const options = parseRunOptions(['--final-verifier-model', 'claude-fable-5-1:max'], '/tmp');
+  assert.equal(options.finalVerifierModel, 'claude-fable-5-1:max');
+});
+
+// gpt-6-astra: brand-new codex model family (no claude- prefix) must validate
+// against CODEX_REASONING_VALUES like any other gpt-* model.
+test('parseRunOptions accepts gpt-6-astra:xhigh as a valid codex model:reasoning value', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  const options = parseRunOptions(['--worker-model', 'gpt-6-astra:xhigh'], '/tmp');
+  assert.equal(options.workerModel, 'gpt-6-astra:xhigh');
+});
+
+// Model-aware exclusion: gpt-6-astra's API rejects 'minimal' with an HTTP 400
+// that enumerates the supported set (low/medium/high/xhigh/max) — see
+// src/model-upgrade-table.md "GPT-6 — Astra". Both the full slug and the
+// `astra` alias must be rejected; every OTHER codex model must still accept
+// 'minimal' (mutation control: proves this is model-specific, not a blanket
+// narrowing of CODEX_REASONING_VALUES).
+test('parseRunOptions rejects gpt-6-astra:minimal (model-specific, server-confirmed unsupported)', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  assert.throws(
+    () => parseRunOptions(['--worker-model', 'gpt-6-astra:minimal'], '/tmp'),
+    /gpt-6-astra does not support 'minimal'/,
+  );
+});
+
+test('parseRunOptions rejects astra:minimal (alias form)', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  assert.throws(
+    () => parseRunOptions(['--verifier-model', 'astra:minimal'], '/tmp'),
+    /gpt-6-astra does not support 'minimal'/,
+  );
+});
+
+test('parseRunOptions still accepts gpt-5.5:minimal (minimal remains valid for other codex models)', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  const options = parseRunOptions(['--final-verifier-model', 'gpt-5.5:minimal'], '/tmp');
+  assert.equal(options.finalVerifierModel, 'gpt-5.5:minimal');
+});
+
+// Independent-review finding (MED): --consensus-model and --final-consensus-model
+// never called validateModelFlag at all, unlike --worker-model/--verifier-model/
+// --final-verifier-model — so an invalid value (including gpt-6-astra:minimal,
+// which the final-consensus DEFAULT is astra-family) was accepted at parse
+// time and would only 400 at the final consensus gate, deep into a campaign.
+test('parseRunOptions rejects gpt-6-astra:minimal via --consensus-model', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  assert.throws(
+    () => parseRunOptions(['--consensus-model', 'gpt-6-astra:minimal'], '/tmp'),
+    /gpt-6-astra does not support 'minimal'/,
+  );
+});
+
+test('parseRunOptions rejects astra:minimal via --final-consensus-model (the exact scenario the review flagged)', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  assert.throws(
+    () => parseRunOptions(['--final-consensus-model', 'astra:minimal'], '/tmp'),
+    /gpt-6-astra does not support 'minimal'/,
+  );
+});
+
+test('parseRunOptions accepts a valid --consensus-model / --final-consensus-model value', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  const options = parseRunOptions(
+    ['--consensus-model', 'gpt-5.6-terra:high', '--final-consensus-model', 'gpt-6-astra:xhigh'],
+    '/tmp',
+  );
+  assert.equal(options.consensusModel, 'gpt-5.6-terra:high');
+  assert.equal(options.finalConsensusModel, 'gpt-6-astra:xhigh');
 });
 
 test('parseRunOptions rejects an invalid codex reasoning level the same way as an invalid claude effort', async () => {
@@ -761,4 +855,109 @@ test('CLAUDE_EFFORT_VALUES / CODEX_REASONING_VALUES match the vocabulary encoded
   const codexMatch = zshSource.match(/^\s+(minimal\|low\|medium\|high\|xhigh\|max\|ultra)\)$/m);
   assert.ok(codexMatch, 'could not find the codex reasoning case-pattern line in run_ralph_desk.zsh — has _auto_detect_engine moved/changed?');
   assert.deepEqual(codexMatch[1].split('|'), CODEX_REASONING_VALUES);
+});
+
+// Parity: the short codex model alias table (sol/terra/luna/astra -> full
+// slug) is duplicated in THREE places — _auto_detect_engine's env-var path
+// (run_ralph_desk.zsh), parse_model_flag's CLI-flag path (lib_ralph_desk.zsh),
+// and CODEX_MODEL_ALIASES (command-builder.mjs, the Node CLI path). Extract
+// each source's alias->slug mapping structurally and assert all three agree,
+// so a future alias addition/edit in only one or two sites is caught here
+// instead of silently drifting (the same failure mode the vocabulary parity
+// test above guards against, one level down at the alias-table level).
+test('codex model alias table (sol/terra/luna/astra) agrees across _auto_detect_engine, parse_model_flag, and CODEX_MODEL_ALIASES', async () => {
+  const runZshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/run_ralph_desk.zsh'), 'utf8');
+  const libZshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/lib_ralph_desk.zsh'), 'utf8');
+  const commandBuilderSource = await fs.readFile(path.join(repoRoot, 'src/node/cli/command-builder.mjs'), 'utf8');
+
+  // `spark` is deliberately excluded: all three sites handle it via a
+  // separate dedicated branch (not this family-alias table), so it is not
+  // part of what this test is pinning.
+  const FAMILY_ALIAS_NAMES = /^(sol|terra|luna|astra)$/;
+
+  // run_ralph_desk.zsh: `[[ "$model_part" == "sol" ]]   && model_part="gpt-5.6-sol"`
+  const autoDetectAliases = {};
+  for (const match of runZshSource.matchAll(/\[\[ "\$model_part" == "([a-z]+)" \]\]\s*&& model_part="([\w.-]+)"/g)) {
+    if (FAMILY_ALIAS_NAMES.test(match[1])) autoDetectAliases[match[1]] = match[2];
+  }
+
+  // lib_ralph_desk.zsh (colon-bearing branch): `sol)\n        model="gpt-5.6-sol"`
+  // — the shared `_validate_model_level` refactor (Fable 5.1 / Codex 6 Astra
+  // parse_model_flag CLI-flag validation gap fix) reassigns `model` and
+  // validates before echoing, instead of echoing the literal alias inline.
+  const parseModelFlagAliases = {};
+  for (const match of libZshSource.matchAll(/^ {6}([a-z]+)\)\n {8}model="([\w.-]+)"/gm)) {
+    if (FAMILY_ALIAS_NAMES.test(match[1])) parseModelFlagAliases[match[1]] = match[2];
+  }
+
+  // command-builder.mjs: `['sol', 'gpt-5.6-sol'],` inside CODEX_MODEL_ALIASES.
+  const mapSource = commandBuilderSource.match(/CODEX_MODEL_ALIASES = new Map\(\[([\s\S]*?)\]\)/);
+  assert.ok(mapSource, 'could not find CODEX_MODEL_ALIASES in command-builder.mjs — has parseModelFlag moved/changed?');
+  const nodeAliases = {};
+  for (const match of mapSource[1].matchAll(/\['([a-z]+)', '([\w.-]+)'\]/g)) {
+    if (FAMILY_ALIAS_NAMES.test(match[1])) nodeAliases[match[1]] = match[2];
+  }
+
+  const expectedAliasCount = 4; // sol, terra, luna, astra
+  assert.equal(Object.keys(autoDetectAliases).length, expectedAliasCount, `run_ralph_desk.zsh: expected ${expectedAliasCount} aliases, found ${JSON.stringify(autoDetectAliases)}`);
+  assert.deepEqual(parseModelFlagAliases, autoDetectAliases, 'lib_ralph_desk.zsh parse_model_flag alias table must match run_ralph_desk.zsh _auto_detect_engine');
+  assert.deepEqual(nodeAliases, autoDetectAliases, 'command-builder.mjs CODEX_MODEL_ALIASES must match the zsh alias tables');
+
+  // Pin the actual expected mapping so a coordinated-but-wrong edit across
+  // all three sites is still caught.
+  assert.deepEqual(autoDetectAliases, {
+    sol: 'gpt-5.6-sol',
+    terra: 'gpt-5.6-terra',
+    luna: 'gpt-5.6-luna',
+    astra: 'gpt-6-astra',
+  });
+});
+
+// Parity: the claude bare-alias set (haiku/sonnet/opus/fable) is duplicated
+// in FOUR places — _auto_detect_engine's case pattern (run_ralph_desk.zsh),
+// parse_model_flag's case pattern (lib_ralph_desk.zsh), CLAUDE_MODELS
+// (command-builder.mjs), and isClaudeFamily (run.mjs). `fable` was missing
+// from all four until this wave (a real bug — see the "bare fable" tests
+// above and in test_us003_unified_model_format.sh / us002-cli-command-
+// builder.test.mjs). Extract each source's alias set structurally and assert
+// all four agree, so a future alias addition/edit in only some sites is
+// caught here instead of silently drifting.
+test('claude bare-alias set (haiku/sonnet/opus/fable) agrees across _auto_detect_engine, parse_model_flag, CLAUDE_MODELS, and isClaudeFamily', async () => {
+  const runZshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/run_ralph_desk.zsh'), 'utf8');
+  const libZshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/lib_ralph_desk.zsh'), 'utf8');
+  const commandBuilderSource = await fs.readFile(path.join(repoRoot, 'src/node/cli/command-builder.mjs'), 'utf8');
+  const runSource = await fs.readFile(path.join(repoRoot, 'src/node/run.mjs'), 'utf8');
+
+  // Both zsh sites share the identical case-pattern line shape:
+  // `haiku|sonnet|opus|fable|claude|claude-*)` — extract the pipe-separated
+  // bare names, dropping the generic `claude`/`claude-*` markers (those cover
+  // versioned ids, not short aliases, and have no Node Set/function counterpart).
+  const extractZshAliasSet = (source) => {
+    const match = source.match(/^\s*(haiku\|sonnet\|opus\|fable\|claude\|claude-\*)\)$/m);
+    if (!match) return null;
+    return match[1].split('|').filter((name) => name !== 'claude' && name !== 'claude-*').sort();
+  };
+  const autoDetectAliases = extractZshAliasSet(runZshSource);
+  const parseModelFlagAliases = extractZshAliasSet(libZshSource);
+  assert.ok(autoDetectAliases, 'could not find the claude alias case-pattern line in run_ralph_desk.zsh — has _auto_detect_engine moved/changed?');
+  assert.ok(parseModelFlagAliases, 'could not find the claude alias case-pattern line in lib_ralph_desk.zsh — has parse_model_flag moved/changed?');
+
+  const claudeModelsMatch = commandBuilderSource.match(/CLAUDE_MODELS = new Set\(\[([^\]]*)\]\)/);
+  assert.ok(claudeModelsMatch, 'could not find CLAUDE_MODELS in command-builder.mjs — has isClaudeModelName moved/changed?');
+  const claudeModelsAliases = [...claudeModelsMatch[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort();
+
+  const isClaudeFamilyMatch = runSource.match(/function isClaudeFamily\(modelPart\) \{([\s\S]*?)\n\}/);
+  assert.ok(isClaudeFamilyMatch, 'could not find isClaudeFamily in run.mjs — has it moved/changed?');
+  const isClaudeFamilyAliases = [...isClaudeFamilyMatch[1].matchAll(/modelPart === '([a-z]+)'/g)]
+    .map((m) => m[1])
+    .filter((name) => name !== 'claude')
+    .sort();
+
+  assert.deepEqual(parseModelFlagAliases, autoDetectAliases, 'lib_ralph_desk.zsh parse_model_flag alias set must match run_ralph_desk.zsh _auto_detect_engine');
+  assert.deepEqual(claudeModelsAliases, autoDetectAliases, 'command-builder.mjs CLAUDE_MODELS must match the zsh alias sets');
+  assert.deepEqual(isClaudeFamilyAliases, autoDetectAliases, 'run.mjs isClaudeFamily must match the zsh alias sets');
+
+  // Pin the actual expected set so a coordinated-but-wrong edit across all
+  // four sites is still caught.
+  assert.deepEqual(autoDetectAliases, ['fable', 'haiku', 'opus', 'sonnet']);
 });

@@ -117,7 +117,7 @@
 #       truncated) with the appendix text appended after it, in that order
 #       — and, for the unchanged common case (a single colon-form heading,
 #       no repeats), init's split output must stay byte-identical to
-#       `git show HEAD:` init's output, proving this fix does not perturb
+#       `git show $ORACLE_COMMIT:` init's output, proving this fix does not perturb
 #       the pre-existing, already-correct case.
 #
 # CORRECTION (team lead, post-review): an earlier revision of this fix
@@ -139,7 +139,7 @@
 # exercised too, not just split_prd_by_us's (the scaffold test-spec has no
 # US heading by default, so the original case (k) never reached that awk).
 # case (l) also gained L-7: a colon-form test-spec split, byte-compared
-# against `git show HEAD:` init — split files feed the gate-receipt hash
+# against `git show $ORACLE_COMMIT:` init — split files feed the gate-receipt hash
 # set, so this must be genuinely byte-identical (mirrors N-5's PRD version).
 #
 # SV-gate judge finding (mutant escape): case (a)'s sed stub targets the
@@ -168,6 +168,16 @@ INIT_ABS="$(cd "$(dirname "$INIT")" && pwd)/$(basename "$INIT")"
 # file's own location instead, which always sits in the real repo's tests/.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB_ABS="$REPO_ROOT/src/scripts/lib_ralph_desk.zsh"
+# Byte-parity anchor for the "does the fix preserve the previously-accepted
+# simple case" checks below (L-7, N-5): a FIXED historical commit, NOT
+# "HEAD" — HEAD moves, and pinning byte-comparisons to it means an
+# unrelated LATER commit to init_ralph_desk.zsh can silently perturb what
+# these checks compare against. 6d94518 = "chore: bump version to 0.25.0 +
+# changelog", the last commit before ANY fix in this reaudit-wave-1 branch
+# landed (the commit this branch was cut from) — a stable, known-good prior
+# state for the colon-form case this fix does not change. Do not repoint at
+# HEAD.
+ORACLE_COMMIT="6d94518"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
@@ -804,13 +814,14 @@ FIXTURE_EOF
   fi
 
   # Byte-compare the previously-accepted colon-form case against
-  # `git show HEAD:` init — split files feed the gate-receipt hash set
-  # (lib_ralph_desk.zsh's compute_prd_content_hash / src/node/util/
-  # gate-receipt.mjs), so this must be genuinely byte-identical, not just
-  # "logically equivalent." Mirrors N-5's PRD version below.
+  # `git show $ORACLE_COMMIT:` init (see the constant above — NOT HEAD) —
+  # split files feed the gate-receipt hash set (lib_ralph_desk.zsh's
+  # compute_prd_content_hash / src/node/util/gate-receipt.mjs), so this must
+  # be genuinely byte-identical, not just "logically equivalent." Mirrors
+  # N-5's PRD version below.
   local head_init_ts="$WORKDIR/init-head-l7.zsh"
-  if ! git show HEAD:src/scripts/init_ralph_desk.zsh > "$head_init_ts" 2>/dev/null; then
-    fail "L-7: could not read git HEAD's init_ralph_desk.zsh for the byte-parity check"
+  if ! git show "$ORACLE_COMMIT":src/scripts/init_ralph_desk.zsh > "$head_init_ts" 2>/dev/null; then
+    fail "L-7: could not read git \$ORACLE_COMMIT's init_ralph_desk.zsh for the byte-parity check"
     return
   fi
   local root7_fixed="$WORKDIR/case-l7-fixed" root7_head="$WORKDIR/case-l7-head"
@@ -928,13 +939,13 @@ HEADING_EOF
     fi
   fi
 
-  # Byte-compare against `git show HEAD:` init for the plain, single
-  # colon-form heading case — the fix must not perturb the pre-existing,
-  # already-correct common case, only the newly-reachable duplicate-heading
-  # truncation bug.
+  # Byte-compare against `git show $ORACLE_COMMIT:` init (see the constant
+  # above — NOT HEAD) for the plain, single colon-form heading case — the
+  # fix must not perturb the pre-existing, already-correct common case, only
+  # the newly-reachable duplicate-heading truncation bug.
   local head_init="$WORKDIR/init-head-n5.zsh"
-  if ! git show HEAD:src/scripts/init_ralph_desk.zsh > "$head_init" 2>/dev/null; then
-    fail "N-5: could not read git HEAD's init_ralph_desk.zsh for the byte-parity check"
+  if ! git show "$ORACLE_COMMIT":src/scripts/init_ralph_desk.zsh > "$head_init" 2>/dev/null; then
+    fail "N-5: could not read git \$ORACLE_COMMIT's init_ralph_desk.zsh for the byte-parity check"
     return
   fi
   local root_fixed="$WORKDIR/case-n5-fixed" root_head="$WORKDIR/case-n5-head"

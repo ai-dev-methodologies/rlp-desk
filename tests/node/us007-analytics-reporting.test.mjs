@@ -575,4 +575,19 @@ test('g1-node: models.json cost_factors has the three families (shared-table pin
   assert.equal(costFactors['gpt-5.6-sol'], 1.0);
   assert.equal(costFactors['gpt-5.6-terra'], 0.4);
   assert.equal(costFactors['gpt-5.6-luna'], 0.04);
+  // Fable 5.1 / Codex 6 Astra wave: deliberately NOT added, see
+  // src/model-upgrade-table.md "Cost Model" — gpt-6-astra has no local
+  // pricing evidence (owner number needed), and the claude family (despite
+  // real, well-evidenced pricing) is architecturally unpriced today
+  // (_resolveCostFactor/_cost_factor_x100 are codex-engine-only gated) so
+  // adding it would be inert and could misleadingly imply a cross-engine
+  // dollar equivalence with sol that was never verified. This assertion
+  // pins that deliberate omission — its own failure is the signal that
+  // someone added one of these keys and should double check against the
+  // doc's owner-decision list before doing so.
+  assert.equal(costFactors['gpt-6-astra'], undefined);
+  assert.equal(costFactors.haiku, undefined);
+  assert.equal(costFactors.sonnet, undefined);
+  assert.equal(costFactors.opus, undefined);
+  assert.equal(costFactors['claude-fable-5-1'], undefined);
 });

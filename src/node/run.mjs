@@ -32,10 +32,10 @@ export const RUN_DEFAULTS = {
   mode: 'tmux',
   workerModel: 'haiku',
   verifierModel: 'sonnet',
-  finalVerifierModel: 'opus',
+  finalVerifierModel: 'claude-fable-5-1',
   consensusMode: 'off',
   consensusModel: 'gpt-5.6-terra:high',
-  finalConsensusModel: 'gpt-5.6-sol:xhigh',
+  finalConsensusModel: 'gpt-6-astra:xhigh',
   // Feature 2: parallel consensus verification (claude + codex concurrently).
   // DEFAULT OFF — the sequential consensus path is byte-identical when off.
   consensusParallel: false,
@@ -149,13 +149,14 @@ function parseInteger(value, flag) {
 export const CLAUDE_EFFORT_VALUES = ['low', 'medium', 'high', 'max', 'xhigh'];
 export const CODEX_REASONING_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
-// zsh: `haiku|sonnet|opus|claude|claude-*)` (run_ralph_desk.zsh:441) — any
-// other model_part (gpt-*, spark, sol/terra/luna aliases, or an unrecognized
-// name) falls to the codex branch and is validated against the reasoning
-// vocabulary instead.
+// zsh: `haiku|sonnet|opus|fable|claude|claude-*)` (run_ralph_desk.zsh
+// _auto_detect_engine) — `fable` is a bare alias `claude --help` documents
+// alongside opus/sonnet. Any other model_part (gpt-*, spark, sol/terra/luna/
+// astra aliases, or an unrecognized name) falls to the codex branch and is
+// validated against the reasoning vocabulary instead.
 function isClaudeFamily(modelPart) {
   return modelPart === 'haiku' || modelPart === 'sonnet' || modelPart === 'opus'
-    || modelPart === 'claude' || modelPart.startsWith('claude-');
+    || modelPart === 'fable' || modelPart === 'claude' || modelPart.startsWith('claude-');
 }
 
 export function validateModelFlag(value, flagName) {
@@ -186,6 +187,19 @@ export function validateModelFlag(value, flagName) {
     const kind = claude ? 'effort' : 'reasoning';
     throw new Error(
       `invalid ${kind} '${levelPart}' in ${flagName}='${value}' (expected one of: ${vocabulary.join('|')}).`,
+    );
+  }
+
+  // Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave), mirroring the
+  // zsh _auto_detect_engine check: gpt-6-astra's API rejects 'minimal' with
+  // an HTTP 400 that enumerates the supported set (low/medium/high/xhigh/
+  // max) — see src/model-upgrade-table.md "GPT-6 — Astra". Reject it HERE
+  // for THIS model only ('astra' the alias, or the full 'gpt-6-astra' slug);
+  // 'minimal' remains valid for every other codex model — never a blanket
+  // narrowing of CODEX_REASONING_VALUES.
+  if (!claude && (modelPart === 'astra' || modelPart === 'gpt-6-astra') && levelPart === 'minimal') {
+    throw new Error(
+      `invalid reasoning 'minimal' in ${flagName}='${value}': gpt-6-astra does not support 'minimal' (server enumerates: low|medium|high|xhigh|max).`,
     );
   }
 }
@@ -236,10 +250,12 @@ export function parseRunOptions(args, cwd) {
         break;
       case '--consensus-model':
         options.consensusModel = consumeValue(args, index, token);
+        validateModelFlag(options.consensusModel, token);
         index += 1;
         break;
       case '--final-consensus-model':
         options.finalConsensusModel = consumeValue(args, index, token);
+        validateModelFlag(options.finalConsensusModel, token);
         index += 1;
         break;
       case '--consensus-parallel':
@@ -889,7 +905,7 @@ async function runRunCommand(args, deps) {
   // <project>/.claude/. After v0.13.0, sentinels live in
   // <project>/.rlp-desk/, but if the user pinned RLP_DESK_RUNTIME_DIR
   // back inside .claude/, the hang can return — surface the warning so
-  // they can switch to gpt-5.5:* or --mode agent quickly.
+  // they can switch to gpt-6-astra:* or --mode agent quickly.
   if (
     !process.env.RLP_DESK_QUIET_WARNINGS
     && process.env.NODE_ENV !== 'test'
@@ -906,7 +922,7 @@ async function runRunCommand(args, deps) {
     );
     write(
       deps.stderr,
-      'If hang persists, switch to --worker-model gpt-5.5:high (codex).',
+      'If hang persists, switch to --worker-model gpt-6-astra:high (codex).',
     );
   }
 
