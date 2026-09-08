@@ -19,6 +19,69 @@ Entry template:
 
 ---
 
+## 2026-09-08 — Model-generation wave: Fable 5.1 + Codex 6 Astra (fix/reaudit-wave-1)
+
+- **Target**: adding Claude Fable 5.1 (`claude-fable-5-1`) and Codex 6 Astra
+  (`gpt-6-astra`) to the model registry, the two upgrade ladders, the
+  role/complexity routing tables and the engine-classification code. Landed on
+  `fix/reaudit-wave-1` on top of the 2026-09-07 audit-remediation wave; not
+  merged to main.
+- **Method**: implement→independent-review pairs with mutation controls, one
+  round of the mandatory 3-scenario SV gate (LOW/MEDIUM/CRITICAL, fresh Worker
+  execution in throwaway sandboxes), plus a separate adversarial review that ran
+  in parallel with the gate. `gpt-6-astra`'s reasoning-level catalog was
+  established by live one-token probes in a read-only sandbox rather than
+  mirrored from `gpt-5.6-sol`, because `models_cache.json` does not list the
+  model.
+- **Result**: **INCOMPLETE — the gate re-run after the fixes did not run.**
+  Gate round 1 returned 27/33 assertions with 6 findings; the parallel review
+  returned PASS with 6 further findings. All 12 were fixed and each fix carries
+  a mutation control, but the LOW/MEDIUM/CRITICAL re-run against the corrected
+  tree was not executed before the session ended. Suites at commit time were
+  green (`npm run test:node` 751/751, `npm run manifest:check` in sync). Per
+  CLAUDE.md the gate must PASS before merge; see
+  `docs/plans/model-generation-wave-handoff.md` for the scenario design to
+  re-run.
+- **Findings** (all FIXED unless noted):
+  - HIGH — the bare alias `fable` classified as the CODEX engine in all four
+    implementations, and a bare canonical `gpt-*` id classified as CLAUDE, so
+    `--worker-model gpt-6-astra` — the exact string in `models.json` and every
+    doc table — would have invoked `claude --model gpt-6-astra`.
+  - HIGH — neither ladder could reach its generation's top model. Claude
+    terminated at `opus` while every doc recommended `claude-fable-5-1:max` for
+    final verification; codex terminated at `gpt-5.6-sol:xhigh` with astra an
+    unreachable island.
+  - HIGH — an intermediate revision of this wave put `gpt-6-astra` in the worker
+    default, which starts the high-volume role at the ceiling, empties the
+    upgrade ladder and makes `check_model_upgrade` return `already_max` from
+    iteration one. Reverted; an invariant test now derives each engine's ceiling
+    from `models.json` at test time and asserts the shipped worker default sits
+    at least two rungs below it.
+  - CRITICAL (gate) — the model-specific `minimal` rejection reached only the
+    env-var path. `parse_model_flag`, which every documented CLI invocation uses,
+    performed no vocabulary validation, so the fix was inert for real users.
+    Both paths now call one shared `_validate_model_level()`.
+  - MEDIUM — `--consensus-model` and `--final-consensus-model` bypassed both
+    validators, and the runtime consensus dispatch never expanded bare codex
+    aliases, so `--consensus-model astra:high` would have invoked `codex -m astra`.
+  - MEDIUM — a restore test retyped the shipped line it was meant to verify, so
+    deleting `WORKER_EFFORT="$_ORIGINAL_WORKER_EFFORT"` left the whole suite
+    green. Rewritten to extract and execute the real block, then confirmed the
+    mutation turns exactly that test red.
+  - MEDIUM — three tests from the previous wave built their pre-fix oracle with
+    `git show HEAD:`; committing that wave made HEAD stop being a pre-fix
+    baseline and they failed loudly. Re-anchored to a fixed commit.
+  - Plus doc drift in six locations where one bullet of a hunk was updated and
+    its neighbour was not.
+- **Lesson**: a green suite proved nothing three separate times in this wave —
+  a dead ladder whose tests never set the triggering variable, a restore test
+  that retyped its own subject, and a gate that passed against a scenario set
+  omitting an existing committed contract test. Mutation controls and
+  execute-the-shipped-line extraction are the only assertions that discriminated.
+- **Artifacts**: `docs/plans/model-generation-wave-handoff.md` (full continuation
+  kit incl. the measured `gpt-6-astra` reasoning-level table and the open
+  `cost_factors` decision).
+
 ## 2026-09-07 — Audit-remediation wave: 137-agent re-audit fix wave + 4-round SV gate (fix/reaudit-wave-1)
 
 - **Target**: audit-remediation wave from a 137-agent re-audit of v0.25.0 (8
