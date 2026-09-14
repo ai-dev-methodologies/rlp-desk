@@ -288,6 +288,36 @@ real claude ceiling now. Verified via a direct walk of the shipped
 `src/node/models.json` ladder — see `tests/node/models-ladder.test.mjs`
 "claude ladder reaches fable".)
 
+**Verification (2026-09-14, claude CLI) — live probes, matching the
+`gpt-6-astra` treatment below.** The claude effort vocabulary
+(`low|medium|high|max|xhigh`, enforced by `_validate_model_level`) predates
+Fable 5.1, so the wave that made `claude-fable-5-1:max` the ladder ceiling had
+not established that this model accepts `max` — the same assumption that turned
+out to be wrong for `gpt-6-astra:minimal`. Each level was probed for real:
+
+```
+claude --model claude-fable-5-1 --effort <level> --mcp-config '{"mcpServers":{}}' \
+  --strict-mcp-config -p "Reply with exactly: OK" --output-format text
+```
+
+| Level | Outcome |
+|-------|---------|
+| low / medium / high / max / xhigh | Accepted — real generation, replied `OK` |
+| minimal / ultra / bogus | **Warning, then ignored**: *"Unknown --effort value 'X' — ignoring it and using the default effort. Valid values: low, medium, high, xhigh, max."* Still exits 0 and still generates. |
+
+**Conclusion:** all five shipped effort levels are confirmed on
+`claude-fable-5-1`, so the `claude-fable-5-1:max` ceiling is valid, and the
+repo's claude vocabulary matches the CLI's own enumeration exactly — no missing
+level, no extra one.
+
+**Asymmetry worth knowing:** codex **fails closed** on an unsupported reasoning
+level (HTTP 400, campaign stops), while claude **fails open** — it warns, drops
+the flag, and runs at the default effort with exit 0. So on the claude side a
+bad effort would silently downgrade a campaign rather than stop it, and
+`_validate_model_level()` is the only thing that catches it before launch. That
+makes the shared validator load-bearing on claude in a way it is not on codex;
+do not weaken it on the assumption the CLI will reject bad input.
+
 **Bare `fable` alias (engine detection, not the ladder):** `claude --help`
 documents `fable` as a short alias for the latest model, alongside
 `opus`/`sonnet`. It was missing from the claude-engine-detection alias set in
