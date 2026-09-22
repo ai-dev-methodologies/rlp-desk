@@ -1170,8 +1170,19 @@ test_auto_detect_engine_astra_minimal_rejected() {
 # same inputs. Both functions now call the SAME shared _validate_model_level
 # (factored so the two cannot drift), so both must be sourced together.
 test_parse_model_flag_astra_minimal_rejected() {
+# Every shared dependency parse_model_flag / _validate_consensus_model_var
+# pull in from the lib. _validate_model_level was the first; _normalize_model_spec
+# (retirement remap + bare-alias level normalization, plus the two module-scope
+# arrays it reads) is the second. Extract them together — a missing one dies with
+# "command not found", and since that exits non-zero a REJECTION assertion then
+# passes for entirely the wrong reason.
+_model_parse_deps() {
+  sed -n '/^typeset -gA RETIRED_MODEL_REMAP=($/,/^}$/p' "$LIB" 2>/dev/null
+  _extract_fn_from "_validate_model_level" "$LIB"
+}
+
   local vml_body pmf_body
-  vml_body=$(_extract_fn_from "_validate_model_level" "$LIB")
+  vml_body=$(_model_parse_deps)
   pmf_body=$(_extract_fn_from "parse_model_flag" "$LIB")
   if [[ -z "$vml_body" || -z "$pmf_body" ]]; then
     fail "parse-model-flag-astra-minimal: _validate_model_level or parse_model_flag not found"
@@ -1201,14 +1212,17 @@ test_parse_model_flag_astra_minimal_rejected() {
   zsh -f "$tmpdir/case2.zsh" >/dev/null 2>&1
   local rc2=$?
 
-  # Case 3 (regression): gpt-5.5:minimal — a DIFFERENT codex model — must
-  # still be ACCEPTED, and echo the split "codex gpt-5.5 minimal" triple.
+  # Case 3 (regression): 'minimal' is rejected for gpt-6-astra ONLY, so a
+  # different codex model must still ACCEPT it. gpt-5.5 is retired, so this
+  # now also pins the ordering rule: the level is validated against the
+  # REPLACEMENT model's vocabulary, not the retired one's — gpt-5.5:minimal
+  # resolves to the accepted gpt-5.6-sol:minimal rather than being rejected.
   {
     echo '#!/usr/bin/env zsh -f'
     echo "$vml_body"
     echo "$pmf_body"
     echo 'out=$(parse_model_flag "gpt-5.5:minimal" "final-verifier") || exit 1'
-    echo '[[ "$out" == "codex gpt-5.5 minimal" ]] && exit 0 || { echo "out=$out" >&2; exit 1; }'
+    echo '[[ "$out" == "codex gpt-5.6-sol minimal" ]] && exit 0 || { echo "out=$out" >&2; exit 1; }'
   } > "$tmpdir/case3.zsh"
   local out3
   out3=$(zsh -f "$tmpdir/case3.zsh" 2>&1)
@@ -1216,7 +1230,7 @@ test_parse_model_flag_astra_minimal_rejected() {
 
   rm -rf "$tmpdir"
   if (( rc1 != 0 && rc2 != 0 && rc3 == 0 )); then
-    pass "parse-model-flag-astra-minimal: gpt-6-astra:minimal and astra:minimal rejected via the CLI-flag path; gpt-5.5:minimal still accepted"
+    pass "parse-model-flag-astra-minimal: gpt-6-astra:minimal and astra:minimal rejected via the CLI-flag path; gpt-5.5:minimal still accepted (as the remapped gpt-5.6-sol:minimal)"
   else
     fail "parse-model-flag-astra-minimal: rc1=$rc1 (want != 0) rc2=$rc2 (want != 0) rc3=$rc3 (want 0, out=$out3)"
   fi
@@ -1228,7 +1242,7 @@ test_parse_model_flag_astra_minimal_rejected() {
 # both and asserts every input's accept/reject verdict agrees.
 test_cli_env_validation_parity() {
   local vml_body pmf_body ade_body
-  vml_body=$(_extract_fn_from "_validate_model_level" "$LIB")
+  vml_body=$(_model_parse_deps)
   pmf_body=$(_extract_fn_from "parse_model_flag" "$LIB")
   ade_body=$(_extract_fn_from "_auto_detect_engine" "$RUN")
   if [[ -z "$vml_body" || -z "$pmf_body" || -z "$ade_body" ]]; then
@@ -1308,7 +1322,7 @@ test_cli_env_validation_parity() {
 # reached the alias-expansion case statement).
 test_bare_codex_alias_classification() {
   local vml_body pmf_body ade_body
-  vml_body=$(_extract_fn_from "_validate_model_level" "$LIB")
+  vml_body=$(_model_parse_deps)
   pmf_body=$(_extract_fn_from "parse_model_flag" "$LIB")
   ade_body=$(_extract_fn_from "_auto_detect_engine" "$RUN")
   if [[ -z "$vml_body" || -z "$pmf_body" || -z "$ade_body" ]]; then
@@ -1326,7 +1340,11 @@ test_bare_codex_alias_classification() {
   local alias_name want_slug
   for alias_name in "${aliases[@]}"; do
     case "$alias_name" in
-      spark) want_slug="gpt-5.3-codex-spark" ;;
+      # spark is a RETIRED alias: it no longer expands to its canonical slug,
+      # it remaps to the live family the retirement table points at. The
+      # property under test is unchanged — a bare alias still classifies as
+      # engine=codex on both paths — only the slug it lands on moved.
+      spark) want_slug="gpt-5.6-luna" ;;
       sol)   want_slug="gpt-5.6-sol" ;;
       terra) want_slug="gpt-5.6-terra" ;;
       luna)  want_slug="gpt-5.6-luna" ;;
@@ -1339,9 +1357,13 @@ test_bare_codex_alias_classification() {
       echo "$pmf_body"
       echo "parse_model_flag '$alias_name' 'worker'"
     } > "$tmpdir/cli.zsh"
-    local cli_out
-    cli_out=$(zsh -f "$tmpdir/cli.zsh" 2>&1)
+    local cli_raw cli_out
+    cli_raw=$(zsh -f "$tmpdir/cli.zsh" 2>&1)
     local cli_rc=$?
+    # A retired id emits a one-line [model-remap] warning on stderr, which this
+    # harness merges into the captured output. Separate the two: the warning is
+    # asserted on its own below, the classification is compared without it.
+    cli_out=$(printf '%s\n' "$cli_raw" | grep -v '^\[model-remap\]')
 
     {
       echo '#!/usr/bin/env zsh -f'
@@ -1351,9 +1373,10 @@ test_bare_codex_alias_classification() {
       echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT'
       echo 'echo "$WORKER_ENGINE $WORKER_MODEL"'
     } > "$tmpdir/env.zsh"
-    local env_out
-    env_out=$(zsh -f "$tmpdir/env.zsh" 2>&1)
+    local env_raw env_out
+    env_raw=$(zsh -f "$tmpdir/env.zsh" 2>&1)
     local env_rc=$?
+    env_out=$(printf '%s\n' "$env_raw" | grep -v '^\[model-remap\]')
 
     if [[ $cli_rc -ne 0 || "$cli_out" != "codex $want_slug "* ]]; then
       failures="$failures [CLI $alias_name: rc=$cli_rc out=[$cli_out] want=codex $want_slug]"
@@ -1400,7 +1423,10 @@ test_bare_codex_alias_classification() {
 # case arm specifically.
 test_bare_gpt_star_classification() {
   local pmf_body ade_body
-  pmf_body=$(_extract_fn_from "parse_model_flag" "$LIB")
+  # bundle the lib-internal deps parse_model_flag calls (_validate_model_level,
+  # _normalize_model_spec + its arrays) — this site builds its own scratch
+  # script and has no separate vml_body prepend like the others.
+  pmf_body="$(_model_parse_deps)"$'\n'"$(_extract_fn_from "parse_model_flag" "$LIB")"
   ade_body=$(_extract_fn_from "_auto_detect_engine" "$RUN")
   if [[ -z "$pmf_body" || -z "$ade_body" ]]; then
     fail "bare-gpt-star: parse_model_flag or _auto_detect_engine not found"
@@ -1411,15 +1437,28 @@ test_bare_gpt_star_classification() {
   tmpdir=$(mktemp -d)
   local failures=""
   local value
+  # Retired ids stay in this list on purpose: "a bare gpt-* id routes to codex"
+  # must hold for them too, they just land on their replacement. want_slug is
+  # the id the run actually ends up using.
+  local want_slug
   for value in "gpt-5.5" "gpt-6-astra" "gpt-5.3-codex-spark"; do
+    case "$value" in
+      gpt-5.5)             want_slug="gpt-5.6-sol" ;;
+      gpt-5.3-codex-spark) want_slug="gpt-5.6-luna" ;;
+      *)                   want_slug="$value" ;;
+    esac
     {
       echo '#!/usr/bin/env zsh -f'
       echo "$pmf_body"
       echo "parse_model_flag '$value' 'worker'"
     } > "$tmpdir/cli.zsh"
-    local cli_out
-    cli_out=$(zsh -f "$tmpdir/cli.zsh" 2>&1)
+    local cli_raw cli_out
+    cli_raw=$(zsh -f "$tmpdir/cli.zsh" 2>&1)
     local cli_rc=$?
+    # A retired id emits a one-line [model-remap] warning on stderr, which this
+    # harness merges into the captured output. Separate the two: the warning is
+    # asserted on its own below, the classification is compared without it.
+    cli_out=$(printf '%s\n' "$cli_raw" | grep -v '^\[model-remap\]')
 
     {
       echo '#!/usr/bin/env zsh -f'
@@ -1429,15 +1468,16 @@ test_bare_gpt_star_classification() {
       echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT'
       echo 'echo "$WORKER_ENGINE $WORKER_MODEL"'
     } > "$tmpdir/env.zsh"
-    local env_out
-    env_out=$(zsh -f "$tmpdir/env.zsh" 2>&1)
+    local env_raw env_out
+    env_raw=$(zsh -f "$tmpdir/env.zsh" 2>&1)
     local env_rc=$?
+    env_out=$(printf '%s\n' "$env_raw" | grep -v '^\[model-remap\]')
 
-    if [[ $cli_rc -ne 0 || "$cli_out" != "codex $value "* ]]; then
-      failures="$failures [CLI $value: rc=$cli_rc out=[$cli_out] want=codex $value]"
+    if [[ $cli_rc -ne 0 || "$cli_out" != "codex $want_slug "* ]]; then
+      failures="$failures [CLI $value: rc=$cli_rc out=[$cli_out] want=codex $want_slug]"
     fi
-    if [[ $env_rc -ne 0 || "$env_out" != "codex $value" ]]; then
-      failures="$failures [ENV $value: rc=$env_rc out=[$env_out] want=codex $value]"
+    if [[ $env_rc -ne 0 || "$env_out" != "codex $want_slug" ]]; then
+      failures="$failures [ENV $value: rc=$env_rc out=[$env_out] want=codex $want_slug]"
     fi
   done
 
@@ -1474,7 +1514,7 @@ test_bare_gpt_star_classification() {
 # passes the raw post-colon model straight to `codex -m` with no expansion.
 test_validate_consensus_model_var() {
   local vml_body vcmv_body
-  vml_body=$(_extract_fn_from "_validate_model_level" "$LIB")
+  vml_body=$(_model_parse_deps)
   vcmv_body=$(_extract_fn_from "_validate_consensus_model_var" "$LIB")
   if [[ -z "$vml_body" || -z "$vcmv_body" ]]; then
     fail "consensus-model-validate: _validate_model_level or _validate_consensus_model_var not found"
@@ -1508,14 +1548,17 @@ test_validate_consensus_model_var() {
   zsh -f "$tmpdir/c2.zsh" >/dev/null 2>&1
   (( $? == 0 )) && failures="$failures [c2: astra:minimal should have been rejected]"
 
-  # Case 3 (regression): a different codex model still accepts minimal.
+  # Case 3 (regression): 'minimal' is rejected for gpt-6-astra ONLY, so a
+  # different codex model must still accept it. gpt-5.5 is retired, so this
+  # also pins the ordering rule — the level is validated against the
+  # REPLACEMENT model's vocabulary, not the retired one's.
   {
     echo '#!/usr/bin/env zsh -f'
     echo "$vml_body"
     echo "$vcmv_body"
     echo 'CONSENSUS_MODEL="gpt-5.5:minimal"'
     echo '_validate_consensus_model_var CONSENSUS_MODEL "CONSENSUS_MODEL" || exit 1'
-    echo '[[ "$CONSENSUS_MODEL" == "gpt-5.5:minimal" ]] || exit 1'
+    echo '[[ "$CONSENSUS_MODEL" == "gpt-5.6-sol:minimal" ]] || exit 1'
   } > "$tmpdir/c3.zsh"
   zsh -f "$tmpdir/c3.zsh" >/dev/null 2>&1
   (( $? != 0 )) && failures="$failures [c3: gpt-5.5:minimal should still be accepted]"
@@ -1535,7 +1578,7 @@ test_validate_consensus_model_var() {
 
   rm -rf "$tmpdir"
   if [[ -z "$failures" ]]; then
-    pass "consensus-model-validate: --consensus-model/--final-consensus-model reject gpt-6-astra:minimal and astra:minimal, accept gpt-5.5:minimal, normalize astra:high -> gpt-6-astra:high"
+    pass "consensus-model-validate: --consensus-model/--final-consensus-model reject gpt-6-astra:minimal and astra:minimal, accept gpt-5.5:minimal as the remapped gpt-5.6-sol:minimal, normalize astra:high -> gpt-6-astra:high"
   else
     fail "consensus-model-validate:$failures"
   fi

@@ -20,6 +20,74 @@ const CODEX_MODEL_ALIASES = new Map([
   ['astra', 'gpt-6-astra'],
 ]);
 
+// Vendor-retired codex families (gpt-5.4 / gpt-5.4-mini 2026-08-31,
+// gpt-5.3-codex-spark 2026-09-14, gpt-5.5 ChatGPT-login-only from 2026-10-14).
+// Their ladder keys are gone, but the ids can still arrive from a user flag,
+// a saved status.json, or a user override ladder at ~/.claude/rlp-desk-models.json
+// — which returns arbitrary unvalidated strings. Remap on the way in, with one
+// warning, rather than failing at the vendor with an opaque error.
+//
+// The REMAP REWRITES ONLY THE MODEL PART, never the level. That is what makes
+// it safe to remap BEFORE vocabulary validation (run.mjs validateModelFlag):
+// a malformed input stays malformed, so remapping can never launder a
+// rejection into an acceptance. `gpt-5.5:` remaps to `gpt-5.6-sol:` and is
+// still rejected for an empty level; `gpt-5.5:high;touch x` keeps its
+// injection-shaped level and is still rejected. Conversely the level IS
+// re-validated against the REPLACEMENT model, which matters concretely:
+// `minimal` is rejected for gpt-6-astra alone, so `gpt-5.5:minimal` correctly
+// becomes the accepted `gpt-5.6-sol:minimal`.
+//
+// Mirrored byte-for-byte (table and warning text) by _normalize_model_spec in
+// lib_ralph_desk.zsh; a parity test pins the two together.
+export const RETIRED_MODEL_REMAP = new Map([
+  ['gpt-5.4', 'gpt-5.6-terra'],
+  ['gpt-5.4-mini', 'gpt-5.6-luna'],
+  ['gpt-5.5', 'gpt-5.6-sol'],
+  ['gpt-5.3-codex-spark', 'gpt-5.6-luna'],
+  ['spark', 'gpt-5.6-luna'],
+]);
+
+// Bare claude aliases carry no effort, so the level falls to the claude CLI's
+// own default — a value this project has never confirmed. Pin the start
+// explicitly instead. haiku is absent on purpose: it has no effort concept.
+// fable resolves to the version-pinned id as well as a level, matching how
+// every doc and the ladder itself refer to it (`claude-fable-5-1:max`, never
+// the floating alias).
+export const BARE_ALIAS_NORMALIZATION = new Map([
+  ['sonnet', 'sonnet:medium'],
+  ['opus', 'opus:medium'],
+  ['fable', 'claude-fable-5-1:max'],
+  ['claude-fable-5-1', 'claude-fable-5-1:max'],
+]);
+
+// Normalizes a `model` or `model:level` spec: retired families are remapped
+// (level preserved) and bare claude aliases gain their explicit start level.
+// Returns the normalized spec. Any remap emits exactly one warning through
+// `warn` (default: stderr), so a user who pinned a retired id learns why the
+// run is using a different model.
+export function normalizeModelSpec(value, { warn = (message) => process.stderr.write(`${message}\n`) } = {}) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return value;
+  }
+
+  const colonIndex = value.indexOf(':');
+  const head = colonIndex === -1 ? value : value.slice(0, colonIndex);
+  const tail = colonIndex === -1 ? '' : value.slice(colonIndex);
+
+  const replacement = RETIRED_MODEL_REMAP.get(head);
+  if (replacement !== undefined) {
+    const normalized = `${replacement}${tail}`;
+    warn(`[model-remap] WARNING: '${value}' is retired — using '${normalized}' instead. To keep the old id (API-key logins still serve it), pin it in ~/.claude/rlp-desk-models.json.`);
+    return normalized;
+  }
+
+  if (colonIndex === -1) {
+    return BARE_ALIAS_NORMALIZATION.get(value) ?? value;
+  }
+
+  return value;
+}
+
 // Single source of truth for "is this BARE (no-colon) name a codex model?":
 // either a known short alias (the Map above), or the real codex id shape
 // itself (gpt-*). Team-lead review follow-up: an earlier fix recognized

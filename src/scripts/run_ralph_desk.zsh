@@ -477,6 +477,48 @@ _block_with_grace() {
 _auto_detect_engine() {
   local model_var="$1" engine_var="$2" codex_model_var="$3" codex_reasoning_var="$4" effort_var="${5:-}"
   local model_val="${(P)model_var}"
+
+  # Vendor-retirement remap + bare-alias level normalization, DUPLICATED from
+  # _normalize_model_spec (lib_ralph_desk.zsh) on purpose. This function's real
+  # call sites run BEFORE `source lib_ralph_desk.zsh`, so calling the lib helper
+  # here would die with "command not found" at startup — and because that exits
+  # non-zero, a rejection test would then pass for entirely the wrong reason.
+  # Same constraint, and the same duplication-plus-parity-test answer, as the
+  # `gpt-*)` and alias arms below. The parity test
+  # (test_us011_worker_model_upgrade.sh cli-env-parity) pins the two copies
+  # together; without this arm the CLI path (`--worker-model gpt-5.5`) would
+  # remap while the env path (`WORKER_MODEL=gpt-5.5`) silently would not.
+  #
+  # Remap rewrites ONLY the model part, never the level, so a malformed value
+  # stays malformed and cannot be laundered past the vocabulary checks below.
+  local _adn_head _adn_tail
+  if [[ "$model_val" == *:* ]]; then
+    _adn_head="${model_val%%:*}"; _adn_tail=":${model_val#*:}"
+  else
+    _adn_head="$model_val"; _adn_tail=""
+  fi
+  local _adn_repl=""
+  case "$_adn_head" in
+    gpt-5.4)             _adn_repl="gpt-5.6-terra" ;;
+    gpt-5.4-mini)        _adn_repl="gpt-5.6-luna" ;;
+    gpt-5.5)             _adn_repl="gpt-5.6-sol" ;;
+    gpt-5.3-codex-spark) _adn_repl="gpt-5.6-luna" ;;
+    spark)               _adn_repl="gpt-5.6-luna" ;;
+  esac
+  if [[ -n "$_adn_repl" ]]; then
+    local _adn_new="${_adn_repl}${_adn_tail}"
+    print -u2 -r -- "[model-remap] WARNING: '${model_val}' is retired — using '${_adn_new}' instead. To keep the old id (API-key logins still serve it), pin it in ~/.claude/rlp-desk-models.json."
+    model_val="$_adn_new"
+    typeset -g "$model_var=$model_val"
+  elif [[ -z "$_adn_tail" ]]; then
+    case "$_adn_head" in
+      sonnet)                    model_val="sonnet:medium" ;;
+      opus)                      model_val="opus:medium" ;;
+      fable|claude-fable-5-1)    model_val="claude-fable-5-1:max" ;;
+    esac
+    [[ "$model_val" != "$_adn_head" ]] && typeset -g "$model_var=$model_val"
+  fi
+
   if [[ "$model_val" == *:* ]]; then
     local model_part="${model_val%%:*}"
     local level_part="${model_val##*:}"

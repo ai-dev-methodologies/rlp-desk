@@ -41,35 +41,35 @@ test('US-002 AC2.1 negative: buildClaudeCmd rejects unsupported modes', async ()
 test('US-002 AC2.2 happy: buildCodexCmd tui includes codex model and reasoning flags', async () => {
   const { buildCodexCmd } = await import('../../src/node/cli/command-builder.mjs');
 
-  const command = buildCodexCmd('tui', 'gpt-5.5', { reasoning: 'high' });
+  const command = buildCodexCmd('tui', 'gpt-5.6-sol', { reasoning: 'high' });
 
   assert.match(
     command,
     // US-001: `--disable hooks` joins `--disable plugins` (F1.19 native-hook
     // isolation). Node emits it unconditionally as dead-code parity.
-    /^codex -m 'gpt-5\.5' -c 'model_reasoning_effort="high"' --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox$/,
+    /^codex -m 'gpt-5\.6-sol' -c 'model_reasoning_effort="high"' --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox$/,
   );
 });
 
 test('US-002 AC2.2 boundary: buildCodexCmd omits reasoning when it is undefined', async () => {
   const { buildCodexCmd } = await import('../../src/node/cli/command-builder.mjs');
 
-  const command = buildCodexCmd('tui', 'gpt-5.5', {});
+  const command = buildCodexCmd('tui', 'gpt-5.6-sol', {});
 
   assert.equal(
     command,
     // US-001: see the AC2.2 happy case above.
-    "codex -m 'gpt-5.5' --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox",
+    "codex -m 'gpt-5.6-sol' --disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox",
   );
 });
 
 test('US-002 GAP-2: buildCodexCmd single-quotes model + reasoning (shell-injection defense)', async () => {
   const { buildCodexCmd } = await import('../../src/node/cli/command-builder.mjs');
 
-  const command = buildCodexCmd('tui', 'gpt-5.5', { reasoning: 'high"; rm -rf / #' });
+  const command = buildCodexCmd('tui', 'gpt-5.6-sol', { reasoning: 'high"; rm -rf / #' });
 
   // model + reasoning are emitted as single-quoted args, at parity with buildClaudeCmd.
-  assert.match(command, /-m 'gpt-5\.5'/);
+  assert.match(command, /-m 'gpt-5\.6-sol'/);
   assert.match(command, /-c 'model_reasoning_effort=/);
   // After stripping single-quoted spans, none of the injected shell syntax survives.
   const bare = command.replace(/'(?:[^']|'\\'')*'/g, '');
@@ -79,7 +79,7 @@ test('US-002 GAP-2: buildCodexCmd single-quotes model + reasoning (shell-injecti
 test('US-002 AC2.2 negative: buildCodexCmd rejects unsupported modes', async () => {
   const { buildCodexCmd } = await import('../../src/node/cli/command-builder.mjs');
 
-  assert.throws(() => buildCodexCmd('print', 'gpt-5.5', { reasoning: 'high' }), /unknown mode/i);
+  assert.throws(() => buildCodexCmd('print', 'gpt-5.6-sol', { reasoning: 'high' }), /unknown mode/i);
 });
 
 test('US-002 AC2.3 happy: parseModelFlag returns claude engine and effort for opus:max', async () => {
@@ -272,19 +272,19 @@ test('parseModelFlag still defaults an unrecognized bare name to the claude engi
 });
 
 // Team-lead review follow-up: fixing only the five known codex ALIASES and
-// leaving a bare, real codex model id (e.g. "gpt-5.5", no colon) misclassified
+// leaving a bare, real codex model id (e.g. "gpt-5.6-sol", no colon) misclassified
 // as claude made the rule unguessable — five names fixed, actual ids still
-// broken, disagreeing with isClaudeEngine('gpt-5.5') which already correctly
+// broken, disagreeing with isClaudeEngine('gpt-5.6-sol') which already correctly
 // says "not claude". Any bare gpt-* id now routes to codex directly (no
 // alias table lookup needed, it's already the real slug).
 test('parseModelFlag treats a bare gpt-* id (no colon) as the codex engine, matching isClaudeEngine', async () => {
   const { parseModelFlag, isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
 
-  assert.deepEqual(parseModelFlag('gpt-5.5', 'worker'), {
+  assert.deepEqual(parseModelFlag('gpt-5.6-sol', 'worker'), {
     engine: 'codex',
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-sol',
   });
-  assert.equal(isClaudeEngine('gpt-5.5'), false);
+  assert.equal(isClaudeEngine('gpt-5.6-sol'), false);
 });
 
 test('parseModelFlag treats a bare gpt-6-astra (no colon) as the codex engine', async () => {
@@ -342,9 +342,9 @@ test('US-002 AC2.4 happy: parseModelFlag maps spark:medium to codex spark defaul
 test('US-002 AC2.4 boundary: parseModelFlag keeps an empty reasoning for codex values', async () => {
   const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
 
-  assert.deepEqual(parseModelFlag('gpt-5.5:'), {
+  assert.deepEqual(parseModelFlag('gpt-5.6-sol:'), {
     engine: 'codex',
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-sol',
     reasoning: '',
   });
 });
@@ -395,8 +395,8 @@ test('isClaudeEngine honors model:effort syntax with claude prefix', async () =>
 
 test('isClaudeEngine returns false for codex models', async () => {
   const { isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
-  assert.equal(isClaudeEngine('gpt-5.5:high'), false);
-  assert.equal(isClaudeEngine('gpt-5.5:xhigh'), false);
+  assert.equal(isClaudeEngine('gpt-5.6-sol:high'), false);
+  assert.equal(isClaudeEngine('gpt-5.6-sol:xhigh'), false);
   assert.equal(isClaudeEngine('spark'), false);
   assert.equal(isClaudeEngine('spark:medium'), false);
   assert.equal(isClaudeEngine('gpt-5.3-codex-spark:high'), false);

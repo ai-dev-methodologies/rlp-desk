@@ -26,7 +26,13 @@
 #   3. 'opus:high max' fails loudly, not silently empty (current impl)
 #   4. 'opus:high max' silently empties the effort var (oracle — reproduces
 #      the previously-reported bug)
-#   5. Valid inputs (opus:high, haiku, gpt-5.5:medium) resolve IDENTICALLY
+#   5. Valid inputs (opus:high, haiku, gpt-5.6-sol:medium) resolve IDENTICALLY
+#      between current impl and oracle. The codex case deliberately uses a LIVE
+#      model id: a retired one (gpt-5.5 et al) is now remapped on the way in, so
+#      it diverges from the oracle BY DESIGN and cannot serve as a no-change
+#      fixture. Bare claude aliases (sonnet/opus/fable) are likewise normalized
+#      to an explicit level now, which is why the claude case here is the
+#      already-levelled opus:high rather than a bare alias.
 #      between current impl and oracle (no behavior regression)
 set -uo pipefail
 
@@ -179,7 +185,7 @@ _resolve() {
   )
 }
 
-for case_model in "opus:high" "haiku" "gpt-5.5:medium"; do
+for case_model in "opus:high" "haiku" "gpt-5.6-sol:medium"; do
   cur=$(_resolve "$TMP/current_fn.zsh" "$case_model")
   ora=$(_resolve "$TMP/oracle_fn.zsh" "$case_model")
   if [[ "$cur" == "$ora" ]]; then

@@ -135,7 +135,7 @@ test('US-008 AC8.2 happy: --mode agent hard-errors (exit 2) and does NOT launch 
   let stderr = '';
 
   const exitCode = await cli.main(
-    ['run', 'test', '--mode', 'agent', '--worker-model', 'gpt-5.5:medium', '--debug'],
+    ['run', 'test', '--mode', 'agent', '--worker-model', 'gpt-5.6-sol:medium', '--debug'],
     {
       cwd: repoRoot,
       stdout: { write() {} },
@@ -166,7 +166,7 @@ test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env
     [
       'run', 'demo',
       '--mode', 'tmux',
-      '--worker-model', 'gpt-5.5:high',
+      '--worker-model', 'gpt-5.6-sol:high',
       '--verifier-model', 'sonnet',
       '--max-iter', '5',
       '--iter-timeout', '900',
@@ -203,8 +203,12 @@ test('US-008 AC8.2 tmux: --mode tmux delegates to the zsh runner with mapped env
   assert.equal(spawned.zshPath, '/fake/run_ralph_desk.zsh');
   assert.equal(spawned.cwd, tempCwd);
   assert.equal(spawned.env.LOOP_NAME, 'demo');
-  assert.equal(spawned.env.WORKER_MODEL, 'gpt-5.5:high');
-  assert.equal(spawned.env.VERIFIER_MODEL, 'sonnet');
+  assert.equal(spawned.env.WORKER_MODEL, 'gpt-5.6-sol:high');
+  // Bare claude aliases are normalized to an explicit start level on the way
+  // in, so the zsh leader never inherits claude CLI's own (unconfirmed)
+  // default effort. `--verifier-model sonnet` therefore forwards as
+  // `sonnet:medium`, not verbatim.
+  assert.equal(spawned.env.VERIFIER_MODEL, 'sonnet:medium');
   assert.equal(spawned.env.MAX_ITER, '5');
   assert.equal(spawned.env.ITER_TIMEOUT, '900');
   assert.equal(spawned.env.CB_THRESHOLD, '4');
@@ -279,7 +283,7 @@ test('US-008 AC8.2 tmux missing zsh runner: surfaces actionable error and exits 
   let stderr = '';
 
   const exitCode = await cli.main(
-    ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.5:high'],
+    ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.6-sol:high'],
     {
       cwd: tempCwd,
       stdout: { write() {} },
@@ -499,7 +503,7 @@ test('main run command does not warn when codex worker model used in tmux mode',
   delete process.env.NODE_ENV;
   try {
     await main(
-      ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.5:high'],
+      ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.6-sol:high'],
       {
         runCampaign: fakeRun,
         stderr,
@@ -615,7 +619,7 @@ test('US-008 P1.b: --mode tmux unaffected by P1.b banner changes', async (t) => 
   delete process.env.NODE_ENV;
   try {
     await main(
-      ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.5:high'],
+      ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.6-sol:high'],
       {
         stderr,
         stdout,
@@ -701,8 +705,8 @@ test('parseRunOptions accepts a bare model name with no effort/reasoning suffix'
 
 test('parseRunOptions accepts a valid codex model:reasoning value', async () => {
   const { parseRunOptions } = await import('../../src/node/run.mjs');
-  const options = parseRunOptions(['--worker-model', 'gpt-5.5:medium'], '/tmp');
-  assert.equal(options.workerModel, 'gpt-5.5:medium');
+  const options = parseRunOptions(['--worker-model', 'gpt-5.6-sol:medium'], '/tmp');
+  assert.equal(options.workerModel, 'gpt-5.6-sol:medium');
 });
 
 // claude-fable-5-1: isClaudeFamily is a plain startsWith('claude-') check, so
@@ -744,10 +748,10 @@ test('parseRunOptions rejects astra:minimal (alias form)', async () => {
   );
 });
 
-test('parseRunOptions still accepts gpt-5.5:minimal (minimal remains valid for other codex models)', async () => {
+test('parseRunOptions still accepts gpt-5.6-sol:minimal (minimal remains valid for other codex models)', async () => {
   const { parseRunOptions } = await import('../../src/node/run.mjs');
-  const options = parseRunOptions(['--final-verifier-model', 'gpt-5.5:minimal'], '/tmp');
-  assert.equal(options.finalVerifierModel, 'gpt-5.5:minimal');
+  const options = parseRunOptions(['--final-verifier-model', 'gpt-5.6-sol:minimal'], '/tmp');
+  assert.equal(options.finalVerifierModel, 'gpt-5.6-sol:minimal');
 });
 
 // Independent-review finding (MED): --consensus-model and --final-consensus-model
@@ -784,8 +788,8 @@ test('parseRunOptions accepts a valid --consensus-model / --final-consensus-mode
 test('parseRunOptions rejects an invalid codex reasoning level the same way as an invalid claude effort', async () => {
   const { parseRunOptions } = await import('../../src/node/run.mjs');
   assert.throws(
-    () => parseRunOptions(['--worker-model', 'gpt-5.5:extreme'], '/tmp'),
-    /invalid reasoning 'extreme' in --worker-model='gpt-5.5:extreme'/,
+    () => parseRunOptions(['--worker-model', 'gpt-5.6-sol:extreme'], '/tmp'),
+    /invalid reasoning 'extreme' in --worker-model='gpt-5.6-sol:extreme'/,
   );
 });
 
@@ -818,7 +822,7 @@ test('main run command forwards accepted --worker-model/--verifier-model/--final
   const exitCode = await main(
     [
       'run', 'demo', '--mode', 'tmux',
-      '--worker-model', 'gpt-5.5:medium',
+      '--worker-model', 'gpt-5.6-sol:medium',
       '--verifier-model', 'opus:high',
       '--final-verifier-model', 'haiku',
     ],
@@ -834,7 +838,7 @@ test('main run command forwards accepted --worker-model/--verifier-model/--final
 
   assert.equal(exitCode, 0);
   assert.ok(capturedEnv, 'spawnZsh must have been called with an env object');
-  assert.equal(capturedEnv.WORKER_MODEL, 'gpt-5.5:medium');
+  assert.equal(capturedEnv.WORKER_MODEL, 'gpt-5.6-sol:medium');
   assert.equal(capturedEnv.VERIFIER_MODEL, 'opus:high');
   assert.equal(capturedEnv.FINAL_VERIFIER_MODEL, 'haiku');
 });
@@ -960,4 +964,90 @@ test('claude bare-alias set (haiku/sonnet/opus/fable) agrees across _auto_detect
   // Pin the actual expected set so a coordinated-but-wrong edit across all
   // four sites is still caught.
   assert.deepEqual(autoDetectAliases, ['fable', 'haiku', 'opus', 'sonnet']);
+});
+
+// ---------------------------------------------------------------------------
+// Vendor-retirement remap + bare-alias level normalization.
+//
+// The ORDERING is the part worth testing, not the tables. Remap runs on the
+// way in, before validateModelFlag; the safety property that makes that sound
+// is that remap rewrites ONLY the model part and never the level, so a
+// malformed input stays malformed and cannot be laundered into an accepted
+// one. The complementary half is that the level IS then judged against the
+// REPLACEMENT model's vocabulary, not the retired model's.
+// ---------------------------------------------------------------------------
+
+test('normalizeModelSpec: every retired family remaps and carries its level over', async () => {
+  const { normalizeModelSpec } = await import('../../src/node/cli/command-builder.mjs');
+  const warn = () => {};
+  assert.equal(normalizeModelSpec('gpt-5.4:high', { warn }), 'gpt-5.6-terra:high');
+  assert.equal(normalizeModelSpec('gpt-5.4-mini:low', { warn }), 'gpt-5.6-luna:low');
+  assert.equal(normalizeModelSpec('gpt-5.5:xhigh', { warn }), 'gpt-5.6-sol:xhigh');
+  assert.equal(normalizeModelSpec('gpt-5.3-codex-spark:medium', { warn }), 'gpt-5.6-luna:medium');
+  // The bare `spark` alias is retired alongside the id it expanded to.
+  assert.equal(normalizeModelSpec('spark:high', { warn }), 'gpt-5.6-luna:high');
+});
+
+test('normalizeModelSpec: bare claude aliases gain an explicit start level, haiku does not', async () => {
+  const { normalizeModelSpec } = await import('../../src/node/cli/command-builder.mjs');
+  assert.equal(normalizeModelSpec('sonnet'), 'sonnet:medium');
+  assert.equal(normalizeModelSpec('opus'), 'opus:medium');
+  assert.equal(normalizeModelSpec('fable'), 'claude-fable-5-1:max');
+  assert.equal(normalizeModelSpec('claude-fable-5-1'), 'claude-fable-5-1:max');
+  // haiku has no effort concept, so it is deliberately absent from the table.
+  assert.equal(normalizeModelSpec('haiku'), 'haiku');
+  // An already-levelled spec is left alone.
+  assert.equal(normalizeModelSpec('opus:high'), 'opus:high');
+});
+
+test('normalizeModelSpec: warns exactly once per remap and not at all otherwise', async () => {
+  const { normalizeModelSpec } = await import('../../src/node/cli/command-builder.mjs');
+  const warnings = [];
+  const warn = (message) => warnings.push(message);
+  normalizeModelSpec('gpt-5.5:high', { warn });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /^\[model-remap\] WARNING: 'gpt-5\.5:high' is retired — using 'gpt-5\.6-sol:high' instead\./);
+  assert.match(warnings[0], /rlp-desk-models\.json/, 'the warning must name the escape hatch, not just the substitution');
+  normalizeModelSpec('sonnet', { warn });
+  normalizeModelSpec('gpt-5.6-sol:high', { warn });
+  assert.equal(warnings.length, 1, 'normalization without a remap must stay silent');
+});
+
+test('remap does NOT launder a malformed retired spec into an accepted one', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  // A trailing colon is broken regardless of which model it names. Remapping
+  // first must not turn this rejection into an accepted 'gpt-5.6-sol:'.
+  assert.throws(
+    () => parseRunOptions(['--worker-model', 'gpt-5.5:'], '/tmp'),
+    /invalid reasoning ''/,
+  );
+  // Same for an injection-shaped level.
+  assert.throws(
+    () => parseRunOptions(['--worker-model', 'gpt-5.5:high;touch x'], '/tmp'),
+    /invalid reasoning 'high;touch x'/,
+  );
+});
+
+test('an invalid level on a retired id is reported against the REMAPPED model', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  // The error names gpt-5.6-sol, not gpt-5.5 — the user needs to see the id
+  // the run would actually have used.
+  assert.throws(
+    () => parseRunOptions(['--worker-model', 'gpt-5.5:extreme'], '/tmp'),
+    /invalid reasoning 'extreme' in --worker-model='gpt-5\.6-sol:extreme'/,
+  );
+});
+
+test('level vocabulary is judged against the REPLACEMENT model, not the retired one', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  // 'minimal' is rejected for gpt-6-astra alone and stays valid elsewhere, so
+  // gpt-5.5:minimal must survive as gpt-5.6-sol:minimal. Validating against
+  // the retired model (or against astra's narrower set) would wrongly reject.
+  const options = parseRunOptions(['--final-verifier-model', 'gpt-5.5:minimal'], '/tmp');
+  assert.equal(options.finalVerifierModel, 'gpt-5.6-sol:minimal');
+  // ...while the model-specific exclusion still fires for astra itself.
+  assert.throws(
+    () => parseRunOptions(['--final-consensus-model', 'astra:minimal'], '/tmp'),
+    /does not support 'minimal'/,
+  );
 });

@@ -71,7 +71,7 @@ test('US-004 AC4.1 boundary: missing zsh runner still leaves the ENRICHED breadc
   const cli = await import('../../src/node/run.mjs');
 
   const exitCode = await cli.main(
-    ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.5:high'],
+    ['run', 'demo', '--mode', 'tmux', '--worker-model', 'gpt-5.6-sol:high'],
     {
       cwd: tempCwd,
       stdout: { write() {} },
@@ -95,7 +95,7 @@ test('US-004 AC4.1 boundary: missing zsh runner still leaves the ENRICHED breadc
   assert.equal(record.leader, 'tmux');
   assert.equal(typeof record.pid, 'number');
   assert.ok(record.options, 'resolved options snapshot must be present');
-  assert.equal(record.options.workerModel, 'gpt-5.5:high');
+  assert.equal(record.options.workerModel, 'gpt-5.6-sol:high');
   assert.equal(typeof record.ts, 'string');
 });
 

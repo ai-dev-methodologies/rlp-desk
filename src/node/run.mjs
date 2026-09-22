@@ -13,7 +13,7 @@ import {
   buildPaths,
   resolveAnalyticsPointer,
 } from './runner/campaign-main-loop.mjs';
-import { isClaudeEngine } from './cli/command-builder.mjs';
+import { isClaudeEngine, normalizeModelSpec } from './cli/command-builder.mjs';
 import {
   writeGateReceipt,
   verifyGateReceipt,
@@ -227,7 +227,7 @@ export function parseRunOptions(args, cwd) {
         index += 1;
         break;
       case '--worker-model':
-        options.workerModel = consumeValue(args, index, token);
+        options.workerModel = normalizeModelSpec(consumeValue(args, index, token));
         validateModelFlag(options.workerModel, token);
         index += 1;
         break;
@@ -235,12 +235,12 @@ export function parseRunOptions(args, cwd) {
         options.lockWorkerModel = true;
         break;
       case '--verifier-model':
-        options.verifierModel = consumeValue(args, index, token);
+        options.verifierModel = normalizeModelSpec(consumeValue(args, index, token));
         validateModelFlag(options.verifierModel, token);
         index += 1;
         break;
       case '--final-verifier-model':
-        options.finalVerifierModel = consumeValue(args, index, token);
+        options.finalVerifierModel = normalizeModelSpec(consumeValue(args, index, token));
         validateModelFlag(options.finalVerifierModel, token);
         index += 1;
         break;
@@ -249,12 +249,12 @@ export function parseRunOptions(args, cwd) {
         index += 1;
         break;
       case '--consensus-model':
-        options.consensusModel = consumeValue(args, index, token);
+        options.consensusModel = normalizeModelSpec(consumeValue(args, index, token));
         validateModelFlag(options.consensusModel, token);
         index += 1;
         break;
       case '--final-consensus-model':
-        options.finalConsensusModel = consumeValue(args, index, token);
+        options.finalConsensusModel = normalizeModelSpec(consumeValue(args, index, token));
         validateModelFlag(options.finalConsensusModel, token);
         index += 1;
         break;

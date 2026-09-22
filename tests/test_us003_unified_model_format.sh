@@ -44,10 +44,19 @@ _run_parse() {
   # _auto_detect_engine cannot drift) — must be sourced alongside it or every
   # colon-format call fails with "command not found" and returns 1 silently.
   validate_body=$(sed -n '/^_validate_model_level() {$/,/^}$/p' "$LIB" 2>/dev/null)
+  # Same class of dependency as _validate_model_level above: parse_model_flag
+  # now also calls _normalize_model_spec (retirement remap + bare-alias level
+  # normalization), which reads two module-scope associative arrays. Extract
+  # the whole contiguous block — arrays AND function — or every call dies with
+  # "command not found", and because that failure exits non-zero a REJECTION
+  # assertion passes for entirely the wrong reason.
+  local normalize_body
+  normalize_body=$(sed -n '/^typeset -gA RETIRED_MODEL_REMAP=($/,/^}$/p' "$LIB" 2>/dev/null)
   local tmp_script tmpout tmperr
   tmp_script=$(mktemp /tmp/us003_XXXXXX.zsh)
   tmpout=$(mktemp); tmperr=$(mktemp)
-  printf '%s\n' "$validate_body" > "$tmp_script"
+  printf '%s\n' "$normalize_body" > "$tmp_script"
+  printf '%s\n' "$validate_body" >> "$tmp_script"
   printf '%s\n' "$func_body" >> "$tmp_script"
   printf "parse_model_flag '%s' '%s'\n" "$value" "$role" >> "$tmp_script"
   zsh "$tmp_script" > "$tmpout" 2> "$tmperr"
@@ -82,9 +91,9 @@ if _func_or_fail "AC1-L1-1: gpt-5.5:medium → engine=codex"; then
 fi
 
 _run_parse "gpt-5.5:medium" "worker"
-if _func_or_fail "AC1-L1-2: gpt-5.5:medium → model=gpt-5.5"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.5" \
-    "AC1-L1-2: gpt-5.5:medium → model=gpt-5.5"
+if _func_or_fail "AC1-L1-2: gpt-5.5:medium → model=gpt-5.6-sol (retired, remapped)"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-sol" \
+    "AC1-L1-2: gpt-5.5:medium → model=gpt-5.6-sol (retired, remapped; level carried over)"
 fi
 
 _run_parse "gpt-5.5:medium" "worker"
@@ -100,9 +109,9 @@ if _func_or_fail "AC1-L1-4: gpt-5.3-codex-spark:high → engine=codex"; then
 fi
 
 _run_parse "gpt-5.3-codex-spark:high" "worker"
-if _func_or_fail "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.3-codex-spark"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.3-codex-spark" \
-    "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.3-codex-spark"
+if _func_or_fail "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.6-luna (retired, remapped)"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-luna" \
+    "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.6-luna (retired, remapped; level carried over)"
 fi
 
 # codex 0.144 / GPT-5.6 family: passthrough of suffixed names + new efforts,
@@ -250,10 +259,13 @@ _run_parse "gpt-5.5" "worker"
 if _func_or_fail "AC1-L1-8: gpt-5.5 (no colon) → codex (bare gpt-* id, not a claude id or alias)"; then
   engine="$(echo "$PARSE_STDOUT" | awk '{print $1}')"
   model="$(echo "$PARSE_STDOUT" | awk '{print $2}')"
-  if [[ "$engine" == "codex" && "$model" == "gpt-5.5" ]]; then
-    pass "AC1-L1-8: gpt-5.5 (no colon) → engine=codex, model=gpt-5.5 (bare gpt-* id routes to codex directly)"
+  # The routing property is unchanged — a bare gpt-* id goes to codex, not
+  # claude. gpt-5.5 is retired, so it lands on its replacement rather than on
+  # itself; the classification, not the slug, is what this pins.
+  if [[ "$engine" == "codex" && "$model" == "gpt-5.6-sol" ]]; then
+    pass "AC1-L1-8: gpt-5.5 (no colon) → engine=codex, model=gpt-5.6-sol (bare gpt-* id routes to codex, retired id remapped)"
   else
-    fail "AC1-L1-8: gpt-5.5 (no colon) should be engine=codex model=gpt-5.5, got engine=$engine model=$model"
+    fail "AC1-L1-8: gpt-5.5 (no colon) should be engine=codex model=gpt-5.6-sol, got engine=$engine model=$model"
   fi
 fi
 
@@ -314,8 +326,10 @@ _run_parse "fable" "worker"
 if _func_or_fail "AC2-L1-6: fable → engine=claude"; then
   assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
     "AC2-L1-6: fable → engine=claude"
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "fable" \
-    "AC2-L1-7: fable → model=fable"
+  # A bare claude alias is normalized to an explicit start level, and fable
+  # additionally resolves to the version-pinned id the ladder and docs use.
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "claude-fable-5-1" \
+    "AC2-L1-7: fable → model=claude-fable-5-1 (bare alias pins the version)"
 fi
 
 _run_parse "fable:max" "final-verifier"
@@ -380,14 +394,15 @@ mkdir -p "$TMP_L3/.rlp-desk/plans" \
          "$TMP_L3/.rlp-desk/logs/e2eslug"
 touch "$TMP_L3/.rlp-desk/plans/prd-e2eslug.md"
 
-# L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows gpt-5.5
+# L3-E2E-1: a retired --worker-model is remapped end to end, so the startup
+# log shows the REPLACEMENT the run will actually use, not the id typed.
 L3_OUT_1=$(LOOP_NAME=e2eslug ROOT="$TMP_L3" TMUX=test \
   zsh "$RUN" --worker-model gpt-5.5:medium 2>/dev/null || true)
-c=$(echo "$L3_OUT_1" | grep -c "gpt-5.5" 2>/dev/null) || c=0
+c=$(echo "$L3_OUT_1" | grep -c "gpt-5.6-sol" 2>/dev/null) || c=0
 if [[ "$c" -ge 1 ]]; then
-  pass "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows gpt-5.5"
+  pass "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows the remapped gpt-5.6-sol"
 else
-  fail "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows gpt-5.5 (output: '$(echo "$L3_OUT_1" | head -5)')"
+  fail "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows the remapped gpt-5.6-sol (output: '$(echo "$L3_OUT_1" | head -5)')"
 fi
 
 # L3-E2E-2: --verifier-model sonnet → startup log shows sonnet

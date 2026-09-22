@@ -252,9 +252,88 @@ _validate_model_level() {
 # Output: nothing on success (return 0, VAR_NAME normalized in place). On
 # failure: one ERROR line on stderr, return 1 — callers must check the
 # return value.
+# Vendor-retired codex families (gpt-5.4 / gpt-5.4-mini 2026-08-31,
+# gpt-5.3-codex-spark 2026-09-14, gpt-5.5 ChatGPT-login-only from 2026-10-14).
+# Their ladder keys are gone, but the ids still arrive from a user flag, a
+# saved status.json, or a user override ladder (~/.claude/rlp-desk-models.json)
+# which returns arbitrary unvalidated strings.
+#
+# `-gA` (not a bare `typeset -A`) for the same reason as the other maps in this
+# file: a bare declaration is function-local when the lib happens to be sourced
+# from inside a function, and a lib function must not depend on a global only
+# run_ralph_desk.zsh declares — standalone consumers (tests) never reach that file.
+#
+# Byte-for-byte mirror of RETIRED_MODEL_REMAP / BARE_ALIAS_NORMALIZATION and the
+# warning text in src/node/cli/command-builder.mjs; a parity test pins the two.
+typeset -gA RETIRED_MODEL_REMAP=(
+  'gpt-5.4'              'gpt-5.6-terra'
+  'gpt-5.4-mini'         'gpt-5.6-luna'
+  'gpt-5.5'              'gpt-5.6-sol'
+  'gpt-5.3-codex-spark'  'gpt-5.6-luna'
+  'spark'                'gpt-5.6-luna'
+)
+
+# Bare claude aliases carry no effort, so the level falls to claude CLI's own
+# default — a value this project has never confirmed. Pin the start explicitly.
+# haiku is absent on purpose: it has no effort concept. fable resolves to the
+# version-pinned id too, matching how the ladder and every doc name it.
+typeset -gA BARE_ALIAS_NORMALIZATION=(
+  'sonnet'            'sonnet:medium'
+  'opus'              'opus:medium'
+  'fable'             'claude-fable-5-1:max'
+  'claude-fable-5-1'  'claude-fable-5-1:max'
+)
+
+# _normalize_model_spec() — remap retired families (level preserved) and give
+# bare claude aliases their explicit start level. Echoes the normalized spec on
+# stdout; any remap warning goes to stderr, so a command substitution captures
+# only the value.
+#
+# The remap REWRITES ONLY THE MODEL PART, never the level. That is what makes it
+# safe to normalize BEFORE _validate_model_level: a malformed input stays
+# malformed, so remapping can never launder a rejection into an acceptance
+# ('gpt-5.5:' becomes 'gpt-5.6-sol:' and is still rejected for an empty level).
+# The level is then validated against the REPLACEMENT model, which matters:
+# 'minimal' is rejected for gpt-6-astra alone, so 'gpt-5.5:minimal' correctly
+# resolves to the accepted 'gpt-5.6-sol:minimal'.
+# Usage: normalized=$(_normalize_model_spec "$spec")
+_normalize_model_spec() {
+  local value="$1"
+  [[ -n "$value" ]] || { printf '%s' "$value"; return 0; }
+
+  local head tail
+  if [[ "$value" == *:* ]]; then
+    head="${value%%:*}"
+    tail=":${value#*:}"
+  else
+    head="$value"
+    tail=""
+  fi
+
+  local replacement="${RETIRED_MODEL_REMAP[$head]:-}"
+  if [[ -n "$replacement" ]]; then
+    local normalized="${replacement}${tail}"
+    print -u2 -r -- "[model-remap] WARNING: '${value}' is retired — using '${normalized}' instead. To keep the old id (API-key logins still serve it), pin it in ~/.claude/rlp-desk-models.json."
+    printf '%s' "$normalized"
+    return 0
+  fi
+
+  if [[ -z "$tail" ]]; then
+    printf '%s' "${BARE_ALIAS_NORMALIZATION[$head]:-$head}"
+    return 0
+  fi
+
+  printf '%s' "$value"
+  return 0
+}
+
 _validate_consensus_model_var() {
   local var_name="$1" context="$2"
   local value="${(P)var_name}"
+  # Same normalization as parse_model_flag: consensus dispatch hand-splits this
+  # value, so a retired id or bare alias reaching it unnormalized would be sent
+  # to the vendor verbatim.
+  value=$(_normalize_model_spec "$value")
   [[ "$value" == *:* ]] || return 0
 
   local model="${value%%:*}" level="${value##*:}"
@@ -282,6 +361,13 @@ _validate_consensus_model_var() {
 parse_model_flag() {
   local value="$1"
   local role="${2:-worker}"
+  # Retirement remap + bare-alias level normalization run FIRST, so a bare
+  # alias that gains a level (sonnet -> sonnet:medium) falls into the colon
+  # branch below and is validated like any other levelled spec, and a retired
+  # id is validated against its REPLACEMENT model's vocabulary. Remap only
+  # rewrites the model part, so a malformed spec stays malformed and cannot be
+  # laundered past _validate_model_level.
+  value=$(_normalize_model_spec "$value")
   local colon_count
   colon_count=$(printf '%s' "$value" | tr -cd ':' | wc -c | tr -d ' ')
   if (( colon_count > 1 )); then
