@@ -210,7 +210,7 @@ test('US-006 AC6.1 happy: run creates the tmux panes, launches the worker with c
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -228,7 +228,7 @@ test('US-006 AC6.1 happy: run creates the tmux panes, launches the worker with c
   );
 
   const workerCommand = tmux.commands.find((entry) => entry.paneId === '%worker')?.command ?? '';
-  assert.match(workerCommand, /codex -m 'gpt-5\.5'/); // GAP-2: model is now shell-quoted
+  assert.match(workerCommand, /codex -m 'gpt-5\.6-sol'/); // GAP-2: model is now shell-quoted
   assert.match(workerCommand, /model_reasoning_effort="medium"/);
   // US-001 (F1.19): `--disable hooks` joins `--disable plugins` at every codex launch.
   assert.match(workerCommand, /--disable plugins --disable hooks --dangerously-bypass-approvals-and-sandbox/);
@@ -259,13 +259,13 @@ test('US-006 AC6.1 happy: run creates the tmux panes, launches the worker with c
 test('US-006 fix/omx-state-isolation: buildLaunchCommand prefixes codex launches with OMX_STATE_ROOT and leaves claude launches + no-runtimeDir callers unprefixed (compat)', async () => {
   const { buildLaunchCommand } = await import('../../src/node/runner/campaign-main-loop.mjs');
 
-  const codexWithDir = buildLaunchCommand('/tmp/prompt.md', 'gpt-5.5:medium', '/tmp/run/omx-state');
+  const codexWithDir = buildLaunchCommand('/tmp/prompt.md', 'gpt-5.6-sol:medium', '/tmp/run/omx-state');
   assert.match(codexWithDir, /^OMX_STATE_ROOT='\/tmp\/run\/omx-state' codex -m/);
 
   // Compat: a caller that does not pass an omxStateDir (e.g. a future
   // non-campaign use of this helper) must get the byte-identical unprefixed
   // command — isolation must never become a hard requirement.
-  const codexWithoutDir = buildLaunchCommand('/tmp/prompt.md', 'gpt-5.5:medium');
+  const codexWithoutDir = buildLaunchCommand('/tmp/prompt.md', 'gpt-5.6-sol:medium');
   assert.doesNotMatch(codexWithoutDir, /OMX_STATE_ROOT/);
   assert.match(codexWithoutDir, /^codex -m/);
 
@@ -290,7 +290,7 @@ test('US-006 AC6.1 boundary: run can create a real tmux session with four panes 
     rootDir: campaign.rootDir,
     mode: 'tmux',
     sessionName,
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     // v0.13.1: explicit empty env forces detached new-session branch even
     // when the test runner is itself inside an attached tmux. Production
     // users invoking from inside tmux take the in-current-window split
@@ -319,7 +319,7 @@ test('US-006 AC6.1 boundary: run can create a real tmux session with four panes 
 
   // 4 panes: leader (from new-session) + flywheel + worker + verifier
   assert.equal(paneIds.length, 4);
-  assert.match(sendCommands[0].command, /gpt-5\.5/);
+  assert.match(sendCommands[0].command, /gpt-5\.6-sol/);
 });
 
 test('US-006 AC6.1 negative: run rejects a missing scaffold before it creates tmux state', async (t) => {
@@ -334,7 +334,7 @@ test('US-006 AC6.1 negative: run rejects a missing scaffold before it creates tm
     run(campaign.slug, {
       rootDir: campaign.rootDir,
       mode: 'tmux',
-      workerModel: 'gpt-5.5:medium',
+      workerModel: 'gpt-5.6-sol:medium',
       pollForSignal: createPoller([]),
       runIntegrationCheck: async () => ({ exitCode: 0 }),
       ...tmux.deps,
@@ -358,7 +358,7 @@ test('US-006 AC6.2 happy: a worker verify signal launches a verifier prompt scop
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -409,7 +409,7 @@ test('US-006 AC6.2 boundary: a codex worker timeout falls back to verifying the 
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       new TimeoutError('codex worker exited before writing a signal'),
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -434,7 +434,7 @@ test('US-006 AC6.2 negative: a failing verdict writes a fix contract and retries
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       {
@@ -479,7 +479,7 @@ test('US-006 AC6.3 happy: three consecutive failures on the same US upgrade the 
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'fail', recommended_state_transition: 'continue', issues: [] },
@@ -502,7 +502,7 @@ test('US-006 AC6.3 happy: three consecutive failures on the same US upgrade the 
     .find((command) => /model_reasoning_effort="high"/.test(command));
 
   assert.ok(upgradedCommand, 'expected a retried worker launch with high reasoning');
-  assert.ok(statusHistory.some((status) => status.worker_model === 'gpt-5.5:high'));
+  assert.ok(statusHistory.some((status) => status.worker_model === 'gpt-5.6-sol:high'));
 });
 
 test('US-006 AC6.3 boundary: resume preserves the failure streak so the next failure upgrades the worker immediately', async (t) => {
@@ -515,7 +515,7 @@ test('US-006 AC6.3 boundary: resume preserves the failure streak so the next fai
       slug: campaign.slug,
       iteration: 2,
       phase: 'worker',
-      worker_model: 'gpt-5.5:medium',
+      worker_model: 'gpt-5.6-sol:medium',
       verifier_model: 'sonnet',
       final_verifier_model: 'opus',
       verified_us: [],
@@ -531,7 +531,7 @@ test('US-006 AC6.3 boundary: resume preserves the failure streak so the next fai
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 3, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'fail', recommended_state_transition: 'continue', issues: [] },
@@ -563,7 +563,7 @@ test('US-006 AC6.3 negative: after repeated failures through xhigh the campaign 
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller(failureSequence),
     runIntegrationCheck: async () => ({ exitCode: 0 }),
     ...tmux.deps,
@@ -590,7 +590,7 @@ test('US-006 AC6.4 happy: after all stories pass individually, final sequential 
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -635,7 +635,7 @@ test('US-006 AC6.4 boundary: a failing final per-US re-verification stops comple
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     maxIterations: 3,
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
@@ -664,7 +664,7 @@ test('US-006 AC6.4 negative: integration failure prevents COMPLETE even after al
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     maxIterations: 2,
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
@@ -698,7 +698,7 @@ test('US-006 AC6.5 happy: an existing blocked sentinel refuses to start and tell
     run(campaign.slug, {
       rootDir: campaign.rootDir,
       mode: 'tmux',
-      workerModel: 'gpt-5.5:medium',
+      workerModel: 'gpt-5.6-sol:medium',
       pollForSignal: createPoller([]),
       runIntegrationCheck: async () => ({ exitCode: 0 }),
       ...tmux.deps,
@@ -723,7 +723,7 @@ test('US-006 AC6.5 boundary: a blocked sentinel short-circuits before any tmux s
     run(campaign.slug, {
       rootDir: campaign.rootDir,
       mode: 'tmux',
-      workerModel: 'gpt-5.5:medium',
+      workerModel: 'gpt-5.6-sol:medium',
       pollForSignal: createPoller([]),
       runIntegrationCheck: async () => ({ exitCode: 0 }),
       onStatusChange: (status) => statusHistory.push(status),
@@ -744,7 +744,7 @@ test('US-006 AC6.5 negative: without a blocked sentinel the campaign is allowed 
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -774,7 +774,7 @@ test('US-006 Bug-7-A: worker pollForSignal success reaps worker pane and locks s
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -814,7 +814,7 @@ test('US-006 Bug-7-B: verifier verdict pass reaps verifier pane and locks verdic
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -849,7 +849,7 @@ test('US-006 Bug-7-C: every accepted artifact triggers a kill+lock pair (post-B2
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -923,7 +923,7 @@ test('US-006 Bug-7-C-negative: lockSentinel(doneClaim) is invoked unconditionall
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -974,7 +974,7 @@ test('US-006 Bug-7-D: --mode agent live tmux reaper leaves all panes at idle she
     rootDir: campaign.rootDir,
     mode: 'tmux',
     sessionName,
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     env: {},
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
@@ -1036,7 +1036,7 @@ test('US-006 Bug-7-D: --mode agent live tmux reaper leaves all panes at idle she
 //                                       (worker_incomplete_uncommitted)
 //   A4. done-claim + clean tree       → synthesize verify signal (legacy path)
 //
-// All four assertions exercise the codex engine (workerModel 'gpt-5.5:medium')
+// All four assertions exercise the codex engine (workerModel 'gpt-5.6-sol:medium')
 // because the synthesize gate was always a codex-only branch.
 
 async function writeDoneClaim(campaign, usId = 'US-001') {
@@ -1063,7 +1063,7 @@ test('US-006 Bug-8-A1: codex worker timeout WITHOUT done-claim writes BLOCKED in
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       new TimeoutError('codex worker exited before writing a signal'),
     ]),
@@ -1098,7 +1098,7 @@ test('US-006 Bug-8-A2: codex worker timeout WITH done-claim but git unverifiable
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       new TimeoutError('codex worker exited before writing a signal'),
     ]),
@@ -1134,7 +1134,7 @@ test('US-006 Bug-8-A3: codex worker timeout WITH done-claim AND dirty tree write
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       new TimeoutError('codex worker exited before writing a signal'),
     ]),
@@ -1179,7 +1179,7 @@ test('US-006 Bug-8-A4: codex worker timeout WITH done-claim AND clean tree synth
   const result = await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       new TimeoutError('codex worker exited before writing a signal'),
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -1224,7 +1224,7 @@ test('US-006 PR-0b-narrow AC-H1: reapProducer awaits waitForProcessExit on every
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },
@@ -1256,7 +1256,7 @@ test('US-006 PR-0b-narrow AC-H2: every accepted sentinel receives a leader_ack s
   await run(campaign.slug, {
     rootDir: campaign.rootDir,
     mode: 'tmux',
-    workerModel: 'gpt-5.5:medium',
+    workerModel: 'gpt-5.6-sol:medium',
     pollForSignal: createPoller([
       { iteration: 1, status: 'verify', us_id: 'US-001', summary: 'done' },
       { verdict: 'pass', recommended_state_transition: 'continue' },

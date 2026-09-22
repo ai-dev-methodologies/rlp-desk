@@ -173,49 +173,49 @@ r=\$(get_next_model 'gpt-5.3-codex-spark:xhigh')
   fi
 fi
 
-# AC2-L1-2c: get_next_model("gpt-5.3-codex-spark:high") returns gpt-5.3-codex-spark:xhigh (not 5.4)
+# AC2-L1-2c: get_next_model("gpt-5.6-sol:high") returns gpt-5.6-sol:xhigh (not a different family)
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-2c: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
-r=\$(get_next_model 'gpt-5.3-codex-spark:high')
-[[ \"\$r\" = 'gpt-5.3-codex-spark:xhigh' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
+r=\$(get_next_model 'gpt-5.6-sol:high')
+[[ \"\$r\" = 'gpt-5.6-sol:xhigh' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-2c: get_next_model(gpt-5.3-codex-spark:high) → gpt-5.3-codex-spark:xhigh (stays in spark)"
+    pass "AC2-L1-2c: get_next_model(gpt-5.6-sol:high) → gpt-5.6-sol:xhigh (stays in sol)"
   else
-    fail "AC2-L1-2c: get_next_model(gpt-5.3-codex-spark:high) should return gpt-5.3-codex-spark:xhigh, got: $result"
+    fail "AC2-L1-2c: get_next_model(gpt-5.6-sol:high) should return gpt-5.6-sol:xhigh, got: $result"
   fi
 fi
 
-# AC2-L1-2d: get_next_model full upgrade chain (gpt-5.3-codex-spark:medium → high)
+# AC2-L1-2d: get_next_model full upgrade chain (gpt-5.6-sol:medium → high)
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-2d: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
-r=\$(get_next_model 'gpt-5.3-codex-spark:medium')
-[[ \"\$r\" = 'gpt-5.3-codex-spark:high' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
+r=\$(get_next_model 'gpt-5.6-sol:medium')
+[[ \"\$r\" = 'gpt-5.6-sol:high' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-2d: get_next_model(gpt-5.3-codex-spark:medium) → gpt-5.3-codex-spark:high"
+    pass "AC2-L1-2d: get_next_model(gpt-5.6-sol:medium) → gpt-5.6-sol:high"
   else
     fail "AC2-L1-2d: spark upgrade failed, got: $result"
   fi
 fi
 
-# AC2-L1-2e: get_next_model(gpt-5.3-codex-spark:low) returns gpt-5.3-codex-spark:medium
+# AC2-L1-2e: get_next_model(gpt-5.6-sol:low) returns gpt-5.6-sol:medium
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-2e: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
-r=\$(get_next_model 'gpt-5.3-codex-spark:low')
-[[ \"\$r\" = 'gpt-5.3-codex-spark:medium' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
+r=\$(get_next_model 'gpt-5.6-sol:low')
+[[ \"\$r\" = 'gpt-5.6-sol:medium' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-2e: get_next_model(gpt-5.3-codex-spark:low) → gpt-5.3-codex-spark:medium"
+    pass "AC2-L1-2e: get_next_model(gpt-5.6-sol:low) → gpt-5.6-sol:medium"
   else
     fail "AC2-L1-2e: spark low upgrade failed, got: $result"
   fi
@@ -374,20 +374,20 @@ check_model_upgrade 'US-001'
   fi
 fi
 
-# AC2-L1-4 (boundary): get_next_model("gpt-5.5:high") returns non-empty — proves gpt-5.5:high is NOT ceiling
+# AC2-L1-4 (boundary): get_next_model("gpt-5.6-terra:high") returns non-empty — proves gpt-5.6-terra:high is NOT ceiling
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-4: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
-r=\$(get_next_model 'gpt-5.5:high')
-# gpt-5.5:high is NOT ceiling — must return gpt-5.5:xhigh
-[[ -n \"\$r\" ]] && exit 0 || { echo \"got empty: gpt-5.5:high incorrectly treated as ceiling\" >&2; exit 1; }" 2>&1)
+r=\$(get_next_model 'gpt-5.6-terra:high')
+# gpt-5.6-terra:high is NOT ceiling — must return gpt-5.5:xhigh
+[[ -n \"\$r\" ]] && exit 0 || { echo \"got empty: gpt-5.6-terra:high incorrectly treated as ceiling\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-4: get_next_model(gpt-5.5:high) returns non-empty (not ceiling)"
+    pass "AC2-L1-4: get_next_model(gpt-5.6-terra:high) returns non-empty (not ceiling)"
   else
-    fail "AC2-L1-4: get_next_model(gpt-5.5:high) must return non-empty — gpt-5.5:high is not ceiling: $result"
+    fail "AC2-L1-4: get_next_model(gpt-5.6-terra:high) must return non-empty — gpt-5.6-terra:high is not ceiling: $result"
   fi
 fi
 
@@ -428,22 +428,22 @@ echo \"haiku->\$a sonnet->\$b opus->\$c fable->\$d\" >&2; exit 1" 2>&1)
   fi
 fi
 
-# L2-2: codex non-pro path: gpt-5.5:medium→high→xhigh→""
+# L2-2: codex generation-ceiling path: gpt-6-astra:medium→high→xhigh→""
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "L2-2: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
-a=\$(get_next_model 'gpt-5.5:medium')
-b=\$(get_next_model 'gpt-5.5:high')
-c=\$(get_next_model 'gpt-5.5:xhigh')
-if [[ \"\$a\" == 'gpt-5.5:high' && \"\$b\" == 'gpt-5.5:xhigh' && -z \"\$c\" ]]; then exit 0; fi
+a=\$(get_next_model 'gpt-6-astra:medium')
+b=\$(get_next_model 'gpt-6-astra:high')
+c=\$(get_next_model 'gpt-6-astra:xhigh')
+if [[ \"\$a\" == 'gpt-6-astra:high' && \"\$b\" == 'gpt-6-astra:xhigh' && -z \"\$c\" ]]; then exit 0; fi
 echo \"med->\$a high->\$b xhigh->\$c\" >&2; exit 1" 2>&1)
   if (( $? == 0 )); then
-    pass "L2-2: codex non-pro path gpt-5.5:medium→high→xhigh→'' correct"
+    pass "L2-2: codex generation-ceiling path gpt-6-astra:medium→high→xhigh→'' correct"
   else
-    fail "L2-2: codex non-pro path incorrect: $result"
+    fail "L2-2: codex generation-ceiling path incorrect: $result"
   fi
 fi
 

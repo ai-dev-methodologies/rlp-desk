@@ -251,18 +251,18 @@ else
   pass "G1: gpt-5.3-codex (non-spark) removed from models.json"
 fi
 
-# G2: spark paths still exist
+# G2: spark paths removed (gpt-5.3-codex-spark retired 2026-08-31)
 if jq -e '.upgrades | keys | any(startswith("gpt-5.3-codex-spark:"))' "$MODELS_JSON" >/dev/null 2>&1; then
-  pass "G2: spark paths still in models.json"
+  fail "G2: models.json still has gpt-5.3-codex-spark entries"
 else
-  fail "G2: spark paths missing from models.json"
+  pass "G2: gpt-5.3-codex-spark removed from models.json"
 fi
 
-# G3: gpt-5.5 paths still exist
+# G3: gpt-5.5 paths removed (gpt-5.5 retired 2026-09-14)
 if jq -e '.upgrades | keys | any(startswith("gpt-5.5:"))' "$MODELS_JSON" >/dev/null 2>&1; then
-  pass "G3: gpt-5.5 paths still in models.json"
+  fail "G3: models.json still has gpt-5.5 entries"
 else
-  fail "G3: gpt-5.5 paths missing from models.json"
+  pass "G3: gpt-5.5 removed from models.json"
 fi
 
 # ============================================================

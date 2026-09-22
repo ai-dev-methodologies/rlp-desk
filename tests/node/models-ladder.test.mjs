@@ -55,8 +55,8 @@ test('shipped-defaults-when-no-override: absent override falls through to shippe
   // claude-fable-5-1:max (see the dedicated "claude ladder reaches fable"
   // test below for the full assertion + rationale).
   assert.equal(ladder.opus, 'claude-fable-5-1:max');
-  assert.equal(ladder['gpt-5.5:medium'], 'gpt-5.5:high');
-  assert.equal(ladder['gpt-5.3-codex-spark:medium'], 'gpt-5.3-codex-spark:high');
+  assert.equal(ladder['gpt-5.6-sol:medium'], 'gpt-5.6-sol:high');
+  assert.equal(ladder['gpt-5.6-luna:medium'], 'gpt-5.6-luna:high');
 });
 
 // Claude ladder now reaches fable: opus -> claude-fable-5-1:max (terminal
@@ -190,12 +190,14 @@ test('""->BLOCKED ceiling normalization: nextWorkerModel treats a ceiling key as
 });
 
 test('AC9: :low starts now upgrade to :medium (deliberate Node behavior change)', () => {
-  // Before US-001, gpt-5.5:low and gpt-5.3-codex-spark:low were ABSENT from
-  // the hardcoded Node MODEL_UPGRADES table, so nextWorkerModel treated them
-  // as an immediate ceiling (BLOCKED) at stage 1. Unifying on the
-  // zsh-authoritative union deliberately changes this: they now upgrade.
-  assert.equal(nextWorkerModel('gpt-5.5:low', 3), 'gpt-5.5:medium');
-  assert.equal(nextWorkerModel('gpt-5.3-codex-spark:low', 3), 'gpt-5.3-codex-spark:medium');
+  // Before US-001 the codex :low rungs were ABSENT from the hardcoded Node
+  // MODEL_UPGRADES table, so nextWorkerModel treated a :low start as an
+  // immediate ceiling (BLOCKED) at stage 1. Unifying on the zsh-authoritative
+  // union deliberately changed this: they now upgrade. (The original case
+  // used gpt-5.5 and gpt-5.3-codex-spark; both were retired by the vendor and
+  // removed from the ladder, so the same property is pinned on live families.)
+  assert.equal(nextWorkerModel('gpt-5.6-sol:low', 3), 'gpt-5.6-sol:medium');
+  assert.equal(nextWorkerModel('gpt-5.6-luna:low', 3), 'gpt-5.6-luna:medium');
 });
 
 test('nextWorkerModel: claude ladder now resolves (previously absent from Node MODEL_UPGRADES)', () => {
@@ -275,11 +277,17 @@ test('nextWorkerModel walks the cost-lane chain past sol:xhigh into the astra:xh
   assert.equal(nextWorkerModel('gpt-6-astra:xhigh', 3), 'BLOCKED');
 });
 
-test('shipped ladder: gpt-5.4 and gpt-5.4-mini climb low..xhigh', async () => {
+test('shipped ladder: a codex family climbs low..xhigh, and only the generation ceiling terminates', async () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
-  assert.equal(ladder['gpt-5.4:low'], 'gpt-5.4:medium');
-  assert.equal(ladder['gpt-5.4:xhigh'], CEILING_SENTINEL);
-  assert.equal(ladder['gpt-5.4-mini:high'], 'gpt-5.4-mini:xhigh');
+  assert.equal(ladder['gpt-6-astra:low'], 'gpt-6-astra:medium');
+  assert.equal(ladder['gpt-6-astra:high'], 'gpt-6-astra:xhigh');
+  // astra is the generation ceiling, so its :xhigh is the ONLY codex rung
+  // that terminates. Every other family's :xhigh hands off to the next family
+  // up, which is what makes this ladder cross-family rather than four
+  // independent chains — assert one handoff so a future edit that flattens
+  // them back into per-family dead ends fails here.
+  assert.equal(ladder['gpt-6-astra:xhigh'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-5.6-sol:high');
 });
 
 // Owner correction (Fable 5.1 / Codex 6 Astra wave): the shipped Worker

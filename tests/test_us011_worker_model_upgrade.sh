@@ -376,8 +376,8 @@ test_e2e_upgrade() {
     # identically to the shipped ladder, so the claude cases alone no longer
     # discriminate real-vs-emergency) — the codex case forces the shipped
     # src/node/models.json resolution path to be real.
-    echo 'result_codex=$(get_next_model "gpt-5.5:low")'
-    echo 'if [[ "$result_haiku" == "sonnet" && "$result_sonnet" == "opus" && "$result_opus" == "claude-fable-5-1:max" && "$result_codex" == "gpt-5.5:medium" ]]; then'
+    echo 'result_codex=$(get_next_model "gpt-5.6-sol:low")'
+    echo 'if [[ "$result_haiku" == "sonnet" && "$result_sonnet" == "opus" && "$result_opus" == "claude-fable-5-1:max" && "$result_codex" == "gpt-5.6-sol:medium" ]]; then'
     echo '  exit 0'
     echo 'else'
     echo '  echo "haiku->$result_haiku sonnet->$result_sonnet opus->$result_opus codex->$result_codex" >&2'
@@ -390,7 +390,7 @@ test_e2e_upgrade() {
   rm -rf "$tmpdir"
 
   if (( rc == 0 )); then
-    pass "E2E-upgrade: get_next_model returns haiku→sonnet, sonnet→opus, opus→claude-fable-5-1:max, gpt-5.5:low→medium"
+    pass "E2E-upgrade: get_next_model returns haiku→sonnet, sonnet→opus, opus→claude-fable-5-1:max, gpt-5.6-sol:low→medium"
   else
     fail "E2E-upgrade: get_next_model upgrade path incorrect (rc=$rc)"
   fi
@@ -552,8 +552,8 @@ test_e2e_codex_engine_shape() {
     echo 'log_debug() { : ; }'
     echo 'log() { : ; }'
     echo 'WORKER_ENGINE="codex"'
-    echo 'WORKER_MODEL="gpt-5.5"'
-    echo 'WORKER_CODEX_MODEL="gpt-5.5"'
+    echo 'WORKER_MODEL="gpt-5.6-sol"'
+    echo 'WORKER_CODEX_MODEL="gpt-5.6-sol"'
     echo 'WORKER_CODEX_REASONING="medium"'
     echo '_ORIGINAL_WORKER_MODEL=""'
     echo '_ORIGINAL_WORKER_CODEX_REASONING=""'
@@ -574,8 +574,8 @@ test_e2e_codex_engine_shape() {
     echo '  echo "FAIL: codex engine did not upgrade medium->high (WORKER_CODEX_REASONING=$WORKER_CODEX_REASONING)" >&2'
     echo '  exit 1'
     echo 'fi'
-    echo 'if [[ "$WORKER_CODEX_MODEL" != "gpt-5.5" || "$WORKER_MODEL" != "gpt-5.5" ]]; then'
-    echo '  echo "FAIL: codex model should stay gpt-5.5 (WORKER_CODEX_MODEL=$WORKER_CODEX_MODEL WORKER_MODEL=$WORKER_MODEL)" >&2'
+    echo 'if [[ "$WORKER_CODEX_MODEL" != "gpt-5.6-sol" || "$WORKER_MODEL" != "gpt-5.6-sol" ]]; then'
+    echo '  echo "FAIL: codex model should stay gpt-5.6-sol (WORKER_CODEX_MODEL=$WORKER_CODEX_MODEL WORKER_MODEL=$WORKER_MODEL)" >&2'
     echo '  exit 1'
     echo 'fi'
     echo 'exit 0'
@@ -587,7 +587,7 @@ test_e2e_codex_engine_shape() {
   rm -rf "$tmpdir"
 
   if (( rc == 0 )); then
-    pass "E2E-codex-shape: codex engine upgrades gpt-5.5:medium->gpt-5.5:high (unchanged behavior)"
+    pass "E2E-codex-shape: codex engine upgrades gpt-5.6-sol:medium->gpt-5.6-sol:high (unchanged behavior)"
   else
     fail "E2E-codex-shape: $out"
   fi
