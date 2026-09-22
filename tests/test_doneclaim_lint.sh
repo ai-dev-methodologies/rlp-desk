@@ -21,12 +21,28 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 # Driver: source lib in a clean zsh, point DONE_CLAIM_FILE at $1, run the lint,
 # print status/reason/rc + violations. Extra env (RLP_DONECLAIM_LINT, jq-less
 # PATH override for the no-jq fail-open case) passed via caller exports.
-lint() { # $1 = done-claim fixture path ; env: DC_ENV extras
-  local dc="$1"
-  DC_LINT="$dc" LOGS_L="$TMP/logs-$RANDOM" zsh --no-rcs -c '
+# $2 = 1 to pre-create an iter-001.attempt-history.md artifact (governance
+# §1f¾ approach-escalation branch — see the fixture's sibling .meta.json),
+# default 0. ITERATION is fixed at 1 for every call; harmless for fixtures
+# with no artifact (the file simply never exists at that path).
+lint() { # $1 = done-claim fixture path ; $2 = with_history (0/1) ; env: DC_ENV extras
+  local dc="$1" with_history="${2:-0}"
+  # mktemp, not "$TMP/logs-$RANDOM": each `lint` call runs inside a forked
+  # command-substitution subshell, and $RANDOM's sequence state is inherited
+  # UNCHANGED at fork time — the PARENT never itself reads $RANDOM between
+  # calls, so every child subshell produces the SAME first value and every
+  # call collided on one shared directory. Harmless before this attempt-
+  # history check existed (LOGS_DIR was otherwise read-only to the lint), but
+  # now a leftover iter-001.attempt-history.md from an earlier fixture in the
+  # same run leaked into every later one — exactly the false-positive this
+  # comment is here to prevent from coming back.
+  local logs_l; logs_l=$(mktemp -d "$TMP/logs-XXXXXX")
+  DC_LINT="$dc" LOGS_L="$logs_l" WITH_HISTORY="$with_history" zsh --no-rcs -c '
     source "'"$LIB"'" 2>/dev/null
     log(){ :; }; log_debug(){ :; }; log_error(){ :; }; log_warn(){ :; }
     mkdir -p "$LOGS_L"; LOGS_DIR="$LOGS_L"; DONE_CLAIM_FILE="$DC_LINT"
+    ITERATION=1
+    (( WITH_HISTORY )) && echo "prior attempts" > "$LOGS_L/iter-001.attempt-history.md"
     '"${DC_PRE:-}"'
     run_pregate_doneclaim_lint; rc=$?
     print "STATUS=$PREGATE_LINT_STATUS REASON=$PREGATE_LINT_REASON RC=$rc"
@@ -39,22 +55,40 @@ lint() { # $1 = done-claim fixture path ; env: DC_ENV extras
 # JSON and status; skip fixtures must produce the expected skip reason.
 print -r -- "-- parity: fixtures produce Node-identical status/violations"
 for dc in "$FIXTURES"/*.json; do
-  [[ "$dc" == *.expected.json ]] && continue
+  [[ "$dc" == *.expected.json || "$dc" == *.meta.json ]] && continue
   name="${dc:t:r}"
   exp="$FIXTURES/$name.expected.json"
+  meta="$FIXTURES/$name.meta.json"
   [[ -f "$exp" ]] || { no "$name: missing expected file"; continue; }
+  # Approach-escalation dimension (governance §1f¾): an OPTIONAL sibling
+  # <name>.meta.json carries {"attemptHistoryExists": bool} — out-of-band
+  # test setup, not part of the done-claim shape itself (same reasoning as
+  # the Node harness's `attemptHistoryExists` option: keeps every fixture a
+  # realistic, self-contained done-claim). Absent meta file = no artifact,
+  # so every pre-existing fixture is unaffected.
+  with_history=0
+  if [[ -f "$meta" ]]; then
+    [[ "$(jq -r '.attemptHistoryExists // false' "$meta")" == "true" ]] && with_history=1
+  fi
   exp_status=$(jq -r '.status' "$exp")
-  out=$(lint "$dc")
+  out=$(lint "$dc" "$with_history")
   got_status=$(print -r -- "$out" | sed -n 's/^STATUS=\([a-z]*\).*/\1/p')
   if [[ "$got_status" != "$exp_status" ]]; then
     no "$name: status $got_status != $exp_status (out: $out)"; continue
   fi
+  # `reason` is checked whenever the fixture's .expected.json carries one —
+  # not just on skip: the approach-escalation branch sets it on FAIL too
+  # (reason=approach_summary_missing), which the TDD-sequence fail fixtures
+  # never did (they carry no `reason` key, so this is a no-op for them).
+  exp_reason=$(jq -r '.reason // empty' "$exp")
+  if [[ -n "$exp_reason" ]]; then
+    got_reason=$(print -r -- "$out" | sed -n 's/^STATUS=[a-z]* REASON=\([a-zA-Z_-]*\).*/\1/p')
+    if [[ "$got_reason" != "$exp_reason" ]]; then
+      no "$name: reason $got_reason != $exp_reason (out: $out)"; continue
+    fi
+  fi
   if [[ "$exp_status" == "skip" ]]; then
-    exp_reason=$(jq -r '.reason' "$exp")
-    got_reason=$(print -r -- "$out" | sed -n 's/^STATUS=[a-z]* REASON=\([a-z-]*\).*/\1/p')
-    [[ "$got_reason" == "$exp_reason" ]] \
-      && ok "$name: skip ($got_reason)" \
-      || no "$name: reason $got_reason != $exp_reason (out: $out)"
+    ok "$name: skip ($exp_reason)"
   else
     got_viol=$(print -r -- "$out" | sed -n 's/^VIOL=//p')
     exp_viol=$(jq -c '.violations' "$exp")

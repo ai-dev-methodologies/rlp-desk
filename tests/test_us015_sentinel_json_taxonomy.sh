@@ -142,26 +142,38 @@ rm -rf "$TMP_DIR"
 # model-capacity stall cap (①). request-l: grew 39 → 47 for leader pane width +
 # canonical geometry BLOCKs (create_session ×4 [split-width + geometry × inside/
 # outside], replace_worker_pane ×3 [split-width verifier/worker fallbacks +
-# geometry], consensus ×1 [geometry]). The invariant is unchanged: total callsites
-# == categorized callsites (no implicit default). Category is passed either inline
-# (single-line calls) or on the last continuation line (multi-line calls).
+# geometry], consensus ×1 [geometry]). model-generation wave: grew 47 → 48 for
+# one new BLOCK — the attempt-history persist failure in write_worker_trigger
+# (infra_failure); the ceiling-aware circuit-breaker branch's existing
+# repeat_axis callsite was reworded in the same wave (still one callsite, not a
+# new one). The invariant is unchanged: total callsites == categorized
+# callsites (no implicit default). Category is passed either inline
+# (single-line calls) or on the last continuation line (multi-line calls). All
+# AC4 greps skip comment lines (first non-blank char '#') so instructional
+# comments that mention write_blocked_sentinel are not miscounted as
+# callsites.
 # ----------------------------------------------------------------------------
-zsh_callsites=$(grep -cE 'write_blocked_sentinel ' "$RUN")
-if [[ "$zsh_callsites" -eq 47 ]]; then
-  pass "AC4-a: 47 zsh write_blocked_sentinel callsites (27 pre-request-j + 12 request-j pane-pinning/capacity + 8 request-l width/geometry fail-fast BLOCKs)"
+_ac4_count() {
+  local file="$1" pat="$2" n
+  n=$(grep -E -- "$pat" "$file" 2>/dev/null | grep -vcE '^[[:space:]]*#') || n=0
+  printf '%s' "$n"
+}
+zsh_callsites=$(_ac4_count "$RUN" 'write_blocked_sentinel ')
+if [[ "$zsh_callsites" -eq 48 ]]; then
+  pass "AC4-a: 48 zsh write_blocked_sentinel callsites (27 pre-request-j + 12 request-j pane-pinning/capacity + 8 request-l width/geometry fail-fast BLOCKs + 1 model-generation-wave attempt-history-persist BLOCK)"
 else
-  fail "AC4-a: expected 47 callsites, got $zsh_callsites"
+  fail "AC4-a: expected 48 callsites, got $zsh_callsites"
 fi
 # All callsites must pass one of the 6 known categories. Inline calls carry it
 # on the call line; multi-line calls carry it on a standalone continuation line.
-sites_with_category=$(grep -cE 'write_blocked_sentinel.*"(metric_failure|cross_us_dep|context_limit|infra_failure|repeat_axis|mission_abort)"' "$RUN")
-sites_with_dynamic=$(grep -cE 'write_blocked_sentinel.*"\$_(verdict|signal)_cat"' "$RUN")
-sites_with_continuation=$(grep -cE '^[[:space:]]*"(metric_failure|cross_us_dep|context_limit|infra_failure|repeat_axis|mission_abort)"[[:space:]]*$' "$RUN")
+sites_with_category=$(_ac4_count "$RUN" 'write_blocked_sentinel.*"(metric_failure|cross_us_dep|context_limit|infra_failure|repeat_axis|mission_abort)"')
+sites_with_dynamic=$(_ac4_count "$RUN" 'write_blocked_sentinel.*"\$_(verdict|signal)_cat"')
+sites_with_continuation=$(_ac4_count "$RUN" '^[[:space:]]*"(metric_failure|cross_us_dep|context_limit|infra_failure|repeat_axis|mission_abort)"[[:space:]]*$')
 total_categorized=$(( sites_with_category + sites_with_dynamic + sites_with_continuation ))
-if [[ "$total_categorized" -eq 47 ]]; then
-  pass "AC4-b: all 47 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
+if [[ "$total_categorized" -eq 48 ]]; then
+  pass "AC4-b: all 48 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
 else
-  fail "AC4-b: only $total_categorized of 47 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
+  fail "AC4-b: only $total_categorized of 48 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
 fi
 
 # ----------------------------------------------------------------------------

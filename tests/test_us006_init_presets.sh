@@ -226,9 +226,36 @@ test_ac3_l1_3() {
   fi
 }
 
+# AC3-L1-4: --mode listed with the REAL slash-command contract.
+# Every preset above is a `/rlp-desk run <slug> ...` invocation, i.e. the
+# slash command, not the Node CLI (`node run.mjs run ...`). The two have
+# DIFFERENT --mode contracts: the slash command accepts `native|tmux`
+# (default `native`, legacy `agent` redirects — src/commands/rlp-desk.md:319,
+# 357-362), while the Node CLI accepts `tmux|native|agent` (default `tmux`,
+# `agent` hard-errors — src/node/run.mjs:32,224-225,965). ADR-001 explicitly
+# gates flipping the SLASH COMMAND's default to `tmux` as a not-yet-done
+# "Wave B" item (docs/plans/adr-001-leader-consolidation.md:69-71), so
+# `native` remains correct here. Regression test for a stale line that
+# advertised `--mode agent|tmux (default: agent)` — a value that hard-errors
+# on the Node CLI and isn't even a valid slash-command mode value.
+test_ac3_l1_4() {
+  if [[ -z "$FN_BODY" ]]; then fail "AC3-L1-4: function missing"; return; fi
+  local out
+  out="$(run_presets_with_codex "testslug")"
+  local mode_line
+  mode_line=$(echo "$out" | grep -E -- '--mode (native\|tmux|agent\|tmux)')
+  if echo "$mode_line" | grep -qE -- '--mode native\|tmux' \
+      && echo "$mode_line" | grep -qE '\(default: native'; then
+    pass "AC3-L1-4: --mode line uses native|tmux with native default: '$mode_line'"
+  else
+    fail "AC3-L1-4: --mode line has wrong contract, got: '$mode_line'"
+  fi
+}
+
 test_ac3_l1_1
 test_ac3_l1_2
 test_ac3_l1_3
+test_ac3_l1_4
 
 # ── L3 E2E: Full init run ────────────────────────────────────────────────────
 echo ""
