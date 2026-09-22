@@ -253,6 +253,8 @@ Worker records what was done, in what order, with command evidence in `done-clai
 - **Commit-claim honesty (`commit_sha`, §1f½)**: When a `commit` step's `exit_code` is `0`, Worker MUST record the resulting commit SHA as `commit_sha` on that same step. The Leader adjudicates every commit claim against git ground truth (§1f½) before any Verifier is dispatched — a claimed commit that git does not corroborate fails the iteration mechanically, before LLM judgment is even invoked.
 - **Confirmation-mode contract (v0.22.3)**: the LEADER derives `verification_mode: confirmation` at verify dispatch iff (a) the durable verified ledger covers every PRD US (per-US entries or a leader-written ALL completion record whose `coverage` equals the full PRD US set), (b) the ledger's commit SHA resolves and `git diff --quiet <sha> HEAD` shows no tracked change since the verified state, and (c) the tracked working tree is clean (`--untracked-files=no`). Any missing or malformed anchor fails CLOSED to `build`. The mode is injected into the verifier prompts as the SOLE authoritative channel — verifiers ignore `verification_mode` strings in worker-writable files. In confirmation mode the Worker Process Audit shifts the freshness burden to the VERIFIER: the verifier reruns the full suite and per-AC spot checks itself (IL-1) and judges on those fresh results, treating the done-claim as historical context — no write_test/verify_red and no new claim timestamps are demanded (fresh RED cannot honestly exist for already-verified code). It is the leader-gated superset of the `verify_existing` allowance above, resolving the prior contradiction where the audit demanded `verify_red` unconditionally. On a leader restart whose ledger already proves completion, the leader arms D-16 finalize and skips the worker round-trip entirely — a worker with nothing to build cannot honestly produce a signal (observed failure mode: it reasons "no action needed" and idles into the no-progress guard). This is an anti-laziness gate against a cooperative-but-sloppy worker, not a Byzantine boundary — workers hold write access to the runtime directory by design; the ledger is append-then-lock (0444 between appends) and the ALL record rides the leader-only COMPLETE path.
 
+- **Approach-escalation field (`approach_summary`, §1f¾)**: when the Leader has persisted an `iter-NNN.attempt-history.md` artifact for this iteration (repeated failure already upgraded the Worker model), the done-claim MUST carry a top-level `approach_summary` field naming the strategy used this iteration and how it differs from the listed prior attempts. Absent an artifact, the field is not required.
+
 - **Operator-seed rule (`ledger-seed`, request-f §3)**: an operator-only command, run with the campaign STOPPED, may append a story ledger entry carrying `seeded:true` and a mandatory `operator_note` (audit-visible, records the factual basis for the seed). A seeded entry NEVER grants a pass — it only routes verification mode; both engines' fresh re-verification remains invariant. All fail-closed derivation checks (PRD binding, ancestor SHA, tree gate) apply to seeded entries identically to regular entries.
 
 ### Verifier: reasoning in verify-verdict.json
@@ -266,7 +268,7 @@ Verifier records WHY each judgment was made in `verify-verdict.json`:
   - `environment` — harness/tooling/capacity failure unrelated to model capability: model-capacity stall, terminal/tool error, context-ceiling truncation, or a verifier safety-classifier refusal. NEVER triggers model upgrade — Leader recovers the environment and retries the SAME model.
   When a verdict carries multiple failure_category values, the effective category is resolved top-level first, then the first entry in `issues[]`, then `reasoning[]`, then `checks[]` — Verifiers should therefore put the DOMINANT root cause first.
   Leader uses failure_category to decide between model upgrade, spec refinement, or architecture escalation.
-- Checks include: IL-1 Evidence Gate, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit, Test Coverage Audit
+- Checks include: IL-1 Evidence Gate, Layer Enforcement, Test Sufficiency, Anti-Gaming, Worker Process Audit, Test Coverage Audit, Approach Escalation Audit (conditional — see §1f¾)
 - This proves the Verifier actually performed each check rather than rubber-stamping
 - **Test Coverage Audit (mandatory)**: Verifier MUST check that tests cover ALL code paths, not just happy paths. Specifically:
   - Every branch in `case` statements must have a test (e.g., all model types in get_next_model)
@@ -281,6 +283,14 @@ Verifier records WHY each judgment was made in `verify-verdict.json`:
   - Unit tests (extract_fn + isolated run) are necessary but NOT sufficient for refactored code
   - Structural tests (grep for function existence) are necessary but NOT sufficient
   - "All unit tests pass" does NOT prove the system works — integration tests prove it
+
+### Verifier: `criteria_results` is load-bearing (zsh leader)
+The zsh leader reads `criteria_results[]` from the verdict and lets it override the top-level `verdict` (`_verdict_criteria_effective`, both the per-US branch and `_final_verify_one_us`):
+- **absent** (key missing or `null`) — permissive: the top-level verdict stands. Covers every verdict written before the field existed; a missing section is never manufactured into a failure.
+- **present with any `met:false`** — the US is NOT credited even if the top-level says `pass`; logged as an unmet-criteria override.
+- **malformed** (present but not an array) — a verifier contract violation: the top-level verdict is overridden to `fail` and logged under its own name, never conflated with absent. Garbage cannot credit a US.
+- **consensus**: `_consensus_finalize` merges both engines' arrays with no engine priority (a `met:false` from either side survives); a malformed value on either side is marked `"malformed-in-consensus-merge"`, which the rule above then treats as malformed.
+The Node leader passes `criteria_results` through unchanged (`verdict-schema.mjs`) and has no consumer yet — this rule is zsh-leader-only until Node parity is scheduled.
 
 ### Why This Is Default (Not Optional)
 - IL-1 says "no claims without evidence" — this applies to Worker AND Verifier
@@ -375,6 +385,24 @@ The Leader accepts a Worker done-claim that asserts a `commit` step with `exit_c
 **On mismatch**: the Leader skips LLM verification entirely and routes to the fix loop (§7½) with a machine-generated `COMMIT-INTEGRITY` fix contract (rendered through the §1f field-name normalizer) — never a free-text verifier finding. The contract instructs the Worker to actually create the commit and record the resulting SHA — **except** for `empty_commit_on_confirmation_claim`, where it instructs the Worker to DROP the empty commit and claim no `commit` step at all (telling it to "create the commit" would instruct a second fabrication). This counts toward `consecutive_failures` like any other fail.
 
 **Failure-count isolation**: the oracle has its own same-US fail counter (`ORACLE_FAILURES`, cap `ORACLE_FAIL_CAP`, default 3) — separate from the mechanical pre-gate's counter and from the circuit breaker. Hitting the cap forces one full LLM verifier round (a safety valve against a false-positive oracle); that verdict then drives the circuit breaker as normal. The Node leader now runs the Layer 1.5 done-claim format lint (§3a) as a pre-gate, which keeps its OWN per-US counter (shared `PREGATE_FAIL_CAP` semantics, never the circuit breaker); the commit-integrity oracle itself, however, has no pre-gate counter to defer to, so it drives the existing consecutive-failure circuit breaker directly on oracle mismatch — same predicate, same "circuit breaker owns terminal escalation" intent as the zsh leader.
+
+## 1f¾. Approach Escalation Enforcement
+
+When repeated same-US failure has upgraded the Worker's model (§4 Model Routing), the Leader must not let the retry silently repeat the same losing strategy under a more expensive model — a model upgrade that never changes the approach defeats the point of escalating at all. The per-US attempt history (`_record_us_attempt`, a capped, newest-first record of "which model attempted this US and why it failed") already surfaces an "APPROACH ESCALATION REQUIRED" section in the next Worker's prompt once the current model has been upgraded, listing prior attempts and demanding a materially different strategy. This section defines the artifact and the two-part check that make that demand enforceable instead of aspirational — an unchecked instruction in a prompt is close to worthless here, because "the loop retries the same losing strategy" is the exact defect this exists to fix.
+
+**Persisted artifact.** When the escalation section fires (inside `write_worker_trigger`, at the same point the fix contract is assembled), the Leader persists that same attempt-history content — the same atomic tmp+mv write discipline as the fix contract (governance §7 s7) — to `.rlp-desk/logs/<slug>/iter-NNN.attempt-history.md`, where `NNN` is the SAME iteration number as the prompt being dispatched (not a per-US singleton — each escalation event gets its own iteration-numbered file, exactly like `iter-NNN.fix-contract.md`, and old files are never deleted; they are part of the permanent audit trail). This is a LEADER-authored artifact — the Leader derives it from prior verifier verdict summaries, never from anything Worker-writable — so the Verifier may treat its presence and content as ground truth, the same trust tier as the PRD and test-spec. Unlike per-US artifacts the Verifier does NOT derive this path itself: `write_verifier_trigger` injects the literal path as an `Attempt History: <path>` line in the prompt's Verification Context, for the SAME iteration number, only when the file exists. Absent line = no escalation was active for this iteration — never a fail. **The key is genuinely the iteration, not the US**: "this iteration's artifact" and "this US's artifact" only coincide because per-US verify mode (`--verify-mode per-us`, the default) dispatches one US per iteration — that correspondence is incidental to the mode, not a property of the artifact, and would need re-deriving if a future mode ever let one iteration span more than one US.
+
+**Named done-claim target.** Whenever the persisted artifact exists for the in-flight iteration, the Worker's done-claim.json MUST carry a top-level `approach_summary` field: 1-3 sentences naming the specific strategy used this iteration and how it differs from every attempt the artifact lists. When no artifact exists for the iteration, `approach_summary` is not required and its absence proves nothing.
+
+**MECHANICAL check (Layer 1.5, deterministic — runs on BOTH leaders, independent of build/confirmation mode).** Before the LLM Verifier is ever dispatched, the same done-claim lint that checks the TDD step sequence (§3a Layer 1.5) also checks: does an `iter-NNN.attempt-history.md` artifact exist for the iteration under evaluation? If yes, is `approach_summary` present, a string, and non-empty after trimming whitespace? Missing/absent/empty → `fail` (reason `approach_summary_missing`), bounced back to the Worker exactly like a TDD-sequence violation — same `PREGATE_FAIL_CAP` counter, never the consecutive-failure circuit breaker. This check runs even when the TDD-sequence check itself would `skip` (confirmation/replay claims such as `verify_existing`, `not-build`, `no-steps`) — a US resolved via `verify_existing` can silently repeat a failed "fix" just as easily as a fresh build, so the field is required regardless of mode. No artifact for the iteration → the check is a no-op; it is not a general-purpose requirement on every done-claim, only a conditional one gated on escalation being active, and a Worker cannot fabricate its way past it by omission since the artifact is a Leader-only write.
+
+**SEMANTIC check (Verifier contract, new check "Approach Escalation Audit", alongside Worker Process Audit and Test Coverage Audit).** Applies ONLY when the Verification Context carries an `Attempt History` line for this iteration. The mechanical check above already guarantees `approach_summary` is present and non-empty by the time the Verifier sees the claim, so the Verifier's job is judging its CONTENT: does it name a strategy that is not substantially the same as any one of the artifact's listed prior attempts, and specific enough that it could not equally describe any of them? A restatement, a close paraphrase, or a summary generic enough to describe any of the listed attempts ("tried a different approach", "fixed it more carefully") FAILS this check — `verdict: fail`, `failure_category: implementation` (a restated strategy is a code-approach defect, never spec ambiguity, environment, or flakiness), and an `issues[]` entry naming WHICH listed attempt it restates. No `Attempt History` line → the check does not apply; the Verifier neither fails a claim for lacking a field it was never required to carry, nor invents an escalation state the Leader did not derive.
+
+**Honesty about the judgment call.** "Materially different" cannot be reduced to a keyword rule — this is a real judgment the Verifier must make. The contract anchors it on the CONCRETE listed attempts (compare the claimed strategy against each one by name/mechanism), not on a vague "is this good enough" standard, so two Verifiers reading the same artifact and the same `approach_summary` should reach the same verdict. Consistent with governance's no-partial-credit rule (IL-1 / the `criteria_results` load-bearing rule), a `pass` on every other check does not excuse a FAIL here — the check either does not apply (no artifact), or it applies and is satisfied, or it fails; there is no partial credit for "close enough."
+
+**Honesty about the artifact's limits (verbatim from the implementation, worth restating here).** The persisted file only records what the Worker was told and what prior attempts looked like — it cannot show the underlying code actually changed strategy; a superficially different `approach_summary` sentence over structurally identical code still passes a check built on this file alone. The real defense against that stays the Verifier's normal evidence work (fresh test runs, diff review, execution_steps inspection) on top of this, not this artifact by itself. This is not a caveat to note and move past: the verifier prompt states it explicitly (check 10⅝) precisely so a passing Approach Escalation Audit is never read as license to relax any OTHER audit (Evidence Gate, Test Sufficiency, Anti-Gaming, Worker Process Audit). If anything, an escalation being active at all is a signal to scrutinize the diff MORE closely — a US that has already failed repeatedly is exactly where a cosmetic-only "fix" is most likely to be attempted next.
+
+**Scope note.** Both checks are artifact-driven, not campaign-mode-driven: on a leader that has not (yet) wired the attempt-history persistence write, the artifact never exists and both checks are permanently no-ops for that leader — a safe default, not a silent gap, since the underlying escalation demand only exists where the persistence write runs.
 
 ## 1g. Sentinel Guarantee Invariant (file-guarantee contract)
 
@@ -539,17 +567,34 @@ truthfulness). Input is the parsed done-claim (`us_id`, `claims[]`, `execution_s
   AC is a **violation** iff `min(idx) < 0` (a phase missing) OR `idx` is not sorted
   ascending (steps out of order). Result: `fail` with `violations:[{ac, idx}]` (else
   `pass`).
+- **Approach-escalation sub-check (§1f¾, independent of the build/skip logic above)**:
+  BEFORE the TDD-sequence evaluation, and even when it would otherwise `skip`
+  (`not-build`, `no-steps`), the predicate checks whether a persisted attempt-history
+  artifact exists for this iteration (`.rlp-desk/logs/<slug>/iter-NNN.attempt-history.md`
+  — a Leader-only write, never Worker-writable). If it exists and the done-claim's
+  top-level `approach_summary` is missing, non-string, or empty after trim: `fail`
+  with `reason: "approach_summary_missing"` and `violations: []` (a distinct fail
+  shape from the `{ac, idx}` TDD-sequence violations — the two never co-occur in one
+  result, since this sub-check short-circuits before the TDD-sequence evaluation
+  runs). No artifact for this iteration → this sub-check contributes nothing;
+  evaluation proceeds to the TDD-sequence check as before.
 
-**Fail routing.** On `fail`, the Leader skips LLM verification and redispatches the
-Worker with a `PRE-GATE FAILURE (done-claim format lint)` fix contract carrying the
-per-AC `idx` coordinates (so the Worker fixes ONLY the execution_steps format, not
-the deliverable). Like the other pre-gate layers it uses the shared per-US
-`PREGATE_FAIL_CAP` counter (default 3) and NEVER touches the consecutive-failure
-circuit breaker; at the cap the Leader forces one full LLM verifier round (its verdict
-then drives the CB), passing the FAIL summary into the verifier prompt for awareness.
-On `pass`/`skip` the outcome is injected into the verifier prompt as a
-`Done-Claim Format Lint: PASS|SKIPPED|FAIL …` line. Opt out entirely with
-`RLP_DONECLAIM_LINT=0`.
+**Fail routing.** On a TDD-sequence `fail`, the Leader skips LLM verification and
+redispatches the Worker with a `PRE-GATE FAILURE (done-claim format lint)` fix
+contract carrying the per-AC `idx` coordinates (so the Worker fixes ONLY the
+execution_steps format, not the deliverable). On an approach-escalation `fail`
+(`reason: "approach_summary_missing"`), the Leader instead redispatches with a fix
+contract instructing the Worker to add the missing `approach_summary` field naming
+its actual strategy — never re-implementing anything, since this sub-check never
+touches `execution_steps`. Both fail shapes share the SAME routing: like the other
+pre-gate layers this uses the shared per-US `PREGATE_FAIL_CAP` counter (default 3)
+and NEVER touches the consecutive-failure circuit breaker; at the cap the Leader
+forces one full LLM verifier round (its verdict then drives the CB), passing the
+FAIL summary into the verifier prompt for awareness. On `pass`/`skip` the outcome is
+injected into the verifier prompt as a `Done-Claim Format Lint: PASS|SKIPPED|FAIL …`
+line. Opt out entirely with `RLP_DONECLAIM_LINT=0` (the opt-out silences BOTH
+sub-checks, since a Worker/campaign that has disabled the lint gets no leader-side
+mechanical enforcement of either).
 
 ### 3a½. Campaign Waivers (fail-closed pre-existing-baseline)
 

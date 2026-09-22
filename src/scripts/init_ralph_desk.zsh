@@ -740,7 +740,7 @@ print_run_presets() {
   fi
   echo ""
   echo "# Full options reference:"
-  echo "#   --mode agent|tmux                      (default: agent)"
+  echo "#   --mode native|tmux                     (default: native; legacy 'agent' redirects to native)"
   echo "#   --worker-model MODEL                   haiku|sonnet|opus|fable or gpt-5.6-sol:high|luna:high|spark:high|astra:high (default: haiku)"
   echo "#   --lock-worker-model                    disable auto model upgrade"
   echo "#   --verifier-model MODEL                 per-US verifier (default: sonnet)"
@@ -1135,6 +1135,9 @@ For BUILD work (any claim that includes a \`write_test\` step), EACH acceptance 
 - The leader machine-lints this the instant you submit the done-claim, BEFORE the verifier runs. A malformed claim is bounced straight back to you with per-AC coordinates: \`idx=[write_test, verify_red, implement, verify_green]\` where \`-1\` = that phase's step is missing for the AC and a non-monotonic list = steps recorded out of order. Fix ONLY the execution_steps format it names (add the missing per-AC labeled steps / correct the order) and resubmit — do NOT re-implement the deliverable.
 - Confirmation/replay claims (no \`write_test\` step — e.g. \`verify_existing\`) are exempt from this lint.
 
+### Approach Escalation (conditional field — governance §1f¾)
+If this prompt includes an "APPROACH ESCALATION REQUIRED" section (repeated failure on this US already upgraded your model), your done-claim.json MUST also include a top-level \`approach_summary\` field: 1-3 sentences naming the SPECIFIC strategy you used THIS iteration and how it differs from every attempt listed in that section. The leader machine-rejects a done-claim missing (or blank) \`approach_summary\` whenever it has a persisted attempt-history record for this US — before the Verifier ever sees it, same as the execution_steps format lint above. The Verifier then separately judges whether your summary actually names a materially different strategy rather than restating one already listed — a generic restatement fails verification even though the field is present. No "APPROACH ESCALATION REQUIRED" section in your prompt → \`approach_summary\` is not required; omit it.
+
 ## Stop behavior
 - Single US achieved → write done-claim JSON to $DESK/memos/$SLUG-done-claim.json with the specific US, signal verify, exit
 - All US achieved → write done-claim JSON with all US, signal verify with us_id "ALL", exit
@@ -1205,6 +1208,7 @@ Required reads:
 - Latest Context: $DESK/context/$SLUG-latest.md
 - Done Claim: $DESK/memos/$SLUG-done-claim.json
 - Iteration Signal: $DESK/memos/$SLUG-iter-signal.json (check us_id field)
+- Attempt History (conditional — governance §1f¾): the Leader injects its literal path into this prompt's Verification Context below as an "Attempt History: <path>" line WHENEVER one exists for this iteration — never derive the path yourself, and never treat its absence from that line as anything but "no escalation active" (the normal case, not a fail). Leader-authored (derived from prior verifier verdict summaries, never Worker-writable) — treat its content as ground truth, the same trust tier as the PRD. Present = an escalation is active for this US (see check 10⅝ below).
 
 ## Verification Scope
 Check the iter-signal.json "us_id" field:
@@ -1242,6 +1246,13 @@ Check the iter-signal.json "us_id" field:
    - Step completeness: each AC should have write_test → verify_red → implement → verify_green sequence in execution_steps
    - **Leader format lint (governance §3a Layer 1.5)**: the leader runs a DETERMINISTIC per-AC TDD-sequence lint on the done-claim BEFORE dispatching you, and reports the outcome as a \`Done-Claim Format Lint: ...\` line in this prompt's Verification Context. When it says \`PASS\`, the per-AC write_test→verify_red→implement→verify_green sequence and labels are already machine-verified — you MUST NOT fail the Worker Process Audit on step-sequence or label-format grounds; confine the audit to SUBSTANCE (fresh evidence plausibility, exit codes, timestamps, command truthfulness). A malformed sequence would have been bounced back to the Worker before reaching you, so a claim in your hands has either passed the lint, been skipped (confirmation/replay, opt-out, or no jq), or hit the fail cap (the line then carries the violations for your awareness — still audit substance, not re-derive the format verdict).
    - Planning Step presence: done-claim execution_steps should include a \`plan\` step as the first entry. If missing, record in reasoning as {"check": "Planning Step", "decision": "info", "basis": "plan step present/absent"} — informational only (does not affect pass/fail verdict)
+10⅝. **Approach Escalation Audit** (ONLY when the Verification Context above carries an "Attempt History: <path>" line for this iteration — otherwise this check does not apply and you MUST NOT fail for its absence, nor demand \`approach_summary\` at all):
+   - The Leader's mechanical pre-gate (governance §1f¾ / §3a Layer 1.5) already rejected any done-claim missing a non-empty top-level \`approach_summary\` field when the artifact exists — a claim reaching you here already has one present. Your job is judging its CONTENT, not re-checking its presence.
+   - Read the attempt-history file's listed prior attempts (newest first).
+   - PASS requires: \`approach_summary\` names a concrete strategy/mechanism for THIS iteration that is NOT substantially the same as any ONE of the listed prior attempts, and specific enough that it could not equally describe any of them.
+   - FAIL when \`approach_summary\` restates, closely paraphrases, or is generic enough to describe one of the listed attempts (e.g. "tried a different approach", "fixed it more carefully", "added more validation" when a prior attempt already claimed exactly that). On FAIL: set \`verdict: fail\`, \`failure_category: implementation\`, and add an \`issues[]\` entry naming WHICH listed attempt it restates (quote or closely paraphrase the matching attempt so the next fix contract can point at it precisely).
+   - This is a real judgment call — anchor it on the CONCRETE attempts listed in the file, compared by name/mechanism, never on a vague "is this good enough" standard. No partial credit: either the check does not apply (no file), or it applies and is satisfied, or it fails.
+   - **Know this check's limit — do not oversell it.** This check only catches a Worker that does not bother to claim anything different, or that restates a prior claim in new words. It does NOT prove the underlying code actually changed strategy — a superficially different \`approach_summary\` sentence over structurally identical code still PASSES this check. A pass here is NOT license to relax any other audit (Evidence Gate, Test Sufficiency, Anti-Gaming, Worker Process Audit) — if anything, an active escalation (this check even applying) is a signal to scrutinize the diff MORE closely than usual, since a US that already failed repeatedly is exactly where a cosmetic-only fix is most likely.
 10¾. **FORMAT is not a PASS-blocker, but SUBSTANCE always is (F-17→F-18, identical for claude AND codex)**: when the acceptance criteria are met and their FRESH checks are green (per the Evidence Gate), record pure-FORMAT observations — missing layer-section headers, a missing N/A marker, RED evidence aggregated rather than per-AC — as warnings in reasoning, NOT as a FAIL. The iter-signal.json only identifies WHICH US to verify; its author (Worker vs leader-synthesized) does not change the verdict. But deliverable COMPLETENESS is NOT a format concern — if an AC's work is absent, uncommitted/untracked, or never actually exercised, that is a FAIL. The real correctness gates (Evidence Gate, Test Sufficiency IL-4, Skip detection IL-5, Anti-Gaming) stay strict regardless.
 11. **Reproducibility check**: verify lock file committed, clean install succeeds, security scan passes, env vars documented (per test-spec Reproducibility Gate). Skip if test-spec says "N/A."
 12. Write verdict JSON to: $DESK/memos/$SLUG-verify-verdict.json
@@ -1263,7 +1274,8 @@ Verdict JSON:
     {"check": "Layer Enforcement", "decision": "pass|fail", "basis": "which layers checked, any TODO found"},
     {"check": "Test Sufficiency", "decision": "pass|fail", "basis": "test count per AC, category coverage"},
     {"check": "Anti-Gaming", "decision": "pass|fail", "basis": "what was checked, any suspicious patterns"},
-    {"check": "Worker Process Audit", "decision": "pass|fail", "basis": "build mode: test-first followed, verify_red present, steps complete / confirmation mode (leader prompt line): fresh timestamped GREEN evidence, no verify_red required; no forbidden shortcuts either way"}
+    {"check": "Worker Process Audit", "decision": "pass|fail", "basis": "build mode: test-first followed, verify_red present, steps complete / confirmation mode (leader prompt line): fresh timestamped GREEN evidence, no verify_red required; no forbidden shortcuts either way"},
+    {"check": "Approach Escalation Audit", "decision": "pass|fail|n/a", "basis": "n/a (no Attempt History line for this iteration) / which listed prior attempt (if any) approach_summary restates, or why it is materially different"}
   ],
   "layer_status": {"L1":"pass|fail|todo|na","L2":"pass|fail|todo|na","L3":"pass|fail|todo|na","L4":"pass|fail|todo|na"},
   "test_quality": {"test_count":0,"ac_count":0,"sufficiency":"pass|fail","anti_patterns_found":[]},
@@ -1276,6 +1288,7 @@ Rules:
 - Do NOT trust the worker's claim. Verify with fresh evidence.
 - If uncertain, verdict = request_info (describe your specific question in summary so Leader can decide).
 - **On a fail verdict, set \`failure_category\` to the DOMINANT root cause** — the one that explains the failure, not every contributing factor. \`spec\` = AC ambiguous/contradictory/untestable; \`implementation\` = code logic error, missing case, wrong algorithm; \`integration\` = pieces work individually but their interaction fails; \`flaky\` = non-deterministic or timing-dependent; \`environment\` = harness/tooling/capacity failure or a verifier safety-classifier refusal, i.e. NEVER a code defect. The Leader routes on this field: \`environment\` and \`flaky\` retry the SAME model (it recovers the environment instead), every other category may escalate it.
+- **A failed Approach Escalation Audit (check 10⅝) is ALWAYS \`failure_category: implementation\`** — the Worker restating a known-failed strategy is a code-approach defect, never spec ambiguity, environment, or flakiness, regardless of what else passed.
 - Campaign Memory is for orientation only — do NOT use it as source of truth for AC verification.
 - Deterministic checks (type hints, linting, security) delegate to test-spec tools; focus on AC verification + semantic review + smoke test.
 - Do NOT modify code or write sentinel files.

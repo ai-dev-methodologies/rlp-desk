@@ -866,6 +866,15 @@ typeset -A LAST_PANE_CONTENT
 typeset -A PANE_IDLE_SINCE
 typeset -A WORKER_RESTARTS
 typeset -A US_FAIL_HISTORY
+# US_FIX_CONTRACT and US_ATTEMPT_HISTORY (DEFECT-1 / DEFECT-2b, fix/reaudit-
+# wave-1) are declared `typeset -gA` in lib_ralph_desk.zsh, next to the
+# functions that populate them (atomic_write / _record_us_attempt) — NOT
+# here. A lib function must not depend on a global only run.zsh declares: a
+# consumer that sources the lib standalone (e.g. tests/test_doneclaim_lint.sh)
+# never reaches this file, so a run-side-only declaration broke atomic_write
+# for every such caller ("assignment to invalid subscript range"). See the
+# lib declarations for what each map is keyed by, populated by, and cleared
+# by (main()'s pass / partial-progress branches, below, do the clearing).
 STALE_CONTEXT_COUNT=0
 HEARTBEAT_STALE_COUNT=0
 MONITOR_FAILURE_COUNT=0
@@ -3253,6 +3262,57 @@ write_worker_trigger() {
   # actually under verification.
   [[ -n "$next_us" ]] && CURRENT_US="$next_us" || CURRENT_US="ALL"
 
+  # DEFECT-2b: compute escalation-active state ONCE, in this function's real
+  # scope — NOT inside the `{ ... } | atomic_write "$prompt_file"` block
+  # below, which runs as a subshell (it is the first stage of that pipe, and
+  # only a pipe's LAST stage avoids forking in zsh). A `return` executed
+  # inside that subshell is absorbed at the subshell boundary and never
+  # reaches this function's own caller — it would just truncate the worker
+  # prompt build silently. Persisting the artifact and checking its result
+  # HERE means a failed write can actually halt the campaign.
+  #
+  # ADVERSARIAL-AUDIT FINDING (fail-open, CRITICAL, closed here): if this
+  # write fails, the Worker prompt below still tells the Worker "APPROACH
+  # ESCALATION REQUIRED", but run_pregate_doneclaim_lint has no artifact to
+  # check against and silently skips the approach_summary requirement — a
+  # Worker under genuinely active escalation could then omit it entirely and
+  # nothing would catch it. A failed leader-side write of a load-bearing
+  # artifact is an infra failure, not a silent downgrade to "no escalation
+  # was active" — same posture this file already uses for every other
+  # infra_failure write_blocked_sentinel call (e.g. the preexisting-dirty t0
+  # git-snapshot failure ahead of main()'s loop, or the F-26 propagation
+  # convention write_complete_sentinel/write_blocked_sentinel themselves use
+  # for their own atomic_write calls).
+  local _escalation_active=0
+  local _attempt_history_file="$LOGS_DIR/iter-$(printf '%03d' $iter).attempt-history.md"
+  if (( _MODEL_UPGRADED )) && [[ -n "${US_ATTEMPT_HISTORY[$CURRENT_US]:-}" ]]; then
+    _escalation_active=1
+    {
+      echo "# Attempt History (iteration $iter, ${CURRENT_US})"
+      echo ""
+      echo "Prior attempts on ${CURRENT_US} (newest first):"
+      print -r -- "${US_ATTEMPT_HISTORY[$CURRENT_US]}" | sed 's/^/- /'
+    } | atomic_write "$_attempt_history_file"
+    if (( ${pipestatus[-1]:-0} != 0 )); then
+      log_error "FAILED to persist attempt-history artifact ($_attempt_history_file) while approach escalation was active for ${CURRENT_US} — IO/disk error. Refusing to dispatch a Worker the enforcement gate could not actually check."
+      write_blocked_sentinel "leader failed to persist the attempt-history artifact for ${CURRENT_US} while approach escalation was active — IO/disk error" "$CURRENT_US" "infra_failure"
+      return 1
+    fi
+  fi
+
+  # DEFECT-1 fix: the immediately-previous iteration wrote no fresh fix
+  # contract whenever the Worker's last turn was a bare `continue` signal (no
+  # verify ran). Fall back to the last unresolved fix contract tracked for
+  # the US we are about to dispatch (US_FIX_CONTRACT — written by
+  # atomic_write, cleared on that US's pass in main()). Keyed by the same
+  # CURRENT_US just assigned above, so a carried-over contract can never leak
+  # across a US boundary (a failure on US-001 stays keyed to US-001 and is
+  # never read back while CURRENT_US is US-002).
+  if [[ ! -f "$fix_contract_file" ]]; then
+    local _carried_fix_contract="${US_FIX_CONTRACT[$CURRENT_US]:-}"
+    [[ -n "$_carried_fix_contract" && -f "$_carried_fix_contract" ]] && fix_contract_file="$_carried_fix_contract"
+  fi
+
   {
     # Per-US PRD injection: substitute full PRD path with per-US split path when available
     local per_us_prd=""
@@ -3277,6 +3337,36 @@ write_worker_trigger() {
       echo "Do NOT just resubmit — actually change the code to address each issue."
       echo ""
       cat "$fix_contract_file"
+    fi
+
+    # DEFECT-2b (fix/reaudit-wave-1): a model upgrade alone is not evidence of
+    # a changed approach — repeated failure on the SAME US must make the next
+    # Worker actively rethink strategy, not just re-run the same plan on a
+    # stronger model. _escalation_active (computed above, in real function
+    # scope — see the comment there on why) is true only once this US has
+    # BOTH triggered an upgrade AND has recorded attempt history, AND the
+    # attempt-history artifact was durably persisted. Testable requirement:
+    # the done-claim summary must name a strategy not already listed below.
+    # HONESTY NOTE (do not let a green check here be mistaken for proof): the
+    # persisted artifact only records what the Worker was told and what prior
+    # attempts looked like. It cannot show the underlying code actually
+    # changed strategy — a superficially different done-claim sentence over
+    # structurally identical code still passes any check built on this file
+    # alone. The real defense against that stays the Verifier's normal
+    # evidence work (fresh test runs, diff review, execution_steps
+    # inspection) doing its job on top of this, not this artifact by itself.
+    if (( _escalation_active )); then
+      echo ""
+      echo "---"
+      echo "## APPROACH ESCALATION REQUIRED (repeated failure upgraded the model)"
+      echo "${CURRENT_US} has failed enough consecutive times that the Worker model was upgraded to ${WORKER_MODEL}."
+      echo "Retrying the SAME approach under a stronger model is not an acceptable use of that upgrade — the approach itself must change."
+      echo ""
+      echo "Prior attempts on ${CURRENT_US} (newest first):"
+      print -r -- "${US_ATTEMPT_HISTORY[$CURRENT_US]}" | sed 's/^/- /'
+      echo ""
+      echo "Your done-claim summary MUST name the specific strategy you used THIS iteration and explain how it differs from every attempt listed above."
+      echo "A summary that only restates one of them (or is generic enough to describe any of them) is not acceptable evidence of a changed approach."
     fi
 
     # ② F-8 carryover (request-b): uncommitted deliverables from a prior
@@ -3485,6 +3575,12 @@ write_verifier_trigger() {
     echo "## Verification Context"
     echo "- **Iteration**: $iter"
     echo "- **Done Claim**: $DONE_CLAIM_FILE"
+    # DEFECT-2b enforcement plumbing: point the Verifier at this iteration's
+    # attempt-history artifact (write_worker_trigger, escalation-active branch
+    # only) when one exists — absent whenever no model-upgrade escalation was
+    # in effect for this iteration, which is the common case.
+    local _attempt_history_file="$LOGS_DIR/iter-$(printf '%03d' $iter).attempt-history.md"
+    [[ -f "$_attempt_history_file" ]] && echo "- **Attempt History**: $_attempt_history_file"
     echo "- **Verify Mode**: $VERIFY_MODE"
     echo "- **Verification Mode (leader-derived, authoritative)**: ${_VMODE:-build}"
     echo "  - Basis: ${_VMODE_BASIS:-underived}"
@@ -4720,6 +4816,28 @@ _final_verify_one_us() {
   # Read verdict
   local verdict
   verdict=$(_normalize_verdict "$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)")
+  # reaudit wave 1: criteria_results is load-bearing here too (governance
+  # §1f) — this is the FINAL per-US gate before a story counts as done
+  # (sequential final verify / confirmation mode's fresh-check recording), so
+  # it must not be gated only at the main-loop verdict site. Same
+  # absent/malformed/empty/populated rule and no-partial-credit override as
+  # the main loop — see _verdict_criteria_effective (lib_ralph_desk.zsh) and
+  # the fuller rationale comment at the main-loop call site (malformed is
+  # NOT absent: this same distinction applies here too, an SV-gate CRITICAL
+  # finding closed in both call sites together, fix/reaudit-wave-1).
+  local _cr_result _cr_state _cr_rest _cr_unmet
+  _cr_result=$(_verdict_criteria_effective "$VERDICT_FILE")
+  _cr_state="${_cr_result%%|*}"; _cr_rest="${_cr_result#*|}"
+  _cr_unmet="${_cr_rest%%|*}"
+  if [[ "$_cr_state" == "malformed" ]]; then
+    log_error "  Final verify $us: verifier contract violation — criteria_results is present but malformed (not an array); cannot trust top-level verdict=$verdict — overriding to fail."
+    log_debug "[GOV] iter=$iter phase=final_verify_criteria_results us=$us criteria_results_malformed=true top_level_verdict=$verdict"
+    verdict="fail"
+  elif (( _cr_unmet > 0 )); then
+    log_error "  Final verify $us: verifier contract violation — top-level verdict=$verdict but $_cr_unmet criteria_results entries report met:false — overriding to fail."
+    log_debug "[GOV] iter=$iter phase=final_verify_criteria_results us=$us criteria_results_contract_violation=true unmet=$_cr_unmet top_level_verdict=$verdict"
+    verdict="fail"
+  fi
   [[ "$verdict" == "pass" ]] && return 0
   return 1
 }
@@ -4820,6 +4938,37 @@ _should_use_consensus() {
 _consensus_finalize() {
   local iter="$1" cons_us_id="$2" claude_verdict_file="$3" codex_verdict_file="$4"
 
+  # SV-gate MEDIUM finding (fix/reaudit-wave-1): both branches below hand-
+  # build a fresh VERDICT_FILE and previously never copied criteria_results
+  # from either engine's verdict — the whole load-bearing-criteria control
+  # (governance §1f, _verdict_criteria_effective) was inert under
+  # CONSENSUS_MODE=all|final-only, since the merged file this function writes
+  # is what the main loop and _final_verify_one_us actually read.
+  #
+  # Merge rule: NO ENGINE PRIORITY (governance.md:1073, "both must pass, no
+  # engine priority") applied to per-criterion data, not just the top-level
+  # verdict — a met:false from EITHER engine must survive into the merged
+  # array (concatenation, same "add // []" idiom already used for
+  # merged_issues below). Malformed is handled the same fail-closed way item
+  # 2 (main-loop + _final_verify_one_us) now handles it: if EITHER engine's
+  # criteria_results is present-but-not-an-array, consensus must not launder
+  # that into a clean empty array by silently coercing it away — the merged
+  # value is set to something itself non-array/non-null so
+  # _verdict_criteria_effective classifies the MERGE as malformed too, and
+  # the same fail-closed override fires downstream.
+  local claude_cr_type codex_cr_type merged_criteria_results
+  claude_cr_type=$(jq -r '.criteria_results | type' "$claude_verdict_file" 2>/dev/null)
+  codex_cr_type=$(jq -r '.criteria_results | type' "$codex_verdict_file" 2>/dev/null)
+  if [[ ("$claude_cr_type" == "array" || "$claude_cr_type" == "null") \
+     && ("$codex_cr_type" == "array" || "$codex_cr_type" == "null") ]]; then
+    local claude_cr codex_cr
+    claude_cr=$(jq -c '.criteria_results // []' "$claude_verdict_file" 2>/dev/null || echo '[]')
+    codex_cr=$(jq -c '.criteria_results // []' "$codex_verdict_file" 2>/dev/null || echo '[]')
+    merged_criteria_results=$(echo "$claude_cr $codex_cr" | jq -s 'add // []')
+  else
+    merged_criteria_results='"malformed-in-consensus-merge"'
+  fi
+
   # Both pass → success
   if [[ "$CLAUDE_VERDICT" = "pass" && "$CODEX_VERDICT" = "pass" ]]; then
     # Create merged verdict with per-engine details. This atomic_write REPLACES
@@ -4832,6 +4981,7 @@ _consensus_finalize() {
       echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
       echo '  "summary": "Consensus PASS: both claude and codex verified independently",'
       echo '  "recommended_state_transition": "complete",'
+      echo '  "criteria_results": '"$merged_criteria_results"','
       echo '  "consensus": {'
       echo '    "claude": { "verdict": "pass", "file": "'"$claude_verdict_file"'" },'
       echo '    "codex": { "verdict": "pass", "file": "'"$codex_verdict_file"'" },'
@@ -4884,6 +5034,7 @@ _consensus_finalize() {
     echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
     echo '  "summary": "Consensus disagreement: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
     echo '  "issues": '"$merged_issues"','
+    echo '  "criteria_results": '"$merged_criteria_results"','
     echo '  "recommended_state_transition": "continue",'
     echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": '"$CONSENSUS_ROUND"' }'
     echo '}'
@@ -5911,7 +6062,15 @@ main() {
       # crash-and-relaunch into verify re-enters with the correct baseline.
       ITER_START_HEAD=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "")
       # --- governance.md s7 step 4: Build worker prompt + trigger ---
-      write_worker_trigger "$ITERATION"
+      # write_worker_trigger can now fail closed (return 1, sentinel already
+      # written) when approach escalation was active but its attempt-history
+      # artifact could not be durably persisted — same react-and-stop shape
+      # used everywhere else in this loop for a write_blocked_sentinel call
+      # (e.g. the codex/claude pane-start failures below).
+      if ! write_worker_trigger "$ITERATION"; then
+        update_status "blocked" "worker_trigger_failed"
+        return 1
+      fi
       local worker_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).worker-prompt.md"
 
       # US-002A: per-iteration pre-existing-dirty baseline for the Bug #8 F-8
@@ -6576,6 +6735,47 @@ main() {
         local _issues_count=$(jq '.issues | length' "$VERDICT_FILE" 2>/dev/null || echo 0)
         log_debug "[GOV] iter=$ITERATION phase=verdict engine=$VERIFIER_ENGINE verdict=$verdict recommended=$recommended us_id=${signal_us_id:-all} issues=$_issues_count"
 
+        # reaudit wave 1: make criteria_results LOAD-BEARING (governance §1f /
+        # maker-checker rule) — see _verdict_criteria_effective (lib) for the
+        # absent/malformed/empty/populated distinction. absent NEVER overrides
+        # (backward compat: pre-existing verdicts and any verifier that omits
+        # the array must not suddenly fail — a legitimately missing field is
+        # not evidence of anything). A populated array with >=1 met:false
+        # entries overrides the top-level verdict to fail — even over "pass"
+        # — no partial credit.
+        #
+        # SV-gate CRITICAL finding (fix/reaudit-wave-1): malformed is NOT the
+        # same as absent and must NOT ride through silently as whatever the
+        # top-level verdict already said. Absent means the field was never
+        # emitted (legacy verdict, older Verifier — nothing to distrust).
+        # Malformed means THIS Verifier tried to emit the field that decides
+        # the verdict and produced garbage (present but not an array) —
+        # crediting a US on that basis is exactly the partial-credit this
+        # control exists to prevent. So: malformed is logged under its own
+        # name (never conflated with the unmet-count log line below) and
+        # always overrides to fail, unconditionally — there is no "already
+        # fail" short-circuit here the way there is for the unmet-count case,
+        # because a malformed top-level verdict cannot be trusted regardless
+        # of what it claims.
+        local _cr_result _cr_state _cr_rest _cr_unmet _cr_malformed
+        _cr_result=$(_verdict_criteria_effective "$VERDICT_FILE")
+        _cr_state="${_cr_result%%|*}"; _cr_rest="${_cr_result#*|}"
+        _cr_unmet="${_cr_rest%%|*}"; _cr_malformed="${_cr_rest#*|}"
+        log_debug "[GOV] iter=$ITERATION phase=criteria_results state=$_cr_state unmet=$_cr_unmet malformed_entries=$_cr_malformed top_level_verdict=$verdict us_id=${signal_us_id:-all}"
+        if [[ "$_cr_state" == "malformed" ]]; then
+          log_error "  Verifier contract violation: criteria_results is present but malformed (not an array) — cannot trust top-level verdict=$verdict; overriding to fail (no credit on unverifiable evidence)."
+          log_debug "[GOV] iter=$ITERATION criteria_results_malformed=true top_level_verdict=$verdict us_id=${signal_us_id:-all}"
+          verdict="fail"
+        elif (( _cr_unmet > 0 )); then
+          if [[ "$verdict" == "pass" ]]; then
+            log_error "  Verifier contract violation: top-level verdict=pass but $_cr_unmet criteria_results entries report met:false — overriding to fail (no partial credit)."
+            log_debug "[GOV] iter=$ITERATION criteria_results_contract_violation=true unmet=$_cr_unmet us_id=${signal_us_id:-all}"
+          else
+            log "  criteria_results: $_cr_unmet entries report met:false (verdict already $verdict)."
+          fi
+          verdict="fail"
+        fi
+
         case "$verdict" in
           pass)
             # D-3 fix: snapshot the CB BEFORE the pass-success reset so a wrong-US
@@ -6657,6 +6857,14 @@ main() {
                   fi
                   log "  US $signal_us_id verified. Verified so far: $VERIFIED_US"
                   log_debug "[FLOW] iter=$ITERATION verified_us_update=$signal_us_id verified_us_total=$VERIFIED_US"
+                  # DEFECT-1 fix: this US's unresolved fix contract (if any) is
+                  # now stale — clear it so a later, unrelated US never sees it.
+                  unset "US_FIX_CONTRACT[$signal_us_id]"
+                  # DEFECT-2b: its attempt history is resolved too — a US that
+                  # passes has no "already-failed approach" to warn about
+                  # anymore, even if it needs rework later (that would be a
+                  # fresh history, not a continuation of this one).
+                  unset "US_ATTEMPT_HISTORY[$signal_us_id]"
                   # F-14: durable source-of-truth. On append failure the
                   # in-session credit stands but the durable record is gone —
                   # a later resume falls back to build mode (safe: re-verifies
@@ -6711,6 +6919,11 @@ main() {
                   log "  Partial progress: $_pus passed (overall FAIL). Verified so far: $VERIFIED_US"
                   _append_verified_ledger "$_pus" \
                     || log_error "durable ledger append failed for $_pus — a resume will re-verify (build mode) instead of confirming"
+                  # DEFECT-1 fix: this US passed even though the overall verdict
+                  # is FAIL — its own unresolved fix contract is stale now.
+                  unset "US_FIX_CONTRACT[$_pus]"
+                  # DEFECT-2b: same reasoning — its attempt history is resolved.
+                  unset "US_ATTEMPT_HISTORY[$_pus]"
                 fi
               done
               log_debug "[FLOW] iter=$ITERATION partial_progress prev=$_prev_verified now=$VERIFIED_US"
@@ -6728,6 +6941,11 @@ main() {
 
             (( CONSECUTIVE_FAILURES++ ))
             record_us_failure "${signal_us_id:-unknown}"
+            # DEFECT-2b: snapshot the model BEFORE check_model_upgrade can
+            # mutate WORKER_MODEL, so the attempt-history entry below records
+            # which model actually produced THIS failure (not the model it
+            # may be upgraded to as a result of it).
+            local _pre_upgrade_worker_model="$WORKER_MODEL"
             # Luna-first spec §2.5: environment/harness failures (incl. verifier
             # safety-classifier refusals, capacity stalls) and flaky failures never
             # climb the model ladder — recover the environment, retry the SAME model.
@@ -6749,6 +6967,10 @@ main() {
             fi
             local verdict_summary_fail
             verdict_summary_fail=$(jq -r '.summary // "no summary"' "$VERDICT_FILE" 2>/dev/null)
+            # DEFECT-2b: record this attempt (pre-upgrade model + why it
+            # failed) into the capped per-US history write_worker_trigger
+            # surfaces to an escalated Worker.
+            _record_us_attempt "${signal_us_id:-unknown}" "$_pre_upgrade_worker_model" "$verdict_summary_fail"
             log "  Verifier FAILED (consecutive: $CONSECUTIVE_FAILURES). Building fix contract..."
 
             # Extract issues from verdict for next Worker's fix contract
@@ -6792,17 +7014,40 @@ main() {
             if (( CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD )); then
               # For codex: use full model:reasoning string (WORKER_MODEL loses reasoning suffix after upgrade)
               _ceiling_model_str="$([[ "$WORKER_ENGINE" = "codex" ]] && echo "${WORKER_CODEX_MODEL}:${WORKER_CODEX_REASONING}" || echo "$WORKER_MODEL")"
-              if (( _MODEL_UPGRADED )) && [[ -z "$(get_next_model "$_ceiling_model_str")" ]]; then
+              local _at_ceiling=0
+              [[ -z "$(get_next_model "$_ceiling_model_str")" ]] && _at_ceiling=1
+              # DEFECT-2a (fix/reaudit-wave-1): check_model_upgrade() runs BEFORE
+              # this check and upgrades on the SAME failure that trips the CB
+              # when CB_THRESHOLD lands exactly on a ladder-row boundary (default
+              # 6 with the 4-rung claude ladder: opus's 2nd fail simultaneously
+              # (a) upgrades WORKER_MODEL to the ceiling and (b) trips the CB) —
+              # so the ceiling model was promoted TO but never actually
+              # DISPATCHED, yet the old BLOCKED text claimed "Worker upgraded to
+              # ceiling model" as if it had run and failed there. _SAME_US_FAIL_COUNT
+              # is reset to 0 by check_model_upgrade on every upgrade and then
+              # counts the NEW model's own consecutive fails — < 2 means the
+              # model just reached is still in its first (or zeroth) attempt on
+              # its own 2-attempt window, so defer the breaker one more failure
+              # instead of blocking on a model that never got a turn.
+              if (( _MODEL_UPGRADED && _at_ceiling && _SAME_US_FAIL_COUNT < 2 )); then
+                log "  Circuit breaker deferred: Worker just reached ceiling model (${WORKER_MODEL}) — giving it its own attempt window (same-model fail ${_SAME_US_FAIL_COUNT}/2) before blocking."
+                log_debug "[GOV] iter=$ITERATION circuit_breaker=deferred reason=ceiling_not_yet_dispatched same_us_fail_count=$_SAME_US_FAIL_COUNT model=$WORKER_MODEL"
+                update_status "verifier" "fail"
+                _cmu_deferred=1
+              elif (( _MODEL_UPGRADED )) && (( _at_ceiling )); then
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"architecture escalation: Worker at ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures\""
-                log_error "Circuit breaker: architecture escalation — Worker upgraded to ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures"
-                write_blocked_sentinel "architecture escalation: Worker upgraded to ceiling model (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
+                log_error "Circuit breaker: architecture escalation — Worker at ceiling (${WORKER_MODEL}) failed its own attempt window, ${EFFECTIVE_CB_THRESHOLD} consecutive failures"
+                write_blocked_sentinel "architecture escalation: Worker at ceiling model (${WORKER_MODEL}) failed after its own attempt window, ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
               else
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"${EFFECTIVE_CB_THRESHOLD} consecutive verification failures\""
                 log_error "Circuit breaker: ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
                 write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
               fi
-              update_status "blocked" "consecutive_failures"
-              return 1
+              if (( ! ${_cmu_deferred:-0} )); then
+                update_status "blocked" "consecutive_failures"
+                return 1
+              fi
+              unset _cmu_deferred
             fi
 
             update_status "verifier" "fail"

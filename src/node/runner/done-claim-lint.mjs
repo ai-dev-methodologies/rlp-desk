@@ -34,10 +34,14 @@ function acsOf(step) {
  * Deterministic per-AC TDD-sequence lint of a parsed done-claim.
  *
  * @param {*} doneClaim parsed done-claim JSON ({us_id, claims[], execution_steps[]})
- * @param {{env?: object}} [options] env defaults to process.env (RLP_DONECLAIM_LINT opt-out)
+ * @param {{env?: object, attemptHistoryExists?: boolean}} [options] env defaults to
+ *   process.env (RLP_DONECLAIM_LINT opt-out). attemptHistoryExists is caller-computed
+ *   (a filesystem check for this iteration's persisted iter-NNN.attempt-history.md — see
+ *   governance §1f¾) since this function stays pure/no-I/O; defaults to false so every
+ *   existing call site (and every pre-escalation done-claim) is unaffected.
  * @returns {{status:'skip'|'pass'|'fail', reason?:string, violations?:Array<{ac:string, idx:number[]}>}}
  */
-export function lintDoneClaimTddSequence(doneClaim, { env = process.env } = {}) {
+export function lintDoneClaimTddSequence(doneClaim, { env = process.env, attemptHistoryExists = false } = {}) {
   // Opt-out (reason `disabled`).
   if (env && env.RLP_DONECLAIM_LINT === '0') {
     return { status: 'skip', reason: 'disabled' };
@@ -45,6 +49,23 @@ export function lintDoneClaimTddSequence(doneClaim, { env = process.env } = {}) 
   // Missing/unparseable done-claim — fail-open (reason `unparseable`).
   if (!doneClaim || typeof doneClaim !== 'object' || Array.isArray(doneClaim)) {
     return { status: 'skip', reason: 'unparseable' };
+  }
+  // Approach-escalation enforcement (governance §1f¾): when the Leader has
+  // persisted an attempt-history artifact for this iteration (repeated failure
+  // already upgraded the Worker model and the next prompt demanded a
+  // materially different strategy), the done-claim MUST name that strategy
+  // in a top-level `approach_summary` field. This is INDEPENDENT of the
+  // TDD-sequence check below — it runs even for confirmation/replay claims
+  // (no write_test step) that the TDD-sequence check itself skips, since a
+  // US resolved via verify_existing can silently repeat a failed "fix" just
+  // as easily as a fresh build. No artifact for this iteration → not required; this
+  // is a conditional check gated on escalation being active, never a
+  // blanket done-claim requirement.
+  if (attemptHistoryExists) {
+    const summary = doneClaim.approach_summary;
+    if (typeof summary !== 'string' || summary.trim().length === 0) {
+      return { status: 'fail', reason: 'approach_summary_missing', violations: [] };
+    }
   }
   const steps = doneClaim.execution_steps;
   if (!Array.isArray(steps) || steps.length === 0) {

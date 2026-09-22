@@ -829,6 +829,65 @@ _verdict_failure_category() {
   jq -r 'first((.failure_category? | select(type=="string")), (.issues? | .[]? | .failure_category? | select(type=="string")), (.reasoning? | .[]? | .failure_category? | select(type=="string")), (.checks? | .[]? | .failure_category? | select(type=="string")), "")' "$vf" 2>/dev/null || echo ""
 }
 
+# _verdict_criteria_effective() — reaudit wave 1: makes the verifier contract's
+# criteria_results array (init_ralph_desk.zsh Verdict JSON block) LOAD-BEARING.
+# Before this, no consumer read the field at all (an adversarial probe showed
+# a top-level verdict=pass sailing through while an individual criterion
+# carried met:false + missing_evidence) — the maker-checker rule this project
+# is built on forbids exactly that kind of partial credit.
+#
+# Returns "<state>|<unmet_count>|<malformed_entry_count>" on stdout:
+#   state=absent    — the key is missing OR explicit JSON null. Covers every
+#                      verdict written before this feature existed, and any
+#                      verifier that omits the array. The caller MUST NOT
+#                      penalize this state — treating "missing" as "failed"
+#                      would be the same forbidden assumption in the other
+#                      direction (never assume a missing section is present,
+#                      but never manufacture a failure from its absence
+#                      either). unmet_count is always 0 here.
+#   state=malformed — the key is present but is not a JSON array (garbage:
+#                      object, string, number, bool). NOT the same as absent:
+#                      the caller MUST override the top-level verdict to fail
+#                      (a verifier that engaged the contract and produced
+#                      garbage cannot credit a US) and log it under its own
+#                      name, never conflated with absent. unmet_count is 0
+#                      here only because nothing parseable exists to count.
+#   state=empty     — a present array with zero entries. The verifier engaged
+#                      the structured contract but cited no criteria at all
+#                      (short of the schema's length>=1 expectation — see
+#                      tests/self-verification-methodology.md L5). Nothing to
+#                      override on (there is no entry to be met:false), but
+#                      reported distinctly from "absent" so an operator can
+#                      tell "never populated" apart from "populated as
+#                      nothing".
+#   state=populated — a present array with >=1 entries. unmet_count counts
+#                      entries with met===false using STRICT boolean equality;
+#                      an entry with met missing/null/a non-boolean is never
+#                      counted as unmet (a malformed ENTRY must never
+#                      masquerade as a failure) — it is counted in
+#                      malformed_entry_count instead.
+# Usage: _verdict_criteria_effective <verdict_file>
+_verdict_criteria_effective() {
+  local vf="$1"
+  [[ -f "$vf" ]] || { echo "absent|0|0"; return 0; }
+  local state
+  state=$(jq -r '
+    if (has("criteria_results")|not) or (.criteria_results == null) then "absent"
+    elif (.criteria_results|type) != "array" then "malformed"
+    elif (.criteria_results|length) == 0 then "empty"
+    else "populated"
+    end' "$vf" 2>/dev/null)
+  [[ -z "$state" ]] && state="malformed"
+  local unmet=0 malformed_entries=0
+  if [[ "$state" == "populated" ]]; then
+    unmet=$(jq '[.criteria_results[]? | select(.met == false)] | length' "$vf" 2>/dev/null)
+    [[ -z "$unmet" ]] && unmet=0
+    malformed_entries=$(jq '[.criteria_results[]? | select((.met|type) != "boolean")] | length' "$vf" 2>/dev/null)
+    [[ -z "$malformed_entries" ]] && malformed_entries=0
+  fi
+  echo "${state}|${unmet}|${malformed_entries}"
+}
+
 # record_us_failure() — track per-US cumulative failure count (dual counter, Option D)
 # Unlike CONSECUTIVE_FAILURES which resets on pass, US_FAIL_HISTORY persists across phases.
 # This enables prior-failure warnings when a US that struggled in per-US mode fails again in final verify.
@@ -848,6 +907,56 @@ record_us_failure() {
 
   return 0
 }
+
+# ATTEMPT_HISTORY_CAP: how many past attempts _record_us_attempt() keeps per
+# US. Deliberately small — this is a cross-attempt INDEX ("what already
+# didn't work"), not a transcript; the fix contract (US_FIX_CONTRACT,
+# DEFECT-1) still carries the full detail of the MOST RECENT failure. A
+# bigger cap would eat Worker-prompt context and bury the signal for no
+# benefit — 3 is enough to show "you already tried this" without a growing
+# wall of history.
+ATTEMPT_HISTORY_CAP=3
+
+# US_ATTEMPT_HISTORY[us_id] — DEFECT-2b: capped, newest-first, one-line-per-
+# attempt history of "which model failed this US and why". Declared here
+# (`-g` = global even if this lib happens to be sourced from inside a
+# function — see the file-header note above on why a bare `typeset -A`
+# would otherwise be scoped local) rather than in run_ralph_desk.zsh: a lib
+# function (_record_us_attempt, below) must not depend on a global only the
+# run script declares, or sourcing this lib standalone breaks it. Populated
+# here, read by write_worker_trigger's APPROACH ESCALATION section, and
+# cleared once a US passes (see main()'s pass / partial-progress branches).
+typeset -gA US_ATTEMPT_HISTORY
+
+# _record_us_attempt() — DEFECT-2b: append a one-line, capped, newest-first
+# record of "which model attempted this US and why it failed" to
+# US_ATTEMPT_HISTORY[us_id] (declared just above).
+# Lets an escalated Worker (write_worker_trigger's APPROACH ESCALATION
+# section) see exactly which approaches already failed, instead of a bare
+# model-upgrade notice that says nothing about what to do differently.
+# Usage: _record_us_attempt <us_id> <model> <one_line_summary>
+_record_us_attempt() {
+  local us_id="$1" model="$2" summary="$3"
+  [[ -z "$us_id" || "$us_id" = "unknown" ]] && return 0
+  local line="iter ${ITERATION:-?} (${model}): ${summary:0:120}"
+  local existing="${US_ATTEMPT_HISTORY[$us_id]:-}"
+  local combined="$line"
+  [[ -n "$existing" ]] && combined="${line}"$'\n'"${existing}"
+  US_ATTEMPT_HISTORY[$us_id]="$(print -r -- "$combined" | head -n "$ATTEMPT_HISTORY_CAP")"
+  return 0
+}
+
+# US_FIX_CONTRACT[us_id] — DEFECT-1: most-recently-written UNRESOLVED fix
+# contract per US, keyed by the same in-flight us_id convention as CURRENT_US
+# (D-11). Declared here (`-g`, see the US_ATTEMPT_HISTORY note above for why)
+# rather than in run_ralph_desk.zsh: atomic_write (below) is a lib function
+# that writes this map, and a lib function must not depend on a global only
+# the run script declares — a consumer that sources this lib standalone
+# (e.g. tests/test_doneclaim_lint.sh) never reaches that declaration.
+# Populated by atomic_write() whenever it replaces a *.fix-contract.md
+# target; read by write_worker_trigger; cleared once that US passes
+# verification (see main()'s pass / partial-progress branches).
+typeset -gA US_FIX_CONTRACT
 
 # --- governance.md s7: Atomic file writes (tmux pattern) ---
 # All file writes by the Leader use tmp+mv to prevent corruption.
@@ -883,6 +992,18 @@ atomic_write() {
   # triggers) and gated the same way as every other lifecycle helper, so the
   # off-path cost is one already-gated function call.
   _lifecycle_clear_lock_mark "${target:t}"
+  # DEFECT-1 (fix/reaudit-wave-1): track the most recently written UNRESOLVED
+  # fix contract per US. write_worker_trigger previously looked up ONLY
+  # iter-(iter-1).fix-contract.md — empty whenever the Worker's prior turn was
+  # a bare `continue` signal (no verify ran, so no new contract was written),
+  # which silently dropped real unresolved verifier feedback. Recording it
+  # here keyed by the in-flight US (CURRENT_US — the same in-flight-us_id
+  # convention D-11 uses for BLOCKED sentinels: set to the dispatch-time
+  # target US by write_worker_trigger, then to the verified/verifying US by
+  # the done-claim path) lets that lookup survive an intervening continue.
+  # Cleared on that US's pass — see the pass / partial-progress branches in
+  # run_ralph_desk.zsh's main(). US_FIX_CONTRACT is declared just above.
+  [[ "${target:t}" == *.fix-contract.md ]] && US_FIX_CONTRACT[${CURRENT_US:-ALL}]="$target"
   return 0
 }
 
@@ -3259,6 +3380,19 @@ run_pregate_doneclaim_lint() {
   # unparseable (parity with the Node predicate, which requires a plain object).
   jq -e 'type == "object"' "$DONE_CLAIM_FILE" >/dev/null 2>&1 || { PREGATE_LINT_REASON="unparseable"; return 0; }
 
+  # Approach-escalation enforcement (governance §1f¾) — independent of the
+  # TDD-sequence evaluation below, runs even for confirmation/replay claims.
+  local _attempt_history_file="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).attempt-history.md"
+  if [[ -f "$_attempt_history_file" ]]; then
+    local _approach_summary
+    _approach_summary=$(jq -r 'if (.approach_summary|type) == "string" then .approach_summary else "" end' "$DONE_CLAIM_FILE" 2>/dev/null)
+    if [[ -z "${_approach_summary//[[:space:]]/}" ]]; then
+      PREGATE_LINT_STATUS="fail"; PREGATE_LINT_REASON="approach_summary_missing"
+      PREGATE_LINT_VIOLATIONS="[]"
+      return 1
+    fi
+  fi
+
   local steps_len
   steps_len=$(jq -r 'if (.execution_steps|type)=="array" then (.execution_steps|length) else -1 end' "$DONE_CLAIM_FILE" 2>/dev/null)
   [[ "$steps_len" == <-> ]] || steps_len=-1
@@ -3305,6 +3439,24 @@ _pregate_register_fail_doneclaim_lint() {
   local iter="$1" us_id="${2:-ALL}"
   _pregate_bump "$us_id" || return 1
   local pregate_contract="$LOGS_DIR/iter-$(printf '%03d' $iter).fix-contract.md"
+  # Approach-escalation failure (governance §1f¾) has its own cause and fix —
+  # PREGATE_LINT_VIOLATIONS is "[]" here (nothing per-AC to report), so the
+  # generic TDD-sequence body below would render an empty violation list and
+  # tell the Worker nothing useful. Branch before touching that path.
+  if [[ "$PREGATE_LINT_REASON" == "approach_summary_missing" ]]; then
+    local _attempt_history_file="$LOGS_DIR/iter-$(printf '%03d' $iter).attempt-history.md"
+    {
+      echo "# Fix Contract (PRE-GATE FAILURE, iteration $iter)"
+      echo ""
+      echo "## PRE-GATE FAILURE (approach escalation — governance §1f¾)"
+      echo "- rule: this US has failed enough consecutive times to upgrade the Worker model. Your done-claim.json MUST include a top-level \`approach_summary\` field — a non-empty string naming the specific strategy you used THIS iteration and how it differs from every attempt already on record."
+      echo "- prior attempts on record: $_attempt_history_file"
+      echo ""
+      echo "## Next Iteration Contract"
+      echo "Add \`approach_summary\` to done-claim.json describing your actual strategy for this iteration, then resubmit. This is a format requirement, not by itself a re-implementation demand — but the summary must genuinely reflect a materially different approach from what is on record, not merely restate one of the prior attempts in new words."
+    } | atomic_write "$pregate_contract"
+    return 0
+  fi
   {
     echo "# Fix Contract (PRE-GATE FAILURE, iteration $iter)"
     echo ""

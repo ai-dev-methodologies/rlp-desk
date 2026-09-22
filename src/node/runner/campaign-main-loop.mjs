@@ -556,6 +556,30 @@ export function buildDoneClaimLintFixContract(iteration, violations) {
   return `${lines.join('\n')}\n`;
 }
 
+// Approach-escalation fix contract (governance §1f¾, DEFECT-2b). A SEPARATE
+// builder from buildDoneClaimLintFixContract above: that one renders `{ac,idx}`
+// TDD-sequence violations, which are always `[]` for an approach_summary_missing
+// lint failure — reusing it here would hand the Worker a blank, useless
+// violations list. Mirrors the zsh `_pregate_register_fail_doneclaim_lint`'s
+// approach_summary_missing branch (lib_ralph_desk.zsh) in INTENT — names the
+// required field, cites the attempt-history artifact, and is explicit that
+// this is a format requirement, not a re-implementation demand — not in exact
+// wording (the two are independent renderers, not a shared string template).
+// Exported for direct unit testing (parity with the zsh writer).
+export function buildApproachSummaryMissingFixContract(iteration, attemptHistoryPath) {
+  const lines = [
+    `# Fix Contract (PRE-GATE FAILURE, iteration ${iteration})`,
+    '',
+    '## PRE-GATE FAILURE (approach escalation — governance §1f¾)',
+    '- rule: this US has failed enough consecutive times to upgrade the Worker model. Your done-claim.json MUST include a top-level `approach_summary` field — a non-empty string naming the specific strategy you used THIS iteration and how it differs from every attempt already on record.',
+    `- prior attempts on record: ${attemptHistoryPath}`,
+    '',
+    '## Next Iteration Contract',
+    'Add `approach_summary` to done-claim.json describing your actual strategy for this iteration, then resubmit. This is a format requirement, not by itself a re-implementation demand — but the summary must genuinely reflect a materially different approach from what is on record, not merely restate one of the prior attempts in new words.',
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
 // Exported for direct unit testing (US-001: tests/node/models-ladder.test.mjs
 // exercises the ""->'BLOCKED' ceiling normalization and the :low->:medium
 // alignment against the real shipped MODEL_UPGRADES map).
@@ -2619,7 +2643,17 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
       const capParsed = Number.parseInt(lintEnv.PREGATE_FAIL_CAP, 10);
       const lintCap = capParsed > 0 ? capParsed : 3;
       const lintDoneClaim = await readJsonIfExists(paths.doneClaimFile);
-      const lintResult = lintDoneClaimTddSequence(lintDoneClaim, { env: lintEnv });
+      // Approach-escalation enforcement (governance §1f¾): attemptHistoryExists
+      // is caller-computed (the pure predicate stays no-I/O) from the SAME
+      // iter-NNN.attempt-history.md path the zsh leader's write_worker_trigger /
+      // write_verifier_trigger read and write — keyed by iteration, not US (see
+      // governance §1f¾ "the key is genuinely the iteration, not the US").
+      const attemptHistoryPath = path.join(
+        paths.campaignLogDir,
+        `iter-${String(state.iteration).padStart(3, '0')}.attempt-history.md`,
+      );
+      const attemptHistoryExists = fsSync.existsSync(attemptHistoryPath);
+      const lintResult = lintDoneClaimTddSequence(lintDoneClaim, { env: lintEnv, attemptHistoryExists });
       if (lintResult.status === 'fail') {
         // Reset the per-US streak when the in-flight US changes (mirror _pregate_bump).
         if (state.pregate_lint_us !== lintUsId) {
@@ -2638,9 +2672,15 @@ async function _runCampaignBody(slug, options, paths, rootDir) {
             paths.campaignLogDir,
             `iter-${String(state.iteration).padStart(3, '0')}.fix-contract.md`,
           );
+          // approach_summary_missing carries violations:[] — the generic
+          // {ac,idx} builder would hand the Worker a blank list and nothing
+          // useful. Mirrors the zsh _pregate_register_fail_doneclaim_lint
+          // branch (lib_ralph_desk.zsh) byte-for-byte in intent, not in text.
           await writePromptFile(
             fixContractPath,
-            buildDoneClaimLintFixContract(state.iteration, lintResult.violations),
+            lintResult.reason === 'approach_summary_missing'
+              ? buildApproachSummaryMissingFixContract(state.iteration, attemptHistoryPath)
+              : buildDoneClaimLintFixContract(state.iteration, lintResult.violations),
           );
           state.current_us = lintUsId;
           state.phase = 'worker';
