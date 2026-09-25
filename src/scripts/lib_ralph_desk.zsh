@@ -799,7 +799,18 @@ check_model_upgrade() {
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
       current_model_str=$(get_model_string "$WORKER_ENGINE" "${WORKER_CODEX_MODEL:-$WORKER_MODEL}" "${WORKER_CODEX_REASONING:-}")
     else
-      current_model_str=$(get_model_string "$WORKER_ENGINE" "$WORKER_MODEL" "")
+      # Model-mapping refresh: the claude ladder is a 7-rung chain whose every
+      # rung above haiku is effort-qualified (sonnet:medium, opus:low, ...), so
+      # the lookup key must carry WORKER_EFFORT — keying off the bare
+      # WORKER_MODEL would miss every key but `haiku` and silently report
+      # already_max from the first upgrade onward (the same silent-no-op class
+      # as the WORKER_CODEX_MODEL fallback bug fixed just above).
+      # get_model_string() is NOT used here: it returns a BARE name for claude
+      # on purpose (pinned by test_engine_refactor T2-2/T2-5), and the model
+      # string it builds is also what `claude --model` consumes elsewhere.
+      # haiku carries no effort, so it keeps falling through as a bare key.
+      current_model_str="$WORKER_MODEL"
+      [[ -n "${WORKER_EFFORT:-}" ]] && current_model_str="${WORKER_MODEL}:${WORKER_EFFORT}"
     fi
 
     local next_model

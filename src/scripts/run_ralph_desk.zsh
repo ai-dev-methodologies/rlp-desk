@@ -7054,14 +7054,26 @@ main() {
 
             # Circuit breaker: consecutive failures (with architecture escalation when at model ceiling)
             if (( CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD )); then
-              # For codex: use full model:reasoning string (WORKER_MODEL loses reasoning suffix after upgrade)
-              _ceiling_model_str="$([[ "$WORKER_ENGINE" = "codex" ]] && echo "${WORKER_CODEX_MODEL}:${WORKER_CODEX_REASONING}" || echo "$WORKER_MODEL")"
+              # Both engines: use the full model:effort string. WORKER_MODEL loses
+              # the suffix after an upgrade (the ladder value is split into
+              # WORKER_MODEL + WORKER_CODEX_REASONING/WORKER_EFFORT), and since the
+              # model-mapping refresh every claude rung above haiku is
+              # effort-qualified too — so a bare claude key misses the ladder and
+              # reports "at ceiling" for every rung, falsely triggering the
+              # architecture escalation below. Mirrors the engine-aware lookup key
+              # in check_model_upgrade (lib_ralph_desk.zsh).
+              if [[ "$WORKER_ENGINE" = "codex" ]]; then
+                _ceiling_model_str="${WORKER_CODEX_MODEL}:${WORKER_CODEX_REASONING}"
+              else
+                _ceiling_model_str="$WORKER_MODEL"
+                [[ -n "${WORKER_EFFORT:-}" ]] && _ceiling_model_str="${WORKER_MODEL}:${WORKER_EFFORT}"
+              fi
               local _at_ceiling=0
               [[ -z "$(get_next_model "$_ceiling_model_str")" ]] && _at_ceiling=1
               # DEFECT-2a (fix/reaudit-wave-1): check_model_upgrade() runs BEFORE
               # this check and upgrades on the SAME failure that trips the CB
               # when CB_THRESHOLD lands exactly on a ladder-row boundary (default
-              # 6 with the 4-rung claude ladder: opus's 2nd fail simultaneously
+              # 6, 2 fails per rung: a rung's 2nd fail simultaneously
               # (a) upgrades WORKER_MODEL to the ceiling and (b) trips the CB) —
               # so the ceiling model was promoted TO but never actually
               # DISPATCHED, yet the old BLOCKED text claimed "Worker upgraded to

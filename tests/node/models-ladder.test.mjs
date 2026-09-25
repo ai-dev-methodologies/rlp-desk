@@ -49,12 +49,12 @@ test('override-precedence: a valid override file wins over shipped defaults', as
 
 test('shipped-defaults-when-no-override: absent override falls through to shipped defaults', () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
-  assert.equal(ladder.haiku, 'sonnet');
-  assert.equal(ladder.sonnet, 'opus');
+  assert.equal(ladder.haiku, 'sonnet:medium');
+  assert.equal(ladder['sonnet:medium'], 'opus:low');
   // Fable 5.1 wave: opus is no longer the claude ceiling — it escalates into
   // claude-fable-5-1:max (see the dedicated "claude ladder reaches fable"
   // test below for the full assertion + rationale).
-  assert.equal(ladder.opus, 'claude-fable-5-1:max');
+  assert.equal(ladder['opus:xhigh'], 'claude-fable-5-1:max');
   assert.equal(ladder['gpt-5.6-sol:medium'], 'gpt-5.6-sol:high');
   assert.equal(ladder['gpt-5.6-luna:medium'], 'gpt-5.6-luna:high');
 });
@@ -67,10 +67,51 @@ test('shipped-defaults-when-no-override: absent override falls through to shippe
 // fable reference in docs/governance, which is always version-pinned, never
 // the floating `fable` alias) paired with `:max` (matching the "top model +
 // top effort" role fable already holds everywhere else in this repo).
-test('claude ladder reaches fable: opus escalates to claude-fable-5-1:max, which is the real claude ceiling', () => {
+test('claude ladder reaches fable: opus:xhigh escalates to claude-fable-5-1:max, which is the real claude ceiling', () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
-  assert.equal(ladder.opus, 'claude-fable-5-1:max');
-  assert.equal(ladder['claude-fable-5-1'], CEILING_SENTINEL);
+  assert.equal(ladder['opus:xhigh'], 'claude-fable-5-1:max');
+  assert.equal(ladder['claude-fable-5-1:max'], CEILING_SENTINEL);
+});
+
+// Model-mapping refresh: the claude chain is a SINGLE 7-rung chain whose every
+// rung above haiku is effort-qualified. Complexity picks only the starting
+// rung; repeated same-US failure walks it upward. haiku alone stays bare —
+// it has no effort concept (BARE_ALIAS_NORMALIZATION omits it for the same
+// reason). Pinned as a walk, not as seven independent lookups, so a rung
+// inserted in the middle without rewiring its neighbours turns this red.
+test('claude ladder is one 7-rung chain: haiku -> sonnet:medium -> opus:low/medium/high/xhigh -> claude-fable-5-1:max -> ceiling', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  const walked = [];
+  let rung = 'haiku';
+  for (let hop = 0; hop < 20; hop += 1) {
+    walked.push(rung);
+    const next = ladder[rung];
+    if (next === undefined || next === CEILING_SENTINEL) break;
+    rung = next;
+  }
+  assert.deepEqual(walked, [
+    'haiku',
+    'sonnet:medium',
+    'opus:low',
+    'opus:medium',
+    'opus:high',
+    'opus:xhigh',
+    'claude-fable-5-1:max',
+  ]);
+  assert.equal(ladder['claude-fable-5-1:max'], CEILING_SENTINEL, 'the walk must end at a real ceiling key, not a lookup miss');
+});
+
+// The bare claude aliases are NOT ladder keys any more. Every entry point
+// normalizes them first (normalizeModelSpec / _normalize_model_spec:
+// sonnet -> sonnet:medium, opus -> opus:medium, claude-fable-5-1 ->
+// claude-fable-5-1:max), so a bare key here would be dead weight that also
+// re-admits the unpinned-effort start this wave exists to remove. Absence is
+// the assertion: a well-meaning "compatibility" re-add must turn this red.
+test('claude ladder carries no bare alias keys (normalization owns that, not the ladder)', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  for (const bare of ['sonnet', 'opus', 'claude-fable-5-1', 'fable']) {
+    assert.equal(ladder[bare], undefined, `bare '${bare}' must not be a ladder key`);
+  }
 });
 
 // gpt-6-astra: newest codex frontier model. Its own escalation chain
@@ -113,7 +154,7 @@ test('malformed-JSON warn+fallthrough: malformed override falls through to shipp
   const warnings = [];
   const ladder = loadModelLadder({ overrideFile, shippedFile: realShippedFile, warn: (msg) => warnings.push(msg) });
 
-  assert.equal(ladder.haiku, 'sonnet'); // fell through to shipped defaults
+  assert.equal(ladder.haiku, 'sonnet:medium'); // fell through to shipped defaults
   assert.equal(warnings.length, 1, `expected exactly one warning, got ${warnings.length}: ${JSON.stringify(warnings)}`);
   assert.match(warnings[0], /override file .* unreadable or malformed/);
 });
@@ -149,7 +190,7 @@ for (const [label, badValue] of [
     const ladder = loadModelLadder({ overrideFile, shippedFile: realShippedFile, warn: (msg) => warnings.push(msg) });
 
     // Falls through to the REAL shipped defaults, not the non-string value.
-    assert.equal(ladder.haiku, 'sonnet');
+    assert.equal(ladder.haiku, 'sonnet:medium');
     assert.notEqual(ladder.haiku, badValue);
     assert.equal(warnings.length, 1, `expected exactly one warning, got ${warnings.length}: ${JSON.stringify(warnings)}`);
     assert.match(warnings[0], /override file .* unreadable or malformed/);
@@ -180,11 +221,11 @@ test('emergency-inline-ladder: both override and shipped unreadable falls all th
 });
 
 test('""->BLOCKED ceiling normalization: nextWorkerModel treats a ceiling key as BLOCKED', () => {
-  // 3 consecutive failures -> stage 1 upgrade attempt. opus itself is no
-  // longer a ceiling (Fable 5.1 wave: it escalates to claude-fable-5-1:max) —
-  // claude-fable-5-1 is the real claude ceiling now (JSON "" -> 'BLOCKED').
-  assert.equal(nextWorkerModel('opus', 3), 'claude-fable-5-1:max');
-  assert.equal(nextWorkerModel('claude-fable-5-1', 3), 'BLOCKED');
+  // 3 consecutive failures -> stage 1 upgrade attempt. opus:xhigh is the last
+  // opus rung and escalates to claude-fable-5-1:max, which is the real claude
+  // ceiling (JSON "" -> 'BLOCKED').
+  assert.equal(nextWorkerModel('opus:xhigh', 3), 'claude-fable-5-1:max');
+  assert.equal(nextWorkerModel('claude-fable-5-1:max', 3), 'BLOCKED');
   assert.equal(nextWorkerModel('gpt-5.5:xhigh', 3), 'BLOCKED');
   assert.equal(nextWorkerModel('gpt-5.3-codex-spark:xhigh', 3), 'BLOCKED');
 });
@@ -203,8 +244,8 @@ test('AC9: :low starts now upgrade to :medium (deliberate Node behavior change)'
 test('nextWorkerModel: claude ladder now resolves (previously absent from Node MODEL_UPGRADES)', () => {
   // Before US-001, haiku/sonnet/opus were entirely absent from the Node
   // hardcode, so any claude worker treated as instantly BLOCKED at stage 1.
-  assert.equal(nextWorkerModel('haiku', 3), 'sonnet');
-  assert.equal(nextWorkerModel('sonnet', 3), 'opus');
+  assert.equal(nextWorkerModel('haiku', 3), 'sonnet:medium');
+  assert.equal(nextWorkerModel('sonnet:medium', 3), 'opus:low');
 });
 
 test('cross-consumer equivalence: every shipped ladder key normalizes the same way as the zsh loader (""<->BLOCKED)', async () => {

@@ -78,6 +78,15 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 # ladder (models.json, resolved via LIB_DIR — same hermeticity guard pattern
 # used by tests/test_us011_worker_model_upgrade.sh's extract_fn). Prints one
 # line per failure: "<n> model=<model> blocked=<0|1>".
+#
+# Starts at opus:medium, which is what `--worker-model opus` normalizes to
+# (BARE_ALIAS_NORMALIZATION / _normalize_model_spec). The property under test
+# is the interaction at the CB boundary — the ceiling being promoted TO on the
+# very failure that trips the breaker — so the start rung must sit exactly
+# CB_THRESHOLD/2 hops below the ceiling. On the 7-rung claude ladder that is
+# opus:medium (-> opus:high -> opus:xhigh -> claude-fable-5-1:max, 3 hops, 2
+# fails per hop = failure #6). A haiku start is 6 hops out and would simply
+# never reach the ceiling before the breaker fires, making A1-A4 vacuous.
 run_cb_simulation() { # $1 = run_src  $2 = num_failures  $3 = cb_threshold
   local run_src="$1" n="$2" cbt="${3:-6}"
   zsh -c "
@@ -100,8 +109,8 @@ run_cb_simulation() { # $1 = run_src  $2 = num_failures  $3 = cb_threshold
     WORKER_ENGINE='claude'
     WORKER_CODEX_MODEL=''
     WORKER_CODEX_REASONING=''
-    WORKER_MODEL='haiku'
-    WORKER_EFFORT=''
+    WORKER_MODEL='opus'
+    WORKER_EFFORT='medium'
     LOCK_WORKER_MODEL=0
     _MODEL_UPGRADED=0
     _SAME_US_FAIL_COUNT=0
@@ -173,8 +182,6 @@ path = sys.argv[1]
 with open(path) as f:
     text = f.read()
 old = '''            if (( CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD )); then
-              # For codex: use full model:reasoning string (WORKER_MODEL loses reasoning suffix after upgrade)
-              _ceiling_model_str="$([[ "$WORKER_ENGINE" = "codex" ]] && echo "${WORKER_CODEX_MODEL}:${WORKER_CODEX_REASONING}" || echo "$WORKER_MODEL")"
 '''
 assert old in text, "anchor not found"
 # Find the span from that anchor through the matching outer 'fi' we emit today,
@@ -183,8 +190,16 @@ start = text.index(old)
 end_marker = "              unset _cmu_deferred\n            fi\n"
 end = text.index(end_marker, start) + len(end_marker)
 replacement = '''            if (( CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD )); then
-              # For codex: use full model:reasoning string (WORKER_MODEL loses reasoning suffix after upgrade)
-              _ceiling_model_str="$([[ "$WORKER_ENGINE" = "codex" ]] && echo "${WORKER_CODEX_MODEL}:${WORKER_CODEX_REASONING}" || echo "$WORKER_MODEL")"
+              # Lookup key kept IDENTICAL to the shipped block on purpose: this
+              # mutation control re-injects DEFECT-2a (the missing deferral)
+              # only. Mutating the key too would let A1/A3 go red for the wrong
+              # reason and stop discriminating the defect it controls for.
+              if [[ "$WORKER_ENGINE" = "codex" ]]; then
+                _ceiling_model_str="${WORKER_CODEX_MODEL}:${WORKER_CODEX_REASONING}"
+              else
+                _ceiling_model_str="$WORKER_MODEL"
+                [[ -n "${WORKER_EFFORT:-}" ]] && _ceiling_model_str="${WORKER_MODEL}:${WORKER_EFFORT}"
+              fi
               if (( _MODEL_UPGRADED )) && [[ -z "$(get_next_model "$_ceiling_model_str")" ]]; then
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\\"architecture escalation: Worker at ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures\\""
                 log_error "Circuit breaker: architecture escalation — Worker upgraded to ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures"

@@ -62,16 +62,25 @@ done
 ok "real lib ladder functions sourced from lib_ralph_desk.zsh"
 
 # ---- get_next_model: the documented ladders ----
-# Fable 5.1 wave: opus is no longer the claude ceiling — it escalates into
-# claude-fable-5-1:max, whose own bare key is the new real claude ceiling.
-[[ "$(get_next_model haiku)" == sonnet && "$(get_next_model sonnet)" == opus \
-   && "$(get_next_model opus)" == claude-fable-5-1:max \
-   && -z "$(get_next_model claude-fable-5-1)" ]] \
-  && ok "claude ladder: haiku→sonnet→opus→claude-fable-5-1:max→ceiling" || no "claude ladder wrong"
-[[ "$(get_next_model gpt-5.5:low)" == gpt-5.5:medium && "$(get_next_model gpt-5.5:medium)" == gpt-5.5:high && "$(get_next_model gpt-5.5:high)" == gpt-5.5:xhigh && -z "$(get_next_model gpt-5.5:xhigh)" ]] \
-  && ok "codex gpt-5.5 ladder: low→medium→high→xhigh→ceiling" || no "codex gpt-5.5 ladder wrong"
-[[ "$(get_next_model gpt-5.3-codex-spark:high)" == gpt-5.3-codex-spark:xhigh && -z "$(get_next_model gpt-5.3-codex-spark:xhigh)" ]] \
-  && ok "codex spark ladder ceiling at xhigh" || no "codex spark ladder wrong"
+# Model-mapping refresh: one 7-rung chain, every rung above haiku effort-qualified.
+[[ "$(get_next_model haiku)" == sonnet:medium \
+   && "$(get_next_model sonnet:medium)" == opus:low \
+   && "$(get_next_model opus:low)" == opus:medium \
+   && "$(get_next_model opus:medium)" == opus:high \
+   && "$(get_next_model opus:high)" == opus:xhigh \
+   && "$(get_next_model opus:xhigh)" == claude-fable-5-1:max \
+   && -z "$(get_next_model claude-fable-5-1:max)" ]] \
+  && ok "claude ladder: haiku→sonnet:medium→opus:low/medium/high/xhigh→claude-fable-5-1:max→ceiling" || no "claude ladder wrong"
+# The retired families (gpt-5.5, gpt-5.3-codex-spark) no longer have ladder keys.
+# Same property as before, retargeted onto a live family: a codex family climbs
+# low→medium→high→xhigh within itself.
+[[ "$(get_next_model gpt-5.6-terra:low)" == gpt-5.6-terra:medium && "$(get_next_model gpt-5.6-terra:medium)" == gpt-5.6-terra:high && "$(get_next_model gpt-5.6-terra:high)" == gpt-5.6-terra:xhigh ]] \
+  && ok "codex family ladder: terra low→medium→high→xhigh" || no "codex family ladder wrong"
+# A vendor-retired id is keyless, so it resolves to ceiling rather than to a
+# stale rung. (Inputs are remapped before they ever get here — see
+# _normalize_model_spec — this pins that the LADDER itself carries no leftovers.)
+[[ -z "$(get_next_model gpt-5.5:high)" && -z "$(get_next_model gpt-5.3-codex-spark:high)" ]] \
+  && ok "retired codex ids carry no ladder keys (resolve to ceiling)" || no "retired codex ladder keys still present"
 [[ -z "$(get_next_model some-unknown-model)" ]] \
   && ok "unknown model → ceiling (no upgrade, safe)" || no "unknown model not treated as ceiling"
 [[ "$(get_next_model gpt-5.6-luna:high)" == gpt-5.6-luna:max \
@@ -92,16 +101,19 @@ LOCK_WORKER_MODEL=0; _MODEL_UPGRADED=0; _ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WOR
 _SAME_US_FAIL_COUNT=0; _LAST_FAILED_US=""
 check_model_upgrade US-001   # fail#1: count=1, no upgrade
 [[ "$WORKER_MODEL" == haiku && $_MODEL_UPGRADED -eq 0 ]] && ok "claude: 1st same-US fail → NO upgrade (haiku)" || no "claude 1st fail upgraded early (model=$WORKER_MODEL)"
-check_model_upgrade US-001   # fail#2: count=2 → upgrade haiku→sonnet, reset
-[[ "$WORKER_MODEL" == sonnet && $_MODEL_UPGRADED -eq 1 && "$_ORIGINAL_WORKER_MODEL" == haiku ]] && ok "claude: 2nd same-US fail → upgrade haiku→sonnet (_MODEL_UPGRADED=1, orig saved)" || no "claude 2nd fail upgrade wrong (model=$WORKER_MODEL up=$_MODEL_UPGRADED orig=$_ORIGINAL_WORKER_MODEL)"
+check_model_upgrade US-001   # fail#2: count=2 → upgrade haiku→sonnet:medium, reset
+[[ "$WORKER_MODEL" == sonnet && "$WORKER_EFFORT" == medium && $_MODEL_UPGRADED -eq 1 && "$_ORIGINAL_WORKER_MODEL" == haiku ]] && ok "claude: 2nd same-US fail → upgrade haiku→sonnet:medium (_MODEL_UPGRADED=1, orig saved)" || no "claude 2nd fail upgrade wrong (model=$WORKER_MODEL effort=$WORKER_EFFORT up=$_MODEL_UPGRADED orig=$_ORIGINAL_WORKER_MODEL)"
 check_model_upgrade US-001   # count=1 again (reset), no upgrade
 [[ "$WORKER_MODEL" == sonnet ]] && ok "claude: counter reset after upgrade (3rd fail → still sonnet)" || no "claude 3rd fail (model=$WORKER_MODEL)"
-check_model_upgrade US-001   # count=2 → upgrade sonnet→opus
-[[ "$WORKER_MODEL" == opus ]] && ok "claude: 4th same-US fail → upgrade sonnet→opus" || no "claude 4th fail (model=$WORKER_MODEL)"
-# Fable 5.1 wave: opus is no longer the ceiling — 2 more same-US fails escalate
-# to claude-fable-5-1 (bare model, effort split into WORKER_EFFORT=max).
-check_model_upgrade US-001; check_model_upgrade US-001   # count→2 at opus → upgrade to fable
-[[ "$WORKER_MODEL" == claude-fable-5-1 && "$WORKER_EFFORT" == max ]] && ok "claude: at opus, 2 more fails → upgrade to claude-fable-5-1:max" || no "claude opus->fable upgrade broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
+check_model_upgrade US-001   # count=2 → upgrade sonnet:medium→opus:low
+[[ "$WORKER_MODEL" == opus && "$WORKER_EFFORT" == low ]] && ok "claude: 4th same-US fail → upgrade sonnet:medium→opus:low" || no "claude 4th fail (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
+# The three remaining opus rungs, then the effort-qualified fable terminal rung.
+check_model_upgrade US-001; check_model_upgrade US-001   # opus:low → opus:medium
+check_model_upgrade US-001; check_model_upgrade US-001   # opus:medium → opus:high
+[[ "$WORKER_MODEL" == opus && "$WORKER_EFFORT" == high ]] && ok "claude: effort climbs within opus (low→medium→high)" || no "claude opus effort climb broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
+check_model_upgrade US-001; check_model_upgrade US-001   # opus:high → opus:xhigh
+check_model_upgrade US-001; check_model_upgrade US-001   # opus:xhigh → claude-fable-5-1:max
+[[ "$WORKER_MODEL" == claude-fable-5-1 && "$WORKER_EFFORT" == max ]] && ok "claude: at opus:xhigh, 2 more fails → upgrade to claude-fable-5-1:max" || no "claude opus->fable upgrade broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
 check_model_upgrade US-001; check_model_upgrade US-001   # count→2 at fable → real ceiling, no upgrade
 [[ "$WORKER_MODEL" == claude-fable-5-1 && "$WORKER_EFFORT" == max ]] && ok "claude: at claude-fable-5-1 ceiling → NO further upgrade (CB will BLOCK)" || no "claude ceiling broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
 
@@ -121,11 +133,12 @@ check_model_upgrade US-001; check_model_upgrade US-001; check_model_upgrade US-0
 LOCK_WORKER_MODEL=0
 
 # ---- codex worker climbs and splits model:reasoning correctly ----
-WORKER_ENGINE=codex; WORKER_MODEL=gpt-5.5; WORKER_CODEX_MODEL=gpt-5.5; WORKER_CODEX_REASONING=medium
+WORKER_ENGINE=codex; WORKER_MODEL=gpt-5.6-terra; WORKER_CODEX_MODEL=gpt-5.6-terra; WORKER_CODEX_REASONING=medium
+WORKER_EFFORT=""
 _MODEL_UPGRADED=0; _ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WORKER_CODEX_REASONING=""; _SAME_US_FAIL_COUNT=0; _LAST_FAILED_US=""
-check_model_upgrade US-001; check_model_upgrade US-001   # count=2 → gpt-5.5:medium → gpt-5.5:high
-[[ "$WORKER_CODEX_MODEL" == gpt-5.5 && "$WORKER_CODEX_REASONING" == high && "$WORKER_MODEL" == gpt-5.5 ]] \
-  && ok "codex: 2nd same-US fail → gpt-5.5:medium→high (model/reasoning split correct)" || no "codex upgrade split wrong (m=$WORKER_CODEX_MODEL r=$WORKER_CODEX_REASONING)"
+check_model_upgrade US-001; check_model_upgrade US-001   # count=2 → terra:medium → terra:high
+[[ "$WORKER_CODEX_MODEL" == gpt-5.6-terra && "$WORKER_CODEX_REASONING" == high && "$WORKER_MODEL" == gpt-5.6-terra ]] \
+  && ok "codex: 2nd same-US fail → gpt-5.6-terra:medium→high (model/reasoning split correct)" || no "codex upgrade split wrong (m=$WORKER_CODEX_MODEL r=$WORKER_CODEX_REASONING)"
 
 # ---- record_us_failure: cumulative per-US history (persists across phases) ----
 typeset -gA US_FAIL_HISTORY; US_FAIL_HISTORY=()

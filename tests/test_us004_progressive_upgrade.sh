@@ -108,36 +108,37 @@ fi
 echo ""
 echo "--- AC2: Ceiling then BLOCKED ---"
 
-# AC2-L1-1: get_next_model("opus") escalates to claude-fable-5-1:max
-# (Fable 5.1 wave — opus is no longer the claude ceiling; claude-fable-5-1 is).
+# AC2-L1-1: get_next_model("opus:xhigh") escalates to claude-fable-5-1:max
+# (opus:xhigh is the last opus rung of the 7-rung claude ladder; the
+# effort-qualified fable rung is the ceiling).
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-1: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
-r=\$(get_next_model 'opus')
+r=\$(get_next_model 'opus:xhigh')
 [[ \"\$r\" == 'claude-fable-5-1:max' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-1: get_next_model(opus) returns claude-fable-5-1:max (claude ladder reaches fable)"
+    pass "AC2-L1-1: get_next_model(opus:xhigh) returns claude-fable-5-1:max (claude ladder reaches fable)"
   else
-    fail "AC2-L1-1: get_next_model(opus) should return claude-fable-5-1:max, got: $result"
+    fail "AC2-L1-1: get_next_model(opus:xhigh) should return claude-fable-5-1:max, got: $result"
   fi
 fi
 
-# AC2-L1-1b: get_next_model("claude-fable-5-1") returns empty (real claude ceiling now)
+# AC2-L1-1b: get_next_model("claude-fable-5-1:max") returns empty (real claude ceiling now)
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-1b: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
-r=\$(get_next_model 'claude-fable-5-1')
+r=\$(get_next_model 'claude-fable-5-1:max')
 [[ -z \"\$r\" ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-1b: get_next_model(claude-fable-5-1) returns empty (real claude ceiling)"
+    pass "AC2-L1-1b: get_next_model(claude-fable-5-1:max) returns empty (real claude ceiling)"
   else
-    fail "AC2-L1-1b: get_next_model(claude-fable-5-1) should return empty, got: $result"
+    fail "AC2-L1-1b: get_next_model(claude-fable-5-1:max) should return empty, got: $result"
   fi
 fi
 
@@ -406,23 +407,28 @@ fi
 echo ""
 echo "--- L2: Upgrade path matches documented table ---"
 
-# L2-1: claude-only path: haiku→sonnet→opus→claude-fable-5-1:max→""
-# (Fable 5.1 wave: the claude ladder now reaches fable — opus is a
-# mid-ladder rung, not the ceiling.)
+# L2-1: the documented 7-rung claude chain, walked end to end:
+# haiku→sonnet:medium→opus:low→opus:medium→opus:high→opus:xhigh→claude-fable-5-1:max→""
+# Complexity picks only the starting rung; repeated same-US failure walks it.
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "L2-1: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
-a=\$(get_next_model 'haiku')
-b=\$(get_next_model 'sonnet')
-c=\$(get_next_model 'opus')
-d=\$(get_next_model 'claude-fable-5-1')
-if [[ \"\$a\" == 'sonnet' && \"\$b\" == 'opus' && \"\$c\" == 'claude-fable-5-1:max' && -z \"\$d\" ]]; then exit 0; fi
-echo \"haiku->\$a sonnet->\$b opus->\$c fable->\$d\" >&2; exit 1" 2>&1)
+chain=''
+cur='haiku'
+for _i in 1 2 3 4 5 6 7 8; do
+  chain=\"\${chain}\${cur} \"
+  nxt=\$(get_next_model \"\$cur\")
+  [[ -z \"\$nxt\" ]] && break
+  cur=\"\$nxt\"
+done
+want='haiku sonnet:medium opus:low opus:medium opus:high opus:xhigh claude-fable-5-1:max '
+[[ \"\$chain\" == \"\$want\" ]] && exit 0
+echo \"chain: \$chain\" >&2; exit 1" 2>&1)
   if (( $? == 0 )); then
-    pass "L2-1: claude path haiku→sonnet→opus→claude-fable-5-1:max→'' correct"
+    pass "L2-1: claude path haiku→sonnet:medium→opus:low/medium/high/xhigh→claude-fable-5-1:max→'' correct"
   else
     fail "L2-1: claude path incorrect: $result"
   fi
