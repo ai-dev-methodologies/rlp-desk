@@ -1583,9 +1583,32 @@ test_validate_consensus_model_var() {
   c4out=$(zsh -f "$tmpdir/c4.zsh" 2>&1)
   (( $? != 0 )) && failures="$failures [c4: astra:high should normalize to gpt-6-astra:high, got: $c4out]"
 
+  # Case 5: a BARE (no-colon) consensus model must be canonicalized in place
+  # too. The colon-less path used to `return 0` BEFORE writing anything back,
+  # so the normalization it had just computed was discarded: `--consensus-model
+  # spark` printed the retirement warning and then still dispatched
+  # `codex -m spark`, and `--consensus-model astra` dispatched the alias
+  # verbatim. Both consensus dispatch sites (sequential run_single_verifier,
+  # parallel run_consensus_verification_parallel) read these globals and hand
+  # the bare value straight to `codex -m`, so the write-back is the fix.
+  for _cm_case in "astra=gpt-6-astra" "spark=gpt-5.6-luna" "gpt-5.5=gpt-5.6-sol" "luna=gpt-5.6-luna"; do
+    local _cm_in="${_cm_case%%=*}" _cm_want="${_cm_case##*=}"
+    {
+      echo '#!/usr/bin/env zsh -f'
+      echo "$vml_body"
+      echo "$vcmv_body"
+      echo "CONSENSUS_MODEL=\"$_cm_in\""
+      echo '_validate_consensus_model_var CONSENSUS_MODEL "CONSENSUS_MODEL" || exit 1'
+      echo "[[ \"\$CONSENSUS_MODEL\" == \"$_cm_want\" ]] || { echo \"got=\$CONSENSUS_MODEL\" >&2; exit 1; }"
+    } > "$tmpdir/c5.zsh"
+    local c5out
+    c5out=$(zsh -f "$tmpdir/c5.zsh" 2>&1)
+    (( $? != 0 )) && failures="$failures [c5: bare '$_cm_in' should canonicalize to '$_cm_want', got: $c5out]"
+  done
+
   rm -rf "$tmpdir"
   if [[ -z "$failures" ]]; then
-    pass "consensus-model-validate: --consensus-model/--final-consensus-model reject gpt-6-astra:minimal and astra:minimal, accept gpt-5.5:minimal as the remapped gpt-5.6-sol:minimal, normalize astra:high -> gpt-6-astra:high"
+    pass "consensus-model-validate: --consensus-model/--final-consensus-model reject gpt-6-astra:minimal and astra:minimal, accept gpt-5.5:minimal as the remapped gpt-5.6-sol:minimal, normalize astra:high -> gpt-6-astra:high and bare astra/spark/gpt-5.5/luna in place"
   else
     fail "consensus-model-validate:$failures"
   fi

@@ -334,16 +334,35 @@ _validate_consensus_model_var() {
   # value, so a retired id or bare alias reaching it unnormalized would be sent
   # to the vendor verbatim.
   value=$(_normalize_model_spec "$value")
-  [[ "$value" == *:* ]] || return 0
+  [[ -n "$value" ]] || return 0
 
-  local model="${value%%:*}" level="${value##*:}"
+  local model level
+  if [[ "$value" == *:* ]]; then
+    model="${value%%:*}"; level="${value##*:}"
+  else
+    model="$value"; level=""
+  fi
+  # `spark` never reaches here as a head: _normalize_model_spec remaps it to
+  # gpt-5.6-luna first (it is a retired family, not a live alias).
   case "$model" in
-    spark) model="gpt-5.3-codex-spark" ;;
     sol)   model="gpt-5.6-sol" ;;
     terra) model="gpt-5.6-terra" ;;
     luna)  model="gpt-5.6-luna" ;;
     astra) model="gpt-6-astra" ;;
   esac
+
+  # A BARE (no-colon) value carries no level to validate — the dispatch sites
+  # pair it with the global VERIFIER_CODEX_REASONING, mirroring parse_model_flag's
+  # bare-alias default. Write the canonical model id back anyway: this branch
+  # used to `return 0` before any write-back, discarding the normalization it
+  # had just computed, so `--consensus-model spark` printed the retirement
+  # warning and still dispatched `codex -m spark`, and `--consensus-model astra`
+  # dispatched the alias verbatim. Both consensus dispatch sites hand this
+  # global straight to `codex -m`.
+  if [[ -z "$level" ]]; then
+    typeset -g "${var_name}=${model}"
+    return 0
+  fi
 
   _validate_model_level codex "$model" "$level" "${context}='${value}'" || return 1
   typeset -g "${var_name}=${model}:${level}"
