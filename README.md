@@ -57,7 +57,7 @@ When the Worker submits a done-claim, the mechanical pre-gate runs before any ve
 
 - **L1 — campaign gate script.** Anything you can script: typecheck, registry/lockfile checks, format lint. A non-zero exit rejects the claim without an LLM.
 - **L1.5 — built-in done-claim TDD-sequence lint (v0.22.17).** A canonical predicate — `jq` on the zsh leader, a pure Node module on the Node leader, one governed spec (§3a) — checks that every acceptance criterion carries its own labeled `write_test → verify_red → implement → verify_green` steps, in order. Comma-separated lists count; the bundle label `all` does not. On failure the claim bounces back with per-AC step-index coordinates as a fix contract — zero tokens, no LLM round. The verifier is told the lint already passed, so it never re-litigates format. Opt out with `RLP_DONECLAIM_LINT=0`.
-- **L2 — execution_steps replay.** The leader re-runs the commands the Worker claimed it ran and compares the actual exit codes against the claimed ones. A claim that does not reproduce is rejected before it can cost a verification round.
+- **L2 — execution_steps replay.** The leader re-runs the commands the Worker claimed it ran and compares the actual exit codes against the claimed ones. A claim that does not reproduce is rejected before it can cost a verification round. `verify_red` steps are the one exception: RED is a point-in-time pre-implementation fact and can never reproduce on the post-implementation tree, so it is skipped rather than replayed.
 
 Any pre-gate failure returns a fix contract to the Worker and redispatches — no verifier is spawned, so the ~20-minute LLM round is never spent on a claim a script could reject.
 
@@ -67,8 +67,7 @@ The same mechanical discipline now guards the **contract side**, not just the Wo
 
 From a production analytics campaign:
 
-- **A false RED claim, caught in seconds.** A Worker claimed `verify_red` exited 1 (test failing before implementation); L2 replay got exit 0. The leader skipped the ~20-25 min LLM round entirely and redispatched with a fix contract:
-  `Pre-gate L2 FAILED (replay mismatch: verify_red claimed=1 actual=0) — skipping LLM verification, redispatching Worker`
+- **An honest RED claim, wrongly rejected — since fixed.** A Worker claimed `verify_red` exited 1 (test failing before implementation); L2 replayed it after implementation and got exit 0, so the leader rejected an honest, correct claim as a mismatch. RED is a point-in-time fact that cannot reproduce post-implementation — replaying it was the leader's bug, not the Worker's. L2 now skips `verify_red` unconditionally, so this failure class no longer exists.
 - **Format defects no longer burn LLM rounds.** A cross-engine verifier once failed the same story for two rounds (~65 minutes) purely on done-claim TDD label format — while all four acceptance criteria were verified green. That entire defect class is now settled in seconds by the built-in L1.5 lint.
 - **Before / after.** Before the mechanical routing, the cross-engine leg sat at pass 0 / fail 15 — rounds of 20-25 minutes each, format and routing noise dominating. After the machine checks moved to machines, the very next story produced the campaign's first both-engines pass. **Cross-verification wasn't the waste — making an LLM do a machine's job was.**
 

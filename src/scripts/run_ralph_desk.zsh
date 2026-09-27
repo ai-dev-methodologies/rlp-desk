@@ -5907,7 +5907,8 @@ main() {
         #   Layer 1 — campaign-static gate script ($DESK/plans/pregate-<slug>.sh).
         #   Layer 2 — replay of verify-* commands the Worker recorded in
         #             done-claim.json execution_steps; a claimed exit that does not
-        #             reproduce is a fail.
+        #             reproduce is a fail (verify_red is never replayed — RED is a
+        #             pre-implementation fact; see run_pregate_replay).
         # Both feed the SAME per-US PREGATE_FAILURES 3-cap and can ONLY early-FAIL —
         # a pass proceeds to the unchanged full LLM verification (Iron Law). On the
         # 3rd same-US pre-gate fail we force one full verifier round (its verdict
