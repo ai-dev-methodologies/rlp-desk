@@ -17,6 +17,22 @@ import { isBuildClaim } from '../shared/done-claim-kind.mjs';
 const PHASES = ['write_test', 'verify_red', 'implement', 'verify_green'];
 const CLAIM_AC_RE = /^\s*(AC[0-9]+)\s*:/;
 
+// L2 (reaudit wave 4): `String.prototype.trim()` strips JS's `\s` whitespace
+// set (which already covers NBSP, U+2007, U+3000, and — surprisingly — the
+// BOM/ZWNBSP U+FEFF) but NOT the zero-width format characters U+200B-U+200D
+// (ZERO WIDTH SPACE/NON-JOINER/JOINER) or U+2060 (WORD JOINER). The zsh
+// mirror (`run_pregate_doneclaim_lint` in src/scripts/lib_ralph_desk.zsh)
+// previously used `${var//[[:space:]]/}`, which under a C locale recognizes
+// NONE of these multi-byte characters at all — so a value made entirely of
+// e.g. NBSP was "present" to zsh but "blank" to Node's plain `.trim()`, and a
+// value made entirely of a zero-width character was "present" to BOTH
+// leaders. This helper strips the exact same codepoint set the zsh mirror's
+// jq `gsub` now strips, so both leaders agree on what counts as blank.
+const BLANK_RE = /[\s\u200B\u200C\u200D\u2060]/g;
+function stripBlank(s) {
+  return s.replace(BLANK_RE, '');
+}
+
 // acs(step) = split (ac_id) on ",", trim per token, drop empty and the exact
 // bundle token "all" (an "all"-labeled step does NOT satisfy any AC's four
 // phases — mirrors the codex Worker Process Audit criterion). Type coercion:
@@ -63,7 +79,7 @@ export function lintDoneClaimTddSequence(doneClaim, { env = process.env, attempt
   // blanket done-claim requirement.
   if (attemptHistoryExists) {
     const summary = doneClaim.approach_summary;
-    if (typeof summary !== 'string' || summary.trim().length === 0) {
+    if (typeof summary !== 'string' || stripBlank(summary).length === 0) {
       return { status: 'fail', reason: 'approach_summary_missing', violations: [] };
     }
   }

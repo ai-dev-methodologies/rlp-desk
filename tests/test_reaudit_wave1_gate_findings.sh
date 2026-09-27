@@ -357,19 +357,29 @@ MAINLOOP_CR_SRC="$TMP/mainloop-cr-snippet.txt"
 print -r -- "$MAINLOOP_CR_TEXT" > "$MAINLOOP_CR_SRC"
 MAINLOOP_CR_MUT="$TMP/mainloop-cr-snippet-mut.txt"
 python3 - "$MAINLOOP_CR_SRC" "$MAINLOOP_CR_MUT" <<'PYEOF'
-import sys
+import re, sys
 src, dst = sys.argv[1], sys.argv[2]
 with open(src) as f:
     text = f.read()
-old = '''        if [[ "$_cr_state" == "malformed" ]]; then
-          log_error "  Verifier contract violation: criteria_results is present but malformed (not an array) — cannot trust top-level verdict=$verdict; overriding to fail (no credit on unverifiable evidence)."
-          log_debug "[GOV] iter=$ITERATION criteria_results_malformed=true top_level_verdict=$verdict us_id=${signal_us_id:-all}"
-          verdict="fail"
-        elif (( _cr_unmet > 0 )); then'''
-new = '''        if (( _cr_unmet > 0 )); then'''
-assert old in text, "mutation anchor not found in extracted snippet"
+# Regex, not an exact string: the block between these two anchors keeps
+# growing new explanatory comment lines each review round (round 3's
+# _cr_original_verdict capture, round 3's fail-variant compare, round 4's
+# fail* prefix match, ...) — an exact-string anchor breaks every time a
+# comment is added even though the STRUCTURE (malformed sets fired+verdict,
+# falls through to the unmet elif) is unchanged. Match from the malformed
+# `if` through the `elif (( _cr_unmet > 0 )); then` line, non-greedy across
+# whatever sits in between, so only an actual STRUCTURAL change (not a new
+# comment) can break this anchor.
+pattern = re.compile(
+    r'        if \[\[ "\$_cr_state" == "malformed" \]\]; then\n'
+    r'.*?\n'
+    r'        elif \(\( _cr_unmet > 0 \)\); then',
+    re.DOTALL,
+)
+new = '        if (( _cr_unmet > 0 )); then'
+assert pattern.search(text), "mutation anchor not found in extracted snippet (H1's _criteria_override_fired block moved/restructured?)"
 with open(dst, "w") as f:
-    f.write(text.replace(old, new))
+    f.write(pattern.sub(new, text, count=1))
 PYEOF
 MUT2_TEXT="$(cat "$MAINLOOP_CR_MUT" 2>/dev/null)"
 [[ -n "$MUT2_TEXT" ]] && ok "2F0: mutation setup stripped the malformed branch from the extracted snippet" \
@@ -400,8 +410,9 @@ CF_TEXT="$(extract_fn _consensus_finalize "$RUN")"
 
 D3="$TMP/3"; mkdir -p "$D3"
 
-run_consensus() { # $1=claude_verdict_json $2=codex_verdict_json $3=CLAUDE_VERDICT $4=CODEX_VERDICT  -> prints merged VERDICT_FILE
+run_consensus() { # $1=claude_verdict_json $2=codex_verdict_json $3=CLAUDE_VERDICT $4=CODEX_VERDICT [$5=cf_text override]  -> prints merged VERDICT_FILE
   local cf="$D3/claude-$RANDOM.json" kf="$D3/codex-$RANDOM.json" vf="$D3/verdict-$RANDOM.json"
+  local cf_text="${5:-$CF_TEXT}"
   print -r -- "$1" > "$cf"
   print -r -- "$2" > "$kf"
   zsh -c "
@@ -416,7 +427,7 @@ run_consensus() { # $1=claude_verdict_json $2=codex_verdict_json $3=CLAUDE_VERDI
     CONSENSUS_ROUND=1
     VERDICT_FILE='$vf'
     LOGS_DIR='$D3'
-    $CF_TEXT
+    $cf_text
     _consensus_finalize 5 US-001 '$cf' '$kf'
   " >/dev/null 2>"$D3/stderr.log"
   cat "$vf" 2>/dev/null
@@ -474,7 +485,26 @@ V3D=$(run_consensus \
   && ok "3D: the disagreement branch also carries the merged criteria_results (length 2)" \
   || no "3D: disagreement branch missing/wrong criteria_results — $V3D"
 
-# --- E: mutation control — strip the merge, prove 3A/3B go red -------------
+# --- E: mutation control — strip the merge, re-run 3A-3D and prove they go red
+# reaudit wave 4 (H3): the merge computation this targets was rewritten from
+# `echo "$a $b" | jq -s 'add // []'` to `jq -n --argjson a "$claude_cr"
+# --argjson b "$codex_cr" '$a + $b'` (zsh's `echo` was silently reinterpreting
+# backslash escapes in evidence/description strings, corrupting the merge —
+# see run_ralph_desk.zsh's H3 comment on _consensus_finalize). This mutation
+# control is updated to target that NEW code, and — per the "keep it a real
+# mutation control" note — it now RE-RUNS the exact 3A/3B/3C/3D scenarios
+# against the mutated copy and asserts those SAME assertions flip to red,
+# rather than only checking a separate "field is absent" proxy.
+#
+# reaudit wave 4 ROUND 2 (finding #3): the merge computation was rewritten
+# AGAIN, from `jq -n --argjson a "$claude_cr" --argjson b "$codex_cr"` to
+# `jq -n --slurpfile a "$claude_verdict_file" --slurpfile b
+# "$codex_verdict_file"` — reading directly from the two ORIGINAL verdict
+# FILES instead of passing extracted arrays through argv, because --argjson
+# still has a real ARG_MAX ceiling (macOS ~1MB total argv+environ, Linux
+# ~128KB/arg) that a large evidence/description string can blow, silently
+# falling back to an empty merge. The anchor below is updated to that shape;
+# same "no real merge" mutation semantics (always '[]').
 echo "--- Item 3 mutation control ---"
 MUT3="$TMP/run_mut3.zsh"
 cp "$RUN" "$MUT3"
@@ -488,17 +518,19 @@ old_decl = '''  local claude_cr_type codex_cr_type merged_criteria_results
   codex_cr_type=$(jq -r '.criteria_results | type' "$codex_verdict_file" 2>/dev/null)
   if [[ ("$claude_cr_type" == "array" || "$claude_cr_type" == "null") \\
      && ("$codex_cr_type" == "array" || "$codex_cr_type" == "null") ]]; then
-    local claude_cr codex_cr
-    claude_cr=$(jq -c '.criteria_results // []' "$claude_verdict_file" 2>/dev/null || echo '[]')
-    codex_cr=$(jq -c '.criteria_results // []' "$codex_verdict_file" 2>/dev/null || echo '[]')
-    merged_criteria_results=$(echo "$claude_cr $codex_cr" | jq -s 'add // []')
+    merged_criteria_results=$(jq -n --slurpfile a "$claude_verdict_file" --slurpfile b "$codex_verdict_file" \\
+      '(($a[0].criteria_results // []) + ($b[0].criteria_results // []))' 2>/dev/null)
+    [[ -n "$merged_criteria_results" ]] || merged_criteria_results='"malformed-in-consensus-merge"'
   else
     merged_criteria_results='"malformed-in-consensus-merge"'
   fi
 '''
-assert old_decl in text, "Item 3 merge computation anchor not found"
-text2 = text.replace(old_decl, '  local merged_criteria_results="null"\n')
-text2 = text2.replace('      echo \'  "criteria_results": \'"$merged_criteria_results"\',\'\n', '')
+assert old_decl in text, "Item 3 merge computation anchor not found (H3 rewrite moved?)"
+# Revert to a no-op "merge": ALWAYS empty, regardless of either engine's
+# criteria_results — this is the faithful "the merge doesn't happen" mutation
+# (as opposed to just deleting the output field, which would only prove a
+# weaker "field is absent" claim rather than "the merge logic itself matters").
+text2 = text.replace(old_decl, "  local merged_criteria_results='[]'\n")
 assert text2 != text
 with open(path, "w") as f:
     f.write(text2)
@@ -506,31 +538,45 @@ PYEOF
 if [[ $? -ne 0 ]]; then
   no "3E0: mutation setup failed (could not strip the Item-3 merge)"
 else
-  ok "3E0: mutation setup reverted Item 3 (merge removed, criteria_results field dropped) on a scratch copy"
+  ok "3E0: mutation setup reverted the Item-3 merge to a permanent no-op (always '[]') on a scratch copy"
   MUT3_CF_TEXT="$(extract_fn _consensus_finalize "$MUT3")"
-  D3E="$TMP/3e"; mkdir -p "$D3E"
-  V3E=$(
-    cf="$D3E/claude.json"; kf="$D3E/codex.json"; vf="$D3E/verdict.json"
-    echo '{"verdict":"pass","criteria_results":[{"id":"AC1","met":true}]}' > "$cf"
-    echo '{"verdict":"pass","criteria_results":[{"id":"AC2","met":false}]}' > "$kf"
-    zsh -c "
-      set -uo pipefail
-      log() { :; }; log_error() { :; }; log_debug() { :; }
-      _lifecycle_clear_lock_mark() { :; }
-      $(extract_fn atomic_write "$LIB")
-      CLAUDE_VERDICT='pass'; CODEX_VERDICT='pass'; CONSENSUS_ROUND=1
-      VERDICT_FILE='$vf'
-      $MUT3_CF_TEXT
-      _consensus_finalize 5 US-001 '$cf' '$kf'
-    " >/dev/null 2>&1
-    cat "$vf" 2>/dev/null
-  )
-  CR3E_PRESENT=$(echo "$V3E" | jq 'has("criteria_results")' 2>/dev/null)
-  if [[ "$CR3E_PRESENT" != "true" ]]; then
-    ok "3E1: mutation control effective — without the merge, criteria_results is absent from the consensus verdict exactly like the pre-fix bug (proves 3A-3D test the real fix)"
-  else
-    no "3E1: mutation control INEFFECTIVE — criteria_results still present without the merge code — $V3E"
-  fi
+  [[ -n "$MUT3_CF_TEXT" ]] || no "3E0b: could not re-extract _consensus_finalize from the mutated copy"
+
+  # Re-run the EXACT 3A/3B/3C/3D fixtures against the mutated merge and assert
+  # the SAME conditions those items checked now fail.
+  MV3A=$(run_consensus \
+    '{"verdict":"pass","criteria_results":[{"id":"AC1","met":true}]}' \
+    '{"verdict":"pass","criteria_results":[{"id":"AC1","met":true}]}' \
+    "pass" "pass" "$MUT3_CF_TEXT")
+  [[ "$(echo "$MV3A" | jq -c '.criteria_results | length' 2>/dev/null)" != "2" ]] \
+    && ok "3E-A: mutation flips 3A red — merged length is no longer 2 without the real merge ($(echo "$MV3A" | jq -c '.criteria_results' 2>/dev/null))" \
+    || no "3E-A: mutation INEFFECTIVE — 3A's condition still holds without the real merge code — $MV3A"
+
+  MV3B=$(run_consensus \
+    '{"verdict":"pass","criteria_results":[{"id":"AC1","met":true}]}' \
+    '{"verdict":"pass","criteria_results":[{"id":"AC2","met":false}]}' \
+    "pass" "pass" "$MUT3_CF_TEXT")
+  MUNMET_3B=$(echo "$MV3B" | jq '[.criteria_results[]? | select(.met == false)] | length' 2>/dev/null)
+  [[ "$MUNMET_3B" != "1" ]] \
+    && ok "3E-B: mutation flips 3B red — the met:false entry no longer survives without the real merge (unmet=$MUNMET_3B)" \
+    || no "3E-B: mutation INEFFECTIVE — 3B's met:false entry still survives without the real merge code — $MV3B"
+
+  MV3C=$(run_consensus \
+    '{"verdict":"pass","criteria_results":[{"id":"AC1","met":true}]}' \
+    '{"verdict":"pass","criteria_results":"garbage"}' \
+    "pass" "pass" "$MUT3_CF_TEXT")
+  MCR3C_TYPE=$(echo "$MV3C" | jq -r '.criteria_results | type' 2>/dev/null)
+  [[ "$MCR3C_TYPE" == "array" ]] \
+    && ok "3E-C: mutation flips 3C red — a malformed per-engine criteria_results is now silently laundered into a clean array (type=$MCR3C_TYPE) without the real merge code" \
+    || no "3E-C: mutation INEFFECTIVE — malformed detection still works without the real merge code (type=$MCR3C_TYPE) — $MV3C"
+
+  MV3D=$(run_consensus \
+    '{"verdict":"pass","criteria_results":[{"id":"AC1","met":true}]}' \
+    '{"verdict":"fail","criteria_results":[{"id":"AC1","met":false}]}' \
+    "pass" "fail" "$MUT3_CF_TEXT")
+  [[ "$(echo "$MV3D" | jq -c '.criteria_results | length' 2>/dev/null)" != "2" ]] \
+    && ok "3E-D: mutation flips 3D red — the disagreement branch also loses the merge without the real merge code" \
+    || no "3E-D: mutation INEFFECTIVE — 3D's condition still holds without the real merge code — $MV3D"
 fi
 
 echo ""

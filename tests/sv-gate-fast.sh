@@ -171,8 +171,16 @@ check "codex-r3 P2-2: atomic_write() contains the clear-mark hook (closes the cl
 # lock-failure guards) on top of the 4 round-1 rm-site clears — 4 + 3 = 7.
 check "codex-r3 P2-2 + P2-sweep F3: 7 VERDICT_FILE clear-mark call sites (4 rm-site + 3 lock-failure guards)" \
   bash -c '[ "$(grep -c "_lifecycle_clear_lock_mark \"\${VERDICT_FILE:t}\"" src/scripts/run_ralph_desk.zsh)" -eq 7 ]'
-check "codex-r3 P2-2: all 3 atomic_write \"\$VERDICT_FILE\" sites still exist (pins the enumerated set)" \
-  bash -c '[ "$(grep -c "atomic_write \"\$VERDICT_FILE\"" src/scripts/run_ralph_desk.zsh)" -eq 3 ]'
+# reaudit wave 4 round 2 (finding #8a): _consensus_finalize's post-write
+# guards (finding #4) added 2 MORE atomic_write "$VERDICT_FILE" sites (the
+# fail-closed rewrite on both the both-pass and disagreement branches) on
+# top of the pre-existing 3 (both-pass success, disagreement, sequential-
+# final-verify failure) — 3 + 2 = 5. Every VERDICT_FILE write in
+# _consensus_finalize still funnels through atomic_write (never a raw `>`
+# redirect); the neighbouring "no raw > redirects onto monitored files"
+# check below covers that file-wide.
+check "codex-r3 P2-2: all 5 atomic_write \"\$VERDICT_FILE\" sites still exist (pins the enumerated set)" \
+  bash -c '[ "$(grep -c "atomic_write \"\$VERDICT_FILE\"" src/scripts/run_ralph_desk.zsh)" -eq 5 ]'
 check "codex-r3 P2-2: no raw > redirects onto monitored files (all funnel through atomic_write)" \
   bash -c '! grep -qE "> ?\"\\\$(SIGNAL_FILE|VERDICT_FILE|signal_file|verdict_file)\"" src/scripts/run_ralph_desk.zsh'
 # codex round 4 — the last non-atomic_write monitored-file mutation:

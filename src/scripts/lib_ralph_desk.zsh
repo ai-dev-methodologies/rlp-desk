@@ -986,11 +986,26 @@ _verdict_failure_category() {
 #                      tell "never populated" apart from "populated as
 #                      nothing".
 #   state=populated — a present array with >=1 entries. unmet_count counts
-#                      entries with met===false using STRICT boolean equality;
-#                      an entry with met missing/null/a non-boolean is never
-#                      counted as unmet (a malformed ENTRY must never
-#                      masquerade as a failure) — it is counted in
-#                      malformed_entry_count instead.
+#                      entries with met===false using STRICT boolean equality,
+#                      PLUS every malformed entry — H2 (reaudit wave 4,
+#                      lead's call): governance says garbage cannot credit a
+#                      US, and BOTH real call sites only ever branch on
+#                      unmet>0 (never on malformed_entry_count alone), so any
+#                      malformed entry that stayed out of unmet could never
+#                      actually force a fail on its own. This now covers
+#                      BOTH kinds of malformed entry: a structurally-invalid
+#                      array element (not a JSON object at all —
+#                      string/number/bool/array/null) AND an object entry
+#                      whose `met` is missing/null/a non-boolean (e.g.
+#                      "met":"false") — every one of them is folded into BOTH
+#                      unmet_count and malformed_entry_count. (Wave-1 through
+#                      the first wave-4 pass kept the object-with-bad-met case
+#                      malformed-only, "never masquerade as a failure on its
+#                      own" — tests/test_criteria_results_load_bearing.zsh
+#                      tests 8/9 pinned that. The lead overrode that call
+#                      after this exact case, "met":"false" sailing through
+#                      uncontested, was the adversarial finding that reopened
+#                      this function; tests 8/9 now expect populated|1|1.)
 # Usage: _verdict_criteria_effective <verdict_file>
 _verdict_criteria_effective() {
   local vf="$1"
@@ -1005,9 +1020,27 @@ _verdict_criteria_effective() {
   [[ -z "$state" ]] && state="malformed"
   local unmet=0 malformed_entries=0
   if [[ "$state" == "populated" ]]; then
-    unmet=$(jq '[.criteria_results[]? | select(.met == false)] | length' "$vf" 2>/dev/null)
+    # H2 (reaudit wave 4): EVERY arm below type-checks BEFORE reading `.met`,
+    # using jq's short-circuiting `or` (the `.met` access only ever runs once
+    # `type != "object"` is already known false, i.e. the entry IS an
+    # object). The OLD `select(.met == false)` / `select((.met|type) !=
+    # "boolean")` indexed `.met` on every array element unconditionally — a
+    # raw string/number entry anywhere in the array (e.g. `[{"met":false},
+    # "garbage"]`) makes jq raise a type error, which aborts the WHOLE
+    # `[...]` comprehension with NO output at all. `unmet`/`malformed_entries`
+    # then came back empty, fell back to 0, and a genuine met:false sitting
+    # right next to the garbage entry was silently swallowed — fail-open on
+    # exactly the kind of contract-violating verdict this control exists to
+    # catch.
+    #
+    # `unmet` folds in EVERY malformed entry too (lead's call, see the
+    # state=populated doc above): a non-object entry, OR an object entry
+    # whose `met` is not a JSON boolean (missing/null/string/...), counts as
+    # unmet exactly like met===false does — because malformed_entry_count
+    # alone never reaches either call site's fail branch.
+    unmet=$(jq '[.criteria_results[]? | select((type != "object") or ((.met|type) != "boolean") or (.met == false))] | length' "$vf" 2>/dev/null)
     [[ -z "$unmet" ]] && unmet=0
-    malformed_entries=$(jq '[.criteria_results[]? | select((.met|type) != "boolean")] | length' "$vf" 2>/dev/null)
+    malformed_entries=$(jq '[.criteria_results[]? | select((type != "object") or ((.met|type) != "boolean"))] | length' "$vf" 2>/dev/null)
     [[ -z "$malformed_entries" ]] && malformed_entries=0
   fi
   echo "${state}|${unmet}|${malformed_entries}"
@@ -1063,7 +1096,31 @@ typeset -gA US_ATTEMPT_HISTORY
 _record_us_attempt() {
   local us_id="$1" model="$2" summary="$3"
   [[ -z "$us_id" || "$us_id" = "unknown" ]] && return 0
-  local line="iter ${ITERATION:-?} (${model}): ${summary:0:120}"
+  # L1 (reaudit wave 4): US_ATTEMPT_HISTORY is capped with `head -n
+  # $ATTEMPT_HISTORY_CAP` below, i.e. a LINE cap, not an ENTRY cap. `summary`
+  # (the verifier's `.summary`, which can legitimately contain embedded
+  # newlines) used to flow into `line` unstripped, so a single multi-line
+  # summary could by itself exceed the cap and evict every prior attempt.
+  # Collapsing embedded newlines to spaces first guarantees one recorded
+  # attempt is always exactly one physical line, so the line cap is actually
+  # an entry cap as documented.
+  local clean_summary="${summary//$'\n'/ }"
+  # M5 (reaudit wave 4): governance §1f¾ check 10⅝ ("did this attempt use a
+  # materially different approach from what's on record") needs the WORKER'S
+  # OWN stated strategy, not just the verifier's failure summary — without it,
+  # the attempt history is a list of why things failed with no record of what
+  # was actually tried. DONE_CLAIM_FILE is a single fixed path
+  # (run_ralph_desk.zsh) the worker just overwrote for THIS iteration's
+  # (now-failed) submission, so it is read directly here rather than
+  # threading a new argument through the call site (run_ralph_desk.zsh is
+  # owned by a different wave-4 agent this iteration).
+  local approach=""
+  if [[ -f "${DONE_CLAIM_FILE:-}" ]] && command -v jq >/dev/null 2>&1; then
+    approach=$(jq -r 'if (.approach_summary|type) == "string" then .approach_summary else "" end' "$DONE_CLAIM_FILE" 2>/dev/null)
+    approach="${approach//$'\n'/ }"
+  fi
+  local line="iter ${ITERATION:-?} (${model}): ${clean_summary:0:120}"
+  [[ -n "${approach//[[:space:]]/}" ]] && line="${line} | approach: ${approach:0:80}"
   local existing="${US_ATTEMPT_HISTORY[$us_id]:-}"
   local combined="$line"
   [[ -n "$existing" ]] && combined="${line}"$'\n'"${existing}"
@@ -1083,10 +1140,22 @@ _record_us_attempt() {
 # verification (see main()'s pass / partial-progress branches).
 typeset -gA US_FIX_CONTRACT
 
+# US_FIX_CONTRACT_NONVERIFIER[us_id] — finding #7 (reaudit wave 4 round 2):
+# marks whether the contract CURRENTLY recorded in US_FIX_CONTRACT[us_id]
+# came from a non-verifier writer (pregate Layer 1/1.5/2, or the commit
+# oracle) rather than a real verifier round. Read by the M3 guard below to
+# decide whether a new non-verifier write may occupy the slot (only when it
+# is empty or already non-verifier — never over a real verifier contract);
+# cleared implicitly whenever a real verifier write records (see the guard).
+typeset -gA US_FIX_CONTRACT_NONVERIFIER
+
 # --- governance.md s7: Atomic file writes (tmux pattern) ---
 # All file writes by the Leader use tmp+mv to prevent corruption.
+# $2 (optional): a truthy value marks this write as a NON-VERIFIER
+# *.fix-contract.md writer (pregate Layer 1/1.5/2, or the commit oracle — see
+# the record site below, M3/finding-#7) for the US_FIX_CONTRACT auto-record.
 atomic_write() {
-  local target="$1"
+  local target="$1" skip_fix_contract_record="${2:-}"
   local tmp="${target}.tmp.$$"
   # F-26: check BOTH stages. A truncated tmp (ENOSPC / SIGPIPE / full disk) must
   # never be atomically renamed into the canonical path — a half-written
@@ -1128,7 +1197,47 @@ atomic_write() {
   # the done-claim path) lets that lookup survive an intervening continue.
   # Cleared on that US's pass — see the pass / partial-progress branches in
   # run_ralph_desk.zsh's main(). US_FIX_CONTRACT is declared just above.
-  [[ "${target:t}" == *.fix-contract.md ]] && US_FIX_CONTRACT[${CURRENT_US:-ALL}]="$target"
+  #
+  # M3 (reaudit wave 4): a PRE-GATE fix contract (Layer 1 mechanical, Layer 2
+  # replay mismatch, or Layer 1.5 done-claim lint / approach-escalation — the
+  # three _pregate_register_fail* writers below, identifiable by their
+  # `skip_fix_contract_record` arg) must NEVER overwrite the most recently
+  # recorded VERIFIER fix contract here. Before this guard, ANY
+  # *.fix-contract.md write replaced US_FIX_CONTRACT unconditionally, so a
+  # sequence like "iter5 verifier fail -> iter6 approach_summary_missing
+  # pregate fail -> iter8 continue" carried iter6's PRE-GATE body into
+  # write_worker_trigger instead of iter5's real unresolved verifier
+  # feedback — silently losing it. Every other caller (including the two real
+  # verifier fix-contract writers in run_ralph_desk.zsh, and the commit
+  # oracle below) passes no second arg and is unaffected... except that
+  # unqualified "unaffected" claim was wrong for the commit oracle
+  # (_oracle_register_fail): it writes a *.fix-contract.md too but never
+  # passed `skip_fix_contract_record`, so it still clobbered a recorded
+  # verifier contract exactly like the bug this guard exists to fix
+  # (finding #7a, reaudit wave 4 round 2 — the oracle's own call site is now
+  # updated to pass the flag too).
+  #
+  # finding #7b (same round): a bare skip that ALWAYS refuses to record is
+  # its own bug — when NO verifier contract has been recorded yet for this
+  # US, a pregate/oracle contract is the ONLY evidence available, and
+  # dropping it on a `continue` loses it entirely (this was the pre-wave-4
+  # behavior: any single fix-contract write, pregate or not, WAS recorded
+  # when nothing better existed). So a non-verifier write records into the
+  # slot exactly when it is empty or already held by another non-verifier
+  # write (tracked by US_FIX_CONTRACT_NONVERIFIER) — never when a real
+  # verifier contract already occupies it. A real verifier write (no flag)
+  # always records unconditionally and clears the non-verifier marker, so it
+  # still supersedes any pregate/oracle contract sitting in the slot.
+  if [[ "${target:t}" == *.fix-contract.md ]]; then
+    local _fc_us="${CURRENT_US:-ALL}"
+    if [[ -z "$skip_fix_contract_record" ]]; then
+      US_FIX_CONTRACT[$_fc_us]="$target"
+      unset "US_FIX_CONTRACT_NONVERIFIER[$_fc_us]"
+    elif [[ -z "${US_FIX_CONTRACT[$_fc_us]:-}" || -n "${US_FIX_CONTRACT_NONVERIFIER[$_fc_us]:-}" ]]; then
+      US_FIX_CONTRACT[$_fc_us]="$target"
+      US_FIX_CONTRACT_NONVERIFIER[$_fc_us]=1
+    fi
+  fi
   return 0
 }
 
@@ -2047,6 +2156,7 @@ update_status() {
   "last_block_reason": '"$_lbr_json"',
   "model_upgraded": '"${_MODEL_UPGRADED:-0}"',
   "same_us_fail_count": '"${_SAME_US_FAIL_COUNT:-0}"',
+  "ceiling_deferral_count": '"${_CEILING_DEFERRAL_COUNT:-0}"',
   "original_worker_model": '"$_owm_json"',
   "original_worker_codex_reasoning": '"$_owcr_json"',
   "original_worker_effort": '"$_owe_json"',
@@ -2316,6 +2426,22 @@ _normalize_verdict() {
     esac
   fi
   print -r -- "$v"
+}
+
+# --- round 5 (codex final pass, P2): bounded fail-alias check --------------
+# A normalized verdict counts as an honest FAIL only when it IS a fail alias
+# (fail/failed/failure/failing) followed by end-of-string or a
+# non-alphanumeric separator — NOT merely PREFIXED by "fail". An unbounded
+# `[[ "$v" == fail* ]]` glob (round 4's original fix) wrongly matched
+# "failsafe_pass" and "failover" — verdicts that start with "fail" but mean
+# the opposite, or something unrelated — letting a criteria-results override
+# skip crediting suppression and treat a flipped verdict as an honest fail.
+# Reused everywhere run_ralph_desk.zsh's criteria-override logic decides
+# "was the ORIGINAL verdict already fail" ($1 must already be normalized —
+# lowercased, trimmed, CR-stripped, spaces/hyphens collapsed to `_` — see
+# _normalize_verdict above; an empty/unset verdict is never a fail alias).
+_verdict_is_fail_variant() {
+  [[ "$1" =~ '^(fail|failed|failure|failing)([^a-z0-9]|$)' ]]
 }
 
 # --- US-018 (R6 P1-F): Test density enforcement (≥3 tests/AC) ---
@@ -3294,7 +3420,7 @@ _pregate_register_fail() {
     echo ""
     echo "## Next Iteration Contract"
     echo "Make the pre-gate pass (exit 0), then continue the contracted work. Scope Lock: only changes that fix the failing checks above are in scope."
-  } | atomic_write "$pregate_contract"
+  } | atomic_write "$pregate_contract" skip_fix_contract_record
   return 0
 }
 
@@ -3329,7 +3455,7 @@ _pregate_register_fail_replay() {
     echo ""
     echo "## Next Iteration Contract"
     echo "Make the command above actually produce the claimed exit code, then continue. Scope Lock: only changes that fix this mismatch are in scope."
-  } | atomic_write "$pregate_contract"
+  } | atomic_write "$pregate_contract" skip_fix_contract_record
   return 0
 }
 
@@ -3520,9 +3646,26 @@ run_pregate_doneclaim_lint() {
   # TDD-sequence evaluation below, runs even for confirmation/replay claims.
   local _attempt_history_file="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).attempt-history.md"
   if [[ -f "$_attempt_history_file" ]]; then
-    local _approach_summary
-    _approach_summary=$(jq -r 'if (.approach_summary|type) == "string" then .approach_summary else "" end' "$DONE_CLAIM_FILE" 2>/dev/null)
-    if [[ -z "${_approach_summary//[[:space:]]/}" ]]; then
+    # L2 (reaudit wave 4): `${var//[[:space:]]/}` only recognizes single-byte
+    # ASCII whitespace under a C locale — a value made ENTIRELY of a
+    # multi-byte Unicode blank (NBSP, U+2007, U+3000, ...) or a zero-width /
+    # BOM character (U+200B-U+200D, U+2060, U+FEFF) survived that strip as
+    # "non-empty" here while the Node mirror's `summary.trim()` correctly (or
+    # for the zero-width/BOM set, ALSO incorrectly, until this fix) treated
+    # it as blank — the two leaders disagreed on the same done-claim. jq
+    # processes JSON strings as Unicode codepoints regardless of the shell's
+    # locale, so doing the stripping in jq — with the SAME codepoint set the
+    # Node predicate now strips (src/node/runner/done-claim-lint.mjs) — keeps
+    # both leaders in agreement without depending on zsh's locale handling.
+    local _approach_summary_status
+    _approach_summary_status=$(jq -r '
+      if (.approach_summary|type) == "string" then
+        ((.approach_summary
+          | gsub("[ \t\n\r\f\u000B\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF\u200B\u200C\u200D\u2060]"; ""))
+         | if length == 0 then "empty" else "nonempty" end)
+      else "empty" end
+    ' "$DONE_CLAIM_FILE" 2>/dev/null)
+    if [[ "$_approach_summary_status" != "nonempty" ]]; then
       PREGATE_LINT_STATUS="fail"; PREGATE_LINT_REASON="approach_summary_missing"
       PREGATE_LINT_VIOLATIONS="[]"
       return 1
@@ -3590,7 +3733,7 @@ _pregate_register_fail_doneclaim_lint() {
       echo ""
       echo "## Next Iteration Contract"
       echo "Add \`approach_summary\` to done-claim.json describing your actual strategy for this iteration, then resubmit. This is a format requirement, not by itself a re-implementation demand — but the summary must genuinely reflect a materially different approach from what is on record, not merely restate one of the prior attempts in new words."
-    } | atomic_write "$pregate_contract"
+    } | atomic_write "$pregate_contract" skip_fix_contract_record
     return 0
   fi
   {
@@ -3605,7 +3748,7 @@ _pregate_register_fail_doneclaim_lint() {
     echo ""
     echo "## Next Iteration Contract"
     echo "Fix ONLY the done-claim execution_steps format for the ACs listed above (add the missing per-AC labeled steps / correct the order), then resubmit the done-claim. Do not re-implement the deliverable."
-  } | atomic_write "$pregate_contract"
+  } | atomic_write "$pregate_contract" skip_fix_contract_record
   return 0
 }
 
@@ -3897,7 +4040,10 @@ _oracle_register_fail() {
     else
       echo "Actually create the commit (git add + git commit) so HEAD advances and the tracked tree is clean, and record the resulting commit SHA in your done-claim's commit step (commit_sha). Scope Lock: only changes that make the commit real are in scope."
     fi
-  } | atomic_write "$oracle_contract"
+  # finding #7a (reaudit wave 4 round 2): the commit oracle is a NON-VERIFIER
+  # writer, same class as the three _pregate_register_fail* writers — must
+  # not clobber a recorded verifier contract (M3 above).
+  } | atomic_write "$oracle_contract" skip_fix_contract_record
   return 0
 }
 

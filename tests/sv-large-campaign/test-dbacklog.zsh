@@ -167,8 +167,35 @@ grep -q 'consensus_codex_retry' "$RUN" \
   && ok "D-14: consensus codex null-verdict retry present (symmetry with claude)" || no "D-14: codex null-retry missing"
 
 # ---- D-15: consensus merged verdict carries us_id (D-3 cross-check applies) ----
-grep -q 'cons_us_id="${2:-' "$RUN" && grep -q '"us_id": "'\''"$cons_us_id"'\''",' "$RUN" \
-  && ok "D-15: consensus merged verdict includes us_id (passed from caller)" || no "D-15: consensus us_id missing"
+# reaudit wave 4 round 2 (finding #8b): H3 (wave 4) replaced the echo-
+# interpolated `"us_id": "$cons_us_id"` JSON assembly in _consensus_finalize
+# with jq -n --arg (zsh's echo reinterprets backslash escapes and corrupted
+# evidence containing literal \n/\\) — the old text pin can never match that
+# shape again. Same guarantee (us_id passed from caller), different assembly
+# mechanism, so the pin now targets the jq form.
+grep -q 'cons_us_id="${2:-' "$RUN" && grep -q -- '--arg us_id "\$cons_us_id"' "$RUN" && grep -q 'us_id: \$us_id' "$RUN" \
+  && ok "D-15: consensus merged verdict includes us_id (passed from caller, via jq --arg)" || no "D-15: consensus us_id missing"
+
+# D-15 behavioral: _consensus_finalize's both-pass branch actually emits the
+# caller-passed us_id into the merged VERDICT_FILE, not just present in
+# source text (extracted by content, real function, real jq assembly).
+CF_TEXT_D15=$(awk '/^_consensus_finalize\(\) \{/{f=1} f{print; if ($0=="}") exit}' "$RUN")
+D15_TMPD=$(mktemp -d)
+echo '{"verdict":"pass"}' > "$D15_TMPD/claude.json"
+echo '{"verdict":"pass"}' > "$D15_TMPD/codex.json"
+D15_OUT=$(zsh -c '
+source '"$LIB"' 2>/dev/null
+log(){ :; }; log_debug(){ :; }; log_error(){ :; }
+CLAUDE_VERDICT=pass; CODEX_VERDICT=pass; CONSENSUS_ROUND=1
+VERDICT_FILE="'"$D15_TMPD"'/out.json"; LOGS_DIR="'"$D15_TMPD"'"
+'"$CF_TEXT_D15"'
+_consensus_finalize 3 US-007 "'"$D15_TMPD"'/claude.json" "'"$D15_TMPD"'/codex.json"
+' 2>&1)
+D15_US=$(jq -r '.us_id // "MISSING"' "$D15_TMPD/out.json" 2>/dev/null)
+[[ "$D15_US" == "US-007" ]] \
+  && ok "D-15 behavioral: merged VERDICT_FILE carries the caller-passed us_id (US-007)" \
+  || no "D-15 behavioral: expected us_id=US-007 in merged verdict, got '$D15_US' (harness out: $D15_OUT)"
+rm -rf "$D15_TMPD"
 # D-15 codex-fix: us_id sanitized to JSON-safe (ALL|US-NNN) before echo-interpolation
 grep -q 'cons_us_id" == (ALL|US-<->)' "$RUN" \
   && ok "D-15 fix: us_id sanitized to ALL|US-NNN (JSON-safe; no quote/backslash injection)" || no "D-15 fix: us_id sanitize missing"

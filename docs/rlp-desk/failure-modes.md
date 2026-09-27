@@ -304,6 +304,28 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 
 ---
 
+## §4½ — Verifier contract integrity & circuit breaker
+
+### F4½.1 — Consensus merge corrupts JSON via zsh `echo` escape reinterpretation
+| Field | Value |
+|---|---|
+| Symptom | Under `--consensus`, a round occasionally produces a `<slug>-verify-verdict.json` that fails to parse, or whose `criteria_results`/`issues` strings carry a real newline instead of a literal `\n` — the load-bearing `criteria_results` check (governance, "criteria_results is load-bearing") then sees malformed data and overrides the round to fail even when both engines genuinely passed |
+| Root cause | `_consensus_finalize` assembled `VERDICT_FILE` and merged per-engine `criteria_results`/`issues` arrays by piping shell-interpolated JSON fragments through zsh's builtin `echo` (`echo "$a $b" \| jq -s ...`, and hand-quoted `echo '"key": ' "$val" ','` for the final assembly). zsh's `echo`, unlike bash's, reinterprets backslash escapes by default — a legitimate evidence/description string containing a literal `\n` or `\\` was silently rewritten (to a real newline / a collapsed backslash) before jq ever parsed it, corrupting both the merge input and the final JSON, up to producing invalid JSON entirely (e.g. a stray `"criteria_results": ,`) |
+| Detection | `tests/test_reaudit_wave4_run.sh` (consensus-merge JSON-corruption case, embedded-`\n` fixture) |
+| Recovery | Every merge and `VERDICT_FILE` assembly in `_consensus_finalize` rebuilt with `jq -n --arg`/`--argjson` — no shell-interpolated `echo` of JSON content anywhere in the function. The both-pass branch additionally validates its own output (`jq empty`) and fails closed with a synthetic `fail` verdict if still invalid, instead of shipping a broken `VERDICT_FILE` forward |
+| Reference | reaudit wave 4, finding H3; `_consensus_finalize` in `src/scripts/lib_ralph_desk.zsh`; `docs/plans/model-generation-wave-handoff.md` Wave 4 table |
+
+### F4½.2 — Circuit-breaker ceiling deferral never resolves under environment/flaky failures
+| Field | Value |
+|---|---|
+| Symptom | With a US already at the model-ladder ceiling, repeated `environment`/`flaky`-classified failures never trip BLOCKED — the circuit breaker defers every round instead, and the campaign runs to `max_iter` (TIMEOUT) rather than surfacing a real stop |
+| Root cause | The ceiling-model deferral (DEFECT-2a, governance §8) grants the ceiling model its own 2-attempt window by checking `_SAME_US_FAIL_COUNT < 2` before deferring. `check_model_upgrade` — and therefore `_SAME_US_FAIL_COUNT` — is deliberately skipped for `environment`/`flaky` failure categories (those retry the SAME model instead of escalating). If every post-ceiling failure classifies that way, `_SAME_US_FAIL_COUNT` is frozen below 2 forever, so the "own attempt window" condition never stops being true and the deferral fires on every round with no bound |
+| Detection | `tests/test_reaudit_wave4_run.sh` (ceiling-model deferral bound case, repeated `environment` failures past the intended window) |
+| Recovery | New category-independent counter `_CEILING_DEFERRAL_COUNT` (reset alongside `_SAME_US_FAIL_COUNT` on pass) counts every ceiling-model failure regardless of category and additionally gates the deferral (`_CEILING_DEFERRAL_COUNT <= 2`), bounding it to the SAME 2-attempt window the category-aware counter already grants on the normal (non-env/flaky) path |
+| Reference | reaudit wave 4, finding M1; `_CEILING_DEFERRAL_COUNT` in `src/scripts/run_ralph_desk.zsh`; governance §8; `docs/plans/model-generation-wave-handoff.md` Wave 4 table |
+
+---
+
 ## §5 — Add new entries
 
 When a new failure mode is identified:

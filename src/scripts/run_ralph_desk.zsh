@@ -940,6 +940,11 @@ LOCKFILE_ACQUIRED=0
 LOCK_WORKER_MODEL="${LOCK_WORKER_MODEL:-0}"  # 0|1 — set by --lock-worker-model; disables progressive upgrade
 _SAME_US_FAIL_COUNT=0         # consecutive same-US fail counter (upgrade trigger at >= 2)
 _LAST_FAILED_US=""            # last failed US ID (same-US tracking for upgrade logic)
+_CEILING_DEFERRAL_COUNT=0     # M1 (reaudit wave 4): counts ceiling-model failures for the
+                             # CB deferral bound, REGARDLESS of failure category — see the
+                             # comment at its use site (check_model_upgrade, and therefore
+                             # _SAME_US_FAIL_COUNT, is skipped for environment/flaky
+                             # categories, which would otherwise defer the breaker forever)
 _MODEL_UPGRADED=0             # 1 if Worker model was auto-upgraded during campaign
 _ORIGINAL_WORKER_MODEL=""     # WORKER_MODEL saved before first upgrade (for restore on pass)
 _ORIGINAL_WORKER_CODEX_REASONING=""  # WORKER_CODEX_REASONING saved before first upgrade
@@ -3559,6 +3564,17 @@ TRIGGER_EOF
 
   log "  Worker prompt:  $prompt_file"
   log "  Worker trigger: $trigger_file"
+  # L4a (reaudit wave 4): without an explicit return here, this function's
+  # exit status is whatever the trailing `log` call above returns (zsh: last
+  # command's status). `log` is just an `echo`, so a stdout write failure
+  # (e.g. EPIPE on a closed tmux pane) would make write_worker_trigger itself
+  # report failure — and the caller (`if ! write_worker_trigger ...`) reacts
+  # to that by fail-closing the whole campaign (BLOCKED, worker_trigger_failed)
+  # even though the trigger/prompt were written successfully. The one
+  # legitimate mid-function failure path (approach-escalation attempt-history
+  # persist failure) already has its own explicit `return 1` earlier in this
+  # function — this only covers the success tail.
+  return 0
 }
 
 write_verifier_trigger() {
@@ -4985,7 +5001,10 @@ _consensus_finalize() {
   # from either engine's verdict — the whole load-bearing-criteria control
   # (governance §1f, _verdict_criteria_effective) was inert under
   # CONSENSUS_MODE=all|final-only, since the merged file this function writes
-  # is what the main loop and _final_verify_one_us actually read.
+  # is what the main loop's verdict dispatch actually reads. (L4c, reaudit
+  # wave 4: _final_verify_one_us never calls consensus at all — it runs its
+  # own single-verifier round per US and reads its own VERDICT_FILE, so it
+  # was never part of this claim; corrected here to match the code.)
   #
   # Merge rule: NO ENGINE PRIORITY (governance.md:1073, "both must pass, no
   # engine priority") applied to per-criterion data, not just the top-level
@@ -4998,15 +5017,40 @@ _consensus_finalize() {
   # value is set to something itself non-array/non-null so
   # _verdict_criteria_effective classifies the MERGE as malformed too, and
   # the same fail-closed override fires downstream.
+  # H3 (reaudit wave 4): the merge below used to run through zsh's `echo`
+  # builtin (`echo "$a $b" | jq -s ...` and, further down, `echo '  "...": '
+  # "$x"','`) — zsh's `echo`, UNLIKE bash's, reinterprets backslash escapes by
+  # default, so an evidence/description string containing a literal `\n` or
+  # `\\` (both legal, common JSON string content) got silently rewritten into
+  # a real newline / collapsed backslash before jq ever saw it, corrupting
+  # both the merge input and — separately — the final JSON assembly, up to
+  # producing a stray `"criteria_results": ,` (invalid JSON) that then made
+  # the CB think this round was BLOCKED-worthy garbage every time. jq -n
+  # --argjson never passes the value through a shell string-interpolation
+  # step at all, so there is no echo/print in this function to reinterpret
+  # anything, by construction — not just for this call, but for the two full
+  # VERDICT_FILE assemblies below as well.
+  #
+  # finding #3 (reaudit wave 4 round 2): --argjson still passes the value
+  # through argv, which has a real ceiling (macOS ARG_MAX ~1MB total
+  # argv+environ; Linux ~128KB per single arg) — a large evidence/description
+  # string (a verifier is free to quote a long diff or log excerpt) blows the
+  # merge, jq exits non-zero with empty output, and the old
+  # `[[ -n "$merged" ]] || merged='[]'` fallback then silently classified the
+  # merge as "empty" (permissive under _verdict_criteria_effective) — losing
+  # a real met:false instead of failing closed. Reading directly from the two
+  # ORIGINAL verdict FILES via --slurpfile (jq opens the file itself; no argv
+  # size limit applies) avoids the size ceiling entirely for this step, and
+  # the failure fallback is now the same fail-closed sentinel used for a
+  # type-mismatch, never an empty array.
   local claude_cr_type codex_cr_type merged_criteria_results
   claude_cr_type=$(jq -r '.criteria_results | type' "$claude_verdict_file" 2>/dev/null)
   codex_cr_type=$(jq -r '.criteria_results | type' "$codex_verdict_file" 2>/dev/null)
   if [[ ("$claude_cr_type" == "array" || "$claude_cr_type" == "null") \
      && ("$codex_cr_type" == "array" || "$codex_cr_type" == "null") ]]; then
-    local claude_cr codex_cr
-    claude_cr=$(jq -c '.criteria_results // []' "$claude_verdict_file" 2>/dev/null || echo '[]')
-    codex_cr=$(jq -c '.criteria_results // []' "$codex_verdict_file" 2>/dev/null || echo '[]')
-    merged_criteria_results=$(echo "$claude_cr $codex_cr" | jq -s 'add // []')
+    merged_criteria_results=$(jq -n --slurpfile a "$claude_verdict_file" --slurpfile b "$codex_verdict_file" \
+      '(($a[0].criteria_results // []) + ($b[0].criteria_results // []))' 2>/dev/null)
+    [[ -n "$merged_criteria_results" ]] || merged_criteria_results='"malformed-in-consensus-merge"'
   else
     merged_criteria_results='"malformed-in-consensus-merge"'
   fi
@@ -5016,21 +5060,47 @@ _consensus_finalize() {
     # Create merged verdict with per-engine details. This atomic_write REPLACES
     # the canonical VERDICT_FILE; atomic_write() drops any pending lock-start
     # mark for the replaced basename (lib_ralph_desk.zsh), so no per-site clear.
-    {
-      echo '{'
-      echo '  "verdict": "pass",'
-      echo '  "us_id": "'"$cons_us_id"'",'
-      echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-      echo '  "summary": "Consensus PASS: both claude and codex verified independently",'
-      echo '  "recommended_state_transition": "complete",'
-      echo '  "criteria_results": '"$merged_criteria_results"','
-      echo '  "consensus": {'
-      echo '    "claude": { "verdict": "pass", "file": "'"$claude_verdict_file"'" },'
-      echo '    "codex": { "verdict": "pass", "file": "'"$codex_verdict_file"'" },'
-      echo '    "round": '"$CONSENSUS_ROUND"
-      echo '  }'
-      echo '}'
-    } | atomic_write "$VERDICT_FILE"
+    # Built entirely with jq -n --arg/--argjson (no echo of interpolated
+    # content) — see the H3 comment above.
+    # finding #3: merged_criteria_results can itself be large (the sum of
+    # both engines' arrays) — write it to a temp file and read it back with
+    # --rawfile + fromjson (jq's own file I/O, no argv size ceiling) instead
+    # of --argjson, same reasoning as the merge step above.
+    local _cf_cr_file
+    _cf_cr_file=$(mktemp "${TMPDIR:-/tmp}/rlp-cf-cr.XXXXXX") || _cf_cr_file="${TMPDIR:-/tmp}/rlp-cf-cr.$$"
+    print -r -- "$merged_criteria_results" > "$_cf_cr_file"
+    jq -n \
+      --arg us_id "$cons_us_id" \
+      --arg verified_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg claude_file "$claude_verdict_file" \
+      --arg codex_file "$codex_verdict_file" \
+      --argjson round "$CONSENSUS_ROUND" \
+      --rawfile criteria_results_raw "$_cf_cr_file" \
+      '{
+        verdict: "pass",
+        us_id: $us_id,
+        verified_at_utc: $verified_at,
+        summary: "Consensus PASS: both claude and codex verified independently",
+        recommended_state_transition: "complete",
+        criteria_results: ($criteria_results_raw | fromjson),
+        consensus: {
+          claude: { verdict: "pass", file: $claude_file },
+          codex: { verdict: "pass", file: $codex_file },
+          round: $round
+        }
+      }' | atomic_write "$VERDICT_FILE"
+    rm -f "$_cf_cr_file"
+    # finding #4: `jq empty` on a 0-byte file (the builder emitted nothing —
+    # e.g. atomic_write received an empty pipe) processes no tokens, hits no
+    # error, and exits 0 — a silent pass-through for exactly the corrupt case
+    # this guard exists to catch. Require an actual verdict object instead.
+    if ! jq -e 'type=="object" and has("verdict")' "$VERDICT_FILE" >/dev/null 2>&1; then
+      log_error "_consensus_finalize: both-pass merge produced invalid JSON — failing closed instead of shipping a broken VERDICT_FILE."
+      jq -n --arg us_id "$cons_us_id" \
+        '{verdict:"fail", us_id:$us_id, summary:"consensus merge produced invalid JSON (fail-closed)", recommended_state_transition:"continue"}' \
+        | atomic_write "$VERDICT_FILE"
+      return 2
+    fi
     return 0
   fi
 
@@ -5064,23 +5134,76 @@ _consensus_finalize() {
 
   log "  Combined fix contract: $fix_contract"
 
-  # Create a merged fail verdict for the main loop — include issues from BOTH verdicts
-  local merged_issues="[]"
-  local claude_issues codex_issues
-  claude_issues=$(jq -c '[.issues[]? | . + {"source": "claude"}]' "$claude_verdict_file" 2>/dev/null || echo '[]')
-  codex_issues=$(jq -c '[.issues[]? | . + {"source": "codex"}]' "$codex_verdict_file" 2>/dev/null || echo '[]')
-  merged_issues=$(echo "$claude_issues $codex_issues" | jq -s 'add // []')
-  {
-    echo '{'
-    echo '  "verdict": "fail",'
-    echo '  "verified_at_utc": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
-    echo '  "summary": "Consensus disagreement: claude='"$CLAUDE_VERDICT"' codex='"$CODEX_VERDICT"'",'
-    echo '  "issues": '"$merged_issues"','
-    echo '  "criteria_results": '"$merged_criteria_results"','
-    echo '  "recommended_state_transition": "continue",'
-    echo '  "consensus": { "claude": "'"$CLAUDE_VERDICT"'", "codex": "'"$CODEX_VERDICT"'", "round": '"$CONSENSUS_ROUND"' }'
-    echo '}'
-  } | atomic_write "$VERDICT_FILE"
+  # Create a merged fail verdict for the main loop — include issues from BOTH
+  # verdicts. Same H3 fix as the both-pass branch above: jq -n --argjson
+  # instead of `echo "$a $b" | jq -s`, and the assembly below is jq -n too.
+  # finding #3 (round 2): same E2BIG risk as the criteria_results merge above
+  # (a large issue description is exactly as likely as large evidence) —
+  # merge straight from the two ORIGINAL files via --slurpfile.
+  #
+  # finding #3 (round 3): the round-2 shape combined BOTH engines in ONE jq
+  # expression — a bare-string entry in EITHER engine's issues[] (`. +
+  # {source:...}` on a string is a jq type error), or either engine's WHOLE
+  # verdict file being a non-object (indexing `.issues` on e.g. a bare array
+  # top-level is a hard error `?` does not catch when it sits after the
+  # index, not the iterate), aborted the SINGLE combined expression — losing
+  # the OTHER engine's perfectly valid issues too. Extract each engine
+  # INDEPENDENTLY (two separate jq calls, each reading only its own file) so
+  # one side's garbage can never take down the other side's real issues, and
+  # guard the `.issues` INDEX itself with `?` (`(.issues? // [])[]?`, not
+  # `.issues[]?`) so a non-object top-level file degrades to "no issues on
+  # that side" instead of erroring. A non-object array ELEMENT is tolerated
+  # the same way finding #2's criteria_results fix does: coerced to a safe
+  # placeholder object instead of raising.
+  local _f3_claude_issues _f3_codex_issues
+  _f3_claude_issues=$(jq -c '[(.issues? // [])[]? | if type == "object" then . + {source:"claude"} else {description:(.|tostring), source:"claude"} end]' "$claude_verdict_file" 2>/dev/null)
+  [[ -n "$_f3_claude_issues" ]] || _f3_claude_issues='[]'
+  _f3_codex_issues=$(jq -c '[(.issues? // [])[]? | if type == "object" then . + {source:"codex"} else {description:(.|tostring), source:"codex"} end]' "$codex_verdict_file" 2>/dev/null)
+  [[ -n "$_f3_codex_issues" ]] || _f3_codex_issues='[]'
+  # Concatenate through temp files (not argv) for the same ARG_MAX reason as
+  # the criteria_results merge — each side's array can still be large even
+  # though it is now guaranteed valid JSON.
+  local _f3_ci_file _f3_xi_file merged_issues
+  _f3_ci_file=$(mktemp "${TMPDIR:-/tmp}/rlp-cf-issues-claude.XXXXXX") || _f3_ci_file="${TMPDIR:-/tmp}/rlp-cf-issues-claude.$$"
+  _f3_xi_file=$(mktemp "${TMPDIR:-/tmp}/rlp-cf-issues-codex.XXXXXX") || _f3_xi_file="${TMPDIR:-/tmp}/rlp-cf-issues-codex.$$"
+  print -r -- "$_f3_claude_issues" > "$_f3_ci_file"
+  print -r -- "$_f3_codex_issues" > "$_f3_xi_file"
+  merged_issues=$(jq -n --slurpfile a "$_f3_ci_file" --slurpfile b "$_f3_xi_file" '$a[0] + $b[0]' 2>/dev/null)
+  rm -f "$_f3_ci_file" "$_f3_xi_file"
+  [[ -n "$merged_issues" ]] || merged_issues='"malformed-in-consensus-merge"'
+  # Both merged_issues and merged_criteria_results can be large (the sum of
+  # both engines' arrays) — read them back via --rawfile + fromjson (jq's own
+  # file I/O) instead of --argjson, same reasoning as the both-pass branch.
+  local _cf_issues_file _cf_cr_file2
+  _cf_issues_file=$(mktemp "${TMPDIR:-/tmp}/rlp-cf-issues.XXXXXX") || _cf_issues_file="${TMPDIR:-/tmp}/rlp-cf-issues.$$"
+  _cf_cr_file2=$(mktemp "${TMPDIR:-/tmp}/rlp-cf-cr2.XXXXXX") || _cf_cr_file2="${TMPDIR:-/tmp}/rlp-cf-cr2.$$"
+  print -r -- "$merged_issues" > "$_cf_issues_file"
+  print -r -- "$merged_criteria_results" > "$_cf_cr_file2"
+  jq -n \
+    --arg verified_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg summary "Consensus disagreement: claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT" \
+    --rawfile issues_raw "$_cf_issues_file" \
+    --rawfile criteria_results_raw "$_cf_cr_file2" \
+    --arg claude_verdict "$CLAUDE_VERDICT" \
+    --arg codex_verdict "$CODEX_VERDICT" \
+    --argjson round "$CONSENSUS_ROUND" \
+    '{
+      verdict: "fail",
+      verified_at_utc: $verified_at,
+      summary: $summary,
+      issues: ($issues_raw | fromjson),
+      criteria_results: ($criteria_results_raw | fromjson),
+      recommended_state_transition: "continue",
+      consensus: { claude: $claude_verdict, codex: $codex_verdict, round: $round }
+    }' | atomic_write "$VERDICT_FILE"
+  rm -f "$_cf_issues_file" "$_cf_cr_file2"
+  # finding #4: same 0-byte blind spot as the both-pass guard above.
+  if ! jq -e 'type=="object" and has("verdict")' "$VERDICT_FILE" >/dev/null 2>&1; then
+    log_error "_consensus_finalize: disagreement merge produced invalid JSON — failing closed instead of shipping a broken VERDICT_FILE."
+    jq -n --arg summary "Consensus disagreement: claude=$CLAUDE_VERDICT codex=$CODEX_VERDICT (merge produced invalid JSON, fail-closed)" \
+      '{verdict:"fail", summary:$summary, recommended_state_transition:"continue"}' \
+      | atomic_write "$VERDICT_FILE"
+  fi
   return 2  # consensus disagreement → outer fix-loop retries
 }
 
@@ -5820,7 +5943,7 @@ main() {
     local _status_mu
     _status_mu=$(jq -r '.model_upgraded // 0' "$STATUS_FILE" 2>/dev/null)
     if [[ "$_status_mu" == "1" ]]; then
-      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_owcr _s_sufc _s_wef _s_owef
+      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_owcr _s_sufc _s_wef _s_owef _s_cdc
       _s_wm=$(jq -r '.worker_model // empty' "$STATUS_FILE" 2>/dev/null)
       _s_we=$(jq -r '.worker_engine // empty' "$STATUS_FILE" 2>/dev/null)
       _s_wcm=$(jq -r '.worker_codex_model // empty' "$STATUS_FILE" 2>/dev/null)
@@ -5839,6 +5962,13 @@ main() {
       _s_wef=$(jq -r '.worker_effort // empty' "$STATUS_FILE" 2>/dev/null)
       _s_owef=$(jq -r '.original_worker_effort // empty' "$STATUS_FILE" 2>/dev/null)
       _s_sufc=$(jq -r '.same_us_fail_count // 0' "$STATUS_FILE" 2>/dev/null)
+      # finding #6 (reaudit wave 4 round 2): _CEILING_DEFERRAL_COUNT bounds the
+      # ceiling model's own attempt window (M1) — unlike _SAME_US_FAIL_COUNT it
+      # was never persisted, so a crash-relaunch mid-window silently reset it
+      # to 0 and granted a fresh 2-attempt deferral window on every restart.
+      # Missing field (a status.json from before this fix) -> 0, same as
+      # same_us_fail_count above — backward compatible.
+      _s_cdc=$(jq -r '.ceiling_deferral_count // 0' "$STATUS_FILE" 2>/dev/null)
       if [[ -n "$_s_wm" && -n "$_s_we" ]]; then
         _MODEL_UPGRADED=1
         WORKER_MODEL="$_s_wm"; WORKER_ENGINE="$_s_we"
@@ -5849,7 +5979,8 @@ main() {
         [[ -n "$_s_wef" ]] && WORKER_EFFORT="$_s_wef"
         [[ -n "$_s_owef" ]] && _ORIGINAL_WORKER_EFFORT="$_s_owef"
         [[ "$_s_sufc" == <-> ]] && _SAME_US_FAIL_COUNT="$_s_sufc"
-        log "  Restored auto-upgraded Worker model: $WORKER_MODEL ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}, orig_effort=${_ORIGINAL_WORKER_CODEX_REASONING:-?}, worker_effort=${WORKER_EFFORT:-?}, same_us_fails=$_SAME_US_FAIL_COUNT (D-5b restore-priority)"
+        [[ "$_s_cdc" == <-> ]] && _CEILING_DEFERRAL_COUNT="$_s_cdc"
+        log "  Restored auto-upgraded Worker model: $WORKER_MODEL ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}, orig_effort=${_ORIGINAL_WORKER_CODEX_REASONING:-?}, worker_effort=${WORKER_EFFORT:-?}, same_us_fails=$_SAME_US_FAIL_COUNT, ceiling_deferrals=$_CEILING_DEFERRAL_COUNT (D-5b restore-priority)"
         log_debug "[FLOW] restored_model_upgrade=true worker_model=$WORKER_MODEL engine=$WORKER_ENGINE same_us_fail=$_SAME_US_FAIL_COUNT"
       fi
     fi
@@ -5926,7 +6057,7 @@ main() {
     _r12_check_lifecycle "iter_start"
     log ""
     log "========== Iteration $ITERATION / $MAX_ITER =========="
-    local ITER_START_TIME
+    local ITER_START_TIME=""
     ITER_START_TIME=$(date +%s)
     local _iter_contract=""
     _iter_contract=$(sed -n '/^## Next Iteration Contract$/,/^## /{ /^## Next/d; /^## [^N]/d; p; }' "$MEMORY_FILE" 2>/dev/null | head -1 | tr '\n' ' ')
@@ -5974,7 +6105,7 @@ main() {
         # claim file's own mtime so PR-A-accepted evidence is judged against
         # the window it actually ran in (PR-A validation gates its integrity).
         if [[ -z "${ITER_WINDOW_START:-}" && -f "$DONE_CLAIM_FILE" ]]; then
-          local _dc_epoch
+          local _dc_epoch=""
           _dc_epoch=$(stat -f %m "$DONE_CLAIM_FILE" 2>/dev/null || stat -c %Y "$DONE_CLAIM_FILE" 2>/dev/null || echo "")
           if [[ -n "$_dc_epoch" ]]; then
             ITER_WINDOW_START=$(date -u -r "$_dc_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null               || date -u -d "@$_dc_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
@@ -5995,7 +6126,7 @@ main() {
       local _blocked_sidecar="$MEMOS_DIR/${SLUG}-blocked.json"
       if _validate_blocked_recovery \
            "$BLOCKED_SENTINEL" "$_blocked_sidecar" "$STATUS_FILE"; then
-        local _prev_reason
+        local _prev_reason=""
         _prev_reason=$(jq -r '.last_block_reason // ""' "$STATUS_FILE" 2>/dev/null)
         log "[recovery] Operator-cleared BLOCKED detected (was: ${_prev_reason:-unrecorded}). Resetting counters and resuming as worker. iter=$ITERATION"
         log_debug "[recovery] iter=$ITERATION blocked_recovery=applied reason=\"${BLOCKED_RECOVERY_FAIL_REASON:-sidecar absent or recoverable=true}\""
@@ -6130,7 +6261,7 @@ main() {
       # how F-8 sweeps operator files. Retain the prior baseline and log; if git
       # is still broken at recovery time, Gate 3's own fail-closed dirty check
       # BLOCKs the iteration anyway.
-      local _iter_pre
+      local _iter_pre=""
       if _iter_pre=$(_git_dirty_names "$ROOT" "$(_git_dirty_base)"); then
         ITER_PREEXISTING_DIRTY="$_iter_pre"
       else
@@ -6259,7 +6390,7 @@ main() {
           return 1
         fi
         # Check if Worker is still actively running (not stuck)
-        local worker_cmd
+        local worker_cmd=""
         worker_cmd=$(tmux display-message -p -t "$WORKER_PANE" '#{pane_current_command}' 2>/dev/null)
         if [[ "$worker_cmd" == "node" || "$worker_cmd" == "claude" || "$worker_cmd" == "codex" ]]; then
           # Process alive — extend indefinitely (no hard ceiling kill)
@@ -6319,9 +6450,9 @@ main() {
     # US-003: tolerant-read via _resolve_iter_signal_status (lib_ralph_desk.zsh)
     # — canonical `status`, tolerant fallback to legacy `stop`. See that
     # function's header comment for the full AC1-AC4 contract.
-    local signal_status
+    local signal_status=""
     signal_status=$(_resolve_iter_signal_status "$SIGNAL_FILE")
-    local signal_summary
+    local signal_summary=""
     signal_summary=$(jq -r '.summary // "no summary"' "$SIGNAL_FILE" 2>/dev/null)
 
     log "  Worker signal: status=$signal_status summary=\"$signal_summary\""
@@ -6340,7 +6471,7 @@ main() {
       verify_partial)
         # US-019 R7 P1-G: Worker explicitly verified a subset of ACs and deferred the rest.
         # Verifier evaluates only verified_acs. Malformed (empty verified_acs) downgrades to blocked.
-        local vp_count
+        local vp_count=""
         vp_count=$(jq -r '.verified_acs // [] | length' "$SIGNAL_FILE" 2>/dev/null || echo 0)
         if [[ "$vp_count" -eq 0 ]]; then
           # F-12: a Worker formatting slip (verify_partial with empty verified_acs)
@@ -6349,7 +6480,7 @@ main() {
           # mission_abort that ends the whole campaign on a single malformed signal.
           # A fresh-context Worker that keeps malforming still trips the CB and
           # blocks; one slip just costs an iteration.
-          local vp_us_id
+          local vp_us_id=""
           vp_us_id=$(jq -r '.us_id // empty' "$SIGNAL_FILE" 2>/dev/null)
           (( CONSECUTIVE_FAILURES++ ))
           log "  Worker verify_partial malformed (empty verified_acs) — soft-fail retry $CONSECUTIVE_FAILURES/$EFFECTIVE_CB_THRESHOLD (bounded by CB)."
@@ -6468,18 +6599,56 @@ main() {
         # circuits under the shared PREGATE_FAIL_CAP, or forces one full verifier
         # round at the cap (carrying the FAIL summary for injection).
         typeset -g _DONECLAIM_LINT_LINE=""
-        if (( ! _pg_short && ! _pg_force )); then
+        # M2 (reaudit wave 4): this used to be gated on `! _pg_short &&
+        # ! _pg_force`, so when Layer 1 had ALREADY forced a verifier round
+        # (its own PREGATE_FAIL_CAP), Layer 1.5 — including the approach-
+        # escalation check — never ran at all, and the verifier proceeded
+        # with NO done-claim lint information whatsoever (not even a SKIPPED
+        # line). Now it still evaluates whenever Layer 1 did not itself
+        # short-circuit, but when Layer 1 already decided to force, Layer 1.5
+        # only FORWARDS what it found — it must never re-decide short-circuit
+        # vs force (that would silently override Layer 1's decision and could
+        # even downgrade a force back to a short-circuit).
+        if (( ! _pg_short )); then
           run_pregate_doneclaim_lint
-          log_debug "[GOV] iter=$ITERATION phase=pregate layer=1.5 status=$PREGATE_LINT_STATUS reason=${PREGATE_LINT_REASON:-none} us=${signal_us_id:-all}"
+          log_debug "[GOV] iter=$ITERATION phase=pregate layer=1.5 status=$PREGATE_LINT_STATUS reason=${PREGATE_LINT_REASON:-none} us=${signal_us_id:-all} force_already_set=$_pg_force"
           if [[ "$PREGATE_LINT_STATUS" == "fail" ]]; then
-            if _pregate_register_fail_doneclaim_lint "$ITERATION" "${signal_us_id:-ALL}"; then
-              log "  Pre-gate L1.5 FAILED (done-claim format lint: ${PREGATE_LINT_VIOLATIONS}) — skipping LLM verification, redispatching Worker (pre-gate fail ${PREGATE_FAILURES}/${PREGATE_FAIL_CAP})."
+            if (( _pg_force )); then
+              # Layer 1 already forced — do not call _pregate_register_fail_doneclaim_lint
+              # (it would bump PREGATE_FAILURES and could set _pg_short, undoing
+              # Layer 1's force). Just forward the real reason to the verifier
+              # instead of staying silent.
+              if [[ "$PREGATE_LINT_REASON" == "approach_summary_missing" ]]; then
+                _DONECLAIM_LINT_LINE="Done-Claim Format Lint: FAIL (approach_summary_missing) — the done-claim.json is missing the required top-level approach_summary field (governance §1f¾ approach escalation)."
+              else
+                _DONECLAIM_LINT_LINE="Done-Claim Format Lint: FAIL — violations: ${PREGATE_LINT_VIOLATIONS}"
+              fi
+            elif _pregate_register_fail_doneclaim_lint "$ITERATION" "${signal_us_id:-ALL}"; then
+              # round 4 item D: PREGATE_LINT_VIOLATIONS is "[]" (nothing
+              # per-AC to report) for approach_summary_missing — same gap
+              # the M2 fix already closed on the FORCE branch below. This is
+              # the SHORT-CIRCUIT branch, which had the same bare-"[]" log
+              # line; name the real reason here too.
+              if [[ "$PREGATE_LINT_REASON" == "approach_summary_missing" ]]; then
+                log "  Pre-gate L1.5 FAILED (done-claim format lint: approach_summary_missing) — skipping LLM verification, redispatching Worker (pre-gate fail ${PREGATE_FAILURES}/${PREGATE_FAIL_CAP})."
+              else
+                log "  Pre-gate L1.5 FAILED (done-claim format lint: ${PREGATE_LINT_VIOLATIONS}) — skipping LLM verification, redispatching Worker (pre-gate fail ${PREGATE_FAILURES}/${PREGATE_FAIL_CAP})."
+              fi
               _pg_short=1
             else
               log "  Pre-gate L1.5 failed ${PREGATE_FAIL_CAP}× for ${signal_us_id:-ALL} — forcing full LLM verifier round (lint FAIL passed to verifier)."
               log_debug "[GOV] iter=$ITERATION phase=pregate action=force_verifier layer=1.5 us=${signal_us_id:-all}"
               _pg_force=1
-              _DONECLAIM_LINT_LINE="Done-Claim Format Lint: FAIL (fail cap reached) — violations: ${PREGATE_LINT_VIOLATIONS}"
+              # M2: the cap-forced message used to always be the generic
+              # "violations: ${PREGATE_LINT_VIOLATIONS}" — but
+              # PREGATE_LINT_VIOLATIONS is "[]" for approach_summary_missing
+              # (nothing per-AC to report), so the verifier never learned the
+              # ACTUAL reason it was forced. Name it explicitly.
+              if [[ "$PREGATE_LINT_REASON" == "approach_summary_missing" ]]; then
+                _DONECLAIM_LINT_LINE="Done-Claim Format Lint: FAIL (fail cap reached: approach_summary_missing) — the done-claim.json is missing the required top-level approach_summary field (governance §1f¾ approach escalation)."
+              else
+                _DONECLAIM_LINT_LINE="Done-Claim Format Lint: FAIL (fail cap reached) — violations: ${PREGATE_LINT_VIOLATIONS}"
+              fi
             fi
           elif [[ "$PREGATE_LINT_STATUS" == "pass" ]]; then
             _DONECLAIM_LINT_LINE="Done-Claim Format Lint: PASS — the leader machine-verified the per-AC TDD step sequence/labels in execution_steps. Do NOT fail the Worker Process Audit on step sequence/label format grounds; audit substance only (evidence freshness, exit codes, timestamps, command truthfulness)."
@@ -6598,7 +6767,7 @@ main() {
           local verifier_prompt="$LOGS_DIR/iter-$(printf '%03d' $ITERATION).verifier-prompt.md"
 
           # Step 7a: Clean previous Verifier session (with dead pane detection)
-          local verifier_cmd
+          local verifier_cmd=""
           verifier_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null)
           if [[ -z "$verifier_cmd" ]]; then
             log "  Verifier pane $VERIFIER_PANE is gone — replacing..."
@@ -6632,7 +6801,7 @@ main() {
           # stronger FINAL_VERIFIER_*; per-US verifies keep the lighter VERIFIER_*.
           # For signal_us_id != ALL, _v_* alias VERIFIER_* EXACTLY — no behavior
           # change on the per-US hot path.
-          local _v_eng _v_model _v_cxm _v_cxr _v_eff _v_role
+          local _v_eng="" _v_model="" _v_cxm="" _v_cxr="" _v_eff="" _v_role=""
           if [[ "$signal_us_id" == "ALL" ]]; then
             _v_eng="$FINAL_VERIFIER_ENGINE"; _v_model="$FINAL_VERIFIER_MODEL"
             _v_cxm="$FINAL_VERIFIER_CODEX_MODEL"; _v_cxr="$FINAL_VERIFIER_CODEX_REASONING"; _v_eff="$FINAL_VERIFIER_EFFORT"
@@ -6647,7 +6816,7 @@ main() {
             _v_role="Verifier"
           fi
 
-          local verifier_launch
+          local verifier_launch=""
           if [[ "$_v_eng" = "codex" ]]; then
             _require_codex_effort "$_v_cxr" "verifier-relaunch"
             verifier_launch="OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $_v_cxm -c model_reasoning_effort=\"$_v_cxr\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox"
@@ -6762,15 +6931,23 @@ main() {
         ITER_VERIFIER_END=$(date +%s)
 
         # --- governance.md s7 step 7: Read verdict via jq ---
-        local verdict
-        verdict=$(_normalize_verdict "$(jq -r '.verdict' "$VERDICT_FILE" 2>/dev/null)")
-        local recommended
+        # round 5 (codex P3): `.verdict` alone renders the literal string
+        # "null" for BOTH an explicit JSON null AND a missing key — a
+        # non-empty string, so the `${_cr_original_verdict:-<no top-level
+        # verdict>}` fallback used downstream never fires for either case.
+        # `// empty` collapses both to real emptiness so that fallback
+        # renders an honest placeholder instead of literal 'null'; a
+        # genuinely absent/null verdict is still (correctly) non-fail for
+        # the criteria-override decision, same as before.
+        local verdict=""
+        verdict=$(_normalize_verdict "$(jq -r '.verdict // empty' "$VERDICT_FILE" 2>/dev/null)")
+        local recommended=""
         # F-23: normalize so a verifier's phrasing variant doesn't strand a
         # genuinely-complete campaign at MAX_ITER. "Complete"/"completed"/"done"
         # all mean complete. Unified through _normalize_verdict (IMP-01) so the
         # verdict field and the transition field share one canonical surface.
         recommended=$(_normalize_verdict "$(jq -r '.recommended_state_transition' "$VERDICT_FILE" 2>/dev/null)" transition)
-        local verdict_summary
+        local verdict_summary=""
         verdict_summary=$(jq -r '.summary // "no summary"' "$VERDICT_FILE" 2>/dev/null)
 
         log "  Verifier: verdict=$verdict recommended=$recommended"
@@ -6800,7 +6977,34 @@ main() {
         # fail" short-circuit here the way there is for the unmet-count case,
         # because a malformed top-level verdict cannot be trusted regardless
         # of what it claims.
-        local _cr_result _cr_state _cr_rest _cr_unmet _cr_malformed
+        # L4b (reaudit wave 4): bare `local name1 name2 ...` (no assignment)
+        # re-executed on the 2nd+ pass through this while-loop (same main()
+        # call frame — the loop never returns between iterations) makes zsh's
+        # `local`/`typeset` builtin print "name=value" to stdout for every
+        # already-set variable, exactly like `typeset -p`. Explicit `=""`
+        # inits suppress it (verified empirically) without changing behavior,
+        # since every one of these is unconditionally reassigned below.
+        local _cr_result="" _cr_state="" _cr_rest="" _cr_unmet="" _cr_malformed=""
+        # H1 (reaudit wave 4): tracks whether EITHER override branch below
+        # fired this round, so the fail-branch per_us_results crediting
+        # further down can refuse to trust a verdict file this same check
+        # just rejected (see the H1 comment at the per_us_results site).
+        local _criteria_override_fired=0
+        # round 3 (finding #1): the pre-override verdict, captured BEFORE
+        # either branch below can mutate `verdict` to "fail". The elif
+        # branch's fired-decision (and the M4 rendering downstream) key off
+        # this, not off a live `$verdict` that may already have been
+        # overwritten by the time they run.
+        local _cr_original_verdict=""
+        _cr_original_verdict="$verdict"
+        # round 3 addendum (codex P1): whether the verdict was ACTUALLY
+        # flipped from a non-fail claim to fail this round -- distinct from
+        # _criteria_override_fired, which now also covers an honest fail
+        # sitting on untrusted (malformed) evidence, where nothing was
+        # actually overridden. Only a true override replaces the verifier's
+        # own summary/heading downstream (M4); an honest-fail-plus-untrusted
+        # round keeps the verifier's own summary and gets a note appended.
+        local _cr_true_override=0
         _cr_result=$(_verdict_criteria_effective "$VERDICT_FILE")
         _cr_state="${_cr_result%%|*}"; _cr_rest="${_cr_result#*|}"
         _cr_unmet="${_cr_rest%%|*}"; _cr_malformed="${_cr_rest#*|}"
@@ -6809,10 +7013,78 @@ main() {
           log_error "  Verifier contract violation: criteria_results is present but malformed (not an array) — cannot trust top-level verdict=$verdict; overriding to fail (no credit on unverifiable evidence)."
           log_debug "[GOV] iter=$ITERATION criteria_results_malformed=true top_level_verdict=$verdict us_id=${signal_us_id:-all}"
           verdict="fail"
+          _criteria_override_fired=1
+          # round 4 (adv #2) + round 5 (codex P2): a FAIL VARIANT (fail.,
+          # failed, FAIL: ..., etc.) is an honest fail too, same as the
+          # exact literal "fail" — only something that is not a bounded
+          # fail alias is a real override. round 4's original fix used an
+          # UNBOUNDED `fail*` glob, which wrongly matched "failsafe_pass"/
+          # "failover" (start with "fail", mean the opposite or something
+          # unrelated); _verdict_is_fail_variant (lib) requires fail/failed/
+          # failure/failing followed by end-of-string or a non-alphanumeric
+          # separator. See the matching comment at the unmet-branch check
+          # below for the full rationale.
+          _verdict_is_fail_variant "$_cr_original_verdict" || _cr_true_override=1
         elif (( _cr_unmet > 0 )); then
-          if [[ "$verdict" == "pass" ]]; then
-            log_error "  Verifier contract violation: top-level verdict=pass but $_cr_unmet criteria_results entries report met:false — overriding to fail (no partial credit)."
+          # round-2 fix (finding #1): only an ACTUAL override — top-level
+          # verdict was NOT already "fail" and got overridden to fail —
+          # sets the fired flag. An honest fail (verdict was already fail)
+          # still forces verdict=fail below (no behavior change there), but
+          # must not be mistaken for an override: the verifier's own
+          # summary/per-criteria detail is trustworthy here, so per_us_results
+          # crediting and the M4 summary substitution downstream must not
+          # treat this round as untrusted.
+          #
+          # round 3 (finding #1): the ORIGINAL check compared against the
+          # literal string pass, which missed every verdict that isn't
+          # EXACTLY pass or fail after normalization — values like pass.,
+          # PASS colon all ACs met, approved, success, null, blocked,
+          # request_info, etc. Every one of those is neither an honest fail
+          # nor a recognized pass, so an unmet criterion overriding it to
+          # fail IS a real override (the top-level claim, whatever it was,
+          # did not survive scrutiny) — compare against fail instead of pass
+          # so ANY non-fail original verdict counts. This does NOT touch the
+          # separate pre-existing blocked-verdict dispatch (wave 1, the case
+          # verdict-in-blocked arm further below) — a blocked verdict that
+          # also has an unmet criterion is still force-converted to fail by
+          # this same block exactly as before; only the fired-bookkeeping
+          # around that pre-existing behavior is corrected here.
+          #
+          # round 3 addendum (codex P1): an HONEST fail (original verdict
+          # already fail) can still sit on UNTRUSTED evidence -- a malformed
+          # ENTRY within the array (e.g. met:false as a string, or a
+          # non-object element) folds into _cr_unmet (H2) just like a clean
+          # met:false does, but it is garbage, not a real verifier judgment.
+          # Crediting per_us_results off garbage is the same partial-credit
+          # hole this whole control exists to close, so an honest fail with
+          # ANY malformed entry (_cr_malformed > 0) is ALSO untrusted
+          # (fired=1), even though nothing was overridden (_cr_true_override
+          # stays 0). An honest fail whose unmet entries are ALL well-formed
+          # booleans (_cr_malformed == 0) remains trustworthy and keeps
+          # crediting exactly as before.
+          #
+          # round 4 (adv #2): the comparison itself was too strict — it only
+          # recognized the exact literal string "fail", so a verifier that
+          # phrases an honest fail as "fail.", "failed", "FAIL: see below",
+          # etc. (anything _normalize_verdict does not map to the bare
+          # word) was wrongly treated as a TRUE override, discarding the
+          # verifier's real diagnosis for a fabricated "override" narrative.
+          #
+          # round 5 (codex P2): round 4's fix used an UNBOUNDED `fail*`
+          # glob, which wrongly matched "failsafe_pass"/"failover" too —
+          # verdicts that start with "fail" but are not fail aliases.
+          # _verdict_is_fail_variant (lib) requires a bounded match: fail/
+          # failed/failure/failing followed by end-of-string or a
+          # non-alphanumeric separator.
+          if ! _verdict_is_fail_variant "$_cr_original_verdict"; then
+            log_error "  Verifier contract violation: top-level verdict=${_cr_original_verdict:-<no top-level verdict>} but $_cr_unmet criteria_results entries report met:false — overriding to fail (no partial credit)."
             log_debug "[GOV] iter=$ITERATION criteria_results_contract_violation=true unmet=$_cr_unmet us_id=${signal_us_id:-all}"
+            _criteria_override_fired=1
+            _cr_true_override=1
+          elif (( _cr_malformed > 0 )); then
+            log_error "  Verifier contract violation: criteria_results (verdict already fail) contains $_cr_malformed malformed entry/entries among $_cr_unmet unmet — evidence untrusted, not crediting partial progress this round."
+            log_debug "[GOV] iter=$ITERATION criteria_results_entry_malformed=true unmet=$_cr_unmet malformed=$_cr_malformed us_id=${signal_us_id:-all}"
+            _criteria_override_fired=1
           else
             log "  criteria_results: $_cr_unmet entries report met:false (verdict already $verdict)."
           fi
@@ -6830,6 +7102,7 @@ main() {
             CONSENSUS_ROUND=0
             _SAME_US_FAIL_COUNT=0
             _LAST_FAILED_US=""
+            _CEILING_DEFERRAL_COUNT=0
             # F-22b: a pass is real progress — reset the consecutive-BLOCKS state
             # too so the now-live block CB counts only blocks with NO intervening
             # success ("consecutive" in the true sense, not cumulative).
@@ -6869,7 +7142,7 @@ main() {
               # so the Worker re-runs the contracted US. Acts ONLY on a PRESENT
               # mismatch (absent verdict us_id = trust the scope), so a correctly-
               # scoped verifier is never affected.
-              local _verdict_us_id
+              local _verdict_us_id=""
               _verdict_us_id=$(jq -r '.us_id // empty' "$VERDICT_FILE" 2>/dev/null)
               _verdict_us_id="${_verdict_us_id:u}"
               if [[ -n "$_verdict_us_id" && "$_verdict_us_id" != "$signal_us_id" ]]; then
@@ -6949,8 +7222,18 @@ main() {
 
             # Parse per_us_results from verdict to track partial progress (batch + per-us)
             local _prev_verified="$VERIFIED_US"
-            if jq -e '.per_us_results' "$VERDICT_FILE" &>/dev/null; then
-              local _newly_passed
+            # H1 (reaudit wave 4): the criteria_results override above means
+            # THIS verdict file was rejected as untrustworthy (malformed, or a
+            # claimed pass with an unmet criterion) — crediting any
+            # per_us_results out of it would grant partial progress on
+            # exactly the evidence the load-bearing check just refused to
+            # trust. Suppress crediting entirely for this round; a genuinely
+            # passing US will be re-confirmed on a later, trustworthy round.
+            if (( _criteria_override_fired )); then
+              log "  criteria_results override fired this round — not crediting per_us_results (verdict untrusted)."
+              log_debug "[GOV] iter=$ITERATION criteria_override_suppressed_partial_progress=true us_id=${signal_us_id:-all}"
+            elif jq -e '.per_us_results' "$VERDICT_FILE" &>/dev/null; then
+              local _newly_passed=""
               _newly_passed=$(jq -r '.per_us_results | to_entries[] | select(.value == "pass") | .key' "$VERDICT_FILE" 2>/dev/null)
               for _pus in $(echo "$_newly_passed"); do
                 if ! echo ",$VERIFIED_US," | grep -q ",$_pus,"; then
@@ -6995,7 +7278,14 @@ main() {
             # Placement-agnostic read (top-level / issues[] / checks[]) —
             # governance classifies failures per ISSUE, so the category is not
             # always top-level. See _verdict_failure_category in the lib.
-            local _fail_cat
+            # L4b follow-up (reaudit wave 4): same bare-`local`-redeclare-
+            # prints-to-stdout bug as the wave-3 _cr_* declarations above —
+            # this line re-executes every iteration of main()'s internal
+            # while-loop within the SAME call frame, so on the 2nd+ fail a
+            # bare `local _fail_cat` (no assignment) makes zsh print
+            # "_fail_cat=<prior value>" to stdout. Explicit `=""` suppresses
+            # it, same fix, same reasoning.
+            local _fail_cat=""
             _fail_cat=$(_verdict_failure_category "$VERDICT_FILE")
             if [[ "$_fail_cat" != "environment" && "$_fail_cat" != "flaky" ]]; then
               check_model_upgrade "${signal_us_id:-unknown}"
@@ -7008,8 +7298,71 @@ main() {
               log "  [WARN] Mid-CB: $CONSECUTIVE_FAILURES/${EFFECTIVE_CB_THRESHOLD} consecutive failures — consider reviewing AC quality"
               log_debug "[GOV] iter=$ITERATION mid_cb_warning=true consecutive_failures=$CONSECUTIVE_FAILURES threshold=$EFFECTIVE_CB_THRESHOLD"
             fi
-            local verdict_summary_fail
+            local verdict_summary_fail=""
             verdict_summary_fail=$(jq -r '.summary // "no summary"' "$VERDICT_FILE" 2>/dev/null)
+            # M4 (reaudit wave 4): when the criteria_results override fired
+            # (H1 / criteria_results load-bearing check above), the verdict
+            # file's own .summary still reflects whatever the verifier
+            # claimed — usually a "pass" narrative, since the override exists
+            # precisely for the case where the top-level verdict cannot be
+            # trusted. Replace it with a summary derived from the override
+            # itself, so _record_us_attempt (below) and the fix contract
+            # describe the ACTUAL reason for the fail, not the pass summary.
+            if (( _criteria_override_fired )); then
+              # round 4 (adv #1 + codex P2): the untrusted-evidence NOTE
+              # text (used below for both the honest-fail PREPEND case and
+              # the fix-contract heading, item C) — distinguishes a
+              # top-level-malformed criteria_results from an entry-level
+              # malformed value, so the Worker/reviewer can tell which shape
+              # of garbage was actually seen.
+              local _cr_untrusted_note=""
+              if [[ "$_cr_state" == "malformed" ]]; then
+                _cr_untrusted_note="criteria_results is not an array"
+              else
+                local _cr_entry_word="entry"
+                (( _cr_malformed != 1 )) && _cr_entry_word="entries"
+                _cr_untrusted_note="$_cr_malformed malformed criteria_results $_cr_entry_word"
+              fi
+              if (( _cr_true_override )); then
+                # round 4 (adv #1 + codex P2): a TRUE override — the verdict
+                # was actually flipped from a non-fail claim to fail — must
+                # REPLACE the verifier's own (untrusted) summary, never
+                # append to it: an appended note can fall past
+                # _record_us_attempt's 120-char truncation and vanish,
+                # letting the untrusted "pass" narrative reach the Worker
+                # with no visible marker at all.
+                if [[ "$_cr_state" == "malformed" ]]; then
+                  verdict_summary_fail="criteria_results malformed (present but not an array) — top-level verdict '${_cr_original_verdict:-<no top-level verdict>}' could not be trusted; treated as fail (no credit on unverifiable evidence)."
+                else
+                  local _cr_unmet_detail=""
+                  # finding #2: same fail-closed predicate as
+                  # _verdict_criteria_effective (lib) — type-check BEFORE
+                  # reading `.met` (short-circuiting `or`), so a non-object
+                  # array element (a bare string/number/etc) never aborts
+                  # the whole comprehension the way the old `select(.met ==
+                  # false)` did. A non-object entry renders as a safe
+                  # placeholder instead of being silently dropped.
+                  _cr_unmet_detail=$(jq -r '.criteria_results[]? | select((type != "object") or ((.met|type) != "boolean") or (.met == false)) | if type == "object" then "\(.criterion // .criterion_id // "?"): \(.missing_evidence // .evidence // "no evidence given")" else "(malformed entry: \(. | tojson))" end' "$VERDICT_FILE" 2>/dev/null | paste -sd';' - 2>/dev/null)
+                  # round 3 (finding #1 follow-through): this branch only
+                  # ever fires (post round-3 fix) when the original verdict
+                  # was a TRUE non-fail claim, but it need not literally be
+                  # "pass" — name the actual claimed verdict instead of
+                  # hardcoding it.
+                  verdict_summary_fail="criteria_results contract violation: $_cr_unmet criterion(s) reported met:false despite top-level verdict=${_cr_original_verdict:-<no top-level verdict>} — ${_cr_unmet_detail:-no per-criterion detail available}"
+                fi
+              else
+                # round 3 (finding #2) + round 3 addendum (codex P1) +
+                # round 4 (adv #1): an HONEST fail (verdict already "fail",
+                # or a fail-variant) sitting on untrusted evidence — either
+                # top-level-malformed criteria_results, or a malformed ENTRY
+                # inside an otherwise-populated array. Nothing was actually
+                # overridden, so the verifier's own summary is kept — but
+                # PREPEND the note (not append) so it survives
+                # _record_us_attempt's 120-char truncation regardless of how
+                # long the verifier's own summary is.
+                verdict_summary_fail="(${_cr_untrusted_note} — partial progress not credited this round) ${verdict_summary_fail}"
+              fi
+            fi
             # DEFECT-2b: record this attempt (pre-upgrade model + why it
             # failed) into the capped per-US history write_worker_trigger
             # surfaces to an escalated Worker.
@@ -7044,6 +7397,31 @@ main() {
               echo "## Summary"
               echo "$verdict_summary_fail"
               echo ""
+              if (( _criteria_override_fired )); then
+                # round 3 (finding #2) + round 3 addendum (codex P1) +
+                # round 4 (adv #3): the heading must not claim an override
+                # that didn't happen. Depends ONLY on _cr_true_override, not
+                # on _cr_state — an untrusted-but-honest round (already-fail
+                # verdict, whether the untrusted evidence is a
+                # top-level-malformed criteria_results OR a malformed ENTRY
+                # within an otherwise-populated array) gets the SAME plain
+                # "untrusted" heading either way; only a real override gets
+                # the "Override...reported X" framing.
+                if (( _cr_true_override )); then
+                  echo "## Criteria Results Override (verifier reported '${_cr_original_verdict:-<no top-level verdict>}'; overridden to fail)"
+                else
+                  echo "## Criteria Results (untrusted — partial progress not credited)"
+                fi
+                if [[ "$_cr_state" == "malformed" ]]; then
+                  echo "- criteria_results malformed (present but not an array) — verifier verdict distrusted."
+                else
+                  # finding #2: same fail-closed predicate as above (and as
+                  # _verdict_criteria_effective in lib) — see the comment at
+                  # the attempt-history site.
+                  jq -r '.criteria_results[]? | select((type != "object") or ((.met|type) != "boolean") or (.met == false)) | if type == "object" then "- \(.criterion // .criterion_id // "?"): \(.missing_evidence // .evidence // "no evidence given")" else "- (malformed entry: \(. | tojson))" end' "$VERDICT_FILE" 2>/dev/null
+                fi
+                echo ""
+              fi
               echo "## Issues (from verify-verdict.json)"
               jq -r '.issues[]? | "- [\(.severity // "unknown")] \(.id // .criterion // .criterion_id // "?"): \(.description // .summary // "no description")\(if .fix_hint then " (hint: \(.fix_hint))" else "" end)"' "$VERDICT_FILE" 2>/dev/null || echo "- (no structured issues available)"
               echo ""
@@ -7084,9 +7462,27 @@ main() {
               # model just reached is still in its first (or zeroth) attempt on
               # its own 2-attempt window, so defer the breaker one more failure
               # instead of blocking on a model that never got a turn.
-              if (( _MODEL_UPGRADED && _at_ceiling && _SAME_US_FAIL_COUNT < 2 )); then
-                log "  Circuit breaker deferred: Worker just reached ceiling model (${WORKER_MODEL}) — giving it its own attempt window (same-model fail ${_SAME_US_FAIL_COUNT}/2) before blocking."
-                log_debug "[GOV] iter=$ITERATION circuit_breaker=deferred reason=ceiling_not_yet_dispatched same_us_fail_count=$_SAME_US_FAIL_COUNT model=$WORKER_MODEL"
+              #
+              # M1 (reaudit wave 4): check_model_upgrade (and therefore
+              # _SAME_US_FAIL_COUNT) is skipped entirely for environment/flaky
+              # failure categories (Luna-first spec §2.5, above) — if every
+              # failure after reaching the ceiling is classified that way,
+              # _SAME_US_FAIL_COUNT never advances past whatever it was reset
+              # to on the promoting failure, and the deferral above would
+              # defer forever (the campaign would run to MAX_ITER instead of
+              # ever blocking). _CEILING_DEFERRAL_COUNT counts every
+              # ceiling-model failure REGARDLESS of category (reset on pass,
+              # alongside _SAME_US_FAIL_COUNT) and bounds the deferral to the
+              # SAME 2-attempt window the category-aware counter already
+              # grants when it IS advancing — so the normal (non-env/flaky)
+              # path is unaffected (both counters reach their bound together)
+              # and the frozen-counter path is now bounded too.
+              if (( _MODEL_UPGRADED && _at_ceiling )); then
+                (( _CEILING_DEFERRAL_COUNT++ ))
+              fi
+              if (( _MODEL_UPGRADED && _at_ceiling && _SAME_US_FAIL_COUNT < 2 && _CEILING_DEFERRAL_COUNT <= 2 )); then
+                log "  Circuit breaker deferred: Worker just reached ceiling model (${WORKER_MODEL}) — giving it its own attempt window (same-model fail ${_SAME_US_FAIL_COUNT}/2, deferral ${_CEILING_DEFERRAL_COUNT}/2) before blocking."
+                log_debug "[GOV] iter=$ITERATION circuit_breaker=deferred reason=ceiling_not_yet_dispatched same_us_fail_count=$_SAME_US_FAIL_COUNT ceiling_deferral_count=$_CEILING_DEFERRAL_COUNT model=$WORKER_MODEL"
                 update_status "verifier" "fail"
                 _cmu_deferred=1
               elif (( _MODEL_UPGRADED )) && (( _at_ceiling )); then
@@ -7114,7 +7510,7 @@ main() {
             ;;
           request_info)
             # --- governance.md s7 step 7: request_info (degraded in tmux mode) ---
-            local verdict_summary_ri
+            local verdict_summary_ri=""
             verdict_summary_ri=$(jq -r '.summary // "no summary"' "$VERDICT_FILE" 2>/dev/null)
             log "  Verifier requests info (degraded in tmux lean mode)."
             log "  Questions: \"$verdict_summary_ri\""
@@ -7129,7 +7525,7 @@ main() {
             fi
             ;;
           blocked)
-            local _verdict_cat
+            local _verdict_cat=""
             _verdict_cat=$(_classify_cross_us_or_metric "$verdict_summary")
             # F-22: a transient/first "blocked" no longer kills the campaign —
             # absorb as a soft-fail with grace; terminate only on a genuine infra
@@ -7157,7 +7553,7 @@ main() {
         ;;
       blocked)
         # --- governance.md s7 step 6: blocked -> write sentinel (with grace) ---
-        local _signal_cat
+        local _signal_cat=""
         _signal_cat=$(_classify_cross_us_or_metric "$signal_summary")
         # F-22: a transient/first Worker-reported "blocked" no longer kills the
         # campaign — absorb as a soft-fail with grace (same gate as the verifier

@@ -74,13 +74,23 @@ f=$(vf populated-onefalse '{"verdict":"pass","criteria_results":[{"criterion":"A
 r=$(_verdict_criteria_effective "$f")
 [[ "$r" == "populated|1|0" ]] && ok "7 THE ADVERSARIAL CASE: one met:false -> populated|1|0" || no "7 one met:false (got: $r)"
 
+# reaudit wave 4 (H2, lead's call): an OBJECT entry with a missing/non-boolean
+# `met` used to count ONLY in malformed_entries, never in unmet — wave 1's
+# rationale was "a malformed ENTRY must never masquerade as a failure". The
+# adversarial finding that reopened this (met:"false" sailing through) showed
+# that rationale itself was the fail-open: governance says garbage cannot
+# credit a US, and neither real call site branches on malformed_entries alone
+# (both only check unmet>0 / state==malformed) — so an entry-level malformed
+# result with no OTHER met:false in the array never forced a fail. Wave 4
+# folds every malformed entry (object-with-bad-met AND non-object) into unmet
+# too, so BOTH tests below now expect populated|1|1, not populated|0|1.
 f=$(vf populated-missingmet '{"verdict":"pass","criteria_results":[{"criterion":"AC1"},{"criterion":"AC2","met":true}]}')
 r=$(_verdict_criteria_effective "$f")
-[[ "$r" == "populated|0|1" ]] && ok "8 entry missing 'met' -> counted malformed, NOT unmet (no false-positive fail)" || no "8 missing met (got: $r)"
+[[ "$r" == "populated|1|1" ]] && ok "8 entry missing 'met' -> populated|1|1 (malformed AND folded into unmet, wave 4 fail-closed)" || no "8 missing met (got: $r)"
 
 f=$(vf populated-stringmet '{"verdict":"pass","criteria_results":[{"criterion":"AC1","met":"false"}]}')
 r=$(_verdict_criteria_effective "$f")
-[[ "$r" == "populated|0|1" ]] && ok "9 non-boolean met (string \"false\") -> malformed entry, NOT unmet" || no "9 met as string (got: $r)"
+[[ "$r" == "populated|1|1" ]] && ok "9 non-boolean met (string \"false\") -> populated|1|1 (malformed AND folded into unmet, wave 4 fail-closed)" || no "9 met as string (got: $r)"
 
 r=$(_verdict_criteria_effective "$TMPD/does-not-exist.json")
 [[ "$r" == "absent|0|0" ]] && ok "10 missing verdict file -> absent|0|0, no crash" || no "10 missing file (got: $r)"
