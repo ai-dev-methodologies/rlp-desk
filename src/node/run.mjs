@@ -49,7 +49,7 @@ export const RUN_DEFAULTS = {
   // Empty = no flag supplied (a present waivers.json is then fully rejected
   // unauthorized_hash_change — fail-closed, AC2.4).
   waiversSha256: '',
-  cbThreshold: 6,
+  cbThreshold: 4,
   maxIterations: 100,
   iterTimeout: 600,
   debug: false,
@@ -905,7 +905,8 @@ async function runRunCommand(args, deps) {
   // <project>/.claude/. After v0.13.0, sentinels live in
   // <project>/.rlp-desk/, but if the user pinned RLP_DESK_RUNTIME_DIR
   // back inside .claude/, the hang can return — surface the warning so
-  // they can switch to gpt-6-astra:* or --mode agent quickly.
+  // they can switch to a codex worker (e.g. gpt-5.6-sol:high) or --mode agent
+  // quickly.
   if (
     !process.env.RLP_DESK_QUIET_WARNINGS
     && process.env.NODE_ENV !== 'test'
@@ -922,7 +923,7 @@ async function runRunCommand(args, deps) {
     );
     write(
       deps.stderr,
-      'If hang persists, switch to --worker-model gpt-6-astra:high (codex).',
+      'If hang persists, switch to --worker-model gpt-5.6-sol:high (codex).',
     );
   }
 

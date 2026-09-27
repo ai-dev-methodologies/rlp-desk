@@ -15,31 +15,31 @@ echo "Target: $RUN, $LIB, $GOV"
 echo ""
 
 # ============================================================
-# T1: CB_THRESHOLD default is 6
+# T1: CB_THRESHOLD default is 4
 # ============================================================
 echo "--- Change 1: CB_THRESHOLD ---"
 
-test_t1_cb_default_6() {
-  if grep -q 'CB_THRESHOLD="${CB_THRESHOLD:-6}"' "$RUN"; then
-    pass "T1: CB_THRESHOLD default is 6"
+test_t1_cb_default_4() {
+  if grep -q 'CB_THRESHOLD="${CB_THRESHOLD:-4}"' "$RUN"; then
+    pass "T1: CB_THRESHOLD default is 4"
   else
-    fail "T1: CB_THRESHOLD default should be 6 (found: $(grep 'CB_THRESHOLD="${CB_THRESHOLD:-' "$RUN"))"
+    fail "T1: CB_THRESHOLD default should be 4 (found: $(grep 'CB_THRESHOLD="${CB_THRESHOLD:-' "$RUN"))"
   fi
 }
 
-# T2: consensus mode doubles CB to 12
+# T2: consensus mode doubles CB to 8
 test_t2_cb_consensus_doubles() {
   # The doubling logic: EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD * 2 ))
-  # With default 6, effective should be 12 when consensus=1
-  # We verify the multiplication formula exists and CB default is 6
+  # With default 4, effective should be 8 when consensus=1
+  # We verify the multiplication formula exists and CB default is 4
   local has_double
   has_double=$(grep -c 'EFFECTIVE_CB_THRESHOLD=$(( CB_THRESHOLD \* 2 ))' "$RUN")
-  local has_default_6
-  has_default_6=$(grep -c 'CB_THRESHOLD="${CB_THRESHOLD:-6}"' "$RUN")
-  if (( has_double >= 1 && has_default_6 >= 1 )); then
-    pass "T2: consensus mode doubles CB (6*2=12)"
+  local has_default_4
+  has_default_4=$(grep -c 'CB_THRESHOLD="${CB_THRESHOLD:-4}"' "$RUN")
+  if (( has_double >= 1 && has_default_4 >= 1 )); then
+    pass "T2: consensus mode doubles CB (4*2=8)"
   else
-    fail "T2: consensus doubling formula or CB default 6 missing (double=$has_double, default6=$has_default_6)"
+    fail "T2: consensus doubling formula or CB default 4 missing (double=$has_double, default4=$has_default_4)"
   fi
 }
 
@@ -175,17 +175,19 @@ echo ""
 echo "--- Governance doc ---"
 
 test_t11_governance_cb_default() {
-  if grep -q 'cb_threshold.*6\|default.*6\|default: 6' "$GOV"; then
-    pass "T11: governance §8 mentions CB default 6"
+  # Loose "default.*6" style greps also match unrelated text like "default 60",
+  # so assert the literal governance §8 escalation-table row instead.
+  if grep -qF '`cb_threshold` (default: 4)' "$GOV"; then
+    pass "T11: governance §8 mentions CB default 4"
   else
-    fail "T11: governance §8 should mention CB default 6"
+    fail "T11: governance §8 should mention CB default 4 (\`cb_threshold\` (default: 4))"
   fi
 }
 
 # ============================================================
 # Run all tests
 # ============================================================
-test_t1_cb_default_6
+test_t1_cb_default_4
 test_t2_cb_consensus_doubles
 test_t3_analytics_dir_always
 test_t4_metadata_always

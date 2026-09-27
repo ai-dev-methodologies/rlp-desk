@@ -515,6 +515,7 @@ _auto_detect_engine() {
       sonnet)                    model_val="sonnet:medium" ;;
       opus)                      model_val="opus:medium" ;;
       fable|claude-fable-5-1)    model_val="claude-fable-5-1:max" ;;
+      claude-opus-5-5)           model_val="claude-opus-5-5:high" ;;
     esac
     [[ "$model_val" != "$_adn_head" ]] && typeset -g "$model_var=$model_val"
   fi
@@ -675,23 +676,22 @@ _auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_R
 _auto_detect_engine VERIFIER_MODEL VERIFIER_ENGINE VERIFIER_CODEX_MODEL VERIFIER_CODEX_REASONING VERIFIER_EFFORT || exit 1
 _auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE FINAL_VERIFIER_CODEX_MODEL FINAL_VERIFIER_CODEX_REASONING FINAL_VERIFIER_EFFORT || exit 1
 
-# REVERTED off gpt-6-astra (owner correction): astra is now the ladder
-# ceiling (src/node/models.json "gpt-5.6-sol:xhigh" -> "gpt-6-astra:high").
-# Starting the Worker there breaks the luna-first concept three ways at once
-# — every iteration pays frontier price, check_model_upgrade returns
-# already_max from iteration 1 (no escalation headroom left), and the
-# circuit breaker loses its escalation signal. Derived from
-# src/commands/rlp-desk.md's cross-engine table (the LOW cost-lane Worker
-# start row: "gpt-5.6-luna:high") rather than picked by name.
+# gpt-6-astra is judge-only (FINAL_VERIFIER_CODEX_MODEL / FINAL_CONSENSUS_MODEL
+# below), never a Worker start. Starting the Worker there breaks the
+# luna-first concept three ways at once — every iteration pays frontier
+# price, check_model_upgrade returns already_max from iteration 1 (no
+# escalation headroom left), and the circuit breaker loses its escalation
+# signal. Derived from src/commands/rlp-desk.md's cross-engine table (the LOW
+# cost-lane Worker start row: "gpt-5.6-luna:high") rather than picked by name.
 WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.6-luna}"
 WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high — paired with gpt-5.6-luna above = gpt-5.6-luna:high (doc's LOW cost-lane Worker start)
-# REVERTED off gpt-6-astra for the same reason — flattens the per-US
-# verifier tier, which src/governance.md's Consensus Model Routing table
-# keeps deliberately below final verification. Derived from that table's
-# per-US codex tiering (luna:max/terra:high/sol:medium/sol:high — a MEDIUM,
-# "balanced, everyday work" mid rung) and matches CONSENSUS_MODEL's own
-# default two lines below (gpt-5.6-terra:high) — the same "per-US codex
-# judgment, no explicit tier" role.
+# gpt-6-astra stays out of the per-US verifier tier for the same reason —
+# it is judge-only, and src/governance.md's Consensus Model Routing table
+# keeps the per-US tier deliberately below final verification. Derived from
+# that table's per-US codex tiering (luna:max/terra:high/sol:medium/sol:high
+# — a MEDIUM, "balanced, everyday work" mid rung) and matches
+# CONSENSUS_MODEL's own default two lines below (gpt-5.6-terra:high) — the
+# same "per-US codex judgment, no explicit tier" role.
 VERIFIER_CODEX_MODEL="${VERIFIER_CODEX_MODEL:-gpt-5.6-terra}"
 VERIFIER_CODEX_REASONING="${VERIFIER_CODEX_REASONING:-high}"   # low|medium|high — paired with gpt-5.6-terra above = gpt-5.6-terra:high (mid rung, below final)
 # D-1: FINAL verifier codex sub-vars (auto-detected above from FINAL_VERIFIER_MODEL,
@@ -720,8 +720,8 @@ elif [[ "${FINAL_CONSENSUS:-0}" = "1" ]]; then
   CONSENSUS_MODE="final-only"
 fi
 CONSENSUS_SCOPE="${CONSENSUS_SCOPE:-${CONSENSUS_MODE}}"
-CB_THRESHOLD="${CB_THRESHOLD:-6}"           # consecutive failures before BLOCKED (default: 6)
-_validate_int_knob CB_THRESHOLD 6 1   # D-19: must be valid before the (( *2 )) below
+CB_THRESHOLD="${CB_THRESHOLD:-4}"           # consecutive failures before BLOCKED (default: 4)
+_validate_int_knob CB_THRESHOLD 4 1   # D-19: must be valid before the (( *2 )) below
 # Effective CB threshold (doubled when consensus mode is active) is computed
 # after CLI arg parsing below, once CONSENSUS_MODE is fully resolved --
 # --consensus/--final-consensus/--verify-consensus reassign it later in this
@@ -7073,7 +7073,7 @@ main() {
               # DEFECT-2a (fix/reaudit-wave-1): check_model_upgrade() runs BEFORE
               # this check and upgrades on the SAME failure that trips the CB
               # when CB_THRESHOLD lands exactly on a ladder-row boundary (default
-              # 6, 2 fails per rung: a rung's 2nd fail simultaneously
+              # 4, 2 fails per rung: a rung's 2nd fail simultaneously
               # (a) upgrades WORKER_MODEL to the ceiling and (b) trips the CB) —
               # so the ceiling model was promoted TO but never actually
               # DISPATCHED, yet the old BLOCKED text claimed "Worker upgraded to

@@ -1,7 +1,7 @@
 # Model Upgrade Table
 
 Progressive Worker model upgrade on consecutive failure per US.
-CB default: 6. Override: `--cb-threshold N`. Worker only — Verifier fixed at campaign start.
+CB default: 4. Override: `--cb-threshold N`. Worker only — Verifier fixed at campaign start.
 
 **US-001 (single-source ladder):** the tables below are a reference view of
 the single shipped ladder file, `src/node/models.json`
@@ -16,7 +16,7 @@ change a cadence), write a same-shaped JSON file to
 `${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json}` (a path outside
 the postinstall-managed, write-protected tree). Precedence is override →
 shipped defaults → a 4-entry emergency inline ladder
-(haiku→sonnet→opus→claude-fable-5-1:max) used only if both files are missing
+(haiku→sonnet→opus→claude-opus-5-5:high) used only if both files are missing
 or malformed.
 
 **Scope note:** this externalizes the upgrade *ladder* only. Model
@@ -56,12 +56,13 @@ Source: the codex CLI's own model catalog (embedded catalog of codex-cli
   justified by the 2026-07-30 price cut):** within luna the ladder raises
   effort to `max` before jumping models (`luna:high → luna:max`, skipping
   xhigh in the default chain; `luna:xhigh → luna:max` for manual starts).
-  `luna:max` then hops to the quota-first `terra:max` lane, which escalates
-  to `sol:xhigh` (terra:max quality sits between sol:high and sol:xhigh —
-  sol:high would be lateral). Terra keeps its own `:xhigh` ladder ceiling
-  before jumping model into sol; **sol's `:xhigh` is no longer a ceiling** —
-  since the astra rewiring below, it escalates one tier further into
-  `gpt-6-astra:high`, which is the real ceiling of the whole ladder now.
+  `luna:max` then hops to the quota-first `terra:max` lane (terra:max quality
+  sits between sol:high and sol:xhigh — sol:high would be lateral), which is
+  now the cost lane's own ceiling (2026-09-26 CB=4/3-rung wave — no further
+  escalation into sol). Terra keeps its own `:xhigh` ladder ceiling before
+  jumping model into sol on a manual terra start; sol's `:xhigh` is its own
+  terminal ceiling again — `gpt-6-astra` is judge-only (see "GPT-6 — Astra"
+  below) and is never reached by a worker escalation.
   `sol:max`/`sol:ultra`/`terra:ultra`/`gpt-6-astra:max`/`gpt-6-astra:ultra`
   remain valid manual starting points but are dead-end keys (no forward
   escalation).
@@ -111,19 +112,20 @@ unconfirmed — flagged, not asserted as fact.
 `gpt-6-astra` has its own `low → medium → high → xhigh` chain (ceiling at
 `xhigh`; `max`/`ultra` are manual-start-only dead ends) — the same shape
 `gpt-5.6-sol` uses, now backed by the measurements above rather than an
-assumption. **Owner decision (applied):** `gpt-5.6-sol:xhigh` now escalates
-into `gpt-6-astra:high` — astra is the real ceiling of the whole ladder.
-Entry point is `gpt-6-astra:high`, not `gpt-6-astra:low`: this matches the
+assumption. This self-chain remains usable for an explicit manual
+`--worker-model gpt-6-astra:<level>` start, and it is what `FINAL_VERIFIER_CODEX_MODEL`
+/ `FINAL_CONSENSUS_MODEL` run at (`gpt-6-astra:high` / `gpt-6-astra:xhigh`
+respectively).
+
+**Owner decision history.** An earlier wave wired `gpt-5.6-sol:xhigh` to
+escalate into `gpt-6-astra:high` (entering at `:high`, matching the
 already-established "model step-up enters at `:high`, never a lower effort"
-rule (the same rule that sends `terra:xhigh` into `sol:high`, one rung below
-sol's own ceiling — see the GPT-5.6 — Terra section below). Since `astra`'s
-own auto-ladder ceiling is `xhigh` (same relative position as sol's), the
-`sol → astra` jump lands one rung below astra's ceiling too, consistent with
-the terra → sol jump. `gpt-6-astra:xhigh` is the new terminal `""` — the full
-ladder is now `sol:xhigh → astra:high → astra:xhigh → BLOCKED`. This changes
-default escalation behavior and cost for any campaign whose worker reaches
-`sol:xhigh` (previously the ceiling, now one tier from it) — see the updated
-Sol/Terra/Luna tables below for the full per-complexity chains.
+rule used for `terra:xhigh → sol:high`), making astra the real ceiling of the
+whole worker ladder. **That decision was reopened and reversed on 2026-09-26**
+(the CB=4/3-rung wave, `docs/plans/model-mapping-2026-09-25-findings.md` Part
+2 §6): `gpt-6-astra` is judge-only, and `gpt-5.6-sol:xhigh` is its own
+terminal `""` again — no worker walk reaches astra any more. See the updated
+Sol/Terra/Luna tables below for the current per-complexity chains.
 
 CLI alias: `astra` → `gpt-6-astra` (same convention as `sol`/`terra`/`luna`).
 
@@ -182,61 +184,86 @@ codex-only architectural gate is revisited on its own. The 1:2:5:10 ratio
 above is ready to apply under whichever answer is chosen — it does not need
 re-deriving.
 
-## GPT-5.6 — Sol (frontier; `sol:xhigh` escalates one tier further into astra — see below, no longer the final ceiling)
+## GPT-5.6 — Sol (frontier; `sol:xhigh` is its own terminal ceiling — astra left the worker escalation path)
 
-| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11-12 | 13+ |
-|------------|-----|-----|-----|-----|------|-------|-----|
-| LOW | gpt-5.6-sol:low | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-6-astra:high | gpt-6-astra:xhigh | BLOCKED |
-| MEDIUM | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-6-astra:high | gpt-6-astra:xhigh | gpt-6-astra:xhigh | BLOCKED |
-| HIGH | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-6-astra:high | gpt-6-astra:xhigh | gpt-6-astra:xhigh | BLOCKED |
-| CRITICAL | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-6-astra:high | gpt-6-astra:xhigh | gpt-6-astra:xhigh | gpt-6-astra:xhigh | BLOCKED |
+| Complexity | 1-2 | 3-4 | 5-6 | 7+ |
+|------------|-----|-----|-----|-----|
+| LOW | gpt-5.6-sol:low | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh (repeat until CB) |
+| MEDIUM | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh (repeat until CB) |
+| HIGH | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh (repeat until CB) |
+| CRITICAL | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh (repeat until CB) | gpt-5.6-sol:xhigh (repeat until CB) |
 
-(`gpt-5.6-sol:xhigh` now escalates into `gpt-6-astra:high` — see "Owner
-decision (applied)" above for why `:high` and not `:low`. `gpt-6-astra:xhigh`
-has no next step — that is the real ceiling now; repeat until CB. HIGH starts
-at `sol:medium` and CRITICAL at `sol:high`, never at the ceiling itself, so
-the ladder retains upgrade headroom. Verified via a direct walk of the
-shipped `src/node/models.json` ladder, not hand-derived — see
-`tests/node/models-ladder.test.mjs` "gpt-5.6-sol:xhigh escalates into
-gpt-6-astra".)
+(2026-09-26 CB=4/3-rung wave, owner decision: `gpt-6-astra` is judge-only —
+the Final Verifier and Final Consensus seats — and left the worker
+escalation path entirely. `gpt-5.6-sol:xhigh` has no next step; it is the
+real ceiling of the sol family now. CRITICAL starts at `sol:high`, one hop
+below the ceiling — with `CB_THRESHOLD` default 4 a CRITICAL campaign may
+start at, or one hop below, the ceiling; if it fails `CB_THRESHOLD` times,
+BLOCKED is the correct outcome, a spec problem rather than a headroom gap
+(see "High-complexity headroom" decision in
+`docs/plans/model-mapping-2026-09-25-findings.md` Part 2 §4). Verified via a
+direct walk of the shipped `src/node/models.json` ladder, not hand-derived —
+see `tests/node/models-ladder.test.mjs` "gpt-5.6-sol:xhigh terminates at its
+own ceiling". Reachability at the default `CB_THRESHOLD=4` depends on how
+many rungs below `sol:xhigh` the row starts, not a fixed number of columns:
+`sol:low` (LOW, 3 rungs below) blocks at failure #4 with `sol:high` only
+just assigned and never actually dispatched (a plain block); `sol:medium`
+(MEDIUM/HIGH, 2 rungs below) has the promotion to `sol:xhigh` land exactly
+on failure #4, so DEFECT-2a defers the breaker and the `5-6` column IS
+reached before an architecture-escalation block at failure #6; `sol:high`
+(CRITICAL, 1 rung below) reaches `sol:xhigh` a rung earlier, within the
+`3-4` column itself, so the architecture-escalation block fires at failure
+#4 instead. The `7+` column applies only when `--cb-threshold` is raised
+above the default.)
 
-## GPT-5.6 — Terra (xhigh → Sol:high jump; terra:max → sol:xhigh quota lane; sol:xhigh continues into astra)
+## GPT-5.6 — Terra (xhigh → Sol:high jump; terra:max is the cost lane's own ceiling)
 
-| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11-12 | 13-14 | 15-16 | 17+ |
-|------------|-----|-----|-----|-----|------|-------|-------|-------|-----|
-| LOW | terra:low | terra:medium | terra:high | terra:xhigh | sol:high | sol:xhigh | astra:high | astra:xhigh | BLOCKED |
-| MEDIUM | terra:medium | terra:high | terra:xhigh | sol:high | sol:xhigh | astra:high | astra:xhigh | astra:xhigh | BLOCKED |
-| HIGH | terra:high | terra:xhigh | sol:high | sol:xhigh | astra:high | astra:xhigh | astra:xhigh | astra:xhigh | BLOCKED |
-| CRITICAL | terra:xhigh | sol:high | sol:xhigh | astra:high | astra:xhigh | astra:xhigh | astra:xhigh | astra:xhigh | BLOCKED |
+| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11-12 |
+|------------|-----|-----|-----|-----|------|-------|
+| LOW | terra:low | terra:medium | terra:high | terra:xhigh | sol:high | sol:xhigh (repeat until CB) |
+| MEDIUM | terra:medium | terra:high | terra:xhigh | sol:high | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) |
+| HIGH | terra:high | terra:xhigh | sol:high | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) |
+| CRITICAL | terra:xhigh | sol:high | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) |
 
-(Cells abbreviate `gpt-5.6-terra` / `gpt-5.6-sol` / `gpt-6-astra`. After
-`terra:xhigh` the ladder jumps to `gpt-5.6-sol:high` — model step-up enters
-at `:high`, never a lower effort; the same rule applies to the `sol → astra`
-jump. Default CB of 6 reaches column 5-6, well before any row reaches astra —
-this table is illustrative of the full shape, not default behavior.)
+(Cells abbreviate `gpt-5.6-terra` / `gpt-5.6-sol`. After `terra:xhigh` the
+ladder jumps to `gpt-5.6-sol:high` — model step-up enters at `:high`, never a
+lower effort. `sol:xhigh` has no next step; it is the real ceiling of the sol
+family now (2026-09-26 CB=4/3-rung wave — `gpt-6-astra` is judge-only and
+left the worker escalation path). This table is illustrative of the full
+manual-start shape, not default behavior — the brainstorm default cost-lane
+walk is the 3-rung `luna:high → luna:max → terra:max` spine below.
+Reachability at the default `CB_THRESHOLD=4` again depends on rungs-to-ceiling,
+not a fixed column: a `terra:low`/`terra:medium`/`terra:high` start
+(LOW/MEDIUM/HIGH, 3+ rungs below `sol:xhigh`) blocks at failure #4 with the
+next rung only just assigned and never dispatched (a plain block, so the
+`5-6` column onward is unreached); a `terra:xhigh` start (CRITICAL, 2 rungs
+below `sol:xhigh`) has the promotion to `sol:xhigh` land exactly on failure
+#4, so DEFECT-2a defers the breaker and the `5-6` column IS reached before
+an architecture-escalation block at failure #6. Any further column applies
+only when `--cb-threshold` is raised above the default.)
 
 (`terra:max` is the quota-first lane hop reached from `luna:max`, or a manual
-`--worker-model gpt-5.6-terra:max` start; on failure it escalates to
-`gpt-5.6-sol:xhigh`, which — as of the astra rewiring — continues into
-`gpt-6-astra:high` on the next failure rather than staying at the ceiling.)
+`--worker-model gpt-5.6-terra:max` start; it has no next step — it is the
+cost lane's own ceiling now, not a hop into `sol:xhigh`.)
 
-## GPT-5.6 — Luna (effort to max first, then terra:max quota lane; sol:xhigh continues into astra)
+## GPT-5.6 — Luna (effort to max first, then terra:max quota-first ceiling)
 
-| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11-12 | 13+ |
-|------------|-----|-----|-----|-----|------|-------|-----|
-| LOW | luna:high | luna:max | terra:max | sol:xhigh | astra:high | astra:xhigh | BLOCKED |
-| MEDIUM | luna:xhigh | luna:max | terra:max | sol:xhigh | astra:high | astra:xhigh | BLOCKED |
-| HIGH | luna:max | terra:max | sol:xhigh | astra:high | astra:xhigh | astra:xhigh | BLOCKED |
-| CRITICAL | sol:high | sol:xhigh | astra:high | astra:xhigh | astra:xhigh | astra:xhigh | BLOCKED |
+| Complexity | 1-2 | 3-4 | 5-6+ |
+|------------|-----|-----|------|
+| LOW | luna:high | luna:max | terra:max (repeat until CB) |
+| MEDIUM | luna:xhigh | luna:max | terra:max (repeat until CB) |
+| HIGH | luna:max | terra:max (repeat until CB) | terra:max (repeat until CB) |
+| CRITICAL | sol:high | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) |
 
-(Cells abbreviate `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol` /
-`gpt-6-astra`. Row = brainstorm start per complexity (cost lane); columns =
-consecutive-failure milestones. Full chain: `luna:high → luna:max →
-terra:max → sol:xhigh → astra:high → astra:xhigh` (ceiling); manual
-`luna:low/medium` starts climb `low → medium → high` first; manual
-`luna:xhigh` joins at `luna:max`. CRITICAL rows start at `sol:high` regardless
-of lane. Speed lane HIGH starts `sol:medium → sol:high → sol:xhigh →
-astra:high → astra:xhigh`.)
+(Cells abbreviate `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol`. Row =
+brainstorm start per complexity (cost lane); columns = consecutive-failure
+milestones. Full chain (2026-09-26 CB=4/3-rung wave): `luna:high → luna:max →
+terra:max` (ceiling) — the old `terra:max → sol:xhigh → astra` escape hatch
+is gone; manual `luna:low/medium` starts climb `low → medium → high` first;
+manual `luna:xhigh` joins at `luna:max`. CRITICAL rows start at `sol:high`
+regardless of lane, on sol's own 2-rung chain to its `sol:xhigh` ceiling —
+lane-independent and outside the luna-first cost lane. Speed lane HIGH starts
+`sol:medium → sol:high → sol:xhigh` (ceiling).)
 
 **Known accepted edge (spec §5).** The lane choice applies only to HIGH rows —
 LOW and MEDIUM start on luna in *both* lanes. So a LOW/MEDIUM US that keeps
@@ -271,29 +298,43 @@ Same 4-tier shape as gpt-5.5 below; substitute `gpt-5.4` or `gpt-5.4-mini`.
 | HIGH | gpt-5.5:high | gpt-5.5:xhigh | gpt-5.5:xhigh | BLOCKED |
 | CRITICAL | gpt-5.5:xhigh | gpt-5.5:xhigh | gpt-5.5:xhigh | BLOCKED |
 
-## Claude-only (Fable 5.1 wave: opus is no longer the ceiling — claude-fable-5-1:max is)
+## Claude-only (2026-09-26 CB=4/3-rung wave: claude-opus-5-5:high is the ceiling — claude-fable-5-1:max left the worker spine for Final Verifier only)
 
-| Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9+ |
-|------------|-----|-----|-----|-----|-----|
-| LOW | haiku | sonnet | opus | claude-fable-5-1:max | BLOCKED |
-| MEDIUM | sonnet | opus | claude-fable-5-1:max | claude-fable-5-1:max | BLOCKED |
-| HIGH | sonnet | opus | claude-fable-5-1:max | claude-fable-5-1:max | BLOCKED |
-| CRITICAL | opus | claude-fable-5-1:max | claude-fable-5-1:max | claude-fable-5-1:max | BLOCKED |
+| Complexity | 1-2 | 3-4 | 5-6+ |
+|------------|-----|-----|------|
+| LOW | haiku | sonnet:high | claude-opus-5-5:high (repeat until CB) |
+| MEDIUM | sonnet:high | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) |
+| HIGH | sonnet:high | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) |
+| CRITICAL | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) |
 
-(`opus` → `claude-fable-5-1:max` — a bug found and fixed in the Fable 5.1
-wave: the claude ladder previously terminated at `opus`, one rung below the
-model every "final verifier" / "top model" recommendation in this repo
-already pointed to. `claude-fable-5-1` has no further upgrade — that is the
-real claude ceiling now. Verified via a direct walk of the shipped
-`src/node/models.json` ladder — see `tests/node/models-ladder.test.mjs`
-"claude ladder reaches fable".)
+(The claude spine shortened from 7 rungs to 3 (2 hops from `haiku`) so
+`CB_THRESHOLD=4` dispatches every rung instead of stranding the budget on a
+mid-ladder rung — see
+`docs/plans/model-mapping-2026-09-25-findings.md` Part 2 §3. This holds for
+consecutive ladder-eligible (spec/implementation/integration) failures on the
+same US; a ladder-ineligible failure mixed into that window (environment/flaky
+verdicts, an F-22 soft-fail, or a malformed `verify_partial`) still increments
+`CONSECUTIVE_FAILURES` without advancing the ladder, so it can trip the
+breaker before a later rung ever dispatches.
+`claude-opus-5-5:high` has no further upgrade — that is the real claude
+ceiling now; `claude-fable-5-1:max` stays a valid terminal key for an
+explicit manual start but is unreachable from the spine (Final Verifier
+only). CRITICAL starts AT the ceiling per owner decision (Part 2 §4 option
+a): if it fails `CB_THRESHOLD` times, BLOCKED is the correct outcome — a
+spec problem, not a model-ladder gap. Verified via a direct walk of the
+shipped `src/node/models.json` ladder — see `tests/node/models-ladder.test.mjs`
+"claude worker ceiling is claude-opus-5-5:high, not fable".)
 
 **Verification (2026-09-14, claude CLI) — live probes, matching the
 `gpt-6-astra` treatment below.** The claude effort vocabulary
 (`low|medium|high|max|xhigh`, enforced by `_validate_model_level`) predates
-Fable 5.1, so the wave that made `claude-fable-5-1:max` the ladder ceiling had
-not established that this model accepts `max` — the same assumption that turned
-out to be wrong for `gpt-6-astra:minimal`. Each level was probed for real:
+Fable 5.1, so the wave that made `claude-fable-5-1:max` the (then-)worker
+ladder ceiling had not established that this model accepts `max` — the same
+assumption that turned out to be wrong for `gpt-6-astra:minimal`. `claude-fable-5-1:max`
+has since left the worker spine (2026-09-26 CB=4/3-rung wave — it is Final
+Verifier only now), but the probe evidence below stays valid: it is exactly
+the model+effort combination `FINAL_VERIFIER_MODEL` runs at. Each level was
+probed for real:
 
 ```
 claude --model claude-fable-5-1 --effort <level> --mcp-config '{"mcpServers":{}}' \
@@ -306,9 +347,10 @@ claude --model claude-fable-5-1 --effort <level> --mcp-config '{"mcpServers":{}}
 | minimal / ultra / bogus | **Warning, then ignored**: *"Unknown --effort value 'X' — ignoring it and using the default effort. Valid values: low, medium, high, xhigh, max."* Still exits 0 and still generates. |
 
 **Conclusion:** all five shipped effort levels are confirmed on
-`claude-fable-5-1`, so the `claude-fable-5-1:max` ceiling is valid, and the
-repo's claude vocabulary matches the CLI's own enumeration exactly — no missing
-level, no extra one.
+`claude-fable-5-1`, so `claude-fable-5-1:max` is a valid ceiling key (Final
+Verifier, and any explicit manual worker start), and the repo's claude
+vocabulary matches the CLI's own enumeration exactly — no missing level, no
+extra one.
 
 **Asymmetry worth knowing:** codex **fails closed** on an unsupported reasoning
 level (HTTP 400, campaign stops), while claude **fails open** — it warns, drops
@@ -330,29 +372,30 @@ the version-pinned `claude-fable-5-1` id (not the floating `fable` alias) —
 matching every other fable reference in this repo, which is always
 version-pinned to avoid silent drift when the alias remaps.
 
-**Worker effort dimension (new for claude):** before this wave, the claude
-worker ladder never touched effort — only codex rows carried a `:reasoning`
-suffix. The new terminal rung is effort-qualified (`claude-fable-5-1:max`,
-mirroring how every codex ceiling rung is always effort-qualified, never
-bare), which required `check_model_upgrade` to split `model:effort` for the
-claude branch the same way it already did for codex — see
-`_ORIGINAL_WORKER_EFFORT` in `lib_ralph_desk.zsh`/`run_ralph_desk.zsh` (saved
-on first upgrade, restored on pass verdict, mirroring
+**Worker effort dimension (new for claude, Fable 5.1 wave):** before that
+wave, the claude worker ladder never touched effort — only codex rows carried
+a `:reasoning` suffix. The terminal rung became effort-qualified
+(`claude-fable-5-1:max` at the time, now `claude-opus-5-5:high` since the
+2026-09-26 CB=4/3-rung wave — every ceiling rung is effort-qualified, never
+bare, mirroring codex), which required `check_model_upgrade` to split
+`model:effort` for the claude branch the same way it already did for codex —
+see `_ORIGINAL_WORKER_EFFORT` in `lib_ralph_desk.zsh`/`run_ralph_desk.zsh`
+(saved on first upgrade, restored on pass verdict, mirroring
 `_ORIGINAL_WORKER_CODEX_REASONING`). **Crash-relaunch persistence (fixed in
-this wave):** the crash-relaunch restore path (D-5b, `run_ralph_desk.zsh`)
-now persists and restores `worker_effort`/`original_worker_effort` in
-`status.json`, mirroring `worker_codex_reasoning`/
+the Fable 5.1 wave):** the crash-relaunch restore path (D-5b,
+`run_ralph_desk.zsh`) persists and restores `worker_effort`/
+`original_worker_effort` in `status.json`, mirroring `worker_codex_reasoning`/
 `original_worker_codex_reasoning` exactly — both `update_status()` (the
 per-iteration status writer) and the session-config writer at
 campaign-creation time set `worker_effort`, and the D-5b restore block reads
 `worker_effort`/`original_worker_effort` back alongside the codex
-equivalents. If the leader crashes while a claude worker is upgraded to
-`claude-fable-5-1:max`, relaunch now restores both `WORKER_MODEL` AND
-`WORKER_EFFORT` — it no longer silently drops back to no explicit effort.
-This gap predated this wave (a manual `--worker-model opus:high` start had
+equivalents. If the leader crashes while a claude worker is upgraded to the
+ceiling (`claude-opus-5-5:high`), relaunch restores both `WORKER_MODEL` AND
+`WORKER_EFFORT` — it does not silently drop back to no explicit effort. This
+gap predated the Fable 5.1 wave (a manual `--worker-model opus:high` start had
 the same exposure) but was previously inert for auto-upgrade (the ladder
-never produced a claude effort); the ladder extension to
-`claude-fable-5-1:max` made it live, so it was closed alongside it. See
+never produced a claude effort); the ladder's first effort-qualified ceiling
+made it live, so it was closed alongside it. See
 `test_d5b_worker_effort_crash_restart` and
 `test_d5b_worker_effort_missing_field_backward_compat` in
 `tests/test_us011_worker_model_upgrade.sh` for the crash-restart and

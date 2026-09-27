@@ -83,6 +83,8 @@ Or without npm:
 curl -sSL https://raw.githubusercontent.com/ai-dev-methodologies/rlp-desk/main/install.sh | bash
 ```
 
+Requires `claude-code >= 2.1.280` — the default claude worker ladder's ceiling model, `claude-opus-5-5`, needs that version or newer.
+
 ### 2. Brainstorm (recommended)
 
 **Always start with brainstorm.** It interactively walks you through the project contract:
@@ -232,11 +234,11 @@ Same-engine Worker and Verifier share blind spots — install codex for cross-en
 | Risk | Worker | Per-US Verifier | Final Verifier | Consensus |
 |------|--------|-----------------|----------------|-----------|
 | LOW | haiku | claude-sonnet-5:high | claude-fable-5-1:max | off |
-| MEDIUM | sonnet | claude-opus-5:low | claude-fable-5-1:max | off |
-| HIGH | opus | claude-opus-5:high | claude-fable-5-1:max | off |
-| CRITICAL | opus | claude-opus-5:max | claude-fable-5-1:max + human | off |
+| MEDIUM | sonnet:high | claude-opus-5:low | claude-fable-5-1:max | off |
+| HIGH | sonnet:high | claude-opus-5:high | claude-fable-5-1:max | off |
+| CRITICAL | claude-opus-5-5:high | claude-opus-5:max | claude-fable-5-1:max + human | off |
 
-Worker auto-upgrade ladder: haiku → sonnet → opus → claude-fable-5-1:max (ceiling). Final: **claude-fable-5-1:max solo** ⚠ same-engine warning displayed.
+Worker auto-upgrade ladder: haiku → sonnet:high → claude-opus-5-5:high (ceiling). Final: **claude-fable-5-1:max solo** ⚠ same-engine warning displayed.
 
 #### 2. Cross-engine: GPT-5.6 (codex installed, recommended, luna-first)
 
@@ -249,7 +251,7 @@ Codex worker + claude verifier — different engines catch each other's blind sp
 | HIGH | gpt-5.6-luna:max | claude-opus-5:high | claude-fable-5-1:max | all (gpt-5.6-sol:medium) |
 | CRITICAL | gpt-5.6-sol:high | claude-opus-5:max | claude-fable-5-1:max + human | all (gpt-5.6-sol:high) |
 
-HIGH-complexity campaigns also get a **speed lane** (`gpt-5.6-sol:medium` worker, skipping the terra quota hop) for time-sensitive work; `brainstorm` asks which lane to use whenever HIGH-complexity US are present (no question when all US are LOW/MEDIUM, none for CRITICAL — those are lane-independent). Final consensus (all complexities): **gpt-6-astra:xhigh**. Both engines must PASS → COMPLETE. Worker auto-upgrade — cost lane: `luna:high → luna:max → terra:max → sol:xhigh → astra:high → astra:xhigh` (ceiling); speed lane HIGH: `sol:medium → sol:high → sol:xhigh → astra:high → astra:xhigh`.
+HIGH-complexity campaigns also get a **speed lane** (`gpt-5.6-sol:medium` worker, skipping the terra quota hop) for time-sensitive work; `brainstorm` asks which lane to use whenever HIGH-complexity US are present (no question when all US are LOW/MEDIUM, none for CRITICAL — those are lane-independent). Final consensus (all complexities): **gpt-6-astra:xhigh**. Both engines must PASS → COMPLETE. Worker auto-upgrade — cost lane: `luna:high → luna:max → terra:max` (ceiling); speed lane HIGH: `sol:medium → sol:high → sol:xhigh` (ceiling). `gpt-6-astra` is judge-only and is never reached by a worker escalation.
 
 > **Alternatives (still supported, not headline presets):** previous-generation codex models `gpt-5.5` and `gpt-5.4` / `gpt-5.4-mini` (low..xhigh ladders) if the account lacks GPT-5.6 access; and `spark` (`gpt-5.3-codex-spark`) — ultra-fast, but only for small tasks that fit its 100k context window (single-file, AC ≤ 4). See `src/model-upgrade-table.md` for the full catalog.
 
@@ -264,13 +266,12 @@ Recommended values shown; if the flags are left unset the final verifier default
 
 #### Progressive Upgrade (Worker Only)
 
-Worker auto-upgrades on consecutive same-US failure. Verifier is fixed at campaign start. CB default: 6.
+Worker auto-upgrades on consecutive same-US failure. Verifier is fixed at campaign start. CB default: 4.
 
 ```
 fail 1-2: keep current model (2-attempt window)
-fail 3-4: upgrade 1 step (e.g., haiku → sonnet)
-fail 5-6: upgrade 2 steps (e.g., haiku → opus)
-fail 7+:  ceiling reached → BLOCKED
+fail 3-4: upgrade 1 step (e.g., haiku → sonnet:high)
+fail 5-6: ceiling reached (e.g., claude-opus-5-5:high) → BLOCKED
 ```
 
 See `src/model-upgrade-table.md` for full upgrade paths per engine and complexity level.
@@ -306,7 +307,7 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 | `--consensus-model MODEL` | gpt-5.6-terra:high | per-US cross-verifier — codex leg only (lighter) |
 | `--final-consensus-model MODEL` | gpt-6-astra:xhigh | final cross-verifier — codex leg only (stricter) |
 | `--verify-mode per-us\|batch` | per-us | per-us: verify each US → final ALL |
-| `--cb-threshold N` | 6 | Consecutive failures → BLOCKED |
+| `--cb-threshold N` | 4 | Consecutive failures → BLOCKED |
 | `--max-iter N` | 100 | Max iterations → TIMEOUT |
 | `--iter-timeout N` | 600 | Per-iteration timeout seconds (tmux only); effort-aware — effective worker budget ×1.5 for `:xhigh` and ×2.0 for `:max` (worker only; verifier/consensus waits use the base value) |
 | `--debug` | off | Debug logging |

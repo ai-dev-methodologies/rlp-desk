@@ -163,39 +163,39 @@ echo ""
 # computation runs.
 # ============================================================
 
-# (g) CLI `--consensus final-only` -> effective CB threshold doubled (6*2=12)
+# (g) CLI `--consensus final-only` -> effective CB threshold doubled (4*2=8)
 G_SLUG="cbcli1"
 G_TMP=$(_new_scaffold "$G_SLUG")
 LOOP_NAME="$G_SLUG" ROOT="$G_TMP" TMUX=test DEBUG=1 \
   zsh "$RUN" --consensus final-only >/dev/null 2>&1 || true
-assert_eq "$(_read_effective_cb_threshold "$G_TMP" "$G_SLUG")" "12" \
-  "(g) CLI --consensus final-only -> effective_cb_threshold doubled to 12"
+assert_eq "$(_read_effective_cb_threshold "$G_TMP" "$G_SLUG")" "8" \
+  "(g) CLI --consensus final-only -> effective_cb_threshold doubled to 8"
 
-# (h) CLI `--consensus all` -> effective CB threshold doubled (6*2=12)
+# (h) CLI `--consensus all` -> effective CB threshold doubled (4*2=8)
 H_SLUG="cbcli2"
 H_TMP=$(_new_scaffold "$H_SLUG")
 LOOP_NAME="$H_SLUG" ROOT="$H_TMP" TMUX=test DEBUG=1 \
   zsh "$RUN" --consensus all >/dev/null 2>&1 || true
-assert_eq "$(_read_effective_cb_threshold "$H_TMP" "$H_SLUG")" "12" \
-  "(h) CLI --consensus all -> effective_cb_threshold doubled to 12"
+assert_eq "$(_read_effective_cb_threshold "$H_TMP" "$H_SLUG")" "8" \
+  "(h) CLI --consensus all -> effective_cb_threshold doubled to 8"
 
-# (i) negative: no consensus flags -> base threshold unchanged (6)
+# (i) negative: no consensus flags -> base threshold unchanged (4)
 I_SLUG="cbnone1"
 I_TMP=$(_new_scaffold "$I_SLUG")
 LOOP_NAME="$I_SLUG" ROOT="$I_TMP" TMUX=test DEBUG=1 \
   zsh "$RUN" >/dev/null 2>&1 || true
-assert_eq "$(_read_effective_cb_threshold "$I_TMP" "$I_SLUG")" "6" \
-  "(i) no consensus flags -> effective_cb_threshold unchanged at 6"
+assert_eq "$(_read_effective_cb_threshold "$I_TMP" "$I_SLUG")" "4" \
+  "(i) no consensus flags -> effective_cb_threshold unchanged at 4"
 
-# (j) env CONSENSUS_MODE=all (pre-parse path) -> doubled (6*2=12). Guards
+# (j) env CONSENSUS_MODE=all (pre-parse path) -> doubled (4*2=8). Guards
 # against regressing the currently-working env-var activation path while
 # fixing the CLI-flag path.
 J_SLUG="cbenv1"
 J_TMP=$(_new_scaffold "$J_SLUG")
 LOOP_NAME="$J_SLUG" ROOT="$J_TMP" TMUX=test DEBUG=1 CONSENSUS_MODE=all \
   zsh "$RUN" >/dev/null 2>&1 || true
-assert_eq "$(_read_effective_cb_threshold "$J_TMP" "$J_SLUG")" "12" \
-  "(j) env CONSENSUS_MODE=all (pre-parse) -> effective_cb_threshold doubled to 12"
+assert_eq "$(_read_effective_cb_threshold "$J_TMP" "$J_SLUG")" "8" \
+  "(j) env CONSENSUS_MODE=all (pre-parse) -> effective_cb_threshold doubled to 8"
 
 echo ""
 echo "=== RESULTS: $PASS passed, $FAIL failed ==="

@@ -23,12 +23,15 @@ import { fileURLToPath } from 'node:url';
 export const CEILING_SENTINEL = 'BLOCKED';
 
 // Identical to the zsh emergency ladder (lib_ralph_desk.zsh get_next_model
-// fallback branch): haiku -> sonnet -> opus -> claude-fable-5-1:max -> ceiling.
+// fallback branch): haiku -> sonnet -> opus -> claude-opus-5-5:high -> ceiling.
+// The terminal is claude-opus-5-5:high (the real claude worker ceiling), not
+// claude-fable-5-1:max — fable is Final-Verifier-only and must never be an
+// emergency-ladder worker target.
 export const EMERGENCY_LADDER = Object.freeze({
   haiku: 'sonnet',
   sonnet: 'opus',
-  opus: 'claude-fable-5-1:max',
-  'claude-fable-5-1': CEILING_SENTINEL,
+  opus: 'claude-opus-5-5:high',
+  'claude-opus-5-5': CEILING_SENTINEL,
 });
 
 // Every upgrades value must be a string (empty string = ceiling). A
@@ -108,7 +111,7 @@ export function loadModelLadder({
     warnOnce(`shipped defaults not found at '${shippedFile}'; falling through`);
   }
 
-  warnOnce('using emergency inline model ladder (haiku, sonnet, opus, claude-fable-5-1 only)');
+  warnOnce('using emergency inline model ladder (haiku, sonnet, opus, claude-opus-5-5 only)');
   return { ...EMERGENCY_LADDER };
 }
 

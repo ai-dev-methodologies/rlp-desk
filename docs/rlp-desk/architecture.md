@@ -176,10 +176,9 @@ Cross-engine (codex installed): cheapest capable start per complexity
   HIGH        →  lane choice (cost: luna:max · speed: sol:medium)
   CRITICAL    →  gpt-5.6-sol:high  (starts above the ladder)
 
-Ladder on failure:  luna:high → luna:max → terra:max → sol:xhigh →
-                    astra:high → astra:xhigh (ceiling)
+Ladder on failure:  luna:high → luna:max → terra:max (ceiling)
 
-Claude-only fallback (codex absent):  haiku → sonnet → opus → claude-fable-5-1:max (ceiling)
+Claude-only fallback (codex absent):  haiku → sonnet:high → claude-opus-5-5:high (ceiling)
 ```
 
 The Leader adapts dynamically:

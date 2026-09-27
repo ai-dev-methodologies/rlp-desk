@@ -377,7 +377,10 @@ test_e2e_upgrade() {
     # which the shipped ladder no longer carries), but the codex case is the
     # one that cannot be satisfied by the fallback at all.
     echo 'result_codex=$(get_next_model "gpt-5.6-sol:low")'
-    echo 'if [[ "$result_haiku" == "sonnet:medium" && "$result_sonnet" == "opus:low" && "$result_opus" == "claude-fable-5-1:max" && "$result_codex" == "gpt-5.6-sol:medium" ]]; then'
+    # 2026-09-26 CB=4/3-rung wave: haiku -> sonnet:high is the new default
+    # spine hop; sonnet:medium and opus:xhigh are legacy on-ramps that both
+    # escalate straight to the new ceiling claude-opus-5-5:high.
+    echo 'if [[ "$result_haiku" == "sonnet:high" && "$result_sonnet" == "claude-opus-5-5:high" && "$result_opus" == "claude-opus-5-5:high" && "$result_codex" == "gpt-5.6-sol:medium" ]]; then'
     echo '  exit 0'
     echo 'else'
     echo '  echo "haiku->$result_haiku sonnet->$result_sonnet opus->$result_opus codex->$result_codex" >&2'
@@ -390,7 +393,7 @@ test_e2e_upgrade() {
   rm -rf "$tmpdir"
 
   if (( rc == 0 )); then
-    pass "E2E-upgrade: get_next_model returns haiku→sonnet:medium, sonnet:medium→opus:low, opus:xhigh→claude-fable-5-1:max, gpt-5.6-sol:low→medium"
+    pass "E2E-upgrade: get_next_model returns haiku→sonnet:high, sonnet:medium→claude-opus-5-5:high, opus:xhigh→claude-opus-5-5:high, gpt-5.6-sol:low→medium"
   else
     fail "E2E-upgrade: get_next_model upgrade path incorrect (rc=$rc)"
   fi
@@ -415,7 +418,7 @@ test_e2e_restore() {
     echo 'log_debug() { : ; }'
     echo 'log() { : ; }'
     echo 'WORKER_MODEL="sonnet"'
-    echo 'WORKER_EFFORT="medium"'   # the 7-rung claude ladder is keyed on model:effort
+    echo 'WORKER_EFFORT="medium"'   # sonnet:medium is a legacy on-ramp on the 3-rung claude ladder
     echo '_ORIGINAL_WORKER_MODEL="sonnet"'
     echo '_LAST_FAILED_US=""'
     echo '_SAME_US_FAIL_COUNT=0'
@@ -428,9 +431,11 @@ test_e2e_restore() {
     echo 'check_model_upgrade "US-001"'
     echo 'check_model_upgrade "US-001"'
     echo ''
+    # 2026-09-26 CB=4/3-rung wave: sonnet:medium is a legacy on-ramp that now
+    # escalates straight to the new ceiling claude-opus-5-5:high.
     echo '# After upgrade: verify model changed'
-    echo 'if [[ "$WORKER_MODEL" != "opus" || "$WORKER_EFFORT" != "low" ]]; then'
-    echo '  echo "FAIL: model not upgraded to opus:low (is $WORKER_MODEL:$WORKER_EFFORT)" >&2'
+    echo 'if [[ "$WORKER_MODEL" != "claude-opus-5-5" || "$WORKER_EFFORT" != "high" ]]; then'
+    echo '  echo "FAIL: model not upgraded to claude-opus-5-5:high (is $WORKER_MODEL:$WORKER_EFFORT)" >&2'
     echo '  exit 1'
     echo 'fi'
     echo 'if (( _MODEL_UPGRADED != 1 )); then'
@@ -659,7 +664,7 @@ test_us001_absent_override_uses_defaults() {
     echo "RLP_DESK_MODELS_FILE=\"$tmpdir/does-not-exist.json\""
     echo "$fn_body"
     echo 'r=$(get_next_model "haiku")'
-    echo '[[ "$r" == "sonnet:medium" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+    echo '[[ "$r" == "sonnet:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
   } > "$tmpdir/harness.zsh"
   local out rc
   out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
@@ -693,7 +698,7 @@ test_us001_malformed_warns_and_falls_through() {
     echo "log_error() { echo \"\$*\" >> \"$tmpdir/warn.log\"; }"
     echo "$fn_body"
     echo 'r=$(get_next_model "haiku")'
-    echo '[[ "$r" == "sonnet:medium" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+    echo '[[ "$r" == "sonnet:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
   } > "$tmpdir/harness.zsh"
   local out rc warned=0
   out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
@@ -734,7 +739,7 @@ test_us001_schema_validation_rejects_non_string_values() {
       echo "log_error() { echo \"\$*\" >> \"$tmpdir/warn.log\"; }"
       echo "$fn_body"
       echo 'r=$(get_next_model "haiku")'
-      echo '[[ "$r" == "sonnet:medium" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+      echo '[[ "$r" == "sonnet:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
     } > "$tmpdir/harness.zsh"
     local out rc warned=0
     out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
@@ -843,15 +848,15 @@ test_us001_emergency_fallback() {
     echo 'a=$(get_next_model "haiku")'
     echo 'b=$(get_next_model "sonnet")'
     echo 'c=$(get_next_model "opus")'
-    echo 'd=$(get_next_model "claude-fable-5-1")'
-    echo 'if [[ "$a" == "sonnet" && "$b" == "opus" && "$c" == "claude-fable-5-1:max" && -z "$d" ]]; then exit 0; else echo "a=$a b=$b c=$c d=$d" >&2; exit 1; fi'
+    echo 'd=$(get_next_model "claude-opus-5-5")'
+    echo 'if [[ "$a" == "sonnet" && "$b" == "opus" && "$c" == "claude-opus-5-5:high" && -z "$d" ]]; then exit 0; else echo "a=$a b=$b c=$c d=$d" >&2; exit 1; fi'
   } > "$tmpdir/harness.zsh"
   local out rc
   out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
   rc=$?
   rm -rf "$tmpdir"
   if (( rc == 0 )); then
-    pass "US001-emergency: both layers unreadable -> emergency inline ladder (haiku->sonnet->opus->claude-fable-5-1:max->ceiling)"
+    pass "US001-emergency: both layers unreadable -> emergency inline ladder (haiku->sonnet->opus->claude-opus-5-5:high->ceiling)"
   else
     fail "US001-emergency: emergency fallback wrong ($out)"
   fi
@@ -993,13 +998,13 @@ test_gpt6_astra_ladder() {
   fi
 }
 
-# Owner decision (applied): gpt-6-astra IS the real ceiling of the whole
-# ladder now — gpt-5.6-sol:xhigh escalates into gpt-6-astra:high (one rung
-# below astra's own ceiling, matching the terra:xhigh -> sol:high rule).
-# INVERTED from the earlier "sol:xhigh stays terminal" version of this test
-# (that was the pre-owner-decision contract) — this is the mutation control:
-# it fails if a future edit re-terminates sol:xhigh or unwires the escalation.
-test_gpt6_sol_escalates_into_astra() {
+# Owner decision (applied, 2026-09-26 CB=4/3-rung wave): gpt-6-astra is
+# judge-only and leaves the worker escalation path entirely — gpt-5.6-sol:xhigh
+# is its own terminal ceiling again, not a hop into gpt-6-astra:high.
+# INVERTED from the earlier "sol:xhigh escalates into astra" version of this
+# test (that was the prior owner-decision contract, now reopened) — this is
+# the mutation control: it fails if a future edit re-wires sol:xhigh into astra.
+test_gpt6_sol_terminates_without_astra() {
   local fn_body
   fn_body=$(extract_fn "get_next_model")
   if [[ -z "$fn_body" ]]; then
@@ -1013,10 +1018,10 @@ test_gpt6_sol_escalates_into_astra() {
     echo "$fn_body"
     echo 'r_sol=$(get_next_model "gpt-5.6-sol:xhigh")'
     echo 'r_astra=$(get_next_model "gpt-6-astra:xhigh")'
-    echo 'if [[ "$r_sol" == "gpt-6-astra:high" && -z "$r_astra" ]]; then'
+    echo 'if [[ -z "$r_sol" && -z "$r_astra" ]]; then'
     echo '  exit 0'
     echo 'else'
-    echo '  echo "sol:xhigh -> $r_sol (expected gpt-6-astra:high) / astra:xhigh -> $r_astra (expected ceiling/empty)" >&2'
+    echo '  echo "sol:xhigh -> $r_sol (expected ceiling/empty) / astra:xhigh -> $r_astra (expected ceiling/empty)" >&2'
     echo '  exit 1'
     echo 'fi'
   } > "$tmpdir/harness.zsh"
@@ -1025,7 +1030,7 @@ test_gpt6_sol_escalates_into_astra() {
   rc=$?
   rm -rf "$tmpdir"
   if (( rc == 0 )); then
-    pass "astra-sol-ceiling: gpt-5.6-sol:xhigh escalates into gpt-6-astra:high; astra:xhigh is the real ceiling"
+    pass "astra-sol-ceiling: gpt-5.6-sol:xhigh terminates at its own ceiling; astra left the worker escalation path"
   else
     fail "astra-sol-ceiling: $out"
   fi
@@ -1108,6 +1113,46 @@ test_auto_detect_engine_fable_alias() {
     pass "auto-detect-fable-alias: _auto_detect_engine classifies bare fable:max as engine=claude, model=fable, effort=max"
   else
     fail "auto-detect-fable-alias: $out"
+  fi
+}
+
+# Bare (no-colon) claude-opus-5-5 — the claude worker ceiling (2026-09-26
+# CB=4/3-rung wave) — must gain its explicit start level on the ENV-VAR path
+# too (WORKER_MODEL=claude-opus-5-5), the same as bare fable does above.
+# Without this, --worker-model claude-opus-5-5 (CLI, normalized by
+# _normalize_model_spec/BARE_ALIAS_NORMALIZATION) and WORKER_MODEL=claude-opus-5-5
+# (env var, normalized by this DUPLICATED table) would silently diverge — the
+# CLI path would carry effort=high into the ladder lookup and the env-var path
+# would not.
+test_auto_detect_engine_bare_claude_opus_5_5() {
+  local fn_body
+  fn_body=$(_extract_fn_from "_auto_detect_engine" "$RUN")
+  if [[ -z "$fn_body" ]]; then
+    fail "auto-detect-bare-opus-5-5: _auto_detect_engine() not found"
+    return
+  fi
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "$fn_body"
+    echo 'WORKER_ENGINE="claude"'
+    echo 'WORKER_MODEL="claude-opus-5-5"'
+    echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT'
+    echo 'if [[ "$WORKER_ENGINE" != "claude" || "$WORKER_MODEL" != "claude-opus-5-5" || "$WORKER_EFFORT" != "high" ]]; then'
+    echo '  echo "claude-opus-5-5: engine=$WORKER_ENGINE model=$WORKER_MODEL effort=$WORKER_EFFORT" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'exit 0'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "auto-detect-bare-opus-5-5: _auto_detect_engine classifies bare claude-opus-5-5 as engine=claude, model=claude-opus-5-5, effort=high"
+  else
+    fail "auto-detect-bare-opus-5-5: $out"
   fi
 }
 
@@ -1642,8 +1687,10 @@ test_consensus_model_cli_flag_rejects_astra_minimal() {
   fi
 }
 
-# Claude ladder now reaches fable: opus:xhigh -> claude-fable-5-1:max (terminal
-# rung, effort-qualified) -> ceiling. Mirrors the Node-side ladder-shape test.
+# 2026-09-26 CB=4/3-rung wave: claude-fable-5-1:max leaves the worker ceiling
+# (Final Verifier only now) — opus:xhigh -> claude-opus-5-5:high is the real
+# claude ceiling, and fable stays a terminal key but unreachable from the
+# spine. Mirrors the Node-side ladder-shape test.
 test_claude_ladder_reaches_fable() {
   local fn_body
   fn_body=$(extract_fn "get_next_model")
@@ -1657,11 +1704,12 @@ test_claude_ladder_reaches_fable() {
     echo '#!/usr/bin/env zsh -f'
     echo "$fn_body"
     echo 'r_opus=$(get_next_model "opus:xhigh")'
+    echo 'r_ceiling=$(get_next_model "claude-opus-5-5:high")'
     echo 'r_fable=$(get_next_model "claude-fable-5-1:max")'
-    echo 'if [[ "$r_opus" == "claude-fable-5-1:max" && -z "$r_fable" ]]; then'
+    echo 'if [[ "$r_opus" == "claude-opus-5-5:high" && -z "$r_ceiling" && -z "$r_fable" ]]; then'
     echo '  exit 0'
     echo 'else'
-    echo '  echo "opus->$r_opus fable->$r_fable" >&2'
+    echo '  echo "opus->$r_opus ceiling->$r_ceiling fable->$r_fable" >&2'
     echo '  exit 1'
     echo 'fi'
   } > "$tmpdir/harness.zsh"
@@ -1670,7 +1718,7 @@ test_claude_ladder_reaches_fable() {
   rc=$?
   rm -rf "$tmpdir"
   if (( rc == 0 )); then
-    pass "claude-ladder-fable: opus:xhigh escalates to claude-fable-5-1:max; claude-fable-5-1:max is the real claude ceiling"
+    pass "claude-ladder-fable: opus:xhigh escalates to claude-opus-5-5:high, the real claude ceiling; fable stays terminal but unreachable"
   else
     fail "claude-ladder-fable: $out"
   fi
@@ -1714,10 +1762,10 @@ test_claude_worker_effort_upgrade_and_restore() {
     echo 'log_debug() { : ; }'
     echo 'log() { : ; }'
     echo 'WORKER_ENGINE="claude"'
-    # opus:xhigh is the last opus rung of the 7-rung claude ladder, so a single
-    # upgrade lands exactly on the effort-qualified fable terminal rung — which
-    # is what this test is about. (Pre-refresh the ladder was bare-keyed and a
-    # bare "opus" start did the same job.)
+    # 2026-09-26 CB=4/3-rung wave: opus:xhigh is the last opus on-ramp on the
+    # 3-rung claude ladder, so a single upgrade lands exactly on the new
+    # ceiling claude-opus-5-5:high — which is what this test is about. (Before
+    # this wave the same start landed on the fable terminal rung instead.)
     echo 'WORKER_MODEL="opus"'
     echo 'WORKER_EFFORT="xhigh"'
     echo '_ORIGINAL_WORKER_MODEL=""'
@@ -1732,11 +1780,11 @@ test_claude_worker_effort_upgrade_and_restore() {
     echo "$gnm_body"
     echo "$cmu_body"
     echo ''
-    echo '# 2 consecutive fails on same US: opus:xhigh -> claude-fable-5-1:max'
+    echo '# 2 consecutive fails on same US: opus:xhigh -> claude-opus-5-5:high'
     echo 'check_model_upgrade "US-001"'
     echo 'check_model_upgrade "US-001"'
-    echo 'if [[ "$WORKER_MODEL" != "claude-fable-5-1" || "$WORKER_EFFORT" != "max" ]]; then'
-    echo '  echo "FAIL upgrade: model=$WORKER_MODEL effort=$WORKER_EFFORT (want claude-fable-5-1 / max)" >&2'
+    echo 'if [[ "$WORKER_MODEL" != "claude-opus-5-5" || "$WORKER_EFFORT" != "high" ]]; then'
+    echo '  echo "FAIL upgrade: model=$WORKER_MODEL effort=$WORKER_EFFORT (want claude-opus-5-5 / high)" >&2'
     echo '  exit 1'
     echo 'fi'
     echo ''
@@ -1755,7 +1803,7 @@ test_claude_worker_effort_upgrade_and_restore() {
   rc=$?
   rm -rf "$tmpdir"
   if (( rc == 0 )); then
-    pass "claude-effort-restore: opus:xhigh->claude-fable-5-1:max upgrade sets WORKER_EFFORT=max; restore returns opus:xhigh"
+    pass "claude-effort-restore: opus:xhigh->claude-opus-5-5:high upgrade sets WORKER_EFFORT=high; restore returns opus:xhigh"
   else
     fail "claude-effort-restore: $out"
   fi
@@ -1827,8 +1875,8 @@ test_worker_default_never_equals_ceiling() {
 
 # D-5b WORKER_EFFORT crash-restart persistence (mirrors worker_codex_reasoning
 # exactly, request-j ③ same class of gap, now live on the claude side since
-# the ladder reaches claude-fable-5-1:max). Simulates: opus->fable upgrade
-# (sets WORKER_EFFORT=max) -> update_status() persists it to status.json ->
+# the ladder reaches claude-opus-5-5:high). Simulates: opus->claude-opus-5-5
+# upgrade (sets WORKER_EFFORT=high) -> update_status() persists it to status.json ->
 # a fresh "leader process" (all vars reset to init defaults) -> the real D-5b
 # restore snippet (extracted by content, not retyped — see _extract_d5b_snippet)
 # reads status.json back. Asserts BOTH model and effort come back, not just model.
@@ -1873,9 +1921,9 @@ test_d5b_worker_effort_crash_restart() {
     echo "$cmu_body"
     echo "$us_body"
     echo ''
-    echo '# --- Segment 1: original leader process, upgrades opus:xhigh -> fable ---'
-    # opus:xhigh = last opus rung of the 7-rung claude ladder, one hop below the
-    # fable terminal rung (see test_claude_worker_effort_upgrade_and_restore).
+    echo '# --- Segment 1: original leader process, upgrades opus:xhigh -> claude-opus-5-5:high ---'
+    # opus:xhigh = last opus on-ramp of the 3-rung claude ladder, one hop below
+    # the new ceiling (see test_claude_worker_effort_upgrade_and_restore).
     echo 'WORKER_ENGINE="claude"; WORKER_MODEL="opus"; WORKER_EFFORT="xhigh"'
     echo 'VERIFIER_MODEL="sonnet"; VERIFIER_ENGINE="claude"'
     echo 'WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""'
@@ -1887,8 +1935,8 @@ test_d5b_worker_effort_crash_restart() {
     echo 'CONSECUTIVE_FAILURES=0; CONSECUTIVE_BLOCKS=0; LAST_BLOCK_REASON=""'
     echo 'VERIFIED_US=""; ITER_START_HEAD=""; GATE_RECEIPT_STATUS="none"'
     echo 'check_model_upgrade "US-001"; check_model_upgrade "US-001"'
-    echo 'if [[ "$WORKER_MODEL" != "claude-fable-5-1" || "$WORKER_EFFORT" != "max" ]]; then'
-    echo '  echo "FAIL setup: upgrade did not reach fable:max (model=$WORKER_MODEL effort=$WORKER_EFFORT)" >&2'
+    echo 'if [[ "$WORKER_MODEL" != "claude-opus-5-5" || "$WORKER_EFFORT" != "high" ]]; then'
+    echo '  echo "FAIL setup: upgrade did not reach claude-opus-5-5:high (model=$WORKER_MODEL effort=$WORKER_EFFORT)" >&2'
     echo '  exit 1'
     echo 'fi'
     echo 'update_status "verify" "pending"'
@@ -1903,7 +1951,7 @@ test_d5b_worker_effort_crash_restart() {
     echo "$d5b_body"
     echo ''
     echo '# --- Assert: BOTH model and effort came back, not just model ---'
-    echo 'if [[ "$WORKER_MODEL" == "claude-fable-5-1" && "$WORKER_EFFORT" == "max" && "$_ORIGINAL_WORKER_MODEL" == "opus" && "$_ORIGINAL_WORKER_EFFORT" == "xhigh" ]]; then'
+    echo 'if [[ "$WORKER_MODEL" == "claude-opus-5-5" && "$WORKER_EFFORT" == "high" && "$_ORIGINAL_WORKER_MODEL" == "opus" && "$_ORIGINAL_WORKER_EFFORT" == "xhigh" ]]; then'
     echo '  exit 0'
     echo 'else'
     echo '  echo "FAIL restore: WORKER_MODEL=$WORKER_MODEL WORKER_EFFORT=$WORKER_EFFORT _ORIGINAL_WORKER_MODEL=$_ORIGINAL_WORKER_MODEL _ORIGINAL_WORKER_EFFORT=$_ORIGINAL_WORKER_EFFORT" >&2'
@@ -1915,16 +1963,17 @@ test_d5b_worker_effort_crash_restart() {
   rc=$?
   rm -rf "$tmpdir"
   if (( rc == 0 )); then
-    pass "d5b-effort-restart: crash-restart restores WORKER_MODEL=claude-fable-5-1 AND WORKER_EFFORT=max (not just the model)"
+    pass "d5b-effort-restart: crash-restart restores WORKER_MODEL=claude-opus-5-5 AND WORKER_EFFORT=high (not just the model)"
   else
     fail "d5b-effort-restart: $out"
   fi
 }
 
 test_gpt6_astra_ladder
-test_gpt6_sol_escalates_into_astra
+test_gpt6_sol_terminates_without_astra
 test_auto_detect_engine_new_models
 test_auto_detect_engine_fable_alias
+test_auto_detect_engine_bare_claude_opus_5_5
 test_auto_detect_engine_astra_minimal_rejected
 test_parse_model_flag_astra_minimal_rejected
 test_cli_env_validation_parity

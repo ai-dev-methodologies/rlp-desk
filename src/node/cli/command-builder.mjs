@@ -52,12 +52,16 @@ export const RETIRED_MODEL_REMAP = new Map([
 // explicitly instead. haiku is absent on purpose: it has no effort concept.
 // fable resolves to the version-pinned id as well as a level, matching how
 // every doc and the ladder itself refer to it (`claude-fable-5-1:max`, never
-// the floating alias).
+// the floating alias). claude-opus-5-5 (the claude worker ceiling as of the
+// 2026-09-26 CB=4/3-rung wave) gets the same treatment: without it, a bare
+// `--worker-model claude-opus-5-5` start misses the ladder's effort-qualified
+// key and becomes a dead start.
 export const BARE_ALIAS_NORMALIZATION = new Map([
   ['sonnet', 'sonnet:medium'],
   ['opus', 'opus:medium'],
   ['fable', 'claude-fable-5-1:max'],
   ['claude-fable-5-1', 'claude-fable-5-1:max'],
+  ['claude-opus-5-5', 'claude-opus-5-5:high'],
 ]);
 
 // Normalizes a `model` or `model:level` spec: retired families are remapped

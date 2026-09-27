@@ -277,11 +277,16 @@ typeset -gA RETIRED_MODEL_REMAP=(
 # default — a value this project has never confirmed. Pin the start explicitly.
 # haiku is absent on purpose: it has no effort concept. fable resolves to the
 # version-pinned id too, matching how the ladder and every doc name it.
+# claude-opus-5-5 (the claude worker ceiling as of the 2026-09-26 CB=4/3-rung
+# wave) gets the same treatment: without it, a bare
+# `--worker-model claude-opus-5-5` start misses the ladder's effort-qualified
+# key and becomes a dead start.
 typeset -gA BARE_ALIAS_NORMALIZATION=(
   'sonnet'            'sonnet:medium'
   'opus'              'opus:medium'
   'fable'             'claude-fable-5-1:max'
   'claude-fable-5-1'  'claude-fable-5-1:max'
+  'claude-opus-5-5'   'claude-opus-5-5:high'
 )
 
 # _normalize_model_spec() — remap retired families (level preserved) and give
@@ -527,7 +532,7 @@ get_model_string() {
 # with an optional user override at
 # ${RLP_DESK_MODELS_FILE:-$HOME/.claude/rlp-desk-models.json} (never touched
 # by postinstall). Precedence: override -> shipped -> a 4-entry emergency
-# inline ladder (haiku/sonnet/opus/claude-fable-5-1, identical to the Node
+# inline ladder (haiku/sonnet/opus/claude-opus-5-5, identical to the Node
 # emergency ladder in src/node/model-ladder.mjs, cross-checked by an
 # equivalence test).
 # Malformed/unreadable JSON at any layer falls through to the next layer with
@@ -569,13 +574,13 @@ get_next_model() {
     if [[ -z "$ladder_file" ]]; then
       if [[ "${_MODEL_LADDER_WARNED:-0}" != 1 ]]; then
         _MODEL_LADDER_WARNED=1
-        log_error "model ladder: shipped defaults not found under '$LIB_DIR'; using emergency inline ladder (haiku, sonnet, opus, claude-fable-5-1)"
+        log_error "model ladder: shipped defaults not found under '$LIB_DIR'; using emergency inline ladder (haiku, sonnet, opus, claude-opus-5-5)"
       fi
       case "$current" in
         haiku)  echo "sonnet" ;;
         sonnet) echo "opus"   ;;
-        opus)   echo "claude-fable-5-1:max" ;;
-        *)      echo ""       ;;  # claude-fable-5-1 / unknown → ceiling
+        opus)   echo "claude-opus-5-5:high" ;;
+        *)      echo ""       ;;  # claude-opus-5-5 / unknown → ceiling
       esac
       return 0
     fi
@@ -807,8 +812,9 @@ check_model_upgrade() {
     local current_model_str
     # Engine-aware ladder key (mirrors the WORKER_ENGINE branch below and the
     # _ceiling_model_str pattern in run_ralph_desk.zsh). run_ralph_desk.zsh
-    # unconditionally defaults WORKER_CODEX_MODEL (gpt-6-astra as of the
-    # Fable 5.1 / Codex 6 Astra wave, was gpt-5.5) regardless of engine, so a
+    # unconditionally defaults WORKER_CODEX_MODEL (gpt-5.6-luna as of the
+    # 2026-08-03 luna-first policy; was gpt-6-astra during the Fable 5.1 /
+    # Codex 6 Astra wave, gpt-5.5 before that) regardless of engine, so a
     # claude campaign always has WORKER_CODEX_MODEL set. The old
     # `${WORKER_CODEX_MODEL:-$WORKER_MODEL}` fallback therefore ALWAYS
     # preferred WORKER_CODEX_MODEL for claude campaigns too, keying the
@@ -818,9 +824,10 @@ check_model_upgrade() {
     if [[ "$WORKER_ENGINE" = "codex" ]]; then
       current_model_str=$(get_model_string "$WORKER_ENGINE" "${WORKER_CODEX_MODEL:-$WORKER_MODEL}" "${WORKER_CODEX_REASONING:-}")
     else
-      # Model-mapping refresh: the claude ladder is a 7-rung chain whose every
-      # rung above haiku is effort-qualified (sonnet:medium, opus:low, ...), so
-      # the lookup key must carry WORKER_EFFORT — keying off the bare
+      # Model-mapping refresh (2026-09-26 CB=4/3-rung wave): the claude ladder
+      # is a 3-rung chain whose every rung above haiku is effort-qualified
+      # (sonnet:high, claude-opus-5-5:high), so the lookup key must carry
+      # WORKER_EFFORT — keying off the bare
       # WORKER_MODEL would miss every key but `haiku` and silently report
       # already_max from the first upgrade onward (the same silent-no-op class
       # as the WORKER_CODEX_MODEL fallback bug fixed just above).
@@ -854,12 +861,14 @@ check_model_upgrade() {
       WORKER_CODEX_REASONING="${next_model##*:}"
       WORKER_MODEL="$WORKER_CODEX_MODEL"
     else
-      # Fable 5.1 wave: the claude ladder's terminal rung is effort-qualified
-      # ("opus" -> "claude-fable-5-1:max") — split it the same way the codex
-      # branch above splits model:reasoning, so WORKER_MODEL stays a bare id
+      # Fable 5.1 wave: every claude rung above haiku is effort-qualified
+      # ("haiku" -> "sonnet:high" -> "claude-opus-5-5:high" as of the
+      # 2026-09-26 CB=4/3-rung wave) — split it the same way the codex branch
+      # above splits model:reasoning, so WORKER_MODEL stays a bare id
       # (what `claude --model` expects) and the effort reaches WORKER_EFFORT
-      # (what `--effort` expects). Earlier claude rungs (haiku/sonnet/opus)
-      # have no colon and fall through the else branch unchanged.
+      # (what `--effort` expects). Only the starting rung (haiku) has no colon
+      # and falls through the else branch unchanged; every rung reached from
+      # here on out carries one.
       if [[ "$next_model" == *:* ]]; then
         WORKER_MODEL="${next_model%%:*}"
         WORKER_EFFORT="${next_model##*:}"
@@ -1996,7 +2005,8 @@ update_status() {
   # not be empty") → BLOCKED. jq-encoded like the other free-text restore fields.
   _owcr_json=$(printf '%s' "${_ORIGINAL_WORKER_CODEX_REASONING:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owcr_json" ]] && _owcr_json='""'
   # Fable 5.1 wave: claude-side counterpart of _owcr_json above, same gap and
-  # same fix. Since the claude ladder now reaches claude-fable-5-1:max, an
+  # same fix. Since the claude ladder's terminal rung is effort-qualified
+  # (claude-opus-5-5:high as of the 2026-09-26 CB=4/3-rung wave), an
   # auto-upgraded claude Worker can carry a non-empty WORKER_EFFORT — without
   # persisting it here, a leader-relaunch restore rehydrates WORKER_MODEL but
   # drops WORKER_EFFORT back to empty (silently, not a hard BLOCK like the

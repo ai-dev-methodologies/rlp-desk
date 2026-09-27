@@ -4,12 +4,13 @@
 #
 # Root cause (found by adversarial probe, confirmed by reading + tracing the
 # code): check_model_upgrade() upgrades the Worker model on the 2nd
-# consecutive same-US failure. With the default CB_THRESHOLD=6 and the
-# 4-rung claude ladder (haiku -> sonnet -> opus -> claude-fable-5-1:max),
-# the arithmetic lands the opus->fable upgrade on EXACTLY the same failure
-# (#6) that trips the circuit breaker — so the ceiling model is assigned to
-# WORKER_MODEL but never actually dispatched, while the old BLOCKED text
-# read "Worker upgraded to ceiling model" as if it had run and failed there.
+# consecutive same-US failure. With the shipped CB_THRESHOLD=4 (2026-09-26
+# CB=4/3-rung wave) and the 3-rung claude ladder (haiku -> sonnet:high ->
+# claude-opus-5-5:high), the arithmetic lands the sonnet->opus-5-5 upgrade on
+# EXACTLY the same failure (#4) that trips the circuit breaker — so the
+# ceiling model is assigned to WORKER_MODEL but never actually dispatched,
+# while the old BLOCKED text read "Worker upgraded to ceiling model" as if
+# it had run and failed there.
 #
 # Fix (2a): the circuit-breaker check now defers blocking while the current
 # (possibly just-upgraded) model has not yet had its own 2-attempt window
@@ -79,16 +80,15 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 # used by tests/test_us011_worker_model_upgrade.sh's extract_fn). Prints one
 # line per failure: "<n> model=<model> blocked=<0|1>".
 #
-# Starts at opus:medium, which is what `--worker-model opus` normalizes to
-# (BARE_ALIAS_NORMALIZATION / _normalize_model_spec). The property under test
-# is the interaction at the CB boundary — the ceiling being promoted TO on the
-# very failure that trips the breaker — so the start rung must sit exactly
-# CB_THRESHOLD/2 hops below the ceiling. On the 7-rung claude ladder that is
-# opus:medium (-> opus:high -> opus:xhigh -> claude-fable-5-1:max, 3 hops, 2
-# fails per hop = failure #6). A haiku start is 6 hops out and would simply
-# never reach the ceiling before the breaker fires, making A1-A4 vacuous.
+# Starts at haiku, the shipped Worker default. The property under test is the
+# interaction at the CB boundary — the ceiling being promoted TO on the very
+# failure that trips the breaker — so the start rung must sit exactly
+# CB_THRESHOLD/2 hops below the ceiling. On the 3-rung claude ladder
+# (2026-09-26 CB=4/3-rung wave) that is haiku itself (-> sonnet:high ->
+# claude-opus-5-5:high, 2 hops, 2 fails per hop = failure #4, matching
+# CB_THRESHOLD=4).
 run_cb_simulation() { # $1 = run_src  $2 = num_failures  $3 = cb_threshold
-  local run_src="$1" n="$2" cbt="${3:-6}"
+  local run_src="$1" n="$2" cbt="${3:-4}"
   zsh -c "
     set -uo pipefail
     log() { :; }; log_error() { :; }; log_debug() { :; }
@@ -109,8 +109,8 @@ run_cb_simulation() { # $1 = run_src  $2 = num_failures  $3 = cb_threshold
     WORKER_ENGINE='claude'
     WORKER_CODEX_MODEL=''
     WORKER_CODEX_REASONING=''
-    WORKER_MODEL='opus'
-    WORKER_EFFORT='medium'
+    WORKER_MODEL='haiku'
+    WORKER_EFFORT=''
     LOCK_WORKER_MODEL=0
     _MODEL_UPGRADED=0
     _SAME_US_FAIL_COUNT=0
@@ -135,34 +135,34 @@ run_cb_simulation() { # $1 = run_src  $2 = num_failures  $3 = cb_threshold
   "
 }
 
-# --- A: with the fix, the ceiling model (claude-fable-5-1) gets a real turn ---
+# --- A: with the fix, the ceiling model (claude-opus-5-5) gets a real turn ---
 echo "--- A: circuit breaker defers until the ceiling model has its own attempt window ---"
-SIM_A="$(run_cb_simulation "$RUN" 8 6)"
+SIM_A="$(run_cb_simulation "$RUN" 6 4)"
 echo "$SIM_A" | sed 's/^/    /'
 
 BLOCKED_LINE=$(echo "$SIM_A" | grep 'blocked=1' | head -1)
 BLOCKED_AT_N=$(echo "$BLOCKED_LINE" | awk '{print $1}')
 BLOCKED_MODEL=$(echo "$BLOCKED_LINE" | sed -n 's/.*model=\([^ ]*\).*/\1/p')
 
-[[ "$BLOCKED_AT_N" == "8" ]] \
-  && ok "A1: circuit breaker fires at failure #8, not #6 (ceiling got fails #7 and #8 as its own window)" \
-  || no "A1: circuit breaker fired at the wrong failure count (got '$BLOCKED_AT_N', expected 8) — full sim:\n$SIM_A"
+[[ "$BLOCKED_AT_N" == "6" ]] \
+  && ok "A1: circuit breaker fires at failure #6, not #4 (ceiling got fails #5 and #6 as its own window)" \
+  || no "A1: circuit breaker fired at the wrong failure count (got '$BLOCKED_AT_N', expected 6) — full sim:\n$SIM_A"
 
-[[ "$BLOCKED_MODEL" == "claude-fable-5-1" ]] \
-  && ok "A2: the model BLOCKED fires on is the ceiling model that actually ran (claude-fable-5-1)" \
+[[ "$BLOCKED_MODEL" == "claude-opus-5-5" ]] \
+  && ok "A2: the model BLOCKED fires on is the ceiling model that actually ran (claude-opus-5-5)" \
   || no "A2: BLOCKED fired on wrong/no model (got '$BLOCKED_MODEL')"
 
-MODEL_AT_6=$(echo "$SIM_A" | awk '$1==6{print}' | sed -n 's/.*model=\([^ ]*\).*/\1/p')
-BLOCKED_AT_6=$(echo "$SIM_A" | awk '$1==6{print}' | sed -n 's/.*blocked=\([^ ]*\).*/\1/p')
-[[ "$MODEL_AT_6" == "claude-fable-5-1" && "$BLOCKED_AT_6" == "0" ]] \
-  && ok "A3: failure #6 upgrades to the ceiling but does NOT block yet (deferred — ceiling not dispatched yet)" \
-  || no "A3: expected model=claude-fable-5-1 blocked=0 at failure #6, got model=$MODEL_AT_6 blocked=$BLOCKED_AT_6"
+MODEL_AT_4=$(echo "$SIM_A" | awk '$1==4{print}' | sed -n 's/.*model=\([^ ]*\).*/\1/p')
+BLOCKED_AT_4=$(echo "$SIM_A" | awk '$1==4{print}' | sed -n 's/.*blocked=\([^ ]*\).*/\1/p')
+[[ "$MODEL_AT_4" == "claude-opus-5-5" && "$BLOCKED_AT_4" == "0" ]] \
+  && ok "A3: failure #4 upgrades to the ceiling but does NOT block yet (deferred — ceiling not dispatched yet)" \
+  || no "A3: expected model=claude-opus-5-5 blocked=0 at failure #4, got model=$MODEL_AT_4 blocked=$BLOCKED_AT_4"
 
-MODEL_AT_7=$(echo "$SIM_A" | awk '$1==7{print}' | sed -n 's/.*model=\([^ ]*\).*/\1/p')
-BLOCKED_AT_7=$(echo "$SIM_A" | awk '$1==7{print}' | sed -n 's/.*blocked=\([^ ]*\).*/\1/p')
-[[ "$MODEL_AT_7" == "claude-fable-5-1" && "$BLOCKED_AT_7" == "0" ]] \
-  && ok "A4: failure #7 is the ceiling model's OWN first attempt, still not blocked" \
-  || no "A4: expected model=claude-fable-5-1 blocked=0 at failure #7, got model=$MODEL_AT_7 blocked=$BLOCKED_AT_7"
+MODEL_AT_5=$(echo "$SIM_A" | awk '$1==5{print}' | sed -n 's/.*model=\([^ ]*\).*/\1/p')
+BLOCKED_AT_5=$(echo "$SIM_A" | awk '$1==5{print}' | sed -n 's/.*blocked=\([^ ]*\).*/\1/p')
+[[ "$MODEL_AT_5" == "claude-opus-5-5" && "$BLOCKED_AT_5" == "0" ]] \
+  && ok "A4: failure #5 is the ceiling model's OWN first attempt, still not blocked" \
+  || no "A4: expected model=claude-opus-5-5 blocked=0 at failure #5, got model=$MODEL_AT_5 blocked=$BLOCKED_AT_5"
 
 # --- B: a campaign that never reaches the ceiling is unaffected -----------
 echo "--- B: no interaction when the ladder isn't exhausted at the CB boundary ---"
@@ -241,7 +241,7 @@ else
     WORKER_ENGINE='claude'; WORKER_MODEL='haiku'; WORKER_EFFORT=''; WORKER_CODEX_MODEL=''; WORKER_CODEX_REASONING=''
     LOCK_WORKER_MODEL=0; _MODEL_UPGRADED=0; _SAME_US_FAIL_COUNT=0; _LAST_FAILED_US=''
     _ORIGINAL_WORKER_MODEL=''; _ORIGINAL_WORKER_CODEX_REASONING=''; _ORIGINAL_WORKER_EFFORT=''
-    CONSECUTIVE_FAILURES=0; CB_THRESHOLD=6; EFFECTIVE_CB_THRESHOLD=6; ITERATION=0
+    CONSECUTIVE_FAILURES=0; CB_THRESHOLD=4; EFFECTIVE_CB_THRESHOLD=4; ITERATION=0
     for (( i=1; i<=8; i++ )); do
       ITERATION=\$i
       (( CONSECUTIVE_FAILURES++ ))
@@ -252,11 +252,20 @@ else
       (( _blocked )) && break
     done
   ")"
+  # Discriminating value is 4, not 6: at CB_THRESHOLD=4 the fixed code (Scenario
+  # A above) defers and blocks at #6, so a mutant that blocks at #4 — the exact
+  # failure where check_model_upgrade promotes WORKER_MODEL to the ceiling but
+  # never dispatches it — proves the reverted deferral is what A1/A3 exercise.
+  # A CB_THRESHOLD of 6 does not discriminate: the outer
+  # `CONSECUTIVE_FAILURES >= EFFECTIVE_CB_THRESHOLD` guard does not even open
+  # until #6, by which point the ceiling model already has its own 2-attempt
+  # window (fails #5 and #6) whether or not the 2a deferral is present — so
+  # the FIXED code also blocks at #6 and the mutation goes undetected.
   MUT_BLOCKED_AT=$(echo "$SIM_C" | grep 'blocked=1' | head -1 | awk '{print $1}')
-  if [[ "$MUT_BLOCKED_AT" == "6" ]]; then
-    ok "C1: mutation control effective — with 2a reverted, BLOCKED fires at #6 before the ceiling ever ran (proves A1/A3 test the real fix)"
+  if [[ "$MUT_BLOCKED_AT" == "4" ]]; then
+    ok "C1: mutation control effective — with 2a reverted, BLOCKED fires at #4, the moment the ceiling model is promoted, without giving it its own attempt window (proves A1/A3 test the real fix)"
   else
-    no "C1: mutation control INEFFECTIVE — reverted code still blocked at '$MUT_BLOCKED_AT', expected 6 — sim:\n$SIM_C"
+    no "C1: mutation control INEFFECTIVE — reverted code blocked at '$MUT_BLOCKED_AT', expected 4 — sim:\n$SIM_C"
   fi
 fi
 

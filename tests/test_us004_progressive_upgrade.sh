@@ -108,9 +108,10 @@ fi
 echo ""
 echo "--- AC2: Ceiling then BLOCKED ---"
 
-# AC2-L1-1: get_next_model("opus:xhigh") escalates to claude-fable-5-1:max
-# (opus:xhigh is the last opus rung of the 7-rung claude ladder; the
-# effort-qualified fable rung is the ceiling).
+# AC2-L1-1: get_next_model("opus:xhigh") escalates to claude-opus-5-5:high
+# (opus:xhigh is the last opus on-ramp of the 3-rung claude ladder; the
+# effort-qualified opus-5-5 rung is the ceiling. 2026-09-26 CB=4/3-rung wave:
+# claude-fable-5-1:max left the worker ceiling — Final Verifier only now.)
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-1: get_next_model() not found"
@@ -118,27 +119,44 @@ else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
 r=\$(get_next_model 'opus:xhigh')
-[[ \"\$r\" == 'claude-fable-5-1:max' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
+[[ \"\$r\" == 'claude-opus-5-5:high' ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-1: get_next_model(opus:xhigh) returns claude-fable-5-1:max (claude ladder reaches fable)"
+    pass "AC2-L1-1: get_next_model(opus:xhigh) returns claude-opus-5-5:high (claude ladder ceiling)"
   else
-    fail "AC2-L1-1: get_next_model(opus:xhigh) should return claude-fable-5-1:max, got: $result"
+    fail "AC2-L1-1: get_next_model(opus:xhigh) should return claude-opus-5-5:high, got: $result"
   fi
 fi
 
-# AC2-L1-1b: get_next_model("claude-fable-5-1:max") returns empty (real claude ceiling now)
+# AC2-L1-1b: get_next_model("claude-opus-5-5:high") returns empty (real claude ceiling now)
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
   fail "AC2-L1-1b: get_next_model() not found"
 else
   result=$(run_harness "#!/usr/bin/env zsh -f
 ${fn_gnm}
+r=\$(get_next_model 'claude-opus-5-5:high')
+[[ -z \"\$r\" ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
+  if (( $? == 0 )); then
+    pass "AC2-L1-1b: get_next_model(claude-opus-5-5:high) returns empty (real claude ceiling)"
+  else
+    fail "AC2-L1-1b: get_next_model(claude-opus-5-5:high) should return empty, got: $result"
+  fi
+fi
+
+# AC2-L1-1c: get_next_model("claude-fable-5-1:max") returns empty — fable stays
+# a valid terminal key for an explicit manual start, unreachable from the spine.
+fn_gnm=$(extract_fn "get_next_model")
+if [[ -z "$fn_gnm" ]]; then
+  fail "AC2-L1-1c: get_next_model() not found"
+else
+  result=$(run_harness "#!/usr/bin/env zsh -f
+${fn_gnm}
 r=\$(get_next_model 'claude-fable-5-1:max')
 [[ -z \"\$r\" ]] && exit 0 || { echo \"got: \$r\" >&2; exit 1; }" 2>&1)
   if (( $? == 0 )); then
-    pass "AC2-L1-1b: get_next_model(claude-fable-5-1:max) returns empty (real claude ceiling)"
+    pass "AC2-L1-1c: get_next_model(claude-fable-5-1:max) returns empty (terminal, unreachable from spine)"
   else
-    fail "AC2-L1-1b: get_next_model(claude-fable-5-1:max) should return empty, got: $result"
+    fail "AC2-L1-1c: get_next_model(claude-fable-5-1:max) should return empty, got: $result"
   fi
 fi
 
@@ -407,8 +425,8 @@ fi
 echo ""
 echo "--- L2: Upgrade path matches documented table ---"
 
-# L2-1: the documented 7-rung claude chain, walked end to end:
-# haiku→sonnet:medium→opus:low→opus:medium→opus:high→opus:xhigh→claude-fable-5-1:max→""
+# L2-1: the documented 3-rung claude chain (2026-09-26 CB=4/3-rung wave),
+# walked end to end: haiku→sonnet:high→claude-opus-5-5:high→""
 # Complexity picks only the starting rung; repeated same-US failure walks it.
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
@@ -424,11 +442,11 @@ for _i in 1 2 3 4 5 6 7 8; do
   [[ -z \"\$nxt\" ]] && break
   cur=\"\$nxt\"
 done
-want='haiku sonnet:medium opus:low opus:medium opus:high opus:xhigh claude-fable-5-1:max '
+want='haiku sonnet:high claude-opus-5-5:high '
 [[ \"\$chain\" == \"\$want\" ]] && exit 0
 echo \"chain: \$chain\" >&2; exit 1" 2>&1)
   if (( $? == 0 )); then
-    pass "L2-1: claude path haiku→sonnet:medium→opus:low/medium/high/xhigh→claude-fable-5-1:max→'' correct"
+    pass "L2-1: claude path haiku→sonnet:high→claude-opus-5-5:high→'' correct"
   else
     fail "L2-1: claude path incorrect: $result"
   fi

@@ -73,9 +73,9 @@ Ask about these items one by one (or in small groups):
    | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
    |------------|--------|-----------------|----------------|-----------|
    | LOW | haiku | claude-sonnet-5:high | claude-fable-5-1:max | off |
-   | MEDIUM | sonnet | claude-opus-5:low | claude-fable-5-1:max | off |
-   | HIGH | opus | claude-opus-5:high | claude-fable-5-1:max | off |
-   | CRITICAL | opus | claude-opus-5:max | claude-fable-5-1:max + human | off |
+   | MEDIUM | sonnet:high | claude-opus-5:low | claude-fable-5-1:max | off |
+   | HIGH | sonnet:high | claude-opus-5:high | claude-fable-5-1:max | off |
+   | CRITICAL | claude-opus-5-5:high | claude-opus-5:max | claude-fable-5-1:max + human | off |
 
    **Model mapping — Cross-engine** (codex installed, recommended; luna-first
    per governance §4 — workers start cheap, ladder escalates on observed
@@ -107,13 +107,13 @@ Ask about these items one by one (or in small groups):
    `[DECIDE] phase=lane lane=<choice>`.
 
    **Worker model selection** (cross-engine, codex 0.144 / GPT-5.6 generation, luna-first per governance §4 — see model-upgrade-table.md for the full catalog):
-   - **gpt-5.6-luna** — default recommendation for LOW/MEDIUM and the cost-lane HIGH start (see the Cross-engine table above for the exact effort per complexity; `luna:high` ≈ the old `terra:medium` quality tier per the Artificial Analysis index tie at 46, at roughly 1/10 the cost after the 2026-07-30 API price cut). Escalation up the ladder (`luna:high → luna:max` directly — the MEDIUM manual `luna:xhigh` entry also joins the ladder at `:max`, then `luna:max` jumps model to `terra:max`, escalating further to `sol:xhigh`) is automatic on observed failure only — CRITICAL rows start above the ladder and are exempt from luna-first.
-   - **gpt-5.6-sol** — HIGH speed-lane start and CRITICAL start (frontier agentic model; HIGH speed lane starts at `sol:medium`, CRITICAL at `sol:high` — `sol:xhigh` now escalates one tier further into `gpt-6-astra:high` on repeated failure, so starting below it keeps upgrade headroom)
-   - **gpt-6-astra** — the ladder's real ceiling (codex 0.153, newest frontier generation): reached automatically via `sol:xhigh` escalation, or usable directly as a manual `--worker-model gpt-6-astra:high` start. Confirmed reasoning efforts: `low`/`medium`/`high`/`xhigh`/`max` (`minimal` is rejected by the API for this model; `ultra` is accepted but unconfirmed as a distinct level — see model-upgrade-table.md "GPT-6 — Astra" for the live-probe evidence)
-   - **gpt-5.6-terra** — manual quota-first start (`terra:max` ≈ the sol:high–xhigh quality midpoint, slower than sol; escalates to `sol:xhigh` on repeated failure) — not a brainstorm default, but available via `--worker-model` when Sol quota is the binding constraint
+   - **gpt-5.6-luna** — default recommendation for LOW/MEDIUM and the cost-lane HIGH start (see the Cross-engine table above for the exact effort per complexity; `luna:high` ≈ the old `terra:medium` quality tier per the Artificial Analysis index tie at 46, at roughly 1/10 the cost after the 2026-07-30 API price cut). Escalation up the ladder (`luna:high → luna:max` directly — the MEDIUM manual `luna:xhigh` entry also joins the ladder at `:max`, then `luna:max` jumps model to `terra:max`, which is the cost lane's own ceiling) is automatic on observed failure only — CRITICAL rows start above the ladder and are exempt from luna-first.
+   - **gpt-5.6-sol** — HIGH speed-lane start and CRITICAL start (frontier agentic model; HIGH speed lane starts at `sol:medium`, CRITICAL at `sol:high` — `sol:high` escalates to `sol:xhigh`, which is sol's own terminal ceiling now that astra has left the worker escalation path). A claude CRITICAL campaign starts AT the ceiling (`claude-opus-5-5:high`); a codex CRITICAL campaign starts one hop below it (`sol:high` → `sol:xhigh`). Either way, if it fails `CB_THRESHOLD` times, BLOCKED is the correct outcome (a spec problem, not a model-ladder gap).
+   - **gpt-6-astra** — judge-only (codex 0.153, newest frontier generation): the Final Verifier and Final Consensus seats (`FINAL_VERIFIER_CODEX_MODEL` / `FINAL_CONSENSUS_MODEL`), never a worker escalation target — no worker walk reaches it automatically. Still usable directly as a manual `--worker-model gpt-6-astra:high` start if desired. Confirmed reasoning efforts: `low`/`medium`/`high`/`xhigh`/`max` (`minimal` is rejected by the API for this model; `ultra` is accepted but unconfirmed as a distinct level — see model-upgrade-table.md "GPT-6 — Astra" for the live-probe evidence)
+   - **gpt-5.6-terra** — manual quota-first start, and the cost lane's own ceiling via the `luna:max` escalation (`terra:max` ≈ the sol:high–xhigh quality midpoint, slower than sol) — not a brainstorm default, but available via `--worker-model` when Sol quota is the binding constraint
    - **gpt-5.5 / gpt-5.4 / gpt-5.4-mini** — previous-generation models, still fully supported (low..xhigh ladders) if the account lacks 5.6 access
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
-   - Aliases: `sol`/`terra`/`luna`/`spark`/`astra` expand to their full slugs; `max`/`ultra` reasoning efforts exist on the 5.6 family, and only `max` exists for `luna` (no `luna:ultra`) — astra confirms `max` but not `ultra` (see above). Ladder behavior differs by family: within `luna` the ladder raises effort straight to `:max` before any model jump (`luna:high → luna:max`; the MEDIUM manual `luna:xhigh` start also joins the ladder at `:max` — it is not an extra rung) — `luna:max` then jumps model on a quota-first hop to `terra:max`, which escalates further to `sol:xhigh`. `terra` keeps its own `:xhigh` ladder ceiling before jumping model (e.g. `terra:high → terra:xhigh → sol:high`); `sol` climbs to `:xhigh` and then jumps model again into `astra:high → astra:xhigh` — that is the final ceiling now. `sol:max` / `sol:ultra` / `terra:ultra` / `astra:max` / `astra:ultra` are manual-only starting keys with no forward escalation (dead ends).
+   - Aliases: `sol`/`terra`/`luna`/`spark`/`astra` expand to their full slugs; `max`/`ultra` reasoning efforts exist on the 5.6 family, and only `max` exists for `luna` (no `luna:ultra`) — astra confirms `max` but not `ultra` (see above). Ladder behavior differs by family: within `luna` the ladder raises effort straight to `:max` before any model jump (`luna:high → luna:max`; the MEDIUM manual `luna:xhigh` start also joins the ladder at `:max` — it is not an extra rung) — `luna:max` then jumps model on a quota-first hop to `terra:max`, which is now the cost lane's own ceiling (astra left the worker escalation path). `terra` keeps its own `:xhigh` ladder ceiling before jumping model (e.g. `terra:high → terra:xhigh → sol:high`); `sol` climbs to `:xhigh`, which is now its own terminal ceiling (astra is judge-only and no longer reachable from the worker ladder). `sol:max` / `sol:ultra` / `terra:ultra` / `astra:max` / `astra:ultra` are manual-only starting keys with no forward escalation (dead ends).
 
    **Verifier model selection** (fully-explicit, version-pinned, per complexity):
    - **per-US Verifier** — `claude-sonnet-5:high` (LOW) / `claude-opus-5:low` (MEDIUM) / `claude-opus-5:high` (HIGH) / `claude-opus-5:max` (CRITICAL). Version-pinned full ids (not the floating `sonnet`/`opus` aliases) so the verify tier does not silently drift when the alias remaps. The claude engine accepts effort on both short aliases (`opus:max`) AND full ids (`claude-opus-5:high`).
@@ -249,7 +249,7 @@ Tell the user:
    #   --final-consensus-model MODEL          final cross-verifier — codex leg only (default: gpt-6-astra:xhigh)
    #   --consensus-parallel                   run claude+codex consensus verifiers concurrently (default: off)
    #   --verify-mode per-us|batch             (default: per-us)
-   #   --cb-threshold N                       (default: 6)
+   #   --cb-threshold N                       (default: 4)
    #   --max-iter N                           (default: 100)
    #   --iter-timeout N                       tmux only (default: 600)
    #   --pre-gate-timeout N                   mechanical pre-gate soft timeout, seconds (default: 300)
@@ -288,7 +288,7 @@ Tell the user:
    #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5:high/claude-opus-5:low/claude-opus-5:high/claude-opus-5:max — version-pinned + explicit effort)
    #   --final-verifier-model MODEL           final ALL verifier (default: claude-fable-5-1; recommended claude-fable-5-1:max — top model + top effort)
    #   --verify-mode per-us|batch             (default: per-us)
-   #   --cb-threshold N                       (default: 6)
+   #   --cb-threshold N                       (default: 4)
    #   --max-iter N                           (default: 100)
    #   --iter-timeout N                       tmux only (default: 600)
    #   --pre-gate-timeout N                   mechanical pre-gate soft timeout, seconds (default: 300)
@@ -317,7 +317,7 @@ Tell the user:
 
 Options (parse from `$ARGUMENTS`):
 - `--mode native|tmux` (default: `native`) — execution mode. `native` = slash command is the leader, calls `Agent(...)` (claude) and `Bash("codex exec ...")` (codex). `tmux` = slash command spawns the zsh runner via `node run.mjs --mode tmux`. Legacy `--mode agent` typed against the slash command emits a deprecation notice and redirects to `--mode native` (NOT to be confused with `node run.mjs --mode agent`, which is the deprecated Node-leader alpha — see "Direct Node CLI invocation" below).
-- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` (no colon) = claude engine, UNLESS `model` is one of the five known bare codex aliases (`spark`/`sol`/`terra`/`luna`/`astra`) or a bare `gpt-*` id (e.g. `gpt-5.5`), either of which route to codex with no explicit reasoning specified on the command line; `model:effort` = claude engine when `model` is a claude name (short alias `haiku`/`sonnet`/`opus` OR full versioned id `claude-*`), otherwise codex engine (`model:reasoning`). Examples: `haiku`, `sonnet`, `opus`, `opus:max`, `claude-opus-5:high`, `claude-fable-5-1:max`, `claude-opus-5[1m]:high` (1M context + effort), `spark` (bare, no reasoning), `gpt-5.5` (bare, no reasoning), `spark:high`, `gpt-5.6-sol:xhigh`, `gpt-5.5:high`, `gpt-5.6-luna:max` (cost-lane HIGH start), `gpt-5.6-terra:max` (manual quota-first start — quality ≈ sol:high–xhigh midpoint, slower; escalates to sol:xhigh on failure). Parsed by `parse_model_flag()` which auto-splits engine/model/effort-or-reasoning; a colon-bearing name is codex ONLY when the model part is neither a claude short alias nor a `claude-*`/`claude` name. Any bare name that is neither a claude id, a known codex alias, nor a `gpt-*` id still defaults to claude.
+- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` (no colon) = claude engine, UNLESS `model` is one of the five known bare codex aliases (`spark`/`sol`/`terra`/`luna`/`astra`) or a bare `gpt-*` id (e.g. `gpt-5.5`), either of which route to codex with no explicit reasoning specified on the command line; `model:effort` = claude engine when `model` is a claude name (short alias `haiku`/`sonnet`/`opus` OR full versioned id `claude-*`), otherwise codex engine (`model:reasoning`). Examples: `haiku`, `sonnet`, `opus`, `opus:max`, `claude-opus-5:high`, `claude-fable-5-1:max`, `claude-opus-5[1m]:high` (1M context + effort), `spark` (bare, no reasoning), `gpt-5.5` (bare, no reasoning), `spark:high`, `gpt-5.6-sol:xhigh`, `gpt-5.5:high`, `gpt-5.6-luna:max` (cost-lane HIGH start), `gpt-5.6-terra:max` (manual quota-first start, also the cost lane's own ceiling — quality ≈ sol:high–xhigh midpoint, slower). Parsed by `parse_model_flag()` which auto-splits engine/model/effort-or-reasoning; a colon-bearing name is codex ONLY when the model part is neither a claude short alias nor a `claude-*`/`claude` name. Any bare name that is neither a claude id, a known codex alias, nor a `gpt-*` id still defaults to claude.
   - **Two user-visible behavior notes (Fable 5.1 / Codex 6 Astra wave):** (1) A `model:` value with a trailing colon and nothing after it (e.g. `--worker-model gpt-5.5:`) now exits 1 at startup instead of silently launching with an unspecified reasoning level — this matches the env-var path's pre-existing behavior, which always rejected an empty reasoning; the CLI-flag path used to accept it, an inconsistency closed by routing both through one shared validator. (2) A bare codex alias or bare `gpt-*` id on the CLI (no `:reasoning` suffix) internally defaults its reasoning to `high` rather than leaving it unset — an unset codex reasoning would otherwise hard-block the campaign at launch (`_require_codex_effort` refuses to assemble `-c model_reasoning_effort=""`, which codex itself would reject).
 - `--lock-worker-model` — disable automatic model upgrade on failure. Worker stays on the specified model regardless of consecutive failures.
 - `--verifier-model MODEL` (default: `sonnet`; recommended per complexity: `claude-sonnet-5:high` (LOW) / `claude-opus-5:low` (MEDIUM) / `claude-opus-5:high` (HIGH) / `claude-opus-5:max` (CRITICAL)) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier. Claude engine accepts `model:effort` on both short aliases (`opus:max`) AND full `claude-*` ids (`claude-opus-5:high`); version-pinning prevents alias drift.
@@ -332,7 +332,7 @@ Options (parse from `$ARGUMENTS`):
 - `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
   - `per-us`: verify after each US, then final full verify of all AC
   - `batch`: verify only after all US done (legacy behavior)
-- `--cb-threshold N` — circuit breaker threshold: consecutive failures before BLOCKED (default: 6). When `--consensus` is not `off`, effective threshold is automatically doubled (e.g., default becomes 12).
+- `--cb-threshold N` — circuit breaker threshold: consecutive failures before BLOCKED (default: 4). When `--consensus` is not `off`, effective threshold is automatically doubled (e.g., default becomes 8).
 - `--max-iter N` (default: 100)
 - `--iter-timeout N` — per-iteration timeout in seconds (default: 600). Enforced in tmux mode only. Agent mode: not enforced (Agent() has no timeout API). Effort-aware: the effective worker budget is ×1.5 for `:xhigh` and ×2.0 for `:max` efforts (applies on top of the value you set); verifier/consensus waits use the base value.
 - `--pre-gate-timeout N` — overall soft timeout in seconds for the mechanical pre-gate, bounding layer 1 (gate script) + layer 2 (execution_steps replay) combined (default: 300). See the pre-gate convention below.
@@ -800,7 +800,7 @@ After the loop ends (COMPLETE, BLOCKED, TIMEOUT, or INTERRUPTED), generate `logs
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
 - Same acceptance criterion fails 2 consecutive iterations → upgrade model, retry once, then BLOCKED
-- 3 consecutive **fail** verdicts on 3 unique criterion IDs → upgrade model per the ladder (claude: →opus; codex: next ladder step), retry once, then BLOCKED
+- `cb_threshold` (default 4) consecutive **fail** verdicts on `cb_threshold` unique criterion IDs → climb per the ladder (claude: haiku → sonnet:high → claude-opus-5-5:high; codex: next ladder step); a ceiling reached on the CB-tripping failure gets its own 2-attempt window before BLOCKED
 - max_iter reached → TIMEOUT, report to user
 
 Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pass`, unchanged by `request_info`). Only **fail** verdicts count for CB chains — `request_info` does not break or contribute.
@@ -933,7 +933,7 @@ Run options:
   --consensus-model MODEL              per-US cross-verifier — codex leg only (default: gpt-5.6-terra:high)
   --final-consensus-model MODEL        Final cross-verifier — codex leg only (default: gpt-6-astra:xhigh)
   --verify-mode per-us|batch           Verification strategy (default: per-us)
-  --cb-threshold N                     Consecutive failures before BLOCKED (default: 6)
+  --cb-threshold N                     Consecutive failures before BLOCKED (default: 4)
   --max-iter N                         Max iterations (default: 100)
   --iter-timeout N                     Per-iteration timeout, tmux only (default: 600)
   --waivers-sha256 HASH                Out-of-band authorization for .rlp-desk/plans/waivers.json (fail-closed waiver channel)

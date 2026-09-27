@@ -342,6 +342,20 @@ if _func_or_fail "AC2-L1-8: fable:max → engine=claude"; then
     "AC2-L1-10: fable:max → effort=max"
 fi
 
+# claude-opus-5-5: the claude worker ceiling (2026-09-26 CB=4/3-rung wave). A
+# bare start carries no effort and, like fable above, must be pinned to an
+# explicit level or it misses the ladder's effort-qualified key and becomes a
+# dead start.
+_run_parse "claude-opus-5-5" "worker"
+if _func_or_fail "AC2-L1-11: claude-opus-5-5 → engine=claude"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $1}')" "claude" \
+    "AC2-L1-11: claude-opus-5-5 → engine=claude"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "claude-opus-5-5" \
+    "AC2-L1-12: claude-opus-5-5 → model=claude-opus-5-5 (bare alias pins the level)"
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $3}')" "high" \
+    "AC2-L1-13: claude-opus-5-5 → effort=high (bare alias normalization)"
+fi
+
 echo ""
 
 # ============================================================

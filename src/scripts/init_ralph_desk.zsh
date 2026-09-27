@@ -749,7 +749,7 @@ print_run_presets() {
   echo "#   --consensus-model MODEL                per-US cross-verifier (default: gpt-5.6-terra:high)"
   echo "#   --final-consensus-model MODEL          final cross-verifier (default: gpt-6-astra:xhigh)"
   echo "#   --verify-mode per-us|batch             (default: per-us)"
-  echo "#   --cb-threshold N                       (default: 6)"
+  echo "#   --cb-threshold N                       (default: 4)"
   echo "#   --max-iter N                           (default: 100)"
   echo "#   --iter-timeout N                       tmux only (default: 600)"
   echo "#   --debug                                debug logging"

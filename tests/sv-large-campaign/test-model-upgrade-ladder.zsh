@@ -62,15 +62,25 @@ done
 ok "real lib ladder functions sourced from lib_ralph_desk.zsh"
 
 # ---- get_next_model: the documented ladders ----
-# Model-mapping refresh: one 7-rung chain, every rung above haiku effort-qualified.
-[[ "$(get_next_model haiku)" == sonnet:medium \
-   && "$(get_next_model sonnet:medium)" == opus:low \
-   && "$(get_next_model opus:low)" == opus:medium \
-   && "$(get_next_model opus:medium)" == opus:high \
-   && "$(get_next_model opus:high)" == opus:xhigh \
-   && "$(get_next_model opus:xhigh)" == claude-fable-5-1:max \
+# 2026-09-26 CB=4/3-rung wave: one 3-rung chain, every rung above haiku
+# effort-qualified. claude-fable-5-1:max left the worker ceiling (Final
+# Verifier only now) — the legacy opus:* on-ramps all point straight at the
+# new ceiling claude-opus-5-5:high.
+[[ "$(get_next_model haiku)" == sonnet:high \
+   && "$(get_next_model sonnet:high)" == claude-opus-5-5:high \
+   && -z "$(get_next_model claude-opus-5-5:high)" \
+   && "$(get_next_model opus:xhigh)" == claude-opus-5-5:high \
    && -z "$(get_next_model claude-fable-5-1:max)" ]] \
-  && ok "claude ladder: haiku→sonnet:medium→opus:low/medium/high/xhigh→claude-fable-5-1:max→ceiling" || no "claude ladder wrong"
+  && ok "claude ladder: haiku→sonnet:high→claude-opus-5-5:high→ceiling (fable terminal but unreachable)" || no "claude ladder wrong"
+# On-ramps: sonnet:medium (bare `--worker-model sonnet` normalizes here) and
+# every legacy opus:* effort (opus:low/medium/high — opus:xhigh already
+# covered above) must all escalate straight to the new ceiling too, not just
+# opus:xhigh.
+[[ "$(get_next_model sonnet:medium)" == claude-opus-5-5:high \
+   && "$(get_next_model opus:low)" == claude-opus-5-5:high \
+   && "$(get_next_model opus:medium)" == claude-opus-5-5:high \
+   && "$(get_next_model opus:high)" == claude-opus-5-5:high ]] \
+  && ok "claude on-ramps: sonnet:medium and opus:low/medium/high all escalate to claude-opus-5-5:high" || no "claude on-ramps wrong"
 # The retired families (gpt-5.5, gpt-5.3-codex-spark) no longer have ladder keys.
 # Same property as before, retargeted onto a live family: a codex family climbs
 # low→medium→high→xhigh within itself.
@@ -86,14 +96,15 @@ ok "real lib ladder functions sourced from lib_ralph_desk.zsh"
 [[ "$(get_next_model gpt-5.6-luna:high)" == gpt-5.6-luna:max \
    && "$(get_next_model gpt-5.6-luna:xhigh)" == gpt-5.6-luna:max \
    && "$(get_next_model gpt-5.6-luna:max)" == gpt-5.6-terra:max \
-   && "$(get_next_model gpt-5.6-terra:max)" == gpt-5.6-sol:xhigh ]] \
-  && ok "luna-first chain: luna:high→luna:max→terra:max→sol:xhigh" || no "luna-first chain wrong"
-# Fable 5.1 / Codex 6 Astra wave: sol:xhigh is no longer the ceiling — it
-# escalates into astra:high, whose own :xhigh is the new real ceiling.
+   && -z "$(get_next_model gpt-5.6-terra:max)" ]] \
+  && ok "luna-first chain: luna:high→luna:max→terra:max→ceiling" || no "luna-first chain wrong"
+# 2026-09-26 CB=4/3-rung wave: gpt-6-astra is judge-only and left the worker
+# escalation path — sol:xhigh is its own terminal ceiling again, not a hop
+# into astra:high.
 [[ "$(get_next_model gpt-5.6-terra:xhigh)" == gpt-5.6-sol:high \
-   && "$(get_next_model gpt-5.6-sol:xhigh)" == gpt-6-astra:high \
+   && -z "$(get_next_model gpt-5.6-sol:xhigh)" \
    && -z "$(get_next_model gpt-6-astra:xhigh)" ]] \
-  && ok "terra:xhigh→sol:high jump; sol:xhigh→astra:high; astra:xhigh ceiling" || no "sol/astra chain regressed"
+  && ok "terra:xhigh→sol:high jump; sol:xhigh ceiling (astra out of worker path); astra:xhigh ceiling" || no "sol/astra chain regressed"
 
 # ---- check_model_upgrade: claude worker climbs on same-US double fail ----
 WORKER_ENGINE=claude; WORKER_MODEL=haiku; WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""; WORKER_EFFORT=""
@@ -101,21 +112,14 @@ LOCK_WORKER_MODEL=0; _MODEL_UPGRADED=0; _ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WOR
 _SAME_US_FAIL_COUNT=0; _LAST_FAILED_US=""
 check_model_upgrade US-001   # fail#1: count=1, no upgrade
 [[ "$WORKER_MODEL" == haiku && $_MODEL_UPGRADED -eq 0 ]] && ok "claude: 1st same-US fail → NO upgrade (haiku)" || no "claude 1st fail upgraded early (model=$WORKER_MODEL)"
-check_model_upgrade US-001   # fail#2: count=2 → upgrade haiku→sonnet:medium, reset
-[[ "$WORKER_MODEL" == sonnet && "$WORKER_EFFORT" == medium && $_MODEL_UPGRADED -eq 1 && "$_ORIGINAL_WORKER_MODEL" == haiku ]] && ok "claude: 2nd same-US fail → upgrade haiku→sonnet:medium (_MODEL_UPGRADED=1, orig saved)" || no "claude 2nd fail upgrade wrong (model=$WORKER_MODEL effort=$WORKER_EFFORT up=$_MODEL_UPGRADED orig=$_ORIGINAL_WORKER_MODEL)"
+check_model_upgrade US-001   # fail#2: count=2 → upgrade haiku→sonnet:high, reset
+[[ "$WORKER_MODEL" == sonnet && "$WORKER_EFFORT" == high && $_MODEL_UPGRADED -eq 1 && "$_ORIGINAL_WORKER_MODEL" == haiku ]] && ok "claude: 2nd same-US fail → upgrade haiku→sonnet:high (_MODEL_UPGRADED=1, orig saved)" || no "claude 2nd fail upgrade wrong (model=$WORKER_MODEL effort=$WORKER_EFFORT up=$_MODEL_UPGRADED orig=$_ORIGINAL_WORKER_MODEL)"
 check_model_upgrade US-001   # count=1 again (reset), no upgrade
 [[ "$WORKER_MODEL" == sonnet ]] && ok "claude: counter reset after upgrade (3rd fail → still sonnet)" || no "claude 3rd fail (model=$WORKER_MODEL)"
-check_model_upgrade US-001   # count=2 → upgrade sonnet:medium→opus:low
-[[ "$WORKER_MODEL" == opus && "$WORKER_EFFORT" == low ]] && ok "claude: 4th same-US fail → upgrade sonnet:medium→opus:low" || no "claude 4th fail (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
-# The three remaining opus rungs, then the effort-qualified fable terminal rung.
-check_model_upgrade US-001; check_model_upgrade US-001   # opus:low → opus:medium
-check_model_upgrade US-001; check_model_upgrade US-001   # opus:medium → opus:high
-[[ "$WORKER_MODEL" == opus && "$WORKER_EFFORT" == high ]] && ok "claude: effort climbs within opus (low→medium→high)" || no "claude opus effort climb broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
-check_model_upgrade US-001; check_model_upgrade US-001   # opus:high → opus:xhigh
-check_model_upgrade US-001; check_model_upgrade US-001   # opus:xhigh → claude-fable-5-1:max
-[[ "$WORKER_MODEL" == claude-fable-5-1 && "$WORKER_EFFORT" == max ]] && ok "claude: at opus:xhigh, 2 more fails → upgrade to claude-fable-5-1:max" || no "claude opus->fable upgrade broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
-check_model_upgrade US-001; check_model_upgrade US-001   # count→2 at fable → real ceiling, no upgrade
-[[ "$WORKER_MODEL" == claude-fable-5-1 && "$WORKER_EFFORT" == max ]] && ok "claude: at claude-fable-5-1 ceiling → NO further upgrade (CB will BLOCK)" || no "claude ceiling broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
+check_model_upgrade US-001   # count=2 → upgrade sonnet:high→claude-opus-5-5:high (the real ceiling)
+[[ "$WORKER_MODEL" == claude-opus-5-5 && "$WORKER_EFFORT" == high ]] && ok "claude: 4th same-US fail → upgrade sonnet:high→claude-opus-5-5:high" || no "claude 4th fail (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
+check_model_upgrade US-001; check_model_upgrade US-001   # count→2 at ceiling → no further upgrade
+[[ "$WORKER_MODEL" == claude-opus-5-5 && "$WORKER_EFFORT" == high ]] && ok "claude: at claude-opus-5-5:high ceiling → NO further upgrade (CB will BLOCK)" || no "claude ceiling broke (model=$WORKER_MODEL effort=$WORKER_EFFORT)"
 
 # ---- different US resets the same-US counter (no premature upgrade) ----
 WORKER_MODEL=haiku; _MODEL_UPGRADED=0; _ORIGINAL_WORKER_MODEL=""; _SAME_US_FAIL_COUNT=0; _LAST_FAILED_US=""
@@ -156,7 +160,7 @@ RUN="${0:A:h:h:h}/src/scripts/run_ralph_desk.zsh"
 # status.json. worker_effort/original_worker_effort added in the Fable 5.1
 # wave — same class of gap as worker_codex_reasoning/original_worker_codex_reasoning
 # (request-j ③), now live on the claude side too since the ladder reaches
-# claude-fable-5-1:max.
+# claude-opus-5-5:high.
 _restore_reads=(consecutive_blocks last_block_reason model_upgraded same_us_fail_count
                 original_worker_model worker_model worker_engine worker_codex_model worker_codex_reasoning
                 worker_effort original_worker_effort)

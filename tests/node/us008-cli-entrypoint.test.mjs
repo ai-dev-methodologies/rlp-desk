@@ -333,7 +333,7 @@ test('US-008 AC8.2 boundary: bare `run <slug>` now defaults to --mode tmux and a
   assert.equal(spawned.env.LOOP_NAME, 'demo');
   assert.equal(spawned.env.WORKER_MODEL, 'haiku', 'default worker model');
   assert.equal(spawned.env.MAX_ITER, '100', 'default max-iter');
-  assert.equal(spawned.env.CB_THRESHOLD, '6', 'default cb-threshold');
+  assert.equal(spawned.env.CB_THRESHOLD, '4', 'default cb-threshold');
   assert.equal(spawned.env.VERIFY_MODE, 'per-us', 'default verify-mode');
   assert.equal(spawned.env.CONSENSUS_MODE, 'off', 'default consensus');
   assert.equal(spawned.env.RLP_CONSENSUS_PARALLEL, '0', 'Feature 2: parallel consensus OFF by default');
@@ -489,6 +489,12 @@ test('main run command warns when claude worker model used in tmux mode', async 
   const combined = stderrChunks.join('');
   assert.match(combined, /Claude worker in tmux mode/);
   assert.match(combined, /\.rlp-desk/);
+  // gpt-6-astra is judge-only (2026-09-26 CB=4/3-rung wave) — never a worker
+  // escalation target — so the suggested fallback must be a real codex
+  // WORKER, not the judge-only model. gpt-5.6-sol:high is the CRITICAL codex
+  // worker start.
+  assert.match(combined, /--worker-model gpt-5\.6-sol:high/);
+  assert.doesNotMatch(combined, /gpt-6-astra/);
 });
 
 test('main run command does not warn when codex worker model used in tmux mode', async () => {
@@ -994,6 +1000,11 @@ test('normalizeModelSpec: bare claude aliases gain an explicit start level, haik
   assert.equal(normalizeModelSpec('opus'), 'opus:medium');
   assert.equal(normalizeModelSpec('fable'), 'claude-fable-5-1:max');
   assert.equal(normalizeModelSpec('claude-fable-5-1'), 'claude-fable-5-1:max');
+  // The claude worker ceiling (2026-09-26 CB=4/3-rung wave) is
+  // claude-opus-5-5:high — same class of gap as claude-fable-5-1 above: a
+  // bare start carries no effort, so it must gain one explicitly or it never
+  // reaches the ladder key and becomes a dead start.
+  assert.equal(normalizeModelSpec('claude-opus-5-5'), 'claude-opus-5-5:high');
   // haiku has no effort concept, so it is deliberately absent from the table.
   assert.equal(normalizeModelSpec('haiku'), 'haiku');
   // An already-levelled spec is left alone.

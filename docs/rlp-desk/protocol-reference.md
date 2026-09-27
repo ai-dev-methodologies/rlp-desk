@@ -337,18 +337,21 @@ HIGH lane question: `rlp-desk.md` Step 7 (mapping tables).
   assumption of difficulty.
 - **Cross-engine defaults (codex installed)**: LOW → `gpt-5.6-luna:high`,
   MEDIUM → `gpt-5.6-luna:xhigh`, HIGH → lane choice (cost lane: `luna:max`,
-  escalates via the quota-first `terra:max` hop; speed lane: `sol:medium`,
-  climbing to `sol:xhigh` then one tier further into `astra:high` →
-  `astra:xhigh`, the real ceiling), CRITICAL → `gpt-5.6-sol:high` (starts
-  above the ladder, exempt from luna-first).
-- **Claude-only fallback (codex absent)**: `haiku` (LOW) → `sonnet`
-  (MEDIUM/HIGH) → `opus` (CRITICAL); ladder is haiku → sonnet → opus →
-  `claude-fable-5-1:max` on failure, the real ceiling of the claude-only
-  ladder.
+  escalates via the quota-first `terra:max` hop, which is the cost lane's own
+  ceiling; speed lane: `sol:medium`, climbing to `sol:xhigh`, its own
+  terminal ceiling), CRITICAL → `gpt-5.6-sol:high` (starts above the ladder,
+  exempt from luna-first). `gpt-6-astra` is judge-only and is never reached
+  by a worker escalation.
+- **Claude-only fallback (codex absent)**: `haiku` (LOW) → `sonnet:high`
+  (MEDIUM/HIGH) → `claude-opus-5-5:high` (CRITICAL, starts at the ceiling);
+  ladder is haiku → sonnet:high → claude-opus-5-5:high on failure, the real
+  ceiling of the claude-only ladder. `claude-fable-5-1:max` is Final Verifier
+  only, not on the worker spine.
 - **Effort before model, luna only**: within `luna` the ladder raises effort
   to `:max` before jumping models; `terra` keeps its own `:xhigh` ladder
-  ceiling before jumping into `sol`, and `sol`'s `:xhigh` now escalates one
-  tier further into `gpt-6-astra:high` — the real ceiling of the whole ladder.
+  ceiling before jumping into `sol` on a manual terra start, and `sol`'s
+  `:xhigh` is its own terminal ceiling again (2026-09-26 CB=4/3-rung wave —
+  `gpt-6-astra` left the worker escalation path and is judge-only now).
 - **Escalation trigger is `failure_category`, not vibes**: `spec` /
   `implementation` / `integration` failures upgrade the Worker model on
   retry (unless `--lock-worker-model`). `environment` / `flaky` failures —

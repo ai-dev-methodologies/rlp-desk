@@ -231,7 +231,7 @@ Verification occurs at two boundaries, not as a single final event.
 ### Checkpoint 2: Release Readiness (us_id=ALL)
 - Trigger: all individual US pass Checkpoint 1 → Worker signals verify with us_id = "ALL"
 - Scope: all AC + L2 integration (if applicable) + L3 E2E Simulation + L4 deploy (if applicable) + mutation score (if CRITICAL, when mutation testing tool is configured in test-spec)
-- On fail: fix loop; escalation to user if 6 consecutive failures (default cb_threshold)
+- On fail: fix loop; escalation to user if 4 consecutive failures (default cb_threshold)
 
 ### Relationship to Existing Flow
 - Checkpoint 1 = existing per-US verify (§7a). No change.
@@ -677,8 +677,9 @@ Every leader therefore registers a per-PID entry:
    an observed failure — never an assumption of difficulty.
 2. **Effort before model (luna only)**: within luna the ladder raises effort
    to `max` before jumping models. Terra keeps its own `xhigh` ladder ceiling
-   before jumping into sol; sol's `xhigh` escalates one tier further into
-   `gpt-6-astra:high`, the real ceiling of the whole ladder.
+   before jumping into sol; sol's `xhigh` is its own terminal ceiling.
+   `gpt-6-astra` is judge-only (Final Verifier / Final Consensus seats) and is
+   never reached by a worker escalation (2026-09-26 CB=4/3-rung wave).
 3. **Lanes**: campaigns with HIGH US choose at brainstorm time between the
    long-term/cost lane (HIGH starts `gpt-5.6-luna:max`; escalation passes the
    quota-first `terra:max` hop) and the speed lane (HIGH starts
@@ -697,7 +698,7 @@ Every leader therefore registers a per-PID entry:
 
 | Role | Default Model | Override Criteria |
 |------|---------------|-------------------|
-| Worker | haiku | Default; auto-upgrades on failure (sonnet → opus → claude-fable-5-1) |
+| Worker | haiku | Default; auto-upgrades on failure (sonnet:high → claude-opus-5-5, the ceiling) |
 | Worker (locked) | haiku | `--lock-worker-model` disables auto-upgrade |
 | Verifier (per-US) | sonnet | Lightweight; campaign-fixed (no progressive upgrade) |
 | Verifier (final) | claude-fable-5-1 | Full rigor; independent of per-US model (was `opus` — Fable 5.1 wave) |
@@ -723,10 +724,15 @@ Worker ladder chain (data: `src/node/models.json`; reference view:
 `src/model-upgrade-table.md`):
 
 ```
-Cost lane:  luna:high → luna:max → terra:max → sol:xhigh → astra:high → astra:xhigh (ceiling)
+Cost lane:  luna:high → luna:max → terra:max (ceiling)
             (MEDIUM joins at luna:xhigh → luna:max → …)
-Speed lane: sol:medium → sol:high → sol:xhigh → astra:high → astra:xhigh (ceiling)
+Speed lane: sol:medium → sol:high → sol:xhigh (ceiling)
 ```
+
+`gpt-6-astra` is judge-only (Final Verifier / Final Consensus seats,
+`FINAL_VERIFIER_CODEX_MODEL` / `FINAL_CONSENSUS_MODEL`) — no worker ladder
+reaches it (2026-09-26 CB=4/3-rung wave; astra left the worker escalation
+path).
 
 `--worker-model spark:high` / `gpt-5.6-luna:max` format; `parse_model_flag()`
 auto-detects engine: plain names (haiku, sonnet, opus, fable) = claude;
@@ -1169,7 +1175,7 @@ If `cb_threshold` or more consecutive fix attempts fail for the same US:
    - What was attempted in each fix
    - What specifically kept failing
    - Hypothesis: why fixes are not sticking
-4. **Do NOT attempt fix #4** without user guidance.
+4. **Do NOT attempt fix #5** without user guidance (the attempt after `cb_threshold`'s default of 4 consecutive failures) — **except** when the CB-tripping failure (#4) itself promoted the Worker to the ladder ceiling: DEFECT-2a (§8) gives the ceiling model its own 2-attempt window first, so attempts #5-#6 proceed on the ceiling model before stopping without user guidance.
 5. **Options**: refactor architecture, simplify the US, split the US, or mark BLOCKED.
 
 In tmux mode: Leader writes `<slug>-escalation.md` with the report and sets BLOCKED sentinel with reason "architecture-escalation."
@@ -1280,7 +1286,7 @@ When `tmux new-session -d` collides with an existing session and `RLP_BACKGROUND
 |-----------|---------|
 | context-latest.md unchanged for 3 consecutive iterations | BLOCKED |
 | Same acceptance criterion fails 2 consecutive iterations | Upgrade model, retry once (Agent mode only; tmux: same model retry); if still failing → Architecture Escalation (§7¾) → BLOCKED |
-| `cb_threshold` (default: 6) consecutive **fail** verdicts on `cb_threshold` unique criterion IDs | Upgrade to opus, retry once; if still failing → BLOCKED (adjustable via `--cb-threshold`; when `--consensus` is not `off`, effective threshold doubles automatically: default 6 → 12) |
+| `cb_threshold` (default: 4) consecutive **fail** verdicts on `cb_threshold` unique criterion IDs | Worker climbs one ladder step per 2 consecutive same-US failures (claude: haiku → sonnet:high → claude-opus-5-5:high ceiling; codex: next ladder step); a ceiling reached on the CB-tripping failure gets its own 2-attempt window (DEFECT-2a) before BLOCKED (adjustable via `--cb-threshold`; when `--consensus` is not `off`, effective threshold doubles automatically: default 4 → 8) |
 | max_iter reached | TIMEOUT (report to user) |
 | Same canonical block reason fires `BLOCK_CB_THRESHOLD` (default: 3) times in a row | Mission abort (`.sisyphus/mission-abort.json` + non-zero exit). US-021 R9 P2-I `consecutive_blocks` counter. |
 

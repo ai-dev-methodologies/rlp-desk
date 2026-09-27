@@ -81,7 +81,7 @@ for SLUG in "${MISSIONS[@]}"; do
   WORKER_MODEL="${WORKER_MODEL:-gpt-5.6-luna:high}" \
   VERIFIER_MODEL="${VERIFIER_MODEL:-opus}" \
   VERIFY_MODE="${VERIFY_MODE:-per-us}" \
-  CB_THRESHOLD="${CB_THRESHOLD:-6}" \
+  CB_THRESHOLD="${CB_THRESHOLD:-4}" \
     zsh ~/.claude/ralph-desk/run_ralph_desk.zsh "$SLUG"
   rc=$?
 

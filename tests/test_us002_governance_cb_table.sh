@@ -43,9 +43,12 @@ echo ""
 # AC1: Path B row parametrized (cb_threshold replaces hardcoded 3)
 # ============================================================
 
-# AC1-happy: Path B row (Upgrade to opus) now contains cb_threshold (parametrized)
-val=$(section8 | grep -F 'Upgrade to opus' | grep -cF 'cb_threshold' 2>/dev/null; true)
-assert_one "$val" "AC1-happy: Path B row (Upgrade to opus) contains cb_threshold"
+# AC1-happy: Path B row (ladder climb description) now contains cb_threshold (parametrized)
+# 2026-09-26 CB=4/3-rung wave: the row no longer says "Upgrade to opus" — it
+# names the real ladder-climb behavior (claude-opus-5-5:high ceiling + the
+# DEFECT-2a ceiling attempt window) — see model-mapping-2026-09-25-findings.md.
+val=$(section8 | grep -F 'Worker climbs one ladder step' | grep -cF 'cb_threshold' 2>/dev/null; true)
+assert_one "$val" "AC1-happy: Path B row (ladder climb) contains cb_threshold"
 
 # AC1-negative: old hardcoded "3 consecutive **fail** verdicts" NOT in §8 table
 val=$(s8_count '3 consecutive **fail** verdicts')
