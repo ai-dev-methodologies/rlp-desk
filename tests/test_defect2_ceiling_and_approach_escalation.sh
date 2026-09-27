@@ -92,7 +92,11 @@ run_cb_simulation() { # $1 = run_src  $2 = num_failures  $3 = cb_threshold
   zsh -c "
     set -uo pipefail
     log() { :; }; log_error() { :; }; log_debug() { :; }
-    write_blocked_sentinel() { :; }
+    # Captures the reason string a real BLOCKED would persist to
+    # blocked.md/blocked.json, so the CB-text defect (reason reports the bare
+    # threshold instead of the actual failure count) is observable from the
+    # simulation output.
+    write_blocked_sentinel() { echo \"BLOCKED_REASON::\$1\"; }
     update_status() { :; }
     LIB_DIR='$ROOT_DIR/src/scripts'
     RLP_DESK_MODELS_FILE=\"\${RLP_DESK_MODELS_FILE:-/nonexistent-hermetic-test-guard/rlp-desk-models.json}\"
@@ -171,6 +175,26 @@ BLOCKED_B=$(echo "$SIM_B" | grep -c 'blocked=1')
 (( BLOCKED_B == 0 )) \
   && ok "B1: CB_THRESHOLD=10 with only 3 failures never blocks (regression check)" \
   || no "B1: unexpectedly blocked with CB_THRESHOLD=10 and only 3 failures"
+
+# --- G: BLOCKED text reports the ACTUAL failure count, not the bare threshold
+#        (separate defect from 2a — the 2a deferral above proves the block can
+#        fire well past EFFECTIVE_CB_THRESHOLD failures, e.g. #6 for a
+#        threshold of 4, yet every BLOCKED message printed the THRESHOLD value
+#        as if it were the count. Both the architecture-escalation branch and
+#        the plain branch must report CONSECUTIVE_FAILURES, with the
+#        threshold — if shown at all — clearly labeled.) -------------------
+echo "--- G: BLOCKED sentinel/log text reports the actual count, threshold labeled ---"
+
+SENTINEL_A=$(echo "$SIM_A" | grep '^BLOCKED_REASON::' | sed 's/^BLOCKED_REASON:://')
+[[ "$SENTINEL_A" == "architecture escalation: Worker at ceiling model (claude-opus-5-5) failed after its own attempt window, 6 consecutive verification failures (threshold 4)" ]] \
+  && ok "G1: architecture-escalation BLOCKED text reports the actual count (6), not the bare threshold (4)" \
+  || no "G1: architecture-escalation BLOCKED text wrong — got: $SENTINEL_A"
+
+SIM_G="$(run_cb_simulation "$RUN" 3 3)"
+SENTINEL_G=$(echo "$SIM_G" | grep '^BLOCKED_REASON::' | sed 's/^BLOCKED_REASON:://')
+[[ "$SENTINEL_G" == "3 consecutive verification failures (threshold 3)" ]] \
+  && ok "G2: plain-branch BLOCKED text labels the threshold explicitly (not a bare number that could be mistaken for the count)" \
+  || no "G2: plain-branch BLOCKED text wrong — got: $SENTINEL_G"
 
 # --- C: mutation control — revert 2a on a scratch copy, prove Scenario A goes RED ---
 echo "--- C: mutation control (2a defect re-injected must fail A1/A3) ---"

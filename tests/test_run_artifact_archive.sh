@@ -63,6 +63,11 @@ printf '{"us_id":"US-001","verdict":"pass"}\n' > "$BD/memos/demo-verified.jsonl"
 chmod 0444 "$BD/memos/demo-verified.jsonl"   # ledger is 0444 between appends
 printf 'dc\n' > "$BD/memos/demo-done-claim.json"
 printf 'vv\n' > "$BD/memos/demo-verify-verdict.json"
+# blocked.json is the JSON sidecar write_blocked_sentinel writes alongside
+# blocked.md (P1-D write order contract, lib_ralph_desk.zsh) — a real BLOCKED
+# leaves both files in memos/.
+printf '{"reason":"boom"}\n' > "$BD/memos/demo-blocked.json"
+printf 'BLOCKED\n' > "$BD/memos/demo-blocked.md"
 ROOT="$BROOT" zsh "$INIT" demo --mode fresh >/dev/null 2>&1
 # live evidence paths emptied
 _bfail=0
@@ -82,9 +87,15 @@ if (( ${#_barch} >= 1 )); then
   [[ -f "$_bd/iter-001-verify-verdict.json" && -f "$_bd/iter-001-iter-signal.json" ]] \
     && ok "(b) iter-* evidence relocated into runs/ (incl. iter-signal)" \
     || no "(b) iter-* not archived: $(ls "$_bd" 2>/dev/null)"
+  [[ -f "$_bd/demo-blocked.json" && "$(cat "$_bd/demo-blocked.json")" == '{"reason":"boom"}' ]] \
+    && ok "(b) blocked.json sidecar archived into runs/ with content intact (same destination as blocked.md)" \
+    || no "(b) blocked.json sidecar not archived: $(ls "$_bd" 2>/dev/null)"
 else
   no "(b) no runs/superseded-* archive dir created by init fresh"
 fi
+[[ ! -f "$BD/memos/demo-blocked.json" ]] \
+  && ok "(b) blocked.json sidecar removed from LIVE memos/ by init fresh" \
+  || no "(b) blocked.json sidecar still present in LIVE memos/ after init fresh (DEFECT: fresh mode misses the .json sidecar)"
 
 # ---------------------------------------------------------------------------
 # (c) archive_iter_artifacts includes iter-signal (3rd artifact)

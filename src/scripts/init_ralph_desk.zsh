@@ -901,6 +901,7 @@ if [[ -n "$MODE" ]]; then
     "$DESK/memos/$SLUG-verify-verdict.json" \
     "$DESK/memos/$SLUG-complete.md" \
     "$DESK/memos/$SLUG-blocked.md" \
+    "$DESK/memos/$SLUG-blocked.json" \
     "$DESK/memos/$SLUG-flywheel-signal.json" \
     "$DESK/memos/$SLUG-flywheel-review.md" \
     "$DESK/memos/$SLUG-flywheel-guard-verdict.json"; do

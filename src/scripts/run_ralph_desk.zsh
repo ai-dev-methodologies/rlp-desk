@@ -7090,13 +7090,18 @@ main() {
                 update_status "verifier" "fail"
                 _cmu_deferred=1
               elif (( _MODEL_UPGRADED )) && (( _at_ceiling )); then
-                log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"architecture escalation: Worker at ceiling (${WORKER_MODEL}), ${EFFECTIVE_CB_THRESHOLD} consecutive failures\""
-                log_error "Circuit breaker: architecture escalation — Worker at ceiling (${WORKER_MODEL}) failed its own attempt window, ${EFFECTIVE_CB_THRESHOLD} consecutive failures"
-                write_blocked_sentinel "architecture escalation: Worker at ceiling model (${WORKER_MODEL}) failed after its own attempt window, ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
+                # DEFECT (2026-09-27 fix): the deferral above can let
+                # CONSECUTIVE_FAILURES run past EFFECTIVE_CB_THRESHOLD before
+                # this branch actually fires (e.g. #6 for a threshold of 4) —
+                # report the ACTUAL count, with the threshold labeled rather
+                # than printed as if it were the count.
+                log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"architecture escalation: Worker at ceiling (${WORKER_MODEL}), ${CONSECUTIVE_FAILURES} consecutive failures (threshold ${EFFECTIVE_CB_THRESHOLD})\""
+                log_error "Circuit breaker: architecture escalation — Worker at ceiling (${WORKER_MODEL}) failed its own attempt window, ${CONSECUTIVE_FAILURES} consecutive failures (threshold ${EFFECTIVE_CB_THRESHOLD})"
+                write_blocked_sentinel "architecture escalation: Worker at ceiling model (${WORKER_MODEL}) failed after its own attempt window, ${CONSECUTIVE_FAILURES} consecutive verification failures (threshold ${EFFECTIVE_CB_THRESHOLD})" "" "repeat_axis"
               else
-                log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"${EFFECTIVE_CB_THRESHOLD} consecutive verification failures\""
-                log_error "Circuit breaker: ${EFFECTIVE_CB_THRESHOLD} consecutive verification failures"
-                write_blocked_sentinel "${EFFECTIVE_CB_THRESHOLD} consecutive verification failures" "" "repeat_axis"
+                log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"${CONSECUTIVE_FAILURES} consecutive verification failures (threshold ${EFFECTIVE_CB_THRESHOLD})\""
+                log_error "Circuit breaker: ${CONSECUTIVE_FAILURES} consecutive verification failures (threshold ${EFFECTIVE_CB_THRESHOLD})"
+                write_blocked_sentinel "${CONSECUTIVE_FAILURES} consecutive verification failures (threshold ${EFFECTIVE_CB_THRESHOLD})" "" "repeat_axis"
               fi
               if (( ! ${_cmu_deferred:-0} )); then
                 update_status "blocked" "consecutive_failures"
