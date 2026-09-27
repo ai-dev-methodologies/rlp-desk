@@ -496,9 +496,16 @@ insertion point, in order:
     test`) AND contains none of the denylist patterns (`rm `, `git push`,
     `git commit`, `curl `, `wget `, `sudo `, `> /`, `>> /`) are eligible. Ineligible
     steps are SKIPPED (logged, not run, not a fail).
-  - **Comparison is EQUALITY, not "must be 0"**: a `verify_red` step whose claimed
-    `exit_code` is non-zero by design (RED phase) that replays to the same non-zero
-    code is a MATCH. A mismatch — especially claimed 0, actual ≠0 — is a FAIL.
+  - **`verify_red` steps are NEVER replayed.** RED is a point-in-time
+    pre-implementation fact recorded before the fix existed — re-running the same
+    command against the POST-implementation tree cannot reproduce it; an honest
+    `verify_red` always replays GREEN after implementation, which is not evidence
+    of anything wrong. `verify_red` is SKIPPED unconditionally (logged, not run,
+    not a fail). Anti-gaming of RED evidence remains the LLM Verifier's job
+    (Worker Process Audit).
+  - **Comparison is EQUALITY, not "must be 0"**: for every other replayed step
+    (`verify_green`, `verify_existing`, `verify`, `verify_e2e`, ...), a mismatch —
+    especially claimed 0, actual ≠0 — is a FAIL.
   - Each command runs from the campaign root with a per-command soft timeout
     (`--pre-gate-cmd-timeout`, default 120s); the whole pre-gate (Layer 1 + Layer 2)
     is bounded by `--pre-gate-timeout` (default 300s). A per-command timeout counts

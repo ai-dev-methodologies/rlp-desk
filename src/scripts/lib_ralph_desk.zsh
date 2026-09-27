@@ -3370,8 +3370,14 @@ _pregate_run_cmd_timed() {
 }
 
 # Layer 2: replay verify-* commands recorded in done-claim.json execution_steps
-# and compare each replayed exit code to the worker's CLAIMED exit_code (EQUALITY
-# — a verify_red claiming exit 1 that replays to exit 1 is a MATCH, not a fail).
+# and compare each replayed exit code to the worker's CLAIMED exit_code (EQUALITY).
+# `verify_red` steps are NEVER replayed: RED is a point-in-time pre-implementation
+# fact recorded before the fix existed, so it cannot be reproduced by re-running
+# the command against the POST-implementation tree — an honest verify_red always
+# replays GREEN after implementation, which is not evidence of anything wrong.
+# They are SKIPPED (logged, not run, not a fail); anti-gaming of RED evidence
+# remains the LLM verifier's job (Worker Process Audit). All other verify* steps
+# (verify_green, verify_existing, verify, verify_e2e, ...) keep EQUALITY replay.
 # NO new schema — uses the existing §1f step/ac_id/command/exit_code fields.
 #
 # Division of labor (governance §3a): replay only catches "the claimed command is
@@ -3414,8 +3420,12 @@ run_pregate_replay() {
     # Schema eligibility: verify* step with a non-null command.
     [[ "$step" == verify* ]] || continue
     [[ -n "$cmd" && "$cmd" != "null" ]] || continue
-    # Claimed exit must be an integer to compare against (verify_red keeps its
-    # own non-zero claim — equality handles it).
+    # verify_red is a point-in-time pre-implementation fact — never replayed.
+    if [[ "$step" == "verify_red" ]]; then
+      log_debug "[GOV] iter=$iter phase=pregate_replay step=$step ac=$ac action=skip reason=verify_red_historical"
+      continue
+    fi
+    # Claimed exit must be an integer to compare against.
     [[ "$claimed" == <-> || "$claimed" == -<-> ]] || {
       log_debug "[GOV] iter=$iter phase=pregate_replay step=$step ac=$ac action=skip reason=no_claimed_exit"
       continue

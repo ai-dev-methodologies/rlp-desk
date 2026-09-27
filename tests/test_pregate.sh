@@ -150,10 +150,30 @@ replay() { # $1=steps-json-array  [env: CLAIMENV extra]
   '
 }
 
-print -r -- "-- AC-R2: eligible steps replay to matching exits (incl verify_red nonzero==nonzero) → proceed"
-out=$(replay '[{"step":"verify_green","ac_id":"AC1","command":"sh -c \"exit 0\"","exit_code":0},{"step":"verify_red","ac_id":"AC1","command":"sh -c \"exit 1\"","exit_code":1}]')
-[[ "$out" == *"RAN=1 FAIL=0 RC=0"* ]] && ok "all matches (incl verify_red 1==1) → RAN=1 FAIL=0 return 0" \
+print -r -- "-- AC-R2: verify_red steps are NEVER replayed (historical RED fact, skipped regardless of match) — verify_green is still compared"
+SENT2="$TMP/verify_red_sentinel_$RANDOM"
+out=$(replay '[{"step":"verify_green","ac_id":"AC1","command":"sh -c \"exit 0\"","exit_code":0},{"step":"verify_red","ac_id":"AC1","command":"sh -c \"touch '"$SENT2"'; exit 1\"","exit_code":1}]')
+[[ "$out" == *"RAN=1 FAIL=0 RC=0"* ]] && ok "verify_green matches; verify_red present but skipped → RAN=1 FAIL=0 return 0" \
   || no "AC-R2 wrong (got: $out)"
+[[ ! -e "$SENT2" ]] && ok "verify_red command was NEVER executed (sentinel absent — historical-RED skip)" \
+  || no "verify_red must never be replayed! sentinel file was created"
+
+print -r -- "-- AC-R5: honest verify_red (claimed exit 1, pre-implementation) now replays GREEN post-implementation → skipped, NOT a fail"
+out=$(replay '[{"step":"verify_red","ac_id":"AC1","command":"sh -c \"exit 0\"","exit_code":1}]')
+[[ "$out" == *"RAN=0 FAIL=0 RC=0"* ]] && ok "verify_red-only claim → skipped as historical fact, no-op (RAN=0), not a fail" \
+  || no "AC-R5 wrong (got: $out)"
+
+print -r -- "-- AC-R6: verify_green mismatch still fails even alongside a skipped verify_red (regression guard)"
+out=$(replay '[{"step":"verify_red","ac_id":"AC1","command":"sh -c \"exit 1\"","exit_code":1},{"step":"verify_green","ac_id":"AC1","command":"sh -c \"exit 5\"","exit_code":0}]')
+[[ "$out" == *"FAIL=1 RC=1"* ]] && ok "verify_green mismatch (claimed 0/actual 5) still fails despite skipped verify_red" \
+  || no "AC-R6 wrong (got: $out)"
+[[ "$out" == *"STEP=verify_green"* ]] && ok "fail attributed to verify_green, not the skipped verify_red" \
+  || no "AC-R6 step attribution wrong (got: $out)"
+
+print -r -- "-- AC-R2b: EQUALITY, not must-be-0 — a non-RED step claiming non-zero that replays to the same non-zero is a MATCH"
+out=$(replay '[{"step":"verify_existing","ac_id":"AC1","command":"sh -c \"exit 7\"","exit_code":7}]')
+[[ "$out" == *"RAN=1 FAIL=0 RC=0"* ]] && ok "verify_existing claimed 7 / actual 7 → MATCH (RAN=1 FAIL=0 return 0)" \
+  || no "AC-R2b wrong (got: $out)"
 
 print -r -- "-- AC-R1: eligible step claims exit 0 but replays to exit≠0 → replay fail"
 out=$(replay '[{"step":"verify_green","ac_id":"AC2","command":"sh -c \"exit 3\"","exit_code":0}]')

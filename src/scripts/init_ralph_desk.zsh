@@ -1650,7 +1650,8 @@ if [[ ! -f "$F" ]]; then
 #   This file is LAYER 1 (campaign-static checks). LAYER 2 runs automatically with
 #   no scaffold: after layer 1 passes, the leader replays the verify-* commands you
 #   recorded in done-claim.json execution_steps and fails if a claimed exit code
-#   does not reproduce. See governance §3a.
+#   does not reproduce. verify_red steps are the one exception: RED is a
+#   pre-implementation fact, so layer 2 never replays them. See governance §3a.
 #
 # CONTRACT (keep it strict)
 #   - DETERMINISTIC checks only: compile/build, lint/typecheck, required-file
