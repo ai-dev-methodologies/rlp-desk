@@ -10,6 +10,60 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 - Cost-log campaign-exit row attribution (`final-verify` / `campaign-exit` buckets instead of `unknown`) — spec ready in `docs/plans/manifest-followup-handoff.md`.
 
+## [0.26.0] — 2026-09-28
+
+### Changed
+- **Circuit breaker default is now 4** (was 6; 8 under consensus), paired
+  with 3-rung worker ladders so every rung is actually dispatched before a
+  stuck story blocks:
+  - claude: `haiku → sonnet:high → claude-opus-5-5:high` (ceiling).
+    `claude-fable-5-1` is the Final Verifier only.
+  - codex (cost lane): `gpt-5.6-luna:high → gpt-5.6-luna:max →
+    gpt-5.6-terra:max` (ceiling); `gpt-5.6-sol:xhigh` is sol's own ceiling.
+    `gpt-6-astra` is judge-only (final verifier / final consensus), never a
+    worker escalation target.
+  - A ceiling reached on the breaker-tripping failure still gets its own
+    2-attempt window, bounded regardless of failure category.
+  - Legacy starts (`sonnet:medium`, `opus:*`) escalate straight to the new
+    ceiling. Brainstorm recommends `claude-opus-5-5:high` for CRITICAL.
+- **Requires claude-code ≥ 2.1.280** (for `claude-opus-5-5`).
+- Retired codex models (`gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`,
+  `gpt-5.5`) are removed from the ladder; the retired ids are remapped to
+  current models with a warning instead of failing at the vendor.
+- Bare claude aliases now carry an explicit effort (`sonnet` → `:medium`,
+  `opus` → `:medium`, `fable` → `claude-fable-5-1:max`,
+  `claude-opus-5-5` → `:high`).
+- Added `claude-fable-5-1` and `gpt-6-astra` to the model registry, with
+  correct engine routing for the bare `fable` alias and bare `gpt-*` ids.
+
+### Fixed
+- **An honest TDD claim is no longer rejected by the pre-gate.** Layer 2
+  replayed `verify_red` against the implemented tree and failed every honest
+  RED; `verify_red` is now never replayed.
+- **Verifier criteria results now decide the outcome.** A `pass` verdict with
+  an unmet or malformed criterion is treated as a fail and credits no
+  partial progress; the fix contract names the unmet criteria.
+- **Consensus verdict merge** no longer corrupts the verdict file on
+  evidence containing backslashes or very large criteria lists, and one
+  engine's malformed issues no longer drop the other engine's.
+- **Approach escalation is enforced**: after repeated failures the Worker
+  must state a different approach (`approach_summary`); a missing or
+  restated approach is rejected. Unresolved verifier feedback now carries
+  across `continue` iterations and is not overwritten by pre-gate contracts.
+- The circuit breaker no longer loops to `max_iter` when failures after the
+  ceiling are environment/flaky, and its deferral survives a leader restart.
+- BLOCKED messages report the real failure count (with the threshold
+  labeled); `init --mode fresh` also archives the `blocked.json` sidecar.
+- `--consensus-model` with a bare alias (e.g. `spark`, `astra`) now
+  dispatches the canonical model id.
+- Ctrl-C / SIGTERM now stops a campaign instead of resuming it; new terminal
+  state `INTERRUPTED`.
+- Leader recovery commits no longer sweep the operator's whole git index.
+- `init` works with GNU sed, no longer misclassifies an authored PRD as a
+  scaffold under `--mode fresh`, and splits PRD/test-spec safely.
+- SV reports read zsh-leader analytics correctly and tolerate malformed
+  rows; the Node CLI validates `--*-model` flags like the zsh leader.
+
 ## [0.25.0] — 2026-08-10
 
 ### Fixed
