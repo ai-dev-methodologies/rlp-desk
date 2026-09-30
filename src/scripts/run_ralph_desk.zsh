@@ -1170,7 +1170,7 @@ launch_worker_codex() {
   local _codex_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   while (( _codex_wait < 30 )); do
     sleep 1
-    local _pane_text
+    local _pane_text=""
     _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
     # F-1 (v0.22.21): dismiss codex's "✨ Update available!" launch dialog via the
     # shared dismisser BEFORE the '›' ready check — the update menu also renders
@@ -1233,7 +1233,7 @@ launch_worker_codex() {
   local submit_attempts=0
   while (( submit_attempts < 15 )); do
     sleep 2
-    local pane_check
+    local pane_check=""
     pane_check=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
     if echo "$pane_check" | grep -qi "working\|thinking\|Exploring\|Running\|reading\|searching\|editing\|writing" 2>/dev/null; then
       log_debug "Worker codex started working after $((submit_attempts + 1)) checks"
@@ -1300,7 +1300,7 @@ launch_worker_claude() {
   local submit_attempts=0
   while (( submit_attempts < 15 )); do
     sleep 2
-    local pane_check
+    local pane_check=""
     pane_check=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
     if echo "$pane_check" | grep -qi "esc to interrupt\|thinking\|working\|kneading\|crunching\|clauding\|billowing\|brewing\|tinkering\|burrowing\|saut\|Exploring\|Running\|exec\|Explored\|Prestidigitating\|Undulating\|Reading\|Bash\|Edit\|Write\|Grep\|Glob" 2>/dev/null; then
       log_debug "Worker started working after $((submit_attempts + 1)) submit checks"
@@ -1379,7 +1379,7 @@ launch_verifier_codex() {
   local _codex_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   while (( _codex_wait < 30 )); do
     sleep 1
-    local _pane_text
+    local _pane_text=""
     _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
     # F-1 (v0.22.21): dismiss codex's "✨ Update available!" launch dialog via the
     # shared dismisser before it hijacks the pane (default option is "1. Update
@@ -1435,7 +1435,7 @@ launch_verifier_codex() {
   local submit_attempts=0
   while (( submit_attempts < 15 )); do
     sleep 2
-    local vs_check
+    local vs_check=""
     vs_check=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
     if echo "$vs_check" | grep -qi "working\|thinking\|Exploring\|Running\|reading\|searching\|editing\|writing" 2>/dev/null; then
       log_debug "Verifier codex started working after $((submit_attempts + 1)) checks"
@@ -1497,7 +1497,7 @@ launch_verifier_claude() {
   local submit_attempts=0
   while (( submit_attempts < 15 )); do
     sleep 2
-    local vs_check
+    local vs_check=""
     vs_check=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null)
     if echo "$vs_check" | grep -qi "esc to interrupt\|thinking\|working\|kneading\|crunching\|clauding\|billowing\|brewing\|tinkering\|burrowing\|saut\|Exploring\|Running\|exec\|Explored" 2>/dev/null; then
       log_debug "Verifier started working after $((submit_attempts + 1)) checks"
@@ -2549,7 +2549,7 @@ safe_send_keys() {
     sleep 0.14
 
     # Check if text was consumed
-    local check_capture
+    local check_capture=""
     check_capture=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5)
     if ! echo "$check_capture" | grep -qF "$text" 2>/dev/null; then
       log_debug " Text consumed after round $((round + 1))"
@@ -2580,7 +2580,7 @@ safe_send_keys() {
     sleep 0.18
     tmux send-keys -t "$pane_id" C-m
     sleep 0.14
-    local retry_capture
+    local retry_capture=""
     retry_capture=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -5)
     if ! echo "$retry_capture" | grep -qF "$text" 2>/dev/null; then
       log_debug " Text consumed after adaptive retry round $((retry_round + 1))"
@@ -2611,7 +2611,7 @@ wait_for_pane_ready() {
   local _wfpr_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   log "  Waiting for pane $pane_id ready..."
   while (( $(date +%s) - start < timeout )); do
-    local captured
+    local captured=""
     captured=$(tmux capture-pane -t "$pane_id" -p -S -20 2>/dev/null)
 
     # Auto-dismiss trust prompt (tmux pattern: paneHasTrustPrompt)
@@ -4069,7 +4069,7 @@ poll_for_signal() {
   PANE_IDLE_SINCE[$pane_id]=$(date +%s)
 
   while true; do
-    local now
+    local now=""
     now=$(date +%s)
     local elapsed=$(( now - poll_start ))
 
@@ -4140,11 +4140,11 @@ poll_for_signal() {
     # tried to clear the prompt; if it's still visible the worker is in a
     # multi-prompt sequence and needs more time, not an A4 short-circuit.
     if [[ "$role" != *erifier* && -f "$DONE_CLAIM_FILE" && ! -f "$signal_file" ]]; then
-      local _a4_capture
+      local _a4_capture=""
       _a4_capture=$(tmux capture-pane -t "$pane_id" -p -S -50 2>/dev/null || true)
-      local -a _a4_lines
+      local -a _a4_lines=()
       _a4_lines=("${(@f)_a4_capture}")
-      local _a4_i _a4_n=${#_a4_lines[@]} _a4_blocked=0
+      local _a4_i="" _a4_n=${#_a4_lines[@]} _a4_blocked=0
       for ((_a4_i=1; _a4_i <= _a4_n; _a4_i++)); do
         if [[ "${_a4_lines[_a4_i]}" =~ $_PROMPT_RE ]]; then
           local _a4_prev="${_a4_lines[_a4_i-1]:-}"
@@ -4162,7 +4162,7 @@ poll_for_signal() {
         # Continue polling; do NOT auto-generate signal. auto_dismiss_prompts will
         # try to dismiss on the next loop iteration.
       else
-        local dc_us_id
+        local dc_us_id=""
         dc_us_id=$(jq -r '.us_id // "unknown"' "$DONE_CLAIM_FILE" 2>/dev/null)
         if [[ -n "$dc_us_id" && "$dc_us_id" != "null" ]]; then
           # Bug #8 PR-B: defer to shared 4-way gate (codex critic P1.2).
@@ -4212,12 +4212,12 @@ poll_for_signal() {
     # context (D-17a banner / overloaded / rate-limit / service-unavailable /
     # too-many-requests / quota), so ordinary worker output containing a numeric
     # code (e.g. `expect(res.status).toBe(500)`) no longer false-BLOCKs.
-    local pane_output_for_retry
+    local pane_output_for_retry=""
     pane_output_for_retry=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
     # Reset the backoff counter when the pane makes PROGRESS (content changed):
     # a persistent error banner accumulates toward BLOCK, but new output means
     # the worker is alive, so a stale earlier hit should not count against it.
-    local _cur_api_tail
+    local _cur_api_tail=""
     _cur_api_tail=$(print -r -- "$pane_output_for_retry" | tail -n 10)
     if [[ "$_cur_api_tail" != "$_prev_api_tail" ]]; then
       api_retry_count=0
@@ -4267,7 +4267,7 @@ poll_for_signal() {
         write_blocked_sentinel "model capacity stall: resume text injected ${capacity_strikes}x without progress (Selected model is at capacity)" "" "infra_failure" "infra" "true" "restart"
         return 2
       fi
-      local _cap_now
+      local _cap_now=""
       _cap_now=$(date +%s)
       if (( _cap_now - _last_capacity_reinject_ts >= ${RLP_CAPACITY_REINJECT_COOLDOWN_S:-120} )); then
         (( capacity_strikes++ ))
@@ -4380,7 +4380,7 @@ poll_for_signal() {
     fi
 
     # Dead pane detection during poll: check if claude/codex process died
-    local poll_cmd
+    local poll_cmd=""
     poll_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null)
     # Dead pane detection — delegates to check_dead_pane() for engine-aware logic.
     # D-10: pick the engine for the pane being polled, NOT always WORKER_ENGINE. In
@@ -4587,7 +4587,7 @@ run_single_verifier() {
           break
         fi
         # Early exit: if pane returned to shell, no need to wait
-        local _pane_cmd
+        local _pane_cmd=""
         _pane_cmd=$(tmux display-message -p -t "$VERIFIER_PANE" '#{pane_current_command}' 2>/dev/null || echo "")
         if [[ "$_pane_cmd" = "zsh" || "$_pane_cmd" = "bash" || -z "$_pane_cmd" ]]; then
           log "  Codex verifier$suffix process exited. Proceeding."
@@ -4598,7 +4598,7 @@ run_single_verifier() {
       # submit-anchored timeout (first-progress detection). Once a verdict is on
       # disk the grace path above owns termination, so this is skipped.
       if (( _verdict_detected_at == 0 )); then
-        local _vq_pane
+        local _vq_pane=""
         _vq_pane=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null || true)
         # Quota exhaustion is terminal: codex prints its usage-limit error and
         # parks, so no verdict can arrive. Abort now rather than polling out.
@@ -4633,7 +4633,7 @@ run_single_verifier() {
       # failure and re-dispatches (bounded) rather than hard-timing-out — so a
       # banner-delayed submission never becomes a "verifier timed out" BLOCK.
       if (( _verdict_detected_at == 0 )); then
-        local _dstate
+        local _dstate=""
         _dstate=$(_submission_deadline_state "$_first_progress_ts" "$codex_poll_start" "$(date +%s)" "$ITER_TIMEOUT" "$SUBMISSION_TIMEOUT")
         case "$_dstate" in
           task_timeout)
@@ -4653,7 +4653,7 @@ run_single_verifier() {
               # reason, capture the pane once — if the codex update dialog is
               # STILL on screen, name the true cause + remedy instead of the
               # misleading submission-failure text (incident 2026-07-22).
-              local _sf_pane
+              local _sf_pane=""
               _sf_pane=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null || true)
               if print -r -- "$_sf_pane" | grep -qiE "$_RLP_CODEX_UPDATE_RE" 2>/dev/null; then
                 VERIFIER_ABORT_REASON="Codex verifier$suffix never started: codex update dialog could not be dismissed — run 'codex update' to clear it, or keep the check_for_update_on_startup=false injection enabled (do not set RLP_CODEX_UPDATE_CHECK=1)"
@@ -5383,7 +5383,7 @@ run_consensus_verification_parallel() {
       else
         _cl_dead=0
       fi
-      local _cl_pane
+      local _cl_pane=""
       _cl_pane=$(tmux capture-pane -t "$VERIFIER_PANE" -p 2>/dev/null || true)
       if (( _cl_fp == 0 )) && _pane_shows_progress "$_cl_pane"; then _cl_fp=$_now; fi
     fi
@@ -5399,7 +5399,7 @@ run_consensus_verification_parallel() {
       else
         _cx_dead=0
       fi
-      local _vq_pane
+      local _vq_pane=""
       _vq_pane=$(tmux capture-pane -t "$CONSENSUS_PANE" -p 2>/dev/null || true)
       # Quota exhaustion is terminal (strict detector: non-exhaustion warning
       # banners do NOT match, so they don't abort — request ③.3).

@@ -259,6 +259,7 @@ ZSH_TESTS=(
   tests/test_imp07_api_sniff_context.sh
   tests/test_imp08_slug_guard.sh
   tests/test_imp09_paste_no_tmpfile.sh
+  tests/test_polling_local_bleed.sh
 )
 for t in $ZSH_TESTS; do
   check "$(basename $t)" zsh "$t"

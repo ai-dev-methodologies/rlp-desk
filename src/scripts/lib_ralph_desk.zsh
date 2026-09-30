@@ -2481,7 +2481,7 @@ _lint_test_density() {
   local us
   for us in ${(f)us_list}; do
     # ACs in this US block of the PRD
-    local ac_count
+    local ac_count=""
     ac_count=$(awk -v us="$us" '
       $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
       in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
@@ -2489,7 +2489,7 @@ _lint_test_density() {
       END { print c+0 }
     ' "$prd_file")
 
-    local test_count
+    local test_count=""
     test_count=$(awk -v us="$us" '
       $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
       in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
@@ -3537,7 +3537,7 @@ run_pregate_replay() {
 
   local any_eligible=0 i
   for (( i = 0; i < count; i++ )); do
-    local step cmd claimed ac
+    local step="" cmd="" claimed="" ac=""
     step=$(jq -r ".execution_steps[$i].step // \"\"" "$DONE_CLAIM_FILE" 2>/dev/null)
     cmd=$(jq -r ".execution_steps[$i].command // \"\"" "$DONE_CLAIM_FILE" 2>/dev/null)
     claimed=$(jq -r ".execution_steps[$i].exit_code // \"\"" "$DONE_CLAIM_FILE" 2>/dev/null)
@@ -3562,7 +3562,7 @@ run_pregate_replay() {
       continue
     fi
     # Whole-pregate deadline (layer1+layer2 ≤ RLP_PREGATE_TIMEOUT).
-    local eff_timeout=$cmd_timeout now remaining
+    local eff_timeout=$cmd_timeout now="" remaining=""
     if (( deadline > 0 )); then
       now=$(date +%s); remaining=$(( deadline - now ))
       if (( remaining <= 0 )); then
@@ -3579,7 +3579,7 @@ run_pregate_replay() {
     any_eligible=1
     PREGATE_REPLAY_RAN=1
     local out_file="$LOGS_DIR/iter-$(printf '%03d' $iter).pregate-replay-${i}.log"
-    local actual
+    local actual=""
     _pregate_run_cmd_timed "$cmd" "$eff_timeout" "$out_file"; actual=$?
     if (( _PREGATE_CMD_TIMED_OUT )); then
       PREGATE_REPLAY_FAIL=1
@@ -4647,7 +4647,7 @@ write_blocked_sentinel() {
     local lat_file="$DESK/context/$SLUG-latest.md"
     for hf in "$mem_file" "$lat_file"; do
       if [[ -f "$hf" ]]; then
-        local f_mt
+        local f_mt=""
         f_mt=$(_file_mtime "$hf")
         if (( hygiene_now - f_mt > 300 )); then
           hygiene_violated=true
