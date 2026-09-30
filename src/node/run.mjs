@@ -960,8 +960,11 @@ async function runRunCommand(args, deps) {
   // production leader (--mode tmux) or the slash-command Native Agent() path
   // (--mode native). This is UNRELATED to the slash command's legacy `--mode agent`
   // → native redirect (different code, different leader). The `src/node/**` engine
-  // modules (run()/runCampaign) are RETAINED — they remain the engine the Native
-  // Agent() path and the test suite build on; only this direct-CLI dispatch entry
+  // modules (run()/runCampaign) are RETAINED — the production --mode tmux launcher
+  // is main() -> runRunCommand() -> runTmuxViaZsh() (spawns the zsh runner); run()
+  // (runner/campaign-main-loop.mjs, imported here as runCampaignMain) has no
+  // production entry point and is kept only as a dormant, test-only mirror (per
+  // ADR-001's 2026-09-29 amendment); only this direct-CLI dispatch entry
   // hard-errors. Mirror the --mode native slash-only exit-2 pattern above.
   if (options.mode === 'agent') {
     write(

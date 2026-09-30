@@ -77,7 +77,7 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Symptom | Trigger prompt is echoed into the codex pane's input box but sits unsubmitted; a non-exhaustion usage banner is visible on the pane ("• You have 1 usage limit reset available. Run /usage…", "increased plan usage", weekly-limit); a single Enter resolves it in 6-9s. Field-reproduced twice on the verifier leg (v0.22.15 pa-foundation resume) |
 | Root cause | The banner steals the submit keystroke, so the dispatched Enter never submits the prompt. It is NOT quota exhaustion, so the strict `detect_quota_exhausted` correctly does not fast-fail it — but without an early nudge the prompt idles until the 90s submit window re-injects, adding up to 90s of latency per dispatch |
 | Detection | `_pane_submit_blocked_by_banner` (lib_ralph_desk.zsh): trigger echoed + no `_pane_shows_progress` + matches `RLP_SUBMIT_BANNER_RE` (env-overridable) |
-| Recovery | One early one-shot Enter re-inject at the first poll tick (~POLL_INTERVAL post-dispatch) on both leaders — codex-verifier poll loop (per-dispatch guard, reset on full re-dispatch) and generic `poll_for_signal` (per-poll-session guard). After the single shot the existing submit-anchored 90s path takes over unchanged; progress detection skips the nudge so normal immediate-submit cases get zero re-injects |
+| Recovery | One early one-shot Enter re-inject at the first poll tick (~POLL_INTERVAL post-dispatch), implemented in parity on the zsh production leader and the Node campaign-loop mirror (dormant, test-only) — codex-verifier poll loop (per-dispatch guard, reset on full re-dispatch) and generic `poll_for_signal` (per-poll-session guard). After the single shot the existing submit-anchored 90s path takes over unchanged; progress detection skips the nudge so normal immediate-submit cases get zero re-injects |
 | Reference | request-g (`docs/incoming-requests/tire-plletdata-request-2026-07-21-g.md`), v0.22.16; `tests/test_banner_early_reinject.sh` |
 
 ### F1.9 — format-only done-claim defect burns an LLM cross-verify round (request-h)
@@ -86,7 +86,7 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Symptom | A build-mode done-claim whose deliverables are all green on fresh verification still FAILs the LLM cross-verifier's Worker Process Audit purely on a per-AC TDD step-label/order defect (e.g. an `implement` step labeled `ac_id:"all"` instead of `AC3`). Field case US-002 pa-foundation: 2 codex rounds ≈ 65min (iter-002 627s+964s, iter-004 1059s+1269s) with every AC green — a defect a JSON field-order check resolves in milliseconds |
 | Root cause | The pre-gate (Layer 1 static script, Layer 2 command replay) did not inspect the per-AC `write_test → verify_red → implement → verify_green` label/order of `execution_steps`, so a 100%-deterministic format fault flowed all the way to the 20-25min LLM cross-verification round before being caught |
 | Detection | `run_pregate_doneclaim_lint` (zsh) / `lintDoneClaimTddSequence` (Node); `tests/test_doneclaim_lint.sh` + `tests/node/test-done-claim-lint.test.mjs` drive shared fixtures under `tests/fixtures/done-claim-lint/` |
-| Recovery | Layer 1.5 done-claim TDD-sequence lint (governance §3a) runs before verifier dispatch on BOTH leaders; on fail it bounces the Worker with a `PRE-GATE FAILURE (done-claim format lint)` fix contract carrying per-AC `idx` coordinates (`-1` = phase missing, non-monotonic = out of order). Shared `PREGATE_FAIL_CAP`, never the circuit breaker; the canonical predicate is single-sourced with the worker-prompt format spec and the verifier's Worker Process Audit so a lint-PASS is not re-failed on format grounds. Opt out via `RLP_DONECLAIM_LINT=0` |
+| Recovery | Layer 1.5 done-claim TDD-sequence lint (governance §3a) runs before verifier dispatch in parity on the zsh production leader and the Node campaign-loop mirror (dormant, test-only); on fail it bounces the Worker with a `PRE-GATE FAILURE (done-claim format lint)` fix contract carrying per-AC `idx` coordinates (`-1` = phase missing, non-monotonic = out of order). Shared `PREGATE_FAIL_CAP`, never the circuit breaker; the canonical predicate is single-sourced with the worker-prompt format spec and the verifier's Worker Process Audit so a lint-PASS is not re-failed on format grounds. Opt out via `RLP_DONECLAIM_LINT=0` |
 | Reference | request-h (`docs/incoming-requests/tire-plletdata-request-2026-07-21-h.md`), v0.22.17; governance §3a Layer 1.5 |
 
 ### F1.10 — model-capacity mid-execution stall (request-j ①)
@@ -257,7 +257,7 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Field | Value |
 |---|---|
 | Symptom | B1 §4.2 synthetic numbers differ from B3 empirical p95 by >25% |
-| Root cause | Synthetic anchored to zsh leader's POLL_INTERVAL=5s; production scenarios run via Node leader (100ms poll). Different leader, different floor |
+| Root cause | Synthetic anchored to zsh leader's POLL_INTERVAL=5s; at the time (pre-ADR-001), production scenarios ran via the Node leader (100ms poll). Different leader, different floor. (Since ADR-001, the zsh leader is the canonical production leader and the Node campaign loop is a dormant, test-only mirror — this entry describes the historical drift, not current production behavior.) |
 | Detection | `tests/sv-real-llm/lib/b3-band-revalidation.mjs` runs 5-iter sandbox + compares |
 | Recovery | Refit `B3_BAND_*_MS` constants in `tests/sv-real-llm/lib/b3-lifecycle-assertions.sh`. See revalidation findings doc |
 | Reference | v0.15.4 audit H4; revalidation doc `docs/plans/v0.15-phase-b3-revalidation-findings.md` |
@@ -275,9 +275,9 @@ This atlas consolidates Bug #5/6/7/8/10 + lifecycle race + sentinel contention f
 | Field | Value |
 |---|---|
 | Symptom | Campaign dies before iteration 1 with `--debug` off → empty logs dir, no status.json → post-mortem impossible |
-| Root cause | status.json first written only inside the loop on both leaders; no t0 breadcrumb; tmux SIGHUP skips the EXIT-only trap |
+| Root cause | status.json first written only inside the loop, in parity on the zsh production leader and the Node campaign-loop mirror (dormant, test-only); no t0 breadcrumb; tmux SIGHUP skips the EXIT-only trap |
 | Detection | `tests/node/test-launch-breadcrumb.test.mjs` + `tests/test_launch_breadcrumb.sh` |
-| Recovery | Synchronous t0 `launch-record.json` (durable) + best-effort outcome trap incl. HUP, both leaders |
+| Recovery | Synchronous t0 `launch-record.json` (durable), written by the production `run.mjs` launcher (`runRunCommand()`, before `--mode` dispatch) — not the dormant Node campaign-loop mirror — plus the zsh runner's own best-effort outcome trap incl. HUP |
 | Reference | v0.22.7 US-004; post-mortem `authz-alignment` |
 
 ---

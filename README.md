@@ -349,8 +349,10 @@ RLP Desk has three execution modes, all honoring the same governance protocol. *
 >   dispatching via `Agent()`. Works anywhere (no tmux), good for short/interactive use, but is a
 >   second-class companion: no iteration watchdog, turn-based pauses possible. Not for long unattended runs.
 > - **`--mode agent`** (direct Node CLI) — **HARD-ERRORS (exit 2)** per [ADR-001](docs/plans/adr-001-leader-consolidation.md).
->   The direct-CLI Node leader was retired; the Node leader code (`campaign-main-loop.mjs`) is a dormant mirror
->   used only by the `--mode native` slash path's `Agent()` engine and its tests. Use `--mode tmux`.
+>   The direct-CLI Node leader was retired; `campaign-main-loop.mjs`'s exported `run()` campaign loop
+>   (its other exports, `buildPaths`, `detectLegacyDeskInRunMode` and `resolveAnalyticsPointer`, are used
+>   in production by `run.mjs`) has no production entry point and is a dormant, test-only mirror — the
+>   `--mode native` slash path invokes no Node runner module. Use `--mode tmux`.
 
 ### Environment Compatibility
 

@@ -3,6 +3,9 @@
 > Status: **ACCEPTED** (2026-06-17) · Supersedes the ambiguous "3 substrates" status quo.
 > Scope: governance/architecture decision. Implementation is staged and gated (see §5).
 > Not shipped in the npm tarball (`docs/plans/` is excluded); user-facing parts surface via CHANGELOG + docs.
+> **See [Amendment 2026-09-29](#amendment-2026-09-29)**: corrects the §2 claim below that `src/node/**`
+> "remain[s] the engine the Native Agent path and tests build on" — the Native Agent() path invokes no
+> Node runner module.
 
 ## Context
 
@@ -88,3 +91,26 @@ This is a breaking CLI change for that entry point and is called out in CHANGELO
 - Audit findings: ARCH-1, ARCH-2, DX-1, DX-2, GAP-3, GAP-4, NODE-CB-1, NODE-AUTO-1 (`.tmp/_audit-report-FULL.md`)
 - Reviewed plans: `.tmp/_improvement-plans.md` (D1 decision this ADR resolves)
 - Prior consensus: `docs/plans/native-agent-revert.md`
+
+## Amendment 2026-09-29
+
+§2 above states: "The Node `src/node/**` modules are NOT deleted — ~~they remain the engine the Native
+Agent path and tests build on~~; only the *direct-CLI `--mode agent` entry point* is deprecated then
+removed." That middle clause is corrected here; the original sentence is kept verbatim above for history.
+
+- The Native Agent() path (`--mode native`, the slash command) is orchestrated entirely by
+  `src/commands/rlp-desk.md` prose and invokes no Node runner module — it dispatches Workers/Verifiers
+  directly via `Agent()`/`Bash("codex exec ...")`, never through `src/node/**`.
+- `src/node/runner/campaign-main-loop.mjs` is **not** a wholly dormant module: `run.mjs` imports and
+  calls several of its other exports in production — `detectLegacyDeskInRunMode()` (~749), `buildPaths()`
+  (multiple call sites, incl. ~789), and `resolveAnalyticsPointer()` (~795). Only its exported `run` (the
+  campaign loop itself) is dormant — it is reached only via the CLI branch `runRunCommand()`
+  → `deps.runCampaign(...)` — a dependency-injected call whose default implementation is `run` (imported
+  into `run.mjs` as `runCampaignMain`) — which no `--mode` in `run.mjs` calls; tests call the `run` export
+  directly. That export has **no production entry point** and is a **dormant, test-only mirror** of the
+  zsh leader's protocol.
+- `run.mjs` itself remains production code: `main()` → `runRunCommand()` → `runTmuxViaZsh()` (spawns the
+  zsh runner) is the production `--mode tmux` launcher; the same file also holds CLI-flag translation,
+  gate-receipt, and status/reporting used along that path. This is a distinct call chain from `run()`
+  which is the dormant mirror named above.
+- Deleting the dormant campaign loop (option 4A) is an open owner decision, not made by this amendment.
