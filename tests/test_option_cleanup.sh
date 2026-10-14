@@ -95,15 +95,15 @@ else
 fi
 
 # D7: WORKER_CODEX_MODEL stays at the luna-first cheap-tier start
-# (gpt-5.6-luna, was gpt-5.5) — NOT the astra ladder ceiling. Owner
+# (gpt-6-luna, was gpt-5.6-luna) — NOT the astra ladder ceiling. Owner
 # correction: raising the worker default to the ceiling breaks luna-first
 # (every iteration pays frontier price, no escalation headroom left).
 # Derived from src/commands/rlp-desk.md's cross-engine table LOW cost-lane
 # Worker start row.
-if grep -qF 'WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.6-luna}"' "$RUN"; then
-  pass "D7: WORKER_CODEX_MODEL default is gpt-5.6-luna (luna-first start, not the ceiling)"
+if grep -qF 'WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-6-luna}"' "$RUN"; then
+  pass "D7: WORKER_CODEX_MODEL default is gpt-6-luna (luna-first start, not the ceiling)"
 else
-  fail "D7: WORKER_CODEX_MODEL default should be gpt-5.6-luna"
+  fail "D7: WORKER_CODEX_MODEL default should be gpt-6-luna"
 fi
 # D8: VERIFIER_CODEX_MODEL stays at a mid rung (gpt-5.6-terra, was gpt-5.5) —
 # per-US verification stays below final verification by design (governance.md

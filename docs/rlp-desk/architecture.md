@@ -32,7 +32,7 @@ Claude Code's `Agent()` tool spawns a subprocess — a completely new context wi
 Agent(
     model="sonnet",             # Model selection per iteration
     prompt=full_prompt_text,    # Everything the agent needs
-    mode="bypassPermissions"    # Autonomous execution
+    mode="bypassPermissions"    # no effect: subagents inherit the leader session's permission mode
 )
 ```
 
@@ -172,13 +172,13 @@ difficulty.
 
 ```
 Cross-engine (codex installed): cheapest capable start per complexity
-  LOW/MEDIUM  →  gpt-5.6-luna:high / :xhigh
+  LOW/MEDIUM  →  gpt-6-luna:high / :xhigh
   HIGH        →  lane choice (cost: luna:max · speed: sol:medium)
-  CRITICAL    →  gpt-5.6-sol:high  (starts above the ladder)
+  CRITICAL    →  gpt-6.1-sol:high  (starts above the ladder)
 
 Ladder on failure:  luna:high → luna:max → terra:max (ceiling)
 
-Claude-only fallback (codex absent):  haiku → sonnet:high → claude-opus-5-5:high (ceiling)
+Claude-only fallback (codex absent):  claude-haiku-5-5:medium → claude-sonnet-5-5:high → claude-opus-5-5:high (ceiling)
 ```
 
 The Leader adapts dynamically:

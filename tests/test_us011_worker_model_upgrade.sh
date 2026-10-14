@@ -377,10 +377,11 @@ test_e2e_upgrade() {
     # which the shipped ladder no longer carries), but the codex case is the
     # one that cannot be satisfied by the fallback at all.
     echo 'result_codex=$(get_next_model "gpt-5.6-sol:low")'
-    # 2026-09-26 CB=4/3-rung wave: haiku -> sonnet:high is the new default
-    # spine hop; sonnet:medium and opus:xhigh are legacy on-ramps that both
-    # escalate straight to the new ceiling claude-opus-5-5:high.
-    echo 'if [[ "$result_haiku" == "sonnet:high" && "$result_sonnet" == "claude-opus-5-5:high" && "$result_opus" == "claude-opus-5-5:high" && "$result_codex" == "gpt-5.6-sol:medium" ]]; then'
+    # Sonnet 5.5 / Opus 5.5 wave: haiku -> claude-sonnet-5-5:high is the
+    # default spine hop (version-pinned, no floating alias); sonnet:medium and
+    # opus:xhigh are legacy on-ramps that both escalate straight to the
+    # ceiling claude-opus-5-5:high.
+    echo 'if [[ "$result_haiku" == "claude-sonnet-5-5:high" && "$result_sonnet" == "claude-opus-5-5:high" && "$result_opus" == "claude-opus-5-5:high" && "$result_codex" == "gpt-5.6-sol:medium" ]]; then'
     echo '  exit 0'
     echo 'else'
     echo '  echo "haiku->$result_haiku sonnet->$result_sonnet opus->$result_opus codex->$result_codex" >&2'
@@ -393,7 +394,7 @@ test_e2e_upgrade() {
   rm -rf "$tmpdir"
 
   if (( rc == 0 )); then
-    pass "E2E-upgrade: get_next_model returns haiku→sonnet:high, sonnet:medium→claude-opus-5-5:high, opus:xhigh→claude-opus-5-5:high, gpt-5.6-sol:low→medium"
+    pass "E2E-upgrade: get_next_model returns haiku→claude-sonnet-5-5:high, sonnet:medium→claude-opus-5-5:high, opus:xhigh→claude-opus-5-5:high, gpt-5.6-sol:low→medium"
   else
     fail "E2E-upgrade: get_next_model upgrade path incorrect (rc=$rc)"
   fi
@@ -515,8 +516,12 @@ test_e2e_claude_engine_production_shape() {
     echo 'check_model_upgrade "US-001"'
     echo 'check_model_upgrade "US-001"'
     echo ''
-    echo 'if [[ "$WORKER_MODEL" != "sonnet" ]]; then'
-    echo '  echo "FAIL: claude engine did not upgrade haiku->sonnet (WORKER_MODEL=$WORKER_MODEL)" >&2'
+    echo 'if [[ "$WORKER_MODEL" != "claude-sonnet-5-5" ]]; then'
+    echo '  echo "FAIL: claude engine did not upgrade haiku->claude-sonnet-5-5 (WORKER_MODEL=$WORKER_MODEL)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'if [[ "$WORKER_EFFORT" != "high" ]]; then'
+    echo '  echo "FAIL: claude engine upgrade did not carry effort high (WORKER_EFFORT=$WORKER_EFFORT)" >&2'
     echo '  exit 1'
     echo 'fi'
     echo 'if (( _MODEL_UPGRADED != 1 )); then'
@@ -532,7 +537,7 @@ test_e2e_claude_engine_production_shape() {
   rm -rf "$tmpdir"
 
   if (( rc == 0 )); then
-    pass "E2E-claude-prod-shape: claude engine upgrades haiku->sonnet even with WORKER_CODEX_MODEL set (production shape)"
+    pass "E2E-claude-prod-shape: claude engine upgrades haiku->claude-sonnet-5-5:high even with WORKER_CODEX_MODEL set (production shape)"
   else
     fail "E2E-claude-prod-shape: $out"
   fi
@@ -664,14 +669,14 @@ test_us001_absent_override_uses_defaults() {
     echo "RLP_DESK_MODELS_FILE=\"$tmpdir/does-not-exist.json\""
     echo "$fn_body"
     echo 'r=$(get_next_model "haiku")'
-    echo '[[ "$r" == "sonnet:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+    echo '[[ "$r" == "claude-sonnet-5-5:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
   } > "$tmpdir/harness.zsh"
   local out rc
   out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
   rc=$?
   rm -rf "$tmpdir"
   if (( rc == 0 )); then
-    pass "US001-absent: no override file -> shipped defaults (haiku->sonnet)"
+    pass "US001-absent: no override file -> shipped defaults (haiku->claude-sonnet-5-5:high)"
   else
     fail "US001-absent: shipped defaults not used ($out)"
   fi
@@ -698,7 +703,7 @@ test_us001_malformed_warns_and_falls_through() {
     echo "log_error() { echo \"\$*\" >> \"$tmpdir/warn.log\"; }"
     echo "$fn_body"
     echo 'r=$(get_next_model "haiku")'
-    echo '[[ "$r" == "sonnet:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+    echo '[[ "$r" == "claude-sonnet-5-5:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
   } > "$tmpdir/harness.zsh"
   local out rc warned=0
   out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
@@ -739,7 +744,7 @@ test_us001_schema_validation_rejects_non_string_values() {
       echo "log_error() { echo \"\$*\" >> \"$tmpdir/warn.log\"; }"
       echo "$fn_body"
       echo 'r=$(get_next_model "haiku")'
-      echo '[[ "$r" == "sonnet:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
+      echo '[[ "$r" == "claude-sonnet-5-5:high" ]] && exit 0 || { echo "got: $r" >&2; exit 1; }'
     } > "$tmpdir/harness.zsh"
     local out rc warned=0
     out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
@@ -1156,6 +1161,78 @@ test_auto_detect_engine_bare_claude_opus_5_5() {
   fi
 }
 
+# Sonnet 5.5 wave: bare (no-colon) claude-sonnet-5-5 — the claude ladder's
+# version-pinned MIDDLE rung claude-sonnet-5-5:high, and the id leader.log /
+# status.json now print after a promotion — must gain its explicit start level
+# exactly like bare claude-opus-5-5 above. Without it, pasting the printed id
+# back into WORKER_MODEL / --worker-model misses the effort-qualified ladder
+# key and becomes a dead start (already_max from iteration 1). ENV-VAR path
+# (the DUPLICATED table in _auto_detect_engine, run_ralph_desk.zsh).
+test_auto_detect_engine_bare_claude_sonnet_5_5() {
+  local fn_body
+  fn_body=$(_extract_fn_from "_auto_detect_engine" "$RUN")
+  if [[ -z "$fn_body" ]]; then
+    fail "auto-detect-bare-sonnet-5-5: _auto_detect_engine() not found"
+    return
+  fi
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "$fn_body"
+    echo 'WORKER_ENGINE="claude"'
+    echo 'WORKER_MODEL="claude-sonnet-5-5"'
+    echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT'
+    echo 'if [[ "$WORKER_ENGINE" != "claude" || "$WORKER_MODEL" != "claude-sonnet-5-5" || "$WORKER_EFFORT" != "high" ]]; then'
+    echo '  echo "claude-sonnet-5-5: engine=$WORKER_ENGINE model=$WORKER_MODEL effort=$WORKER_EFFORT" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'exit 0'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "auto-detect-bare-sonnet-5-5: _auto_detect_engine classifies bare claude-sonnet-5-5 as engine=claude, model=claude-sonnet-5-5, effort=high"
+  else
+    fail "auto-detect-bare-sonnet-5-5: $out"
+  fi
+}
+
+# CLI-flag path counterpart of the test above: parse_model_flag runs
+# _normalize_model_spec (lib_ralph_desk.zsh BARE_ALIAS_NORMALIZATION) first, so
+# a bare `--worker-model claude-sonnet-5-5` must come out as the levelled
+# "claude claude-sonnet-5-5 high", not the level-less "claude claude-sonnet-5-5".
+test_parse_model_flag_bare_claude_sonnet_5_5() {
+  local deps_body pmf_body
+  deps_body="$(sed -n '/^typeset -gA RETIRED_MODEL_REMAP=($/,/^}$/p' "$LIB" 2>/dev/null)
+$(_extract_fn_from "_validate_model_level" "$LIB")"
+  pmf_body=$(_extract_fn_from "parse_model_flag" "$LIB")
+  if [[ -z "$deps_body" || -z "$pmf_body" ]]; then
+    fail "parse-model-flag-bare-sonnet-5-5: _normalize_model_spec deps or parse_model_flag not found"
+    return
+  fi
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "$deps_body"
+    echo "$pmf_body"
+    echo 'out=$(parse_model_flag "claude-sonnet-5-5" "worker") || exit 1'
+    echo '[[ "$out" == "claude claude-sonnet-5-5 high" ]] && exit 0 || { echo "out=[$out]" >&2; exit 1; }'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "parse-model-flag-bare-sonnet-5-5: parse_model_flag normalizes bare claude-sonnet-5-5 to 'claude claude-sonnet-5-5 high'"
+  else
+    fail "parse-model-flag-bare-sonnet-5-5: $out"
+  fi
+}
+
 # Model-aware reasoning gate: gpt-6-astra rejects 'minimal' (server-confirmed
 # HTTP 400, see src/model-upgrade-table.md "GPT-6 — Astra"); every other
 # codex model must still accept it — never a blanket vocabulary narrowing.
@@ -1190,13 +1267,14 @@ test_auto_detect_engine_astra_minimal_rejected() {
   zsh -f "$tmpdir/case2.zsh" >/dev/null 2>&1
   local rc2=$?
 
-  # Case 3 (regression): gpt-5.5:minimal — a DIFFERENT codex model — must
-  # still be ACCEPTED. Proves the gate is model-specific, not a blanket
-  # removal of 'minimal' from the shared vocabulary.
+  # Case 3 (regression): gpt-5.6-terra:minimal — a codex model outside the
+  # server-confirmed GPT-6 rejection set — must still be ACCEPTED. Proves the
+  # gate is model-specific, not a blanket removal of 'minimal' from the shared
+  # vocabulary.
   {
     echo '#!/usr/bin/env zsh -f'
     echo "$fn_body"
-    echo 'FINAL_VERIFIER_MODEL="gpt-5.5:minimal"'
+    echo 'FINAL_VERIFIER_MODEL="gpt-5.6-terra:minimal"'
     echo '_auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE FINAL_VERIFIER_CODEX_MODEL FINAL_VERIFIER_CODEX_REASONING'
     echo '[[ "$FINAL_VERIFIER_CODEX_REASONING" == "minimal" ]] && exit 0 || { echo "reasoning=$FINAL_VERIFIER_CODEX_REASONING" >&2; exit 1; }'
   } > "$tmpdir/case3.zsh"
@@ -1204,11 +1282,30 @@ test_auto_detect_engine_astra_minimal_rejected() {
   out3=$(zsh -f "$tmpdir/case3.zsh" 2>&1)
   local rc3=$?
 
+  # Case 4: the other GPT-6 models the server rejects 'minimal' for (aliases
+  # and the remapped retired gpt-5.5) must be rejected with rc != 0 AND the
+  # resolved slug in the message (a harness error would also exit non-zero).
+  local case4_failures="" c4_entry c4_value c4_slug c4_out c4_rc
+  for c4_entry in "sol:minimal gpt-6.1-sol" "luna:minimal gpt-6-luna" "gpt-6-sol:minimal gpt-6-sol" "gpt-5.5:minimal gpt-6.1-sol"; do
+    read -r c4_value c4_slug <<< "$c4_entry"
+    {
+      echo '#!/usr/bin/env zsh -f'
+      echo "$fn_body"
+      echo "WORKER_MODEL='$c4_value'"
+      echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT'
+    } > "$tmpdir/case4.zsh"
+    c4_out=$(zsh -f "$tmpdir/case4.zsh" 2>&1)
+    c4_rc=$?
+    if (( c4_rc == 0 )) || [[ "$c4_out" != *"not supported by $c4_slug in "* ]]; then
+      case4_failures="$case4_failures [$c4_value: rc=$c4_rc want != 0 + 'not supported by $c4_slug', out=$c4_out]"
+    fi
+  done
+
   rm -rf "$tmpdir"
-  if (( rc1 != 0 && rc2 != 0 && rc3 == 0 )); then
-    pass "auto-detect-astra-minimal: gpt-6-astra:minimal and astra:minimal rejected; gpt-5.5:minimal still accepted (model-specific gate)"
+  if (( rc1 != 0 && rc2 != 0 && rc3 == 0 )) && [[ -z "$case4_failures" ]]; then
+    pass "auto-detect-astra-minimal: astra/sol/luna/gpt-6-sol 'minimal' (alias, slug, remapped gpt-5.5) rejected with the resolved slug; gpt-5.6-terra:minimal still accepted (model-specific gate)"
   else
-    fail "auto-detect-astra-minimal: rc1=$rc1 (want != 0) rc2=$rc2 (want != 0) rc3=$rc3 (want 0, out=$out3)"
+    fail "auto-detect-astra-minimal: rc1=$rc1 (want != 0) rc2=$rc2 (want != 0) rc3=$rc3 (want 0, out=$out3) case4:${case4_failures:- ok}"
   fi
 }
 
@@ -1264,27 +1361,51 @@ _model_parse_deps() {
   zsh -f "$tmpdir/case2.zsh" >/dev/null 2>&1
   local rc2=$?
 
-  # Case 3 (regression): 'minimal' is rejected for gpt-6-astra ONLY, so a
-  # different codex model must still ACCEPT it. gpt-5.5 is retired, so this
-  # now also pins the ordering rule: the level is validated against the
-  # REPLACEMENT model's vocabulary, not the retired one's — gpt-5.5:minimal
-  # resolves to the accepted gpt-5.6-sol:minimal rather than being rejected.
+  # Case 3 (regression): 'minimal' is rejected for the GPT-6 generation models
+  # ONLY (astra, gpt-6.1-sol, gpt-6-sol, gpt-6-luna), so a model outside that
+  # set must still ACCEPT it. gpt-5.6-terra is the control.
   {
     echo '#!/usr/bin/env zsh -f'
     echo "$vml_body"
     echo "$pmf_body"
-    echo 'out=$(parse_model_flag "gpt-5.5:minimal" "final-verifier") || exit 1'
-    echo '[[ "$out" == "codex gpt-5.6-sol minimal" ]] && exit 0 || { echo "out=$out" >&2; exit 1; }'
+    echo 'out=$(parse_model_flag "gpt-5.6-terra:minimal" "final-verifier") || exit 1'
+    echo '[[ "$out" == "codex gpt-5.6-terra minimal" ]] && exit 0 || { echo "out=$out" >&2; exit 1; }'
   } > "$tmpdir/case3.zsh"
   local out3
   out3=$(zsh -f "$tmpdir/case3.zsh" 2>&1)
   local rc3=$?
 
+  # Case 4: every other GPT-6 model that the server rejects 'minimal' for
+  # (alias, slug and remapped-retired forms) must be rejected with rc != 0 AND
+  # the resolved slug plus that model's enumeration in stderr. rc alone is not
+  # enough: a harness error would also exit non-zero.
+  local case4_failures="" c4_entry c4_value c4_slug c4_enum c4_out c4_rc
+  for c4_entry in \
+    "sol:minimal gpt-6.1-sol low|medium|high|xhigh|max" \
+    "luna:minimal gpt-6-luna low|medium|high|xhigh|max" \
+    "gpt-6.1-sol:minimal gpt-6.1-sol low|medium|high|xhigh|max" \
+    "gpt-6-sol:minimal gpt-6-sol low|medium|high|xhigh|max" \
+    "gpt-6-luna:minimal gpt-6-luna low|medium|high|xhigh|max" \
+    "gpt-5.5:minimal gpt-6.1-sol low|medium|high|xhigh|max"; do
+    read -r c4_value c4_slug c4_enum <<< "$c4_entry"
+    {
+      echo '#!/usr/bin/env zsh -f'
+      echo "$vml_body"
+      echo "$pmf_body"
+      echo "parse_model_flag '$c4_value' 'worker'"
+    } > "$tmpdir/case4.zsh"
+    c4_out=$(zsh -f "$tmpdir/case4.zsh" 2>&1)
+    c4_rc=$?
+    if (( c4_rc == 0 )) || [[ "$c4_out" != *"not supported by $c4_slug in "* || "$c4_out" != *"(rlp-desk accepts: $c4_enum)"* || "$c4_out" == *"none|"* ]]; then
+      case4_failures="$case4_failures [$c4_value: rc=$c4_rc want != 0 + 'not supported by $c4_slug' + '$c4_enum', out=$c4_out]"
+    fi
+  done
+
   rm -rf "$tmpdir"
-  if (( rc1 != 0 && rc2 != 0 && rc3 == 0 )); then
-    pass "parse-model-flag-astra-minimal: gpt-6-astra:minimal and astra:minimal rejected via the CLI-flag path; gpt-5.5:minimal still accepted (as the remapped gpt-5.6-sol:minimal)"
+  if (( rc1 != 0 && rc2 != 0 && rc3 == 0 )) && [[ -z "$case4_failures" ]]; then
+    pass "parse-model-flag-astra-minimal: astra/sol/luna/gpt-6-sol 'minimal' (alias, slug, remapped gpt-5.5) rejected via the CLI-flag path with the resolved slug and enumeration; gpt-5.6-terra:minimal still accepted"
   else
-    fail "parse-model-flag-astra-minimal: rc1=$rc1 (want != 0) rc2=$rc2 (want != 0) rc3=$rc3 (want 0, out=$out3)"
+    fail "parse-model-flag-astra-minimal: rc1=$rc1 (want != 0) rc2=$rc2 (want != 0) rc3=$rc3 (want 0, out=$out3) case4:${case4_failures:- ok}"
   fi
 }
 
@@ -1308,7 +1429,7 @@ test_cli_env_validation_parity() {
     "opus:max:accept"
     "opus:extreme:reject"
     "gpt-5.5:medium:accept"
-    "gpt-5.5:minimal:accept"
+    "gpt-5.5:minimal:reject"
     "gpt-5.5:bogus:reject"
     "sol:xhigh:accept"
     "astra:high:accept"
@@ -1316,6 +1437,13 @@ test_cli_env_validation_parity() {
     "gpt-6-astra:minimal:reject"
     "astra:minimal:reject"
     "claude-fable-5-1:max:accept"
+    "gpt-5.6-terra:minimal:accept"
+    "gpt-5.6-sol:minimal:accept"
+    "gpt-6.1-sol:minimal:reject"
+    "gpt-6-sol:minimal:reject"
+    "gpt-6-luna:minimal:reject"
+    "sol:minimal:reject"
+    "luna:minimal:reject"
   )
 
   local tmpdir
@@ -1396,10 +1524,10 @@ test_bare_codex_alias_classification() {
       # it remaps to the live family the retirement table points at. The
       # property under test is unchanged — a bare alias still classifies as
       # engine=codex on both paths — only the slug it lands on moved.
-      spark) want_slug="gpt-5.6-luna" ;;
-      sol)   want_slug="gpt-5.6-sol" ;;
+      spark) want_slug="gpt-6-luna" ;;
+      sol)   want_slug="gpt-6.1-sol" ;;
       terra) want_slug="gpt-5.6-terra" ;;
-      luna)  want_slug="gpt-5.6-luna" ;;
+      luna)  want_slug="gpt-6-luna" ;;
       astra) want_slug="gpt-6-astra" ;;
     esac
 
@@ -1495,8 +1623,8 @@ test_bare_gpt_star_classification() {
   local want_slug
   for value in "gpt-5.5" "gpt-6-astra" "gpt-5.3-codex-spark"; do
     case "$value" in
-      gpt-5.5)             want_slug="gpt-5.6-sol" ;;
-      gpt-5.3-codex-spark) want_slug="gpt-5.6-luna" ;;
+      gpt-5.5)             want_slug="gpt-6.1-sol" ;;
+      gpt-5.3-codex-spark) want_slug="gpt-6-luna" ;;
       *)                   want_slug="$value" ;;
     esac
     {
@@ -1600,20 +1728,39 @@ test_validate_consensus_model_var() {
   zsh -f "$tmpdir/c2.zsh" >/dev/null 2>&1
   (( $? == 0 )) && failures="$failures [c2: astra:minimal should have been rejected]"
 
-  # Case 3 (regression): 'minimal' is rejected for gpt-6-astra ONLY, so a
-  # different codex model must still accept it. gpt-5.5 is retired, so this
-  # also pins the ordering rule — the level is validated against the
-  # REPLACEMENT model's vocabulary, not the retired one's.
+  # Case 3 (regression): 'minimal' is rejected for the GPT-6 generation models
+  # ONLY, so a codex model outside that set must still accept it
+  # (gpt-5.6-terra is the control).
   {
     echo '#!/usr/bin/env zsh -f'
     echo "$vml_body"
     echo "$vcmv_body"
-    echo 'CONSENSUS_MODEL="gpt-5.5:minimal"'
+    echo 'CONSENSUS_MODEL="gpt-5.6-terra:minimal"'
     echo '_validate_consensus_model_var CONSENSUS_MODEL "CONSENSUS_MODEL" || exit 1'
-    echo '[[ "$CONSENSUS_MODEL" == "gpt-5.6-sol:minimal" ]] || exit 1'
+    echo '[[ "$CONSENSUS_MODEL" == "gpt-5.6-terra:minimal" ]] || exit 1'
   } > "$tmpdir/c3.zsh"
   zsh -f "$tmpdir/c3.zsh" >/dev/null 2>&1
-  (( $? != 0 )) && failures="$failures [c3: gpt-5.5:minimal should still be accepted]"
+  (( $? != 0 )) && failures="$failures [c3: gpt-5.6-terra:minimal should still be accepted]"
+
+  # Case 3b: the other server-rejected GPT-6 models are rejected with rc 1 AND
+  # the resolved slug in stderr — luna and sol aliases, and the retired
+  # gpt-5.5 (validated against its REPLACEMENT, gpt-6.1-sol).
+  local _c3b_case _c3b_in _c3b_slug _c3b_out _c3b_rc
+  for _c3b_case in "luna:minimal=gpt-6-luna" "sol:minimal=gpt-6.1-sol" "gpt-5.5:minimal=gpt-6.1-sol"; do
+    _c3b_in="${_c3b_case%%=*}"; _c3b_slug="${_c3b_case##*=}"
+    {
+      echo '#!/usr/bin/env zsh -f'
+      echo "$vml_body"
+      echo "$vcmv_body"
+      echo "CONSENSUS_MODEL=\"$_c3b_in\""
+      echo '_validate_consensus_model_var CONSENSUS_MODEL "CONSENSUS_MODEL"'
+    } > "$tmpdir/c3b.zsh"
+    _c3b_out=$(zsh -f "$tmpdir/c3b.zsh" 2>&1)
+    _c3b_rc=$?
+    if (( _c3b_rc != 1 )) || [[ "$_c3b_out" != *"not supported by $_c3b_slug in "* ]]; then
+      failures="$failures [c3b: '$_c3b_in' should be rejected (rc 1) naming $_c3b_slug, rc=$_c3b_rc out=$_c3b_out]"
+    fi
+  done
 
   # Case 4: alias normalization — astra:high -> gpt-6-astra:high in place.
   {
@@ -1636,7 +1783,7 @@ test_validate_consensus_model_var() {
   # verbatim. Both consensus dispatch sites (sequential run_single_verifier,
   # parallel run_consensus_verification_parallel) read these globals and hand
   # the bare value straight to `codex -m`, so the write-back is the fix.
-  for _cm_case in "astra=gpt-6-astra" "spark=gpt-5.6-luna" "gpt-5.5=gpt-5.6-sol" "luna=gpt-5.6-luna"; do
+  for _cm_case in "astra=gpt-6-astra" "spark=gpt-6-luna" "gpt-5.5=gpt-6.1-sol" "luna=gpt-6-luna" "sol=gpt-6.1-sol"; do
     local _cm_in="${_cm_case%%=*}" _cm_want="${_cm_case##*=}"
     {
       echo '#!/usr/bin/env zsh -f'
@@ -1653,7 +1800,7 @@ test_validate_consensus_model_var() {
 
   rm -rf "$tmpdir"
   if [[ -z "$failures" ]]; then
-    pass "consensus-model-validate: --consensus-model/--final-consensus-model reject gpt-6-astra:minimal and astra:minimal, accept gpt-5.5:minimal as the remapped gpt-5.6-sol:minimal, normalize astra:high -> gpt-6-astra:high and bare astra/spark/gpt-5.5/luna in place"
+    pass "consensus-model-validate: --consensus-model/--final-consensus-model reject minimal for gpt-6-astra, gpt-6.1-sol (sol, gpt-5.5) and gpt-6-luna (luna) with the resolved slug, accept gpt-5.6-terra:minimal, normalize astra:high -> gpt-6-astra:high and bare astra/spark/gpt-5.5/luna/sol in place"
   else
     fail "consensus-model-validate:$failures"
   fi
@@ -1675,15 +1822,28 @@ test_consensus_model_cli_flag_rejects_astra_minimal() {
     "$tmp_l3/.rlp-desk/logs/e2eslug"
   touch "$tmp_l3/.rlp-desk/plans/prd-e2eslug.md"
 
-  local rc=0
-  LOOP_NAME=e2eslug ROOT="$tmp_l3" TMUX=test \
-    zsh "$RUN" --final-consensus-model "astra:minimal" >/dev/null 2>&1 || rc=$?
+  # rc alone is vacuous here: the scratch project has no prompts, so the run
+  # can exit 1 for other reasons without validation ever reaching 'minimal'.
+  # Each case therefore asserts BOTH rc == 1 AND the resolved-slug message.
+  local failures="" c_entry c_flag c_value c_want c_out c_rc
+  for c_entry in \
+    "--final-consensus-model;astra:minimal;not supported by gpt-6-astra in " \
+    "--consensus-model;sol:minimal;not supported by gpt-6.1-sol in --consensus-model='sol:minimal'" \
+    "--final-consensus-model;luna:minimal;not supported by gpt-6-luna in --final-consensus-model='luna:minimal'"; do
+    IFS=';' read -r c_flag c_value c_want <<< "$c_entry"
+    c_rc=0
+    c_out=$(LOOP_NAME=e2eslug ROOT="$tmp_l3" TMUX=test \
+      zsh "$RUN" "$c_flag" "$c_value" 2>&1 >/dev/null) || c_rc=$?
+    if (( c_rc != 1 )) || [[ "$c_out" != *"$c_want"* || "$c_out" != *"(rlp-desk accepts: low|medium|high|xhigh|max)"* || "$c_out" == *"none|"* ]]; then
+      failures="$failures [$c_flag $c_value: rc=$c_rc (want 1) want-substring='$c_want' out=$c_out]"
+    fi
+  done
   rm -rf "$tmp_l3"
 
-  if (( rc == 1 )); then
-    pass "consensus-cli-e2e: --final-consensus-model astra:minimal rejected at startup (exit 1)"
+  if [[ -z "$failures" ]]; then
+    pass "consensus-cli-e2e: --consensus-model sol:minimal, --final-consensus-model luna:minimal and astra:minimal rejected at startup (exit 1) with the resolved-slug message"
   else
-    fail "consensus-cli-e2e: --final-consensus-model astra:minimal was NOT rejected (rc=$rc, want 1)"
+    fail "consensus-cli-e2e: minimal not rejected with the expected message:$failures"
   fi
 }
 
@@ -1969,11 +2129,123 @@ test_d5b_worker_effort_crash_restart() {
   fi
 }
 
+# Sonnet 5.5 / Opus 5.5 wave: the claude ladder's MIDDLE rung is the
+# version-pinned full id claude-sonnet-5-5:high. Runs the whole walk haiku
+# (EMPTY effort) -> claude-sonnet-5-5:high -> claude-opus-5-5:high ->
+# pass-restore back to haiku/"", with a crash-restart ON the middle rung,
+# through the real check_model_upgrade / update_status / D-5b snippet /
+# pass-restore snippet (the latter two extracted by CONTENT, not retyped).
+#
+# The crash is simulated IMMEDIATELY after the first hop, i.e. at
+# _SAME_US_FAIL_COUNT=0, on purpose: this test is about the model/effort walk, not
+# about a mid-streak relaunch (F6: the relaunch now restores the same-US streak,
+# count and _LAST_FAILED_US; pinned by test_relaunch_same_us_streak.sh).
+test_claude_two_hop_full_id_ladder_restore() {
+  local cmu_body gnm_body gms_body us_body aw_body d5b_body pr_body
+  cmu_body=$(extract_fn "check_model_upgrade")
+  gnm_body=$(extract_fn "get_next_model")
+  gms_body=$(extract_fn "get_model_string")
+  us_body=$(_extract_fn_from "update_status" "$LIB")
+  aw_body=$(_extract_fn_from "atomic_write" "$LIB")
+  if [[ -z "$cmu_body" || -z "$gnm_body" || -z "$us_body" || -z "$aw_body" ]]; then
+    fail "claude-two-hop-restore: check_model_upgrade/get_next_model/update_status/atomic_write not found"
+    return
+  fi
+  d5b_body=$(_extract_d5b_snippet)
+  if [[ -z "$d5b_body" ]] || ! echo "$d5b_body" | grep -qF '_status_mu'; then
+    fail "claude-two-hop-restore: D-5b snippet extraction (_extract_d5b_snippet) returned nothing — has the block moved out of main()?"
+    return
+  fi
+  pr_body=$(_extract_pass_restore_snippet)
+  if [[ -z "$pr_body" ]] || ! echo "$pr_body" | grep -qF '_MODEL_UPGRADED'; then
+    fail "claude-two-hop-restore: _extract_pass_restore_snippet returned nothing — has the pass-restore block moved out of main()?"
+    return
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local status_file="$tmpdir/status.json"
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo 'log() { : ; }'
+    echo 'log_debug() { : ; }'
+    echo '_lifecycle_clear_lock_mark() { : ; }'
+    echo "LIB_DIR=\"$REPO_ROOT/src/scripts\""
+    # Hermetic: a real ~/.claude/rlp-desk-models.json must not win over the shipped ladder.
+    echo 'RLP_DESK_MODELS_FILE="/nonexistent-hermetic-test-guard/rlp-desk-models.json"'
+    echo "STATUS_FILE=\"$status_file\""
+    echo "$aw_body"
+    echo "$gms_body"
+    echo "$gnm_body"
+    echo "$cmu_body"
+    echo "$us_body"
+    echo ''
+    echo '# --- Start: haiku with an EMPTY effort (production shape for the default claude Worker) ---'
+    echo 'WORKER_ENGINE="claude"; WORKER_MODEL="haiku"; WORKER_EFFORT=""'
+    echo 'VERIFIER_MODEL="sonnet"; VERIFIER_ENGINE="claude"'
+    echo 'WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""'
+    echo 'VERIFIER_CODEX_MODEL=""; VERIFIER_CODEX_REASONING=""'
+    echo '_ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WORKER_CODEX_REASONING=""; _ORIGINAL_WORKER_EFFORT=""'
+    echo '_LAST_FAILED_US=""; _SAME_US_FAIL_COUNT=0; _MODEL_UPGRADED=0'
+    echo 'SLUG="two-hop-test"; BASELINE_COMMIT="none"; ITERATION=3; MAX_ITER=20'
+    echo 'VERIFY_MODE="per-us"; CONSENSUS_MODE="off"'
+    echo 'CONSECUTIVE_FAILURES=0; CONSECUTIVE_BLOCKS=0; LAST_BLOCK_REASON=""'
+    echo 'VERIFIED_US=""; ITER_START_HEAD=""; GATE_RECEIPT_STATUS="none"'
+    echo ''
+    echo '# --- Hop 1: 2 same-US fails, haiku -> claude-sonnet-5-5:high ---'
+    echo 'check_model_upgrade "US-001"; check_model_upgrade "US-001"'
+    echo 'if [[ "$WORKER_MODEL" != "claude-sonnet-5-5" || "$WORKER_EFFORT" != "high" || "$_ORIGINAL_WORKER_MODEL" != "haiku" || -n "$_ORIGINAL_WORKER_EFFORT" || "$_SAME_US_FAIL_COUNT" != "0" || "$_MODEL_UPGRADED" != "1" ]]; then'
+    echo '  echo "FAIL hop1: model=$WORKER_MODEL effort=$WORKER_EFFORT orig=$_ORIGINAL_WORKER_MODEL orig_effort=[$_ORIGINAL_WORKER_EFFORT] count=$_SAME_US_FAIL_COUNT upgraded=$_MODEL_UPGRADED (want claude-sonnet-5-5 / high / haiku / empty / 0 / 1)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'update_status "verify" "pending"'
+    echo ''
+    echo '# --- Crash-restart ON the middle rung (at count 0, see test header): every var reset to init defaults ---'
+    echo 'WORKER_MODEL=""; WORKER_ENGINE=""; WORKER_EFFORT=""'
+    echo 'WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""'
+    echo '_ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WORKER_CODEX_REASONING=""; _ORIGINAL_WORKER_EFFORT=""'
+    echo '_LAST_FAILED_US=""; _MODEL_UPGRADED=0; _SAME_US_FAIL_COUNT=0'
+    echo 'CONSECUTIVE_BLOCKS=0; LAST_BLOCK_REASON=""'
+    echo "$d5b_body"
+    echo 'if [[ "$WORKER_MODEL" != "claude-sonnet-5-5" || "$WORKER_EFFORT" != "high" || "$_ORIGINAL_WORKER_MODEL" != "haiku" || -n "$_ORIGINAL_WORKER_EFFORT" || "$_MODEL_UPGRADED" != "1" ]]; then'
+    echo '  echo "FAIL restart: model=$WORKER_MODEL effort=$WORKER_EFFORT orig=$_ORIGINAL_WORKER_MODEL orig_effort=[$_ORIGINAL_WORKER_EFFORT] upgraded=$_MODEL_UPGRADED (want claude-sonnet-5-5 / high / haiku / empty / 1)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo ''
+    echo '# --- Hop 2: 2 more same-US fails on the RESTORED middle rung, claude-sonnet-5-5:high -> claude-opus-5-5:high ---'
+    echo 'check_model_upgrade "US-001"; check_model_upgrade "US-001"'
+    echo 'if [[ "$WORKER_MODEL" != "claude-opus-5-5" || "$WORKER_EFFORT" != "high" || "$_ORIGINAL_WORKER_MODEL" != "haiku" || -n "$_ORIGINAL_WORKER_EFFORT" ]]; then'
+    echo '  echo "FAIL hop2: model=$WORKER_MODEL effort=$WORKER_EFFORT orig=$_ORIGINAL_WORKER_MODEL orig_effort=[$_ORIGINAL_WORKER_EFFORT] (want claude-opus-5-5 / high / haiku / empty)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo ''
+    echo '# --- Pass verdict: the REAL shipped restore block returns to haiku with an EMPTY effort ---'
+    echo "$pr_body"
+    echo 'if [[ "$WORKER_MODEL" == "haiku" && -z "$WORKER_EFFORT" && "$_MODEL_UPGRADED" == "0" ]]; then'
+    echo '  exit 0'
+    echo 'else'
+    echo '  echo "FAIL restore: model=$WORKER_MODEL effort=[$WORKER_EFFORT] upgraded=$_MODEL_UPGRADED (want haiku / empty / 0)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "claude-two-hop-restore: haiku->claude-sonnet-5-5:high (crash-restart restores it)->claude-opus-5-5:high, pass restores haiku with empty effort"
+  else
+    fail "claude-two-hop-restore: $out"
+  fi
+}
+
 test_gpt6_astra_ladder
 test_gpt6_sol_terminates_without_astra
 test_auto_detect_engine_new_models
 test_auto_detect_engine_fable_alias
 test_auto_detect_engine_bare_claude_opus_5_5
+test_auto_detect_engine_bare_claude_sonnet_5_5
+test_parse_model_flag_bare_claude_sonnet_5_5
 test_auto_detect_engine_astra_minimal_rejected
 test_parse_model_flag_astra_minimal_rejected
 test_cli_env_validation_parity
@@ -1985,6 +2257,164 @@ test_claude_ladder_reaches_fable
 test_claude_worker_effort_upgrade_and_restore
 test_worker_default_never_equals_ceiling
 test_d5b_worker_effort_crash_restart
+test_claude_two_hop_full_id_ladder_restore
+
+# Brainstorm MEDIUM worker start: the explicit full id claude-sonnet-5-5:medium
+# must pass through BOTH normalizers untouched (a colon means a non-empty tail,
+# so the bare-alias branch is skipped) and split into claude / model / medium.
+# Characterization (passes before and after the ladder key is added): ENV-VAR
+# path (_auto_detect_engine in run_ralph_desk.zsh) and CLI-flag path
+# (parse_model_flag in lib_ralph_desk.zsh).
+test_claude_sonnet_5_5_medium_start_passthrough() {
+  local fn_body deps_body pmf_body
+  fn_body=$(_extract_fn_from "_auto_detect_engine" "$RUN")
+  deps_body="$(sed -n '/^typeset -gA RETIRED_MODEL_REMAP=($/,/^}$/p' "$LIB" 2>/dev/null)
+$(_extract_fn_from "_validate_model_level" "$LIB")"
+  pmf_body=$(_extract_fn_from "parse_model_flag" "$LIB")
+  if [[ -z "$fn_body" || -z "$deps_body" || -z "$pmf_body" ]]; then
+    fail "claude-medium-start-passthrough: _auto_detect_engine / _normalize_model_spec deps / parse_model_flag not found"
+    return
+  fi
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "$deps_body"
+    echo "$fn_body"
+    echo "$pmf_body"
+    echo 'WORKER_ENGINE="claude"'
+    echo 'WORKER_MODEL="claude-sonnet-5-5:medium"'
+    echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT'
+    echo 'if [[ "$WORKER_ENGINE" != "claude" || "$WORKER_MODEL" != "claude-sonnet-5-5" || "$WORKER_EFFORT" != "medium" ]]; then'
+    echo '  echo "env path: engine=$WORKER_ENGINE model=$WORKER_MODEL effort=$WORKER_EFFORT (want claude / claude-sonnet-5-5 / medium)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'out=$(parse_model_flag "claude-sonnet-5-5:medium" "worker") || { echo "cli path: parse_model_flag failed" >&2; exit 1; }'
+    echo '[[ "$out" == "claude claude-sonnet-5-5 medium" ]] && exit 0 || { echo "cli path: out=[$out] (want claude claude-sonnet-5-5 medium)" >&2; exit 1; }'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "claude-medium-start-passthrough: claude-sonnet-5-5:medium is not rewritten; env path -> claude/claude-sonnet-5-5/medium, CLI path -> 'claude claude-sonnet-5-5 medium'"
+  else
+    fail "claude-medium-start-passthrough: $out"
+  fi
+}
+
+# Brainstorm MEDIUM claude worker start, whole walk: claude-sonnet-5-5:medium
+# -> claude-sonnet-5-5:high (effort-only hop, SAME model id) -> claude-opus-5-5:high,
+# with a crash-restart ON the middle rung and the pass-restore back to the
+# medium start. Modeled on test_claude_two_hop_full_id_ladder_restore above
+# (real check_model_upgrade / update_status / D-5b snippet / pass-restore
+# snippet), but the start effort is NON-EMPTY ("medium"), so unlike the haiku
+# walk _ORIGINAL_WORKER_EFFORT must survive the crash-restart (D-5b
+# `[[ -n "$_s_owef" ]] && _ORIGINAL_WORKER_EFFORT=...`) for the pass-restore to
+# return to "medium" instead of an empty effort. The crash is simulated at
+# _SAME_US_FAIL_COUNT=0 for the same reason as the haiku walk (a mid-streak
+# relaunch is covered by test_relaunch_same_us_streak.sh, not here).
+test_claude_medium_start_two_hop_restore() {
+  local cmu_body gnm_body gms_body us_body aw_body d5b_body pr_body
+  cmu_body=$(extract_fn "check_model_upgrade")
+  gnm_body=$(extract_fn "get_next_model")
+  gms_body=$(extract_fn "get_model_string")
+  us_body=$(_extract_fn_from "update_status" "$LIB")
+  aw_body=$(_extract_fn_from "atomic_write" "$LIB")
+  if [[ -z "$cmu_body" || -z "$gnm_body" || -z "$us_body" || -z "$aw_body" ]]; then
+    fail "claude-medium-two-hop-restore: check_model_upgrade/get_next_model/update_status/atomic_write not found"
+    return
+  fi
+  d5b_body=$(_extract_d5b_snippet)
+  if [[ -z "$d5b_body" ]] || ! echo "$d5b_body" | grep -qF '_status_mu'; then
+    fail "claude-medium-two-hop-restore: D-5b snippet extraction (_extract_d5b_snippet) returned nothing — has the block moved out of main()?"
+    return
+  fi
+  pr_body=$(_extract_pass_restore_snippet)
+  if [[ -z "$pr_body" ]] || ! echo "$pr_body" | grep -qF '_MODEL_UPGRADED'; then
+    fail "claude-medium-two-hop-restore: _extract_pass_restore_snippet returned nothing — has the pass-restore block moved out of main()?"
+    return
+  fi
+
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local status_file="$tmpdir/status.json"
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo 'log() { : ; }'
+    echo 'log_debug() { : ; }'
+    echo '_lifecycle_clear_lock_mark() { : ; }'
+    echo "LIB_DIR=\"$REPO_ROOT/src/scripts\""
+    # Hermetic: a real ~/.claude/rlp-desk-models.json must not win over the shipped ladder.
+    echo 'RLP_DESK_MODELS_FILE="/nonexistent-hermetic-test-guard/rlp-desk-models.json"'
+    echo "STATUS_FILE=\"$status_file\""
+    echo "$aw_body"
+    echo "$gms_body"
+    echo "$gnm_body"
+    echo "$cmu_body"
+    echo "$us_body"
+    echo ''
+    echo '# --- Start: claude-sonnet-5-5 with effort medium (production shape after _auto_detect_engine) ---'
+    echo 'WORKER_ENGINE="claude"; WORKER_MODEL="claude-sonnet-5-5"; WORKER_EFFORT="medium"'
+    echo 'VERIFIER_MODEL="sonnet"; VERIFIER_ENGINE="claude"'
+    echo 'WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""'
+    echo 'VERIFIER_CODEX_MODEL=""; VERIFIER_CODEX_REASONING=""'
+    echo '_ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WORKER_CODEX_REASONING=""; _ORIGINAL_WORKER_EFFORT=""'
+    echo '_LAST_FAILED_US=""; _SAME_US_FAIL_COUNT=0; _MODEL_UPGRADED=0'
+    echo 'SLUG="medium-two-hop-test"; BASELINE_COMMIT="none"; ITERATION=3; MAX_ITER=20'
+    echo 'VERIFY_MODE="per-us"; CONSENSUS_MODE="off"'
+    echo 'CONSECUTIVE_FAILURES=0; CONSECUTIVE_BLOCKS=0; LAST_BLOCK_REASON=""'
+    echo 'VERIFIED_US=""; ITER_START_HEAD=""; GATE_RECEIPT_STATUS="none"'
+    echo ''
+    echo '# --- Hop 1: 2 same-US fails, claude-sonnet-5-5:medium -> claude-sonnet-5-5:high (same id, effort-only) ---'
+    echo 'check_model_upgrade "US-001"; check_model_upgrade "US-001"'
+    echo 'if [[ "$WORKER_MODEL" != "claude-sonnet-5-5" || "$WORKER_EFFORT" != "high" || "$_ORIGINAL_WORKER_MODEL" != "claude-sonnet-5-5" || "$_ORIGINAL_WORKER_EFFORT" != "medium" || "$_SAME_US_FAIL_COUNT" != "0" || "$_MODEL_UPGRADED" != "1" ]]; then'
+    echo '  echo "FAIL hop1: model=$WORKER_MODEL effort=$WORKER_EFFORT orig=$_ORIGINAL_WORKER_MODEL orig_effort=[$_ORIGINAL_WORKER_EFFORT] count=$_SAME_US_FAIL_COUNT upgraded=$_MODEL_UPGRADED (want claude-sonnet-5-5 / high / claude-sonnet-5-5 / medium / 0 / 1)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo 'update_status "verify" "pending"'
+    echo ''
+    echo '# --- Crash-restart ON the middle rung (at count 0, see test header): every var reset to init defaults ---'
+    echo 'WORKER_MODEL=""; WORKER_ENGINE=""; WORKER_EFFORT=""'
+    echo 'WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""'
+    echo '_ORIGINAL_WORKER_MODEL=""; _ORIGINAL_WORKER_CODEX_REASONING=""; _ORIGINAL_WORKER_EFFORT=""'
+    echo '_LAST_FAILED_US=""; _MODEL_UPGRADED=0; _SAME_US_FAIL_COUNT=0'
+    echo 'CONSECUTIVE_BLOCKS=0; LAST_BLOCK_REASON=""'
+    echo "$d5b_body"
+    echo 'if [[ "$WORKER_MODEL" != "claude-sonnet-5-5" || "$WORKER_EFFORT" != "high" || "$_ORIGINAL_WORKER_MODEL" != "claude-sonnet-5-5" || "$_ORIGINAL_WORKER_EFFORT" != "medium" || "$_MODEL_UPGRADED" != "1" ]]; then'
+    echo '  echo "FAIL restart: model=$WORKER_MODEL effort=$WORKER_EFFORT orig=$_ORIGINAL_WORKER_MODEL orig_effort=[$_ORIGINAL_WORKER_EFFORT] upgraded=$_MODEL_UPGRADED (want claude-sonnet-5-5 / high / claude-sonnet-5-5 / medium (NON-EMPTY, read back from status.json) / 1)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo ''
+    echo '# --- Hop 2: 2 more same-US fails on the RESTORED middle rung, claude-sonnet-5-5:high -> claude-opus-5-5:high ---'
+    echo 'check_model_upgrade "US-001"; check_model_upgrade "US-001"'
+    echo 'if [[ "$WORKER_MODEL" != "claude-opus-5-5" || "$WORKER_EFFORT" != "high" || "$_ORIGINAL_WORKER_EFFORT" != "medium" ]]; then'
+    echo '  echo "FAIL hop2: model=$WORKER_MODEL effort=$WORKER_EFFORT orig=$_ORIGINAL_WORKER_MODEL orig_effort=[$_ORIGINAL_WORKER_EFFORT] (want claude-opus-5-5 / high / claude-sonnet-5-5 / medium)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo ''
+    echo '# --- Pass verdict: the REAL shipped restore block returns to the medium start (not empty, not high) ---'
+    echo "$pr_body"
+    echo 'if [[ "$WORKER_MODEL" == "claude-sonnet-5-5" && "$WORKER_EFFORT" == "medium" && "$_MODEL_UPGRADED" == "0" ]]; then'
+    echo '  exit 0'
+    echo 'else'
+    echo '  echo "FAIL restore: model=$WORKER_MODEL effort=[$WORKER_EFFORT] upgraded=$_MODEL_UPGRADED (want claude-sonnet-5-5 / medium / 0)" >&2'
+    echo '  exit 1'
+    echo 'fi'
+  } > "$tmpdir/harness.zsh"
+  local out rc
+  out=$(zsh -f "$tmpdir/harness.zsh" 2>&1)
+  rc=$?
+  rm -rf "$tmpdir"
+  if (( rc == 0 )); then
+    pass "claude-medium-two-hop-restore: claude-sonnet-5-5:medium->claude-sonnet-5-5:high (crash-restart restores it with original effort medium)->claude-opus-5-5:high, pass restores claude-sonnet-5-5:medium"
+  else
+    fail "claude-medium-two-hop-restore: $out"
+  fi
+}
+
+test_claude_sonnet_5_5_medium_start_passthrough
+test_claude_medium_start_two_hop_restore
 
 # Negative-case mutation control on the D-5b restore READ specifically (not
 # the write path — a hand-crafted status.json bypasses update_status
@@ -2049,6 +2479,100 @@ JSON
   fi
 }
 test_d5b_worker_effort_missing_field_backward_compat
+
+# Addendum-4 (generation refresh): the version-pinned claude-haiku-5-5 is a ladder rung
+# (claude-haiku-5-5:medium), so a bare claude-haiku-5-5 pasted back into --worker-model /
+# WORKER_MODEL must gain :medium exactly like claude-sonnet-5-5 gains :high, or it misses the
+# effort-qualified key and is a dead start. The floating bare "haiku" is deliberately NOT
+# rewritten (the default path stays unpinned). CLI-flag path (parse_model_flag) and ENV-VAR
+# path (_auto_detect_engine); the colon arm stores model and effort separately.
+test_bare_claude_haiku_5_5_normalization() {
+  local deps_body pmf_body ade_body
+  deps_body="$(sed -n '/^typeset -gA RETIRED_MODEL_REMAP=($/,/^}$/p' "$LIB" 2>/dev/null)
+$(_extract_fn_from "_validate_model_level" "$LIB")"
+  pmf_body=$(_extract_fn_from "parse_model_flag" "$LIB")
+  ade_body=$(_extract_fn_from "_auto_detect_engine" "$RUN")
+  if [[ -z "$deps_body" || -z "$pmf_body" || -z "$ade_body" ]]; then
+    fail "bare-haiku-5-5: _normalize_model_spec deps, parse_model_flag or _auto_detect_engine not found"
+    return
+  fi
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "$deps_body"
+    echo "$pmf_body"
+    echo 'out=$(parse_model_flag "claude-haiku-5-5" "worker") || { echo "cli: parse_model_flag claude-haiku-5-5 failed" >&2; exit 1; }'
+    echo '[[ "$out" == "claude claude-haiku-5-5 medium" ]] || { echo "cli: bare claude-haiku-5-5 out=[$out] (want claude claude-haiku-5-5 medium)" >&2; exit 1; }'
+    echo 'out=$(parse_model_flag "haiku" "worker") || { echo "cli: parse_model_flag haiku failed" >&2; exit 1; }'
+    echo '[[ "$out" == "claude haiku" ]] || { echo "cli: bare haiku out=[$out] (want [claude haiku])" >&2; exit 1; }'
+  } > "$tmpdir/cli.zsh"
+  local cli_out cli_rc
+  cli_out=$(zsh -f "$tmpdir/cli.zsh" 2>&1)
+  cli_rc=$?
+
+  {
+    echo '#!/usr/bin/env zsh -f'
+    echo "$ade_body"
+    echo 'WORKER_ENGINE=""; WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""; WORKER_EFFORT=""'
+    echo 'WORKER_MODEL="claude-haiku-5-5"'
+    echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT'
+    echo 'if [[ "$WORKER_ENGINE" != "claude" || "$WORKER_MODEL" != "claude-haiku-5-5" || "$WORKER_EFFORT" != "medium" ]]; then'
+    echo '  echo "env: bare claude-haiku-5-5 engine=$WORKER_ENGINE model=$WORKER_MODEL effort=$WORKER_EFFORT (want claude / claude-haiku-5-5 / medium)" >&2; exit 1'
+    echo 'fi'
+    echo 'WORKER_ENGINE=""; WORKER_EFFORT=""; WORKER_MODEL="haiku"'
+    echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT'
+    echo 'if [[ "$WORKER_MODEL" != "haiku" || -n "$WORKER_EFFORT" ]]; then'
+    echo '  echo "env: bare haiku model=$WORKER_MODEL effort=[$WORKER_EFFORT] (want haiku / empty)" >&2; exit 1'
+    echo 'fi'
+  } > "$tmpdir/env.zsh"
+  local env_out env_rc
+  env_out=$(zsh -f "$tmpdir/env.zsh" 2>&1)
+  env_rc=$?
+  rm -rf "$tmpdir"
+  if (( cli_rc == 0 && env_rc == 0 )); then
+    pass "bare-haiku-5-5: bare claude-haiku-5-5 gains :medium on the CLI path ('claude claude-haiku-5-5 medium') and the env path (claude / claude-haiku-5-5 / medium); bare haiku is unchanged"
+  else
+    fail "bare-haiku-5-5: cli rc=$cli_rc [$cli_out] env rc=$env_rc [$env_out]"
+  fi
+}
+
+# Addendum-4 (D2): the ENV-VAR path's colon arm (_auto_detect_engine, run_ralph_desk.zsh) is one of
+# the three alias copies; sol/luna now expand to the GPT-6 generation, terra/astra do not move.
+test_auto_detect_colon_alias_expansion() {
+  local ade_body
+  ade_body=$(_extract_fn_from "_auto_detect_engine" "$RUN")
+  if [[ -z "$ade_body" ]]; then
+    fail "auto-detect-colon-alias: _auto_detect_engine() not found"
+    return
+  fi
+  local tmpdir failures="" c_entry c_in c_want c_out c_rc
+  tmpdir=$(mktemp -d)
+  for c_entry in "sol:high=gpt-6.1-sol" "luna:high=gpt-6-luna" "terra:high=gpt-5.6-terra" "astra:high=gpt-6-astra"; do
+    c_in="${c_entry%%=*}"; c_want="${c_entry##*=}"
+    {
+      echo '#!/usr/bin/env zsh -f'
+      echo "$ade_body"
+      echo "WORKER_MODEL='$c_in'"
+      echo 'WORKER_ENGINE=""; WORKER_CODEX_MODEL=""; WORKER_CODEX_REASONING=""; WORKER_EFFORT=""'
+      echo '_auto_detect_engine WORKER_MODEL WORKER_ENGINE WORKER_CODEX_MODEL WORKER_CODEX_REASONING WORKER_EFFORT || exit 1'
+      echo 'echo "$WORKER_ENGINE $WORKER_CODEX_MODEL $WORKER_CODEX_REASONING"'
+    } > "$tmpdir/h.zsh"
+    c_out=$(zsh -f "$tmpdir/h.zsh" 2>&1)
+    c_rc=$?
+    if (( c_rc != 0 )) || [[ "$c_out" != "codex $c_want high" ]]; then
+      failures="$failures [$c_in: rc=$c_rc out=[$c_out] want=[codex $c_want high]]"
+    fi
+  done
+  rm -rf "$tmpdir"
+  if [[ -z "$failures" ]]; then
+    pass "auto-detect-colon-alias: sol:high -> gpt-6.1-sol, luna:high -> gpt-6-luna, terra:high -> gpt-5.6-terra, astra:high -> gpt-6-astra on the env path"
+  else
+    fail "auto-detect-colon-alias:$failures"
+  fi
+}
+test_bare_claude_haiku_5_5_normalization
+test_auto_detect_colon_alias_expansion
 
 # ============================================================
 # Summary

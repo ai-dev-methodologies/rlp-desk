@@ -35,29 +35,38 @@ claude alias at all, even though the ladder value that reaches it —
 - CB < table columns → BLOCKED at that column
 - CB > 6 → repeat ceiling model beyond column 6
 
-## Codex model catalog (codex-cli 0.144 / GPT-5.6 generation)
+## Codex model catalog (codex-cli 0.162.1, snapshot 2026-10-11)
 
-Source: the codex CLI's own model catalog (embedded catalog of codex-cli
-0.144.1, cross-checked against `~/.codex/models_cache.json`).
+Source: `~/.codex/models_cache.json` as fetched by codex-cli 0.162.1 on
+2026-10-11 (11 entries; the three not listed in the table, `gpt-reserve`,
+`gpt-daybreak-blue-latest` and `codex-auto-review`, are not used by rlp-desk).
+There is no GPT-6 Terra: `gpt-5.6-terra` is still the terra slot.
 
 | Model | Position | Reasoning efforts | Catalog default |
 |-------|----------|-------------------|-----------------|
-| gpt-5.6-sol | Frontier agentic coding (top) | low, medium, high, xhigh, max, ultra | low |
-| gpt-5.6-terra | Balanced, everyday work | low, medium, high, xhigh, max, ultra | medium |
-| gpt-5.6-luna | Fast and affordable (small) | low, medium, high, xhigh, max | medium |
-| gpt-5.5 | Previous-gen frontier | low, medium, high, xhigh | medium |
-| gpt-5.4 | Everyday coding (prev gen) | low, medium, high, xhigh | medium |
-| gpt-5.4-mini | Small/cost-efficient (prev gen) | low, medium, high, xhigh | medium |
-| gpt-5.3-codex-spark | Ultra-fast coding, 100k context | low, medium, high, xhigh | high |
+| gpt-6.1-sol | Latest workhorse for coding and everyday work (priority 1) | low, medium, high, xhigh, max, ultra | low |
+| gpt-6-astra | Frontier intelligence for the most demanding work (judge-only in rlp-desk) | low, medium, high, xhigh, max, ultra | medium |
+| gpt-6-sol | Previous-generation workhorse | low, medium, high, xhigh, max, ultra | medium |
+| gpt-6-luna | Fast and affordable, easier tasks | low, medium, high, xhigh, max | medium |
+| gpt-5.6-sol | Older generation workhorse | low, medium, high, xhigh, max, ultra | low |
+| gpt-5.6-terra | Older balanced model (no GPT-6 successor) | low, medium, high, xhigh, max, ultra | medium |
+| gpt-5.6-luna | Older fast and efficient model | low, medium, high, xhigh, max | medium |
+| gpt-5.5 | Legacy coding model (hidden in the list) | low, medium, high, xhigh | medium |
 
+- Retired ids (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`,
+  `spark`) remap on entry (see `RETIRED_MODEL_REMAP`). Dated note 2026-10-11:
+  `gpt-5.4`, `gpt-5.4-mini` and `gpt-5.3-codex-spark` are not in the codex
+  0.162.1 catalog (Pro-only models may be hidden from the list); the sections
+  below keep describing them.
 - `max` and `ultra` are effort tiers introduced with the GPT-5.6 family;
-  `gpt-5.6-luna` supports `max` but not `ultra`. **Policy 2026-08-03
+  `gpt-6-luna` and the older 5.6 luna list `max` but not `ultra` (the CLI accepted
+  `luna:ultra` on 2026-10-11, but acceptance is not proof it is applied, and
+  there is no `gpt-6-luna:ultra` ladder key). **Policy 2026-08-03
   (luna-first — partial reversal of the 2026-07-20 xhigh-ceiling policy,
   justified by the 2026-07-30 price cut):** within luna the ladder raises
   effort to `max` before jumping models (`luna:high → luna:max`, skipping
   xhigh in the default chain; `luna:xhigh → luna:max` for manual starts).
-  `luna:max` then hops to the quota-first `terra:max` lane (terra:max quality
-  sits between sol:high and sol:xhigh — sol:high would be lateral), which is
+  `luna:max` then hops to the quota-first `terra:max` lane (GPT-5.6-generation estimate, not re-measured: terra:max quality sits between sol:high and sol:xhigh — sol:high would be lateral; since the 2026-10-11 price page terra is priced above gpt-6.1-sol per token, 0.55 vs 0.5 relative to gpt-5.6-sol = 1.0, and it stays the lane ceiling by owner decision), which is
   now the cost lane's own ceiling (2026-09-26 CB=4/3-rung wave — no further
   escalation into sol). Terra keeps its own `:xhigh` ladder ceiling before
   jumping model into sol on a manual terra start; sol's `:xhigh` is its own
@@ -66,20 +75,24 @@ Source: the codex CLI's own model catalog (embedded catalog of codex-cli
   `sol:max`/`sol:ultra`/`terra:ultra`/`gpt-6-astra:max`/`gpt-6-astra:ultra`
   remain valid manual starting points but are dead-end keys (no forward
   escalation).
-- CLI aliases: `sol` → gpt-5.6-sol, `terra` → gpt-5.6-terra, `luna` →
-  gpt-5.6-luna, `astra` → gpt-6-astra (same convention as the existing `spark`
-  alias).
+- `gpt-6-sol` (previous-generation workhorse, $2/$10) has no ladder keys: an explicit `gpt-6-sol:*` start runs without escalation (a dead start, like `luna:ultra`); use `gpt-6.1-sol`.
+- CLI aliases: `sol` → gpt-6.1-sol, `terra` → gpt-5.6-terra, `luna` →
+  gpt-6-luna, `astra` → gpt-6-astra (same convention as the existing `spark`
+  alias, itself retired). Retired remap targets follow the slot:
+  `gpt-5.4-mini`/`gpt-5.3-codex-spark`/`spark` → gpt-6-luna, `gpt-5.5` →
+  gpt-6.1-sol, `gpt-5.4` → gpt-5.6-terra. Explicit 5.6 sol and luna ids are
+  never rewritten.
 - `gpt-5.5-pro` and `gpt-5.4-nano` appear in some OpenAI surfaces but are NOT
   in the codex CLI catalog — not usable as rlp-desk worker/verifier models.
-- `gpt-6-astra` (codex-cli 0.153.4+) is a newer frontier model not in this
-  0.144.1-sourced table — see "GPT-6 — Astra" below for its (empirically
-  confirmed) catalog details.
+- `gpt-6-astra` (codex-cli 0.153.4+) is listed in the 0.162.1 catalog above
+  (priority 2); see "GPT-6 — Astra" below for its empirically confirmed
+  details.
 
 ## GPT-6 — Astra (newest frontier)
 
 | Model | Position | Reasoning efforts | Catalog default |
 |-------|----------|-------------------|-----------------|
-| gpt-6-astra | Frontier agentic coding (newest) | low, medium, high, xhigh, max (confirmed) | unknown (not in models_cache.json) |
+| gpt-6-astra | Frontier agentic coding (newest) | low, medium, high, xhigh, max (confirmed) | medium (catalog 0.162.1) |
 
 **Verification (2026-09-07, codex-cli 0.153.4) — live probes, not a mirror.**
 `~/.codex/models_cache.json` still doesn't list `gpt-6-astra` (stale relative
@@ -100,6 +113,8 @@ codex exec -m gpt-6-astra -c model_reasoning_effort="<level>" --sandbox read-onl
 | xhigh | Accepted — real generation, replied `OK` (20,935 tokens). |
 | max | Accepted — real generation, replied `OK` (27,993 tokens). |
 | ultra | **Inconclusive.** Accepted with no error — real generation, replied `OK` (20,982 tokens) — but the server's own `minimal`-rejection message explicitly enumerates the supported set as `low, medium, high, xhigh, max` and does **not** include `ultra`. The CLI's own catalog describes `ultra` as "maximum reasoning with automatic task delegation" (a client-side orchestration feature on other models, not a raw `reasoning.effort` API value), which would explain why it isn't rejected even though the server doesn't list it as a distinct supported value for this model — it may be silently reinterpreted (e.g. coerced to `max`) rather than genuinely honored as `ultra`. Treat "accepted" here as "does not error," not as "confirmed distinct reasoning level." |
+
+Update 2026-10-11 (codex-cli 0.162.1): `gpt-6-astra` is now listed in `~/.codex/models_cache.json` (priority 2, default `medium`).
 
 **Conclusion:** `low`/`medium`/`high`/`xhigh`/`max` are authoritatively
 confirmed (both by successful probe AND by the server's own explicit
@@ -127,6 +142,8 @@ whole worker ladder. **That decision was reopened and reversed on 2026-09-26**
 terminal `""` again — no worker walk reaches astra any more. See the updated
 Sol/Terra/Luna tables below for the current per-complexity chains.
 
+`minimal` is also rejected by `gpt-6.1-sol`, `gpt-6-sol` and `gpt-6-luna` (probed 2026-10-11, HTTP 400; the server enumerates `low|medium|high|xhigh|max` for `gpt-6.1-sol` and `none|low|medium|high|xhigh|max` for `gpt-6-sol` and `gpt-6-luna`); the validator rejects it at startup for these four slugs and their aliases (`astra`, `sol`, `luna`, and remapped `gpt-5.5`); the 5.6 family is unprobed and stays accepted.
+
 CLI alias: `astra` → `gpt-6-astra` (same convention as `sol`/`terra`/`luna`).
 
 ## Cost Model (`cost_factors` in `src/node/models.json`)
@@ -134,8 +151,8 @@ CLI alias: `astra` → `gpt-6-astra` (same convention as `sol`/`terra`/`luna`).
 **Architectural finding, not previously documented:** `cost_factors` is
 consumed ONLY for codex-engine rows in both leaders —
 `_resolveCostFactor`/summarizeCost gates on `record.worker_engine === 'codex'`
-(`src/node/reporting/campaign-reporting.mjs`) and `_cost_factor_x100` is only
-called `if [[ "$row_worker_engine" == "codex" ]]` (`src/scripts/lib_ralph_desk.zsh`,
+(`src/node/reporting/campaign-reporting.mjs`) and `_cost_factor_x100` (name kept;
+an integer x1000 scale since 2026-10-11) is only called `if [[ "$row_worker_engine" == "codex" ]]` (`src/scripts/lib_ralph_desk.zsh`,
 "Codex legs sol-equivalent" summary). Claude-engine rows are counted
 (`claude_legs++` / a separate bucket) but **never priced** by this table
 today — the "unknown family -> 1.0" fallback is real, but it currently only
@@ -144,58 +161,81 @@ claude `cost_factors` entry would be inert under the current code — useful
 groundwork, not a live fix — until/unless a future change wires claude legs
 into the same accounting.
 
-**gpt-6-astra, gpt-5.5, gpt-5.4, spark:** no local evidence of real API
-pricing for any of these codex models is available in this session (no
-pricing skill/table for OpenAI/codex was loaded, unlike the Claude side —
-see below). `cost_factors` is unchanged; all four keep the existing
-unknown-family fallback of `1.0` (parity with `sol`, the current most
-expensive family in the table) — the conservative, non-downgrading value a
-guessed entry would also have to be. **Needs an owner number**: real
-per-token pricing for `gpt-6-astra` relative to `gpt-5.6-sol`, if it differs
-from 1.0.
+**Codex factors (2026-10-11, derived from saved raw OpenAI rows).** The raw
+Standard-tier rows are saved verbatim in
+`.omc/artifacts/sv-sonnet-opus-5-5/evidence/openai-pricing-2026-10-11.md`
+(fetched 2026-10-11; $ per MTok input / output, short context). The single-factor
+rule: when the input and output ratios to the anchor are equal the factor is
+that value, otherwise their mean (`estimated_tokens` carries no input/output
+split, so the mean bounds the error at half the spread). The anchor stays
+the 5.6 Sol price (4 / 20) = 1.0, so old numbers keep their meaning. Both leaders
+use the same per-row scaled-integer calculation (each factor x1000, rounded;
+sum of tokens x scaled factor; one floor division by 1000), so reports agree
+to the token.
+
+Factors relative to gpt-5.6-sol = 1.0 (OpenAI price page of 2026-10-11, short context; the 5.6 Sol price is promotional through at least 2026-11-21, re-derive after): gpt-6.1-sol 0.5; gpt-6-luna 0.025; gpt-5.6-terra 0.55 (was 0.4); gpt-5.6-luna 0.055 (was 0.04); one factor = the input/output ratio when equal, else their mean. gpt-6-astra would be 2.5 (judge-only, not applied).
+
+`gpt-6-astra` ($10/$50) is recorded but **not applied**: it is judge-only and
+`cost_factors` only prices worker codex rows. Retired `gpt-5.5`, `gpt-5.4` and
+`spark` remap on entry and carry no factor of their own. The saved page says
+"GPT-5.6 Sol's promotional pricing is available at least through November 21,
+2026": the anchor price is promotional, so every factor expires then and must
+be re-derived after that date (follow-up F-B). Old cost logs re-reported later
+show different terra/luna sol-equivalents than the numbers printed at the time.
 
 **Claude family — real evidence available, not applied (see the
-architectural finding above for why):** the `claude-api` skill's cached
-first-party Anthropic pricing table (2026-06-24) gives Haiku 4.5 $1/$5,
-Sonnet 5 $2/$10, Opus 5 $5/$25, and Fable 5.1 $10/$50 (input/output per
-MTok) — a clean, consistent 1:2:5:10 ratio across all four models on BOTH
+architectural finding above for why):** the Anthropic pricing evidence
+(`claude-api` skill table cached 2026-09-25, re-read 2026-09-30; Haiku 5.5 from
+the platform models overview fetched 2026-10-11) gives Sonnet 5.5 $2/$10, Opus
+5.5 $4/$20, Fable 5.1 $10/$50 and Haiku 5.5 from $0.10/$0.50 (input/output per
+MTok; Opus 5 was $5/$25; Haiku 4.5 was $1/$5 and stays here as the legacy
+reference). That is a 100:40:20:1 ratio (fable:opus:sonnet:haiku-5.5) on BOTH
 input and output pricing. Anchoring to the generation's top tier at `1.0`
 (the same convention `sol` already uses on the codex side) gives:
 
 | Model | Ratio to fable | Evidence |
 |-------|----------------|----------|
 | claude-fable-5-1 | 1.0 | $10/$50 per MTok (anchor) |
-| opus | 0.5 | $5/$25 per MTok = exactly half of fable |
-| sonnet | 0.2 | $2/$10 per MTok = exactly 1/5 of fable |
-| haiku | 0.1 | $1/$5 per MTok = exactly 1/10 of fable |
+| claude-opus-5-5 | 0.4 | $4/$20 per MTok = 2/5 of fable |
+| claude-sonnet-5-5 | 0.2 | $2/$10 per MTok = exactly 1/5 of fable |
+| claude-haiku-5-5 | 0.01 | $0.10/$0.50 per MTok (<=100K prompt) = 1/100 of fable on both legs |
 
 This ratio is well-evidenced (first-party pricing, not a guess) but **was
-NOT added to `cost_factors`**, because doing so would implicitly assert
-`claude-fable-5-1` costs the same per token as `gpt-5.6-sol` (both at `1.0`
-in the same flat table) — a cross-engine equivalence with no local evidence
-either way, since no codex/OpenAI pricing was loaded this session to compare
-against. **Needs an owner decision**: (a) is a cross-engine dollar
-reconciliation between sol and fable available, so these four claude values
-can be placed on the same 1.0-anchored scale as sol/terra/luna/astra, or (b)
-should claude get its own independently-scaled `1.0` anchor with an explicit
-note that summing it against codex factors is not a dollar-equivalent
+NOT added to `cost_factors`**, because the code prices codex rows only and
+claude legs are subscription-pool, not dollar-metered. **Owner decisions:** (a)
+the cross-engine reconciliation now exists in the saved evidence, so the claude
+values CAN be placed on the same 1.0-anchored scale:
+Cross-engine reconciliation from the same saved rows, relative to gpt-5.6-sol = 1.0 (promo price): claude-fable-5-1 2.5, claude-opus-5-5 1.0, claude-sonnet-5-5 0.5, claude-haiku-5-5 0.025 on both legs; NOT applied (claude legs are subscription-pool and the code prices codex rows only).
+(b) should claude get its own independently-scaled `1.0` anchor with an
+explicit note that summing it against codex factors is not a dollar-equivalent
 comparison, or (c) should claude legs stay unpriced (status quo) until the
-codex-only architectural gate is revisited on its own. The 1:2:5:10 ratio
-above is ready to apply under whichever answer is chosen — it does not need
-re-deriving.
+codex-only architectural gate is revisited on its own. (b) and (c) stay open
+to the owner; the ratios above are ready to apply under whichever answer is
+chosen — they do not need re-deriving (apart from the promo-price caveat).
 
-## GPT-5.6 — Sol (frontier; `sol:xhigh` is its own terminal ceiling — astra left the worker escalation path)
+## GPT-6.1 — Sol (workhorse; `sol:xhigh` is its own terminal ceiling — astra left the worker escalation path)
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7+ |
 |------------|-----|-----|-----|-----|
-| LOW | gpt-5.6-sol:low | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh (repeat until CB) |
-| MEDIUM | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh (repeat until CB) |
-| HIGH | gpt-5.6-sol:medium | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh (repeat until CB) |
-| CRITICAL | gpt-5.6-sol:high | gpt-5.6-sol:xhigh | gpt-5.6-sol:xhigh (repeat until CB) | gpt-5.6-sol:xhigh (repeat until CB) |
+| LOW | gpt-6.1-sol:low | gpt-6.1-sol:medium | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) |
+| MEDIUM | gpt-6.1-sol:medium | gpt-6.1-sol:high | gpt-6.1-sol:xhigh | at CB 4: — (not reached: BLOCKED at failure #6) |
+| HIGH | gpt-6.1-sol:medium | gpt-6.1-sol:high | gpt-6.1-sol:xhigh | at CB 4: — (not reached: BLOCKED at failure #6) |
+| CRITICAL | gpt-6.1-sol:high | gpt-6.1-sol:xhigh | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) |
+
+`gpt-5.6-sol:*` and `gpt-5.6-luna:*` (older generation) remain ladder keys and escalate inside their own family; the shared `gpt-5.6-terra:xhigh` hop lands on `gpt-6.1-sol:high`.
+
+**Reachability** (tmux leader only. Walked 2026-10-11 against the real `check_model_upgrade()` + circuit-breaker code; `CB_THRESHOLD=4`, consensus off (consensus doubles the threshold), one US, every failure ladder-eligible). A column is only dispatched if the campaign survives to its first attempt:
+
+| Start | Attempt → model | BLOCKED at failure # | Block |
+|-------|-----------------|----------------------|-------|
+| LOW | #1-2 gpt-6.1-sol:low, #3-4 gpt-6.1-sol:medium | 4 | plain "4 consecutive verification failures" (the next rung is only just assigned at #4 and never dispatched) |
+| MEDIUM | #1-2 gpt-6.1-sol:medium, #3-4 gpt-6.1-sol:high, #5-6 gpt-6.1-sol:xhigh | 6 | architecture escalation (DEFECT-2a: the ceiling gets its own 2-attempt window) |
+| HIGH | #1-2 gpt-6.1-sol:medium, #3-4 gpt-6.1-sol:high, #5-6 gpt-6.1-sol:xhigh | 6 | architecture escalation (same) |
+| CRITICAL | #1-2 gpt-6.1-sol:high, #3-4 gpt-6.1-sol:xhigh | 4 | architecture escalation (the promotion lands at #2, so the ceiling has had both attempts by #4) |
 
 (2026-09-26 CB=4/3-rung wave, owner decision: `gpt-6-astra` is judge-only —
 the Final Verifier and Final Consensus seats — and left the worker
-escalation path entirely. `gpt-5.6-sol:xhigh` has no next step; it is the
+escalation path entirely. `sol:xhigh` has no next step; it is the
 real ceiling of the sol family now. CRITICAL starts at `sol:high`, one hop
 below the ceiling — with `CB_THRESHOLD` default 4 a CRITICAL campaign may
 start at, or one hop below, the ceiling; if it fails `CB_THRESHOLD` times,
@@ -204,63 +244,73 @@ BLOCKED is the correct outcome, a spec problem rather than a headroom gap
 `docs/plans/model-mapping-2026-09-25-findings.md` Part 2 §4). Verified via a
 direct walk of the shipped `src/node/models.json` ladder, not hand-derived —
 see `tests/node/models-ladder.test.mjs` "gpt-5.6-sol:xhigh terminates at its
-own ceiling". Reachability at the default `CB_THRESHOLD=4` depends on how
-many rungs below `sol:xhigh` the row starts, not a fixed number of columns:
-`sol:low` (LOW, 3 rungs below) blocks at failure #4 with `sol:high` only
-just assigned and never actually dispatched (a plain block); `sol:medium`
-(MEDIUM/HIGH, 2 rungs below) has the promotion to `sol:xhigh` land exactly
-on failure #4, so DEFECT-2a defers the breaker and the `5-6` column IS
-reached before an architecture-escalation block at failure #6; `sol:high`
-(CRITICAL, 1 rung below) reaches `sol:xhigh` a rung earlier, within the
-`3-4` column itself, so the architecture-escalation block fires at failure
-#4 instead. The `7+` column applies only when `--cb-threshold` is raised
-above the default.)
+own ceiling" (the legacy 5.6 key) and the gpt-6.1-sol ladder test there.
+The `7+` column applies only when `--cb-threshold` is raised above the
+default; consensus doubles the effective threshold.)
 
 ## GPT-5.6 — Terra (xhigh → Sol:high jump; terra:max is the cost lane's own ceiling)
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7-8 | 9-10 | 11-12 |
 |------------|-----|-----|-----|-----|------|-------|
-| LOW | terra:low | terra:medium | terra:high | terra:xhigh | sol:high | sol:xhigh (repeat until CB) |
-| MEDIUM | terra:medium | terra:high | terra:xhigh | sol:high | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) |
-| HIGH | terra:high | terra:xhigh | sol:high | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) |
-| CRITICAL | terra:xhigh | sol:high | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) |
+| LOW | gpt-5.6-terra:low | gpt-5.6-terra:medium | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) |
+| MEDIUM | gpt-5.6-terra:medium | gpt-5.6-terra:high | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) |
+| HIGH | gpt-5.6-terra:high | gpt-5.6-terra:xhigh | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) | at CB 4: — (not reached: BLOCKED at failure #4) |
+| CRITICAL | gpt-5.6-terra:xhigh | gpt-6.1-sol:high | gpt-6.1-sol:xhigh | at CB 4: — (not reached: BLOCKED at failure #6) | at CB 4: — (not reached: BLOCKED at failure #6) | at CB 4: — (not reached: BLOCKED at failure #6) |
 
-(Cells abbreviate `gpt-5.6-terra` / `gpt-5.6-sol`. After `terra:xhigh` the
-ladder jumps to `gpt-5.6-sol:high` — model step-up enters at `:high`, never a
-lower effort. `sol:xhigh` has no next step; it is the real ceiling of the sol
-family now (2026-09-26 CB=4/3-rung wave — `gpt-6-astra` is judge-only and
-left the worker escalation path). This table is illustrative of the full
+**Reachability** (tmux leader only. Walked 2026-10-11 against the real `check_model_upgrade()` + circuit-breaker code; `CB_THRESHOLD=4`, consensus off (consensus doubles the threshold), one US, every failure ladder-eligible):
+
+| Start | Attempt → model | BLOCKED at failure # | Block |
+|-------|-----------------|----------------------|-------|
+| LOW | #1-2 gpt-5.6-terra:low, #3-4 gpt-5.6-terra:medium | 4 | plain "4 consecutive verification failures" (the next rung is only just assigned at #4 and never dispatched) |
+| MEDIUM | #1-2 gpt-5.6-terra:medium, #3-4 gpt-5.6-terra:high | 4 | plain "4 consecutive verification failures" (same) |
+| HIGH | #1-2 gpt-5.6-terra:high, #3-4 gpt-5.6-terra:xhigh | 4 | plain "4 consecutive verification failures" (same) |
+| CRITICAL | #1-2 gpt-5.6-terra:xhigh, #3-4 gpt-6.1-sol:high, #5-6 gpt-6.1-sol:xhigh | 6 | architecture escalation (DEFECT-2a: the ceiling gets its own 2-attempt window) |
+
+(After `terra:xhigh` the ladder jumps to `gpt-6.1-sol:high` — model step-up
+enters at `:high`, never a lower effort (the shared terra node follows the
+slot rule: terra has no GPT-6 successor, so its escalation lands in the
+current workhorse). `sol:xhigh` has no next step; it is the real ceiling of
+the sol family now (2026-09-26 CB=4/3-rung wave — `gpt-6-astra` is judge-only
+and left the worker escalation path). This table is illustrative of the full
 manual-start shape, not default behavior — the brainstorm default cost-lane
-walk is the 3-rung `luna:high → luna:max → terra:max` spine below.
-Reachability at the default `CB_THRESHOLD=4` again depends on rungs-to-ceiling,
-not a fixed column: a `terra:low`/`terra:medium`/`terra:high` start
-(LOW/MEDIUM/HIGH, 3+ rungs below `sol:xhigh`) blocks at failure #4 with the
-next rung only just assigned and never dispatched (a plain block, so the
-`5-6` column onward is unreached); a `terra:xhigh` start (CRITICAL, 2 rungs
-below `sol:xhigh`) has the promotion to `sol:xhigh` land exactly on failure
-#4, so DEFECT-2a defers the breaker and the `5-6` column IS reached before
-an architecture-escalation block at failure #6. Any further column applies
-only when `--cb-threshold` is raised above the default.)
+walk is the 3-rung `luna:high → luna:max → terra:max` spine below. A
+`terra:low`/`terra:medium`/`terra:high` start has 3+ rungs below
+`sol:xhigh` and blocks at failure #4 with the next rung only just assigned
+and never dispatched; a `terra:xhigh` start (2 rungs below `sol:xhigh`) has
+the promotion to `sol:xhigh` land exactly on failure #4, so DEFECT-2a defers
+the breaker until failure #6. Any further column applies only when
+`--cb-threshold` is raised above the default.)
 
 (`terra:max` is the quota-first lane hop reached from `luna:max`, or a manual
 `--worker-model gpt-5.6-terra:max` start; it has no next step — it is the
 cost lane's own ceiling now, not a hop into `sol:xhigh`.)
 
-## GPT-5.6 — Luna (effort to max first, then terra:max quota-first ceiling)
+## GPT-6 — Luna (effort to max first, then terra:max quota-first ceiling)
 
 | Complexity | 1-2 | 3-4 | 5-6+ |
 |------------|-----|-----|------|
-| LOW | luna:high | luna:max | terra:max (repeat until CB) |
-| MEDIUM | luna:xhigh | luna:max | terra:max (repeat until CB) |
-| HIGH | luna:max | terra:max (repeat until CB) | terra:max (repeat until CB) |
-| CRITICAL | sol:high | sol:xhigh (repeat until CB) | sol:xhigh (repeat until CB) |
+| LOW | gpt-6-luna:high | gpt-6-luna:max | gpt-5.6-terra:max |
+| MEDIUM | gpt-6-luna:xhigh | gpt-6-luna:max | gpt-5.6-terra:max |
+| HIGH | gpt-6-luna:max | gpt-5.6-terra:max | at CB 4: — (not reached: BLOCKED at failure #4) |
+| CRITICAL | gpt-6.1-sol:high | gpt-6.1-sol:xhigh | at CB 4: — (not reached: BLOCKED at failure #4) |
 
-(Cells abbreviate `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol`. Row =
-brainstorm start per complexity (cost lane); columns = consecutive-failure
-milestones. Full chain (2026-09-26 CB=4/3-rung wave): `luna:high → luna:max →
-terra:max` (ceiling) — the old `terra:max → sol:xhigh → astra` escape hatch
-is gone; manual `luna:low/medium` starts climb `low → medium → high` first;
-manual `luna:xhigh` joins at `luna:max`. CRITICAL rows start at `sol:high`
+`gpt-5.6-sol:*` and `gpt-5.6-luna:*` (older generation) remain ladder keys and escalate inside their own family; the shared `gpt-5.6-terra:xhigh` hop lands on `gpt-6.1-sol:high`.
+
+**Reachability** (tmux leader only. Walked 2026-10-11 against the real `check_model_upgrade()` + circuit-breaker code; `CB_THRESHOLD=4`, consensus off (consensus doubles the threshold), one US, every failure ladder-eligible):
+
+| Start | Attempt → model | BLOCKED at failure # | Block |
+|-------|-----------------|----------------------|-------|
+| LOW | #1-2 gpt-6-luna:high, #3-4 gpt-6-luna:max, #5-6 gpt-5.6-terra:max | 6 | architecture escalation (DEFECT-2a: the ceiling gets its own 2-attempt window) |
+| MEDIUM | #1-2 gpt-6-luna:xhigh, #3-4 gpt-6-luna:max, #5-6 gpt-5.6-terra:max | 6 | architecture escalation (same) |
+| HIGH | #1-2 gpt-6-luna:max, #3-4 gpt-5.6-terra:max | 4 | architecture escalation (the promotion lands at #2, so the ceiling has had both attempts by #4) |
+| CRITICAL | #1-2 gpt-6.1-sol:high, #3-4 gpt-6.1-sol:xhigh | 4 | architecture escalation (same) |
+
+(Row = brainstorm start per complexity (cost lane); columns =
+consecutive-failure milestones. Full chain (2026-09-26 CB=4/3-rung wave):
+`luna:high → luna:max → terra:max` (ceiling) — the old
+`terra:max → sol:xhigh → astra` escape hatch is gone; manual
+`luna:low/medium` starts climb `low → medium → high` first; manual
+`luna:xhigh` joins at `luna:max`. CRITICAL rows start at `gpt-6.1-sol:high`
 regardless of lane, on sol's own 2-rung chain to its `sol:xhigh` ceiling —
 lane-independent and outside the luna-first cost lane. Speed lane HIGH starts
 `sol:medium → sol:high → sol:xhigh` (ceiling).)
@@ -274,13 +324,17 @@ is accepted — escalation is evidence-gated, and by the time a LOW US has faile
 this many times its complexity was misjudged. Two mitigations if the latency
 matters: `--lock-worker-model` (pin the start model; the CB then owns the
 terminal outcome instead of the ladder) or a manual `--worker-model
-gpt-5.6-sol:medium` start for that campaign.
+gpt-6.1-sol:medium` start for that campaign.
 
 ## GPT-5.4 / GPT-5.4-mini (low → medium → high → xhigh)
+
+Dated note 2026-10-11: retired ids remap on entry (see the catalog section above); `gpt-5.4` and `gpt-5.4-mini` are not in the codex 0.162.1 catalog (Pro-only models may be hidden from the list).
 
 Same 4-tier shape as gpt-5.5 below; substitute `gpt-5.4` or `gpt-5.4-mini`.
 
 ## GPT Pro (gpt-5.3-codex-spark — separate token limit)
+
+Dated note 2026-10-11: retired ids remap on entry (see the catalog section above); `gpt-5.3-codex-spark` is not in the codex 0.162.1 catalog (Pro-only models may be hidden from the list).
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7+ |
 |------------|-----|-----|-----|-----|
@@ -290,6 +344,8 @@ Same 4-tier shape as gpt-5.5 below; substitute `gpt-5.4` or `gpt-5.4-mini`.
 | CRITICAL | gpt-5.3-codex-spark:xhigh | gpt-5.3-codex-spark:xhigh | gpt-5.3-codex-spark:xhigh | BLOCKED |
 
 ## Non-Pro (gpt-5.5)
+
+Dated note 2026-10-11: retired ids remap on entry (see the catalog section above); `gpt-5.5` is listed in the codex 0.162.1 catalog as hidden (legacy coding model).
 
 | Complexity | 1-2 | 3-4 | 5-6 | 7+ |
 |------------|-----|-----|-----|-----|
@@ -302,10 +358,21 @@ Same 4-tier shape as gpt-5.5 below; substitute `gpt-5.4` or `gpt-5.4-mini`.
 
 | Complexity | 1-2 | 3-4 | 5-6+ |
 |------------|-----|-----|------|
-| LOW | haiku | sonnet:high | claude-opus-5-5:high (repeat until CB) |
-| MEDIUM | sonnet:high | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) |
-| HIGH | sonnet:high | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) |
-| CRITICAL | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) |
+| LOW | claude-haiku-5-5:medium | claude-sonnet-5-5:high | claude-opus-5-5:high (repeat until CB) |
+| MEDIUM | claude-sonnet-5-5:medium | claude-sonnet-5-5:high | claude-opus-5-5:high (repeat until CB) |
+| HIGH | claude-sonnet-5-5:high | claude-opus-5-5:high (repeat until CB) | at CB 4: — (not reached: BLOCKED at failure #4) |
+| CRITICAL | claude-opus-5-5:high (repeat until CB) | claude-opus-5-5:high (repeat until CB) | at CB 4: — (not reached: BLOCKED at failure #4) |
+
+**Reachability** (tmux leader only; native promotion and stopping are not guaranteed to match, a known gap. Walked 2026-10-07 against the real `check_model_upgrade()` + circuit-breaker code; `CB_THRESHOLD=4`, consensus off, one US, every failure ladder-eligible). A column is only dispatched if the campaign survives to its first attempt:
+
+| Start | Attempt → model | BLOCKED at failure # | Block |
+|-------|-----------------|----------------------|-------|
+| LOW | #1-2 claude-haiku-5-5:medium, #3-4 claude-sonnet-5-5:high, #5-6 claude-opus-5-5:high | 6 | architecture escalation (DEFECT-2a: the ceiling gets its own 2-attempt window) |
+| MEDIUM | #1-2 claude-sonnet-5-5:medium, #3-4 claude-sonnet-5-5:high, #5-6 claude-opus-5-5:high | 6 | architecture escalation (same) |
+| HIGH | #1-2 claude-sonnet-5-5:high, #3-4 claude-opus-5-5:high | 4 | architecture escalation (the promotion lands at #2, so the ceiling has had both attempts by #4) |
+| CRITICAL | #1-4 claude-opus-5-5:high | 4 | plain "4 consecutive verification failures" (starts AT the ceiling, never upgraded, so no deferral) |
+
+The `5-6+` column of HIGH and CRITICAL is reached only when the breaker threshold is above 4 (`--cb-threshold N`, N >= 5, or consensus, which doubles it): at `CB_THRESHOLD=6` a HIGH start runs `claude-opus-5-5:high` through failure #6. This table and these stop points describe the tmux leader's coded ladder and circuit breaker (`--mode tmux`). `--mode native` runs the ladder and the breaker as LLM-executed prose (steps ③ and ⑦c and the Circuit Breaker section of `rlp-desk.md`), which is not guaranteed to match them (a known gap).
 
 (The claude spine shortened from 7 rungs to 3 (2 hops from `haiku`) so
 `CB_THRESHOLD=4` dispatches every rung instead of stranding the budget on a
@@ -324,6 +391,17 @@ a): if it fails `CB_THRESHOLD` times, BLOCKED is the correct outcome — a
 spec problem, not a model-ladder gap. Verified via a direct walk of the
 shipped `src/node/models.json` ladder — see `tests/node/models-ladder.test.mjs`
 "claude worker ceiling is claude-opus-5-5:high, not fable".)
+
+The MEDIUM spine is
+`claude-sonnet-5-5:medium` → `claude-sonnet-5-5:high` → `claude-opus-5-5:high`: an effort-only first hop on the same model id, then the same two-hop shape as the haiku spine, so `CB_THRESHOLD=4` still dispatches every rung. Why MEDIUM starts at `medium`: Anthropic's effort guidance says "For agentic coding and multistep tool use, start with `medium` for well-specified tasks and move to `high` for harder or longer ones" (https://platform.claude.com/docs/en/build-with-claude/effort); the ladder spends `high` only after two failed attempts. `:medium` is a start only, nothing escalates into it, and the emergency inline ladder (used only when `models.json` is missing) has no key for it.
+
+Legacy `sonnet:high` / `sonnet:medium` remain ladder keys (persisted
+status.json, older copied flags) and escalate straight to
+`claude-opus-5-5:high`. An override file (`${RLP_DESK_MODELS_FILE:-~/.claude/rlp-desk-models.json}`) REPLACES the whole shipped ladder (`get_next_model()` in `lib_ralph_desk.zsh`) and is read entry by entry, so two cases differ: an override written before the pinned spine has no `claude-sonnet-5-5:high` key and keeps the floating `sonnet` middle rung, so a start on `claude-sonnet-5-5:high` or on its `:medium` sibling is a dead start under it; an override copied from the pinned shipped ladder before the `:medium` key was added still has the `claude-sonnet-5-5:high` key and lacks only `:medium`, so only a `:medium` start is dead under it. Either way, regenerate the override from the shipped file. Legacy `haiku` is the same rung (floating alias; it resolves to `claude-haiku-5-5` in the CLI as of 2026-10-11) and stays a ladder key.
+
+An override written before the 2026-10-11 generation refresh that contains only `gpt-5.6-*` keys will not match `luna:`/`sol:` (now `gpt-6-luna`/`gpt-6.1-sol`): add the new keys or delete the override.
+
+Dead starts (accepted, dispatched with their effort, but not ladder keys, so the worker never escalates and the circuit breaker blocks at failure #4): `haiku:<effort>` (any effort on the floating alias), `claude-haiku-5-5:low` and `claude-haiku-5-5:high` (only `claude-haiku-5-5:medium` is a rung), and `claude-sonnet-5-5:low`. Start on a rung instead.
 
 **Verification (2026-09-14, claude CLI) — live probes, matching the
 `gpt-6-astra` treatment below.** The claude effort vocabulary
@@ -400,6 +478,31 @@ made it live, so it was closed alongside it. See
 `test_d5b_worker_effort_missing_field_backward_compat` in
 `tests/test_us011_worker_model_upgrade.sh` for the crash-restart and
 missing-field-backward-compat coverage.
+
+**Same-US streak across a relaunch (F6):** `update_status()` also persists
+`last_failed_us` (the US that `same_us_fail_count` belongs to), and the relaunch
+restores both for ANY relaunch of a live campaign, promoted or not (the model,
+effort and ceiling bookkeeping restore of D-5b stays gated on `model_upgraded`
+being 1). So a crash after one same-US failure keeps the streak and the next
+same-US failure promotes on time. A missing field restores as 0 / empty. A
+`status.json` whose `phase` is `complete` (a finished run's leftover) or
+`blocked` is not restored. For `blocked`, PR-E resets the other counters only
+when `_validate_blocked_recovery` passes (in `lib_ralph_desk.zsh`: the
+sentinel is cleared, a failure or block counter is non-zero, no sidecar says
+`recoverable=false`); if that validation fails the failure counter is still
+restored while the streak starts at 0, and the ceiling-deferral counter of a
+blocked leftover is still restored by D-5b. A fresh campaign has no file
+(`init --mode fresh|improve` deletes it) and the file is per project root and
+slug. When no PRD exists yet, the missing-PRD fallback of `init --mode
+fresh|improve` clears only the four runtime files (`status.json`, the legacy
+`status.json`, `baseline.log`, `cost-log.jsonl`) and does NOT archive memos,
+iterations or the verified-US ledger, which the PRD-present lifecycle archives.
+The streak is per US and is restored as persisted: if the operator
+relaunches with a different `--worker-model`, a not-yet-promoted campaign applies
+the restored count to the NEW start model (the first same-US failure may promote
+one failure earlier than a cold start), while a promoted campaign keeps its
+persisted model; use `init --mode fresh|improve` for a clean restart. Pinned by
+`tests/test_relaunch_same_us_streak.sh`.
 
 ## Complexity Evaluation (brainstorm determines this)
 

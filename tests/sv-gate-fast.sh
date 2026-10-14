@@ -260,6 +260,8 @@ ZSH_TESTS=(
   tests/test_imp08_slug_guard.sh
   tests/test_imp09_paste_no_tmpfile.sh
   tests/test_polling_local_bleed.sh
+  # ladder contract (get_next_model / check_model_upgrade); outside the test:zsh glob, so this is its only automatic gate
+  tests/sv-large-campaign/test-model-upgrade-ladder.zsh
 )
 for t in $ZSH_TESTS; do
   check "$(basename $t)" zsh "$t"

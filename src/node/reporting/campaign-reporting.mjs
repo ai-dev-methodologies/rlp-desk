@@ -266,16 +266,18 @@ function summarizeCost(records, costFactors = loadCostFactors()) {
 
   // C1 rounding contract: accumulate estimated_tokens x factor across ALL
   // attributed codex rows and floor ONCE at the end — never per-row — so a
-  // small row's contribution (e.g. 10 luna tokens x 0.04) is not truncated
-  // to zero before it can accumulate with its peers. Mirrors the zsh
-  // leader's accumulate-then-divide-once integer arithmetic (lib_ralph_desk.zsh
-  // _cost_factor_x100 callers) even though Node's IEEE754 floats have no
-  // truncation hazard of their own to work around.
-  const codexSolEquivalent = Math.floor(
-    attributed
-      .filter((record) => record.worker_engine === 'codex')
-      .reduce((sum, record) => sum + Number(record.estimated_tokens ?? 0) * _resolveCostFactor(costFactors, record.worker_model), 0),
-  );
+  // small row's contribution (e.g. 10 luna tokens x 0.055) is not truncated
+  // to zero before it can accumulate with its peers. Both leaders share one
+  // scaled-integer calculation: each row's factor is rounded to an integer x1000
+  // (zsh _cost_factor_x100 via jq `round`, here Math.round(factor * 1000)),
+  // multiplied by the row's tokens, summed, and divided by 1000 once. Float
+  // accumulation would differ at the boundary (40 x 1001 gpt-6-luna tokens is
+  // 1000.9999999999994 in floats but 1001 in integers). Ceiling: factors with
+  // <= 3 decimals; widen the scale in both leaders if a 4-decimal factor is added.
+  const scaledSum = attributed
+    .filter((record) => record.worker_engine === 'codex')
+    .reduce((sum, record) => sum + Math.round(_resolveCostFactor(costFactors, record.worker_model) * 1000) * Number(record.estimated_tokens ?? 0), 0);
+  const codexSolEquivalent = Math.floor(scaledSum / 1000);
   // LOW-1 (SV gate): byte-identical to the zsh leader's line
   // (lib_ralph_desk.zsh generate_campaign_report) — two spaces before the
   // parenthetical, no inline ESTIMATED clause. zsh's canonical placement
@@ -283,7 +285,7 @@ function summarizeCost(records, costFactors = loadCostFactors()) {
   // '## Cost & Performance (ESTIMATED ...)' header in generateCampaignReport
   // below, which callers of summarizeCost must supply) — mirrored there so
   // Node doesn't silently drop that signal.
-  lines.push(`- Codex legs sol-equivalent: ${codexSolEquivalent} tokens  (factors sol 1.0 / terra 0.4 / luna 0.04)`);
+  lines.push(`- Codex legs sol-equivalent: ${codexSolEquivalent} tokens  (factors relative to gpt-5.6-sol = 1.0: gpt-6.1-sol 0.5 / gpt-5.6-terra 0.55 / gpt-6-luna 0.025 / gpt-5.6-luna 0.055)`);
 
   if (unattributed.length > 0) {
     lines.push(`- (${unattributed.length} iteration(s) unattributed)`);

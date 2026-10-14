@@ -5,18 +5,18 @@ const CLAUDE_BIN = 'claude';
 const CODEX_BIN = 'codex';
 const CLAUDE_MODELS = new Set(['haiku', 'sonnet', 'opus', 'fable']);
 
-// Codex model aliases (spark, GPT-5.6 family, GPT-6 astra) — single module-scope
+// Codex model aliases (spark, GPT-6.1 sol, GPT-5.6 terra, GPT-6 luna, GPT-6 astra) — single module-scope
 // table shared by both the colon-bearing (`model:reasoning`) and bare
 // (no-colon) branches of parseModelFlag, so a bare `--worker-model astra` and
 // a colon-qualified `--worker-model astra:high` classify the same alias set.
 // Map (not a plain object) so inherited keys like 'constructor' are never
 // mistaken for aliases. Mirror of the zsh parse sites (parse_model_flag /
 // _auto_detect_engine in the .zsh scripts).
-const CODEX_MODEL_ALIASES = new Map([
+export const CODEX_MODEL_ALIASES = new Map([
   ['spark', 'gpt-5.3-codex-spark'],
-  ['sol', 'gpt-5.6-sol'],
+  ['sol', 'gpt-6.1-sol'],
   ['terra', 'gpt-5.6-terra'],
-  ['luna', 'gpt-5.6-luna'],
+  ['luna', 'gpt-6-luna'],
   ['astra', 'gpt-6-astra'],
 ]);
 
@@ -30,26 +30,30 @@ const CODEX_MODEL_ALIASES = new Map([
 // The REMAP REWRITES ONLY THE MODEL PART, never the level. That is what makes
 // it safe to remap BEFORE vocabulary validation (run.mjs validateModelFlag):
 // a malformed input stays malformed, so remapping can never launder a
-// rejection into an acceptance. `gpt-5.5:` remaps to `gpt-5.6-sol:` and is
+// rejection into an acceptance. `gpt-5.5:` remaps to `gpt-6.1-sol:` and is
 // still rejected for an empty level; `gpt-5.5:high;touch x` keeps its
 // injection-shaped level and is still rejected. Conversely the level IS
 // re-validated against the REPLACEMENT model, which matters concretely:
-// `minimal` is rejected for gpt-6-astra alone, so `gpt-5.5:minimal` correctly
-// becomes the accepted `gpt-5.6-sol:minimal`.
+// `minimal` is rejected for gpt-6-astra, gpt-6.1-sol, gpt-6-sol and gpt-6-luna
+// (MINIMAL_UNSUPPORTED_MODELS), so `gpt-5.5:minimal` becomes `gpt-6.1-sol:minimal`
+// and is rejected against the replacement model.
 //
 // Mirrored byte-for-byte (table and warning text) by _normalize_model_spec in
 // lib_ralph_desk.zsh; a parity test pins the two together.
 export const RETIRED_MODEL_REMAP = new Map([
   ['gpt-5.4', 'gpt-5.6-terra'],
-  ['gpt-5.4-mini', 'gpt-5.6-luna'],
-  ['gpt-5.5', 'gpt-5.6-sol'],
-  ['gpt-5.3-codex-spark', 'gpt-5.6-luna'],
-  ['spark', 'gpt-5.6-luna'],
+  ['gpt-5.4-mini', 'gpt-6-luna'],
+  ['gpt-5.5', 'gpt-6.1-sol'],
+  ['gpt-5.3-codex-spark', 'gpt-6-luna'],
+  ['spark', 'gpt-6-luna'],
 ]);
 
 // Bare claude aliases carry no effort, so the level falls to the claude CLI's
 // own default — a value this project has never confirmed. Pin the start
-// explicitly instead. haiku is absent on purpose: it has no effort concept.
+// explicitly instead. The floating `haiku` alias is absent on purpose: it carries
+// no effort (CLI default) and normalizing it would flip the default path. The
+// pinned `claude-haiku-5-5` (Haiku 5.5 has effort; medium is its documented
+// default) gains an explicit `:medium` start like the other pinned ids.
 // fable resolves to the version-pinned id as well as a level, matching how
 // every doc and the ladder itself refer to it (`claude-fable-5-1:max`, never
 // the floating alias). claude-opus-5-5 (the claude worker ceiling as of the
@@ -62,6 +66,23 @@ export const BARE_ALIAS_NORMALIZATION = new Map([
   ['fable', 'claude-fable-5-1:max'],
   ['claude-fable-5-1', 'claude-fable-5-1:max'],
   ['claude-opus-5-5', 'claude-opus-5-5:high'],
+  ['claude-sonnet-5-5', 'claude-sonnet-5-5:high'],
+  ['claude-haiku-5-5', 'claude-haiku-5-5:medium'],
+]);
+
+// Codex models that reject the `minimal` reasoning level (server-side HTTP 400,
+// probed 2026-09-07 for astra and 2026-10-11 for the others). Value = the
+// values rlp-desk accepts for that model (the server enumeration intersected with
+// the validator vocabulary: never `none`), quoted in the validation error. Keyed on the
+// RESOLVED slug (aliases and retired-id remaps resolve first). gpt-5.6-* is
+// unprobed and stays accepted. Mirrored by the `case` in lib_ralph_desk.zsh
+// _validate_model_level and run_ralph_desk.zsh _auto_detect_engine; a parity
+// test pins the three together.
+export const MINIMAL_UNSUPPORTED_MODELS = new Map([
+  ['gpt-6-astra', 'low|medium|high|xhigh|max'],
+  ['gpt-6.1-sol', 'low|medium|high|xhigh|max'],
+  ['gpt-6-sol', 'low|medium|high|xhigh|max'],
+  ['gpt-6-luna', 'low|medium|high|xhigh|max'],
 ]);
 
 // Normalizes a `model` or `model:level` spec: retired families are remapped

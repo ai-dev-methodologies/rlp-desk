@@ -72,16 +72,16 @@ test_ac1_l1_1() {
   if [[ -z "$FN_BODY" ]]; then fail "AC1-L1-1: function missing"; return; fi
   local out
   out="$(run_presets_with_codex "testslug")"
-  # luna-first cost routing (2026-08-03): recommended preset moved to gpt-5.6-luna:high
-  if echo "$out" | grep -qF -- '--worker-model gpt-5.6-luna:high'; then
-    pass "AC1-L1-1: codex detected → output contains --worker-model gpt-5.6-luna:high"
+  # luna-first cost routing (2026-08-03): recommended preset moved to gpt-6-luna:high
+  if echo "$out" | grep -qF -- '--worker-model gpt-6-luna:high'; then
+    pass "AC1-L1-1: codex detected → output contains --worker-model gpt-6-luna:high"
   else
-    fail "AC1-L1-1: codex detected → --worker-model gpt-5.6-luna:high not found in output"
+    fail "AC1-L1-1: codex detected → --worker-model gpt-6-luna:high not found in output"
   fi
-  if echo "$out" | grep -qF -- '--worker-model gpt-5.6-sol:high --consensus all'; then
-    pass "AC1-L1-1b: codex detected → critical preset gpt-5.6-sol:high with --consensus all"
+  if echo "$out" | grep -qF -- '--worker-model gpt-6.1-sol:high --consensus all'; then
+    pass "AC1-L1-1b: codex detected → critical preset gpt-6.1-sol:high with --consensus all"
   else
-    fail "AC1-L1-1b: critical preset gpt-5.6-sol:high --consensus all not found in output"
+    fail "AC1-L1-1b: critical preset gpt-6.1-sol:high --consensus all not found in output"
   fi
 }
 
@@ -91,7 +91,7 @@ test_ac1_l1_2() {
   local out
   out="$(run_presets_with_codex "testslug")"
   local line_gpt line_basic
-  line_gpt=$(echo "$out" | grep -n 'gpt-5\.[0-9]' | head -1 | cut -d: -f1)
+  line_gpt=$(echo "$out" | grep -n 'gpt-[0-9]' | head -1 | cut -d: -f1)
   # find the first /rlp-desk run line that has NO gpt/codex/spark (pure claude-only line)
   line_basic=$(echo "$out" | grep -n '/rlp-desk run' | grep -v 'gpt\|codex\|spark\|consensus' | head -1 | cut -d: -f1)
   if [[ -n "$line_gpt" && -n "$line_basic" ]] && (( line_gpt < line_basic )); then
@@ -174,7 +174,7 @@ test_ac2_l1_3() {
   local out
   out="$(run_presets_without_codex "testslug")"
   local gpt_count
-  gpt_count=$(echo "$out" | grep -cE -- '--worker-model gpt-5\.[0-9]')
+  gpt_count=$(echo "$out" | grep -cE -- '--worker-model gpt-[0-9]')
   if (( gpt_count == 0 )); then
     pass "AC2-L1-3: no codex gpt run preset when codex not installed"
   else
@@ -276,11 +276,11 @@ test_l3_e2e_1() {
   # -f: skip user rc files (.zshenv) so a developer's dotfiles PATH does not
   # re-prepend real dirs ahead of $bin_dir, defeating the codex stub above.
   output=$(ROOT="$test_dir" PATH="$bin_dir:$PATH" zsh -f "$INIT" "testslug-e2e" 2>/dev/null)
-  if echo "$output" | grep -qF 'gpt-5.6-luna:high' && \
-     echo "$output" | grep -qF -- '--worker-model gpt-5.6-sol:high --consensus all'; then
+  if echo "$output" | grep -qF 'gpt-6-luna:high' && \
+     echo "$output" | grep -qF -- '--worker-model gpt-6.1-sol:high --consensus all'; then
     pass "L3-E2E-1: full init with codex → luna (recommended) + sol/all (critical) presets present"
   else
-    fail "L3-E2E-1: gpt-5.6 presets missing in init output (last 8 lines: $(echo "$output" | tail -8 | tr '\n' '|'))"
+    fail "L3-E2E-1: GPT-6 presets missing in init output (last 8 lines: $(echo "$output" | tail -8 | tr '\n' '|'))"
   fi
 }
 

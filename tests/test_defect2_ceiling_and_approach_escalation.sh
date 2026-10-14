@@ -5,8 +5,9 @@
 # Root cause (found by adversarial probe, confirmed by reading + tracing the
 # code): check_model_upgrade() upgrades the Worker model on the 2nd
 # consecutive same-US failure. With the shipped CB_THRESHOLD=4 (2026-09-26
-# CB=4/3-rung wave) and the 3-rung claude ladder (haiku -> sonnet:high ->
-# claude-opus-5-5:high), the arithmetic lands the sonnet->opus-5-5 upgrade on
+# CB=4/3-rung wave) and the 3-rung claude ladder (haiku ->
+# claude-sonnet-5-5:high -> claude-opus-5-5:high), the arithmetic lands the
+# claude-sonnet-5-5 -> claude-opus-5-5 upgrade on
 # EXACTLY the same failure (#4) that trips the circuit breaker — so the
 # ceiling model is assigned to WORKER_MODEL but never actually dispatched,
 # while the old BLOCKED text read "Worker upgraded to ceiling model" as if
@@ -84,8 +85,8 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 # interaction at the CB boundary — the ceiling being promoted TO on the very
 # failure that trips the breaker — so the start rung must sit exactly
 # CB_THRESHOLD/2 hops below the ceiling. On the 3-rung claude ladder
-# (2026-09-26 CB=4/3-rung wave) that is haiku itself (-> sonnet:high ->
-# claude-opus-5-5:high, 2 hops, 2 fails per hop = failure #4, matching
+# (2026-09-26 CB=4/3-rung wave) that is haiku itself (-> claude-sonnet-5-5:high
+# -> claude-opus-5-5:high, 2 hops, 2 fails per hop = failure #4, matching
 # CB_THRESHOLD=4).
 run_cb_simulation() { # $1 = run_src  $2 = num_failures  $3 = cb_threshold
   local run_src="$1" n="$2" cbt="${3:-4}"
@@ -186,7 +187,7 @@ BLOCKED_B=$(echo "$SIM_B" | grep -c 'blocked=1')
 echo "--- G: BLOCKED sentinel/log text reports the actual count, threshold labeled ---"
 
 SENTINEL_A=$(echo "$SIM_A" | grep '^BLOCKED_REASON::' | sed 's/^BLOCKED_REASON:://')
-[[ "$SENTINEL_A" == "architecture escalation: Worker at ceiling model (claude-opus-5-5) failed after its own attempt window, 6 consecutive verification failures (threshold 4)" ]] \
+[[ "$SENTINEL_A" == "architecture escalation: Worker at ceiling model (claude-opus-5-5:high) failed after its own attempt window, 6 consecutive verification failures (threshold 4)" ]] \
   && ok "G1: architecture-escalation BLOCKED text reports the actual count (6), not the bare threshold (4)" \
   || no "G1: architecture-escalation BLOCKED text wrong — got: $SENTINEL_A"
 

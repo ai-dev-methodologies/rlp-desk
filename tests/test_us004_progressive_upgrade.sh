@@ -426,7 +426,7 @@ echo ""
 echo "--- L2: Upgrade path matches documented table ---"
 
 # L2-1: the documented 3-rung claude chain (2026-09-26 CB=4/3-rung wave),
-# walked end to end: haiku→sonnet:high→claude-opus-5-5:high→""
+# walked end to end: haiku→claude-sonnet-5-5:high→claude-opus-5-5:high→""
 # Complexity picks only the starting rung; repeated same-US failure walks it.
 fn_gnm=$(extract_fn "get_next_model")
 if [[ -z "$fn_gnm" ]]; then
@@ -442,11 +442,11 @@ for _i in 1 2 3 4 5 6 7 8; do
   [[ -z \"\$nxt\" ]] && break
   cur=\"\$nxt\"
 done
-want='haiku sonnet:high claude-opus-5-5:high '
+want='haiku claude-sonnet-5-5:high claude-opus-5-5:high '
 [[ \"\$chain\" == \"\$want\" ]] && exit 0
 echo \"chain: \$chain\" >&2; exit 1" 2>&1)
   if (( $? == 0 )); then
-    pass "L2-1: claude path haiku→sonnet:high→claude-opus-5-5:high→'' correct"
+    pass "L2-1: claude path haiku→claude-sonnet-5-5:high→claude-opus-5-5:high→'' correct"
   else
     fail "L2-1: claude path incorrect: $result"
   fi
@@ -502,7 +502,7 @@ ${fn_cmu}
 # 2 consecutive fails → upgrade
 check_model_upgrade 'US-001'
 check_model_upgrade 'US-001'
-if [[ \"\$WORKER_MODEL\" != 'sonnet' ]]; then
+if [[ \"\$WORKER_MODEL\" != 'claude-sonnet-5-5' ]]; then
   echo \"FAIL: not upgraded (got \$WORKER_MODEL)\" >&2; exit 1
 fi
 if [[ \"\$VERIFIER_MODEL\" != 'opus' ]]; then
@@ -510,9 +510,9 @@ if [[ \"\$VERIFIER_MODEL\" != 'opus' ]]; then
 fi
 # pass verdict: reset counters
 _SAME_US_FAIL_COUNT=0; _LAST_FAILED_US=''
-# single fail → no upgrade (should remain sonnet, count=1)
+# single fail → no upgrade (should remain claude-sonnet-5-5, count=1)
 check_model_upgrade 'US-002'
-if [[ \"\$WORKER_MODEL\" != 'sonnet' ]] || (( _SAME_US_FAIL_COUNT != 1 )); then
+if [[ \"\$WORKER_MODEL\" != 'claude-sonnet-5-5' ]] || (( _SAME_US_FAIL_COUNT != 1 )); then
   echo \"FAIL: unexpected post-pass state model=\$WORKER_MODEL count=\$_SAME_US_FAIL_COUNT\" >&2; exit 1
 fi
 exit 0" 2>&1)

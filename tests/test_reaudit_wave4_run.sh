@@ -404,8 +404,8 @@ WRAP2
 }
 
 # Reach the ceiling normally (4 implementation-category failures, CB_THRESHOLD=4,
-# 3-rung ladder haiku->sonnet:high->claude-opus-5-5:high — mirrors test_defect2's
-# scenario), THEN every failure after that is "environment" category forever.
+# 3-rung ladder haiku->claude-sonnet-5-5:high->claude-opus-5-5:high — mirrors
+# test_defect2's scenario), THEN every failure after that is "environment" category forever.
 # Pre-fix: _SAME_US_FAIL_COUNT freezes at the ceiling and the campaign never
 # blocks (would run to MAX_ITER). Post-fix: _CEILING_DEFERRAL_COUNT bounds the
 # deferral to 2 extra failures regardless of category -> blocks at #6 (threshold+2).

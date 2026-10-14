@@ -98,7 +98,7 @@ _validate_int_knob() {
 # and blocks (never auto-repairs) on drift.
 #
 # Per-role codex config:
-#   WORKER_CODEX_MODEL            - codex model for Worker (default: gpt-5.6-luna — luna-first cheap-tier start; NOT the ladder ceiling)
+#   WORKER_CODEX_MODEL            - codex model for Worker (default: gpt-6-luna — luna-first cheap-tier start; NOT the ladder ceiling)
 #   WORKER_CODEX_REASONING        - codex reasoning for Worker (default: high)
 #   VERIFIER_CODEX_MODEL          - codex model for Verifier (default: gpt-5.6-terra — mid rung, below final verification)
 #   VERIFIER_CODEX_REASONING      - codex reasoning for Verifier (default: high)
@@ -500,10 +500,10 @@ _auto_detect_engine() {
   local _adn_repl=""
   case "$_adn_head" in
     gpt-5.4)             _adn_repl="gpt-5.6-terra" ;;
-    gpt-5.4-mini)        _adn_repl="gpt-5.6-luna" ;;
-    gpt-5.5)             _adn_repl="gpt-5.6-sol" ;;
-    gpt-5.3-codex-spark) _adn_repl="gpt-5.6-luna" ;;
-    spark)               _adn_repl="gpt-5.6-luna" ;;
+    gpt-5.4-mini)        _adn_repl="gpt-6-luna" ;;
+    gpt-5.5)             _adn_repl="gpt-6.1-sol" ;;
+    gpt-5.3-codex-spark) _adn_repl="gpt-6-luna" ;;
+    spark)               _adn_repl="gpt-6-luna" ;;
   esac
   if [[ -n "$_adn_repl" ]]; then
     local _adn_new="${_adn_repl}${_adn_tail}"
@@ -516,6 +516,8 @@ _auto_detect_engine() {
       opus)                      model_val="opus:medium" ;;
       fable|claude-fable-5-1)    model_val="claude-fable-5-1:max" ;;
       claude-opus-5-5)           model_val="claude-opus-5-5:high" ;;
+      claude-sonnet-5-5)         model_val="claude-sonnet-5-5:high" ;;
+      claude-haiku-5-5)          model_val="claude-haiku-5-5:medium" ;;
     esac
     [[ "$model_val" != "$_adn_head" ]] && typeset -g "$model_var=$model_val"
   fi
@@ -556,10 +558,10 @@ _auto_detect_engine() {
       *)
         # Codex model with reasoning
         [[ "$model_part" == "spark" ]] && model_part="gpt-5.3-codex-spark"
-        # GPT-5.6 family aliases (codex 0.144) — mirror of parse_model_flag
-        [[ "$model_part" == "sol" ]]   && model_part="gpt-5.6-sol"
+        # Codex family aliases (sol=gpt-6.1-sol, terra=gpt-5.6-terra, luna=gpt-6-luna) — mirror of parse_model_flag
+        [[ "$model_part" == "sol" ]]   && model_part="gpt-6.1-sol"
         [[ "$model_part" == "terra" ]] && model_part="gpt-5.6-terra"
-        [[ "$model_part" == "luna" ]]  && model_part="gpt-5.6-luna"
+        [[ "$model_part" == "luna" ]]  && model_part="gpt-6-luna"
         # GPT-6 alias (codex 0.153) — same convention
         [[ "$model_part" == "astra" ]] && model_part="gpt-6-astra"
         # Warn (stderr) when the name — after alias expansion above — is not even
@@ -571,15 +573,23 @@ _auto_detect_engine() {
         if [[ -n "$codex_reasoning_var" ]]; then
           case "$level_part" in
             minimal|low|medium|high|xhigh|max|ultra)
-              # Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave):
-              # gpt-6-astra's API rejects 'minimal' with an HTTP 400 that
-              # enumerates the supported set (low/medium/high/xhigh/max) —
-              # see src/model-upgrade-table.md "GPT-6 — Astra". Reject it
-              # HERE for THIS model only; 'minimal' remains valid for every
-              # other codex model (gpt-5.x, sol/terra/luna, spark) — never a
-              # blanket narrowing of the shared vocabulary.
-              if [[ "$model_part" == "gpt-6-astra" && "$level_part" == "minimal" ]]; then
-                print -u2 "[rlp-desk] ERROR: reasoning 'minimal' is not supported by gpt-6-astra in $model_var='$model_val' (server enumerates: low|medium|high|xhigh|max)."
+              # Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave, widened
+              # by the 2026-10-11 generation refresh): gpt-6-astra, gpt-6.1-sol,
+              # gpt-6-sol and gpt-6-luna reject 'minimal' with an HTTP 400 that
+              # enumerates the supported set — see src/model-upgrade-table.md
+              # "GPT-6 — Astra". Reject it HERE for THESE resolved slugs only;
+              # 'minimal' remains valid for every other codex model (gpt-5.6-*
+              # is unprobed, spark) — never a blanket narrowing of the shared
+              # vocabulary. Mirrors _validate_model_level (lib) and
+              # MINIMAL_UNSUPPORTED_MODELS (command-builder.mjs).
+              local _enum=''
+              case "$model_part" in
+                gpt-6-astra|gpt-6.1-sol) _enum='low|medium|high|xhigh|max' ;;
+                gpt-6-sol|gpt-6-luna) _enum='low|medium|high|xhigh|max' ;;
+                *) _enum='' ;;
+              esac
+              if [[ -n "$_enum" && "$level_part" == "minimal" ]]; then
+                print -u2 "[rlp-desk] ERROR: reasoning 'minimal' is not supported by $model_part in $model_var='$model_val' (rlp-desk accepts: $_enum)."
                 return 1
               fi
               typeset -g "$codex_reasoning_var=$level_part"
@@ -607,9 +617,9 @@ _auto_detect_engine() {
       spark|sol|terra|luna|astra)
         local bare_model="$model_val"
         [[ "$bare_model" == "spark" ]] && bare_model="gpt-5.3-codex-spark"
-        [[ "$bare_model" == "sol" ]]   && bare_model="gpt-5.6-sol"
+        [[ "$bare_model" == "sol" ]]   && bare_model="gpt-6.1-sol"
         [[ "$bare_model" == "terra" ]] && bare_model="gpt-5.6-terra"
-        [[ "$bare_model" == "luna" ]]  && bare_model="gpt-5.6-luna"
+        [[ "$bare_model" == "luna" ]]  && bare_model="gpt-6-luna"
         [[ "$bare_model" == "astra" ]] && bare_model="gpt-6-astra"
         typeset -g "$engine_var=codex"
         typeset -g "$model_var=$bare_model"
@@ -682,9 +692,9 @@ _auto_detect_engine FINAL_VERIFIER_MODEL FINAL_VERIFIER_ENGINE FINAL_VERIFIER_CO
 # price, check_model_upgrade returns already_max from iteration 1 (no
 # escalation headroom left), and the circuit breaker loses its escalation
 # signal. Derived from src/commands/rlp-desk.md's cross-engine table (the LOW
-# cost-lane Worker start row: "gpt-5.6-luna:high") rather than picked by name.
-WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-5.6-luna}"
-WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high — paired with gpt-5.6-luna above = gpt-5.6-luna:high (doc's LOW cost-lane Worker start)
+# cost-lane Worker start row: "gpt-6-luna:high") rather than picked by name.
+WORKER_CODEX_MODEL="${WORKER_CODEX_MODEL:-gpt-6-luna}"
+WORKER_CODEX_REASONING="${WORKER_CODEX_REASONING:-high}"   # low|medium|high — paired with gpt-6-luna above = gpt-6-luna:high (doc's LOW cost-lane Worker start)
 # gpt-6-astra stays out of the per-US verifier tier for the same reason —
 # it is judge-only, and src/governance.md's Consensus Model Routing table
 # keeps the per-US tier deliberately below final verification. Derived from
@@ -3000,7 +3010,7 @@ is_codex_idle_ui() {
   print -- "$pane_text" | grep -qE 'Context [0-9]+%[[:space:]]*left' && return 0
   # 3. codex model + branch line (e.g. "gpt-5.5 high · feature/...") —
   #    only printed alongside the idle prompt, never during work.
-  #    codex 0.144: slugs may carry suffixes (gpt-5.6-sol|terra|luna,
+  #    codex 0.144: slugs may carry suffixes (gpt-6.1-sol / gpt-6-luna / gpt-5.6-terra,
   #    gpt-5.3-codex-spark) and efforts now include max|ultra.
   #    Anchored to line start (leading tmux-wrap whitespace tolerated) so the
   #    same shape quoted mid-prose in worker output is not misread as idle.
@@ -3406,7 +3416,11 @@ write_worker_trigger() {
       echo ""
       echo "---"
       echo "## APPROACH ESCALATION REQUIRED (repeated failure upgraded the model)"
-      echo "${CURRENT_US} has failed enough consecutive times that the Worker model was upgraded to ${WORKER_MODEL}."
+      # F-LOG: name the effort too (an effort-only hop keeps the model id). Inlined,
+      # not a lib helper: 7 test harnesses extract write_worker_trigger on its own.
+      local _wt_eff="${WORKER_EFFORT:-}"
+      [[ "${WORKER_ENGINE:-}" == "codex" ]] && _wt_eff="${WORKER_CODEX_REASONING:-}"
+      echo "${CURRENT_US} has failed enough consecutive times that the Worker model was upgraded to ${WORKER_MODEL}${_wt_eff:+:$_wt_eff}."
       echo "Retrying the SAME approach under a stronger model is not an acceptable use of that upgrade — the approach itself must change."
       echo ""
       echo "Prior attempts on ${CURRENT_US} (newest first):"
@@ -5933,6 +5947,24 @@ main() {
       log "  Restored consecutive_blocks from status.json: $CONSECUTIVE_BLOCKS"
       log_debug "[FLOW] restored_consecutive_blocks_from_status=$CONSECUTIVE_BLOCKS"
     fi
+    # F6: restore the same-US failure streak (the count AND the US it belongs to) on
+    # ANY relaunch of a live campaign, whether or not the Worker was already promoted.
+    # The most common crash (one same-US failure, then the crash, before the first
+    # promotion) used to restart the streak at 0 because D-5b below is gated on
+    # model_upgraded==1; and after a promotion the count came back without its US, so
+    # the first failure reset it to 1. Not restored from a finished leftover: phase
+    # `complete` (a finished campaign) or `blocked` (an operator-cleared BLOCKED is a
+    # clean restart: PR-E resets the other counters). A fresh campaign has no file
+    # (init --mode fresh|improve deletes status.json) and a first run has none either;
+    # a missing field restores as 0 / empty (status.json from before F6).
+    local _s_phase _s_sufc _s_lfu
+    _s_phase=$(jq -r '.phase // ""' "$STATUS_FILE" 2>/dev/null)
+    if [[ "$_s_phase" != "complete" && "$_s_phase" != "blocked" ]]; then
+      _s_sufc=$(jq -r '.same_us_fail_count // 0' "$STATUS_FILE" 2>/dev/null)
+      _s_lfu=$(jq -r '.last_failed_us // empty' "$STATUS_FILE" 2>/dev/null)
+      [[ "$_s_sufc" == <-> ]] && _SAME_US_FAIL_COUNT="$_s_sufc"
+      [[ -n "$_s_lfu" ]] && _LAST_FAILED_US="$_s_lfu"
+    fi
     # D-5b (restore-priority, user-chosen): if the Worker was AUTO-upgraded during a
     # prior segment (model_upgraded==1), restore the upgraded model + its engine
     # triple + the upgrade bookkeeping, so a crash-relaunch resumes at the upgraded
@@ -5943,7 +5975,7 @@ main() {
     local _status_mu
     _status_mu=$(jq -r '.model_upgraded // 0' "$STATUS_FILE" 2>/dev/null)
     if [[ "$_status_mu" == "1" ]]; then
-      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_owcr _s_sufc _s_wef _s_owef _s_cdc
+      local _s_wm _s_we _s_wcm _s_wcr _s_owm _s_owcr _s_wef _s_owef _s_cdc
       _s_wm=$(jq -r '.worker_model // empty' "$STATUS_FILE" 2>/dev/null)
       _s_we=$(jq -r '.worker_engine // empty' "$STATUS_FILE" 2>/dev/null)
       _s_wcm=$(jq -r '.worker_codex_model // empty' "$STATUS_FILE" 2>/dev/null)
@@ -5961,7 +5993,6 @@ main() {
       # but the campaign quietly resumes at the wrong effort level).
       _s_wef=$(jq -r '.worker_effort // empty' "$STATUS_FILE" 2>/dev/null)
       _s_owef=$(jq -r '.original_worker_effort // empty' "$STATUS_FILE" 2>/dev/null)
-      _s_sufc=$(jq -r '.same_us_fail_count // 0' "$STATUS_FILE" 2>/dev/null)
       # finding #6 (reaudit wave 4 round 2): _CEILING_DEFERRAL_COUNT bounds the
       # ceiling model's own attempt window (M1) — unlike _SAME_US_FAIL_COUNT it
       # was never persisted, so a crash-relaunch mid-window silently reset it
@@ -5978,9 +6009,14 @@ main() {
         [[ -n "$_s_owcr" ]] && _ORIGINAL_WORKER_CODEX_REASONING="$_s_owcr"
         [[ -n "$_s_wef" ]] && WORKER_EFFORT="$_s_wef"
         [[ -n "$_s_owef" ]] && _ORIGINAL_WORKER_EFFORT="$_s_owef"
-        [[ "$_s_sufc" == <-> ]] && _SAME_US_FAIL_COUNT="$_s_sufc"
         [[ "$_s_cdc" == <-> ]] && _CEILING_DEFERRAL_COUNT="$_s_cdc"
-        log "  Restored auto-upgraded Worker model: $WORKER_MODEL ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}, orig_effort=${_ORIGINAL_WORKER_CODEX_REASONING:-?}, worker_effort=${WORKER_EFFORT:-?}, same_us_fails=$_SAME_US_FAIL_COUNT, ceiling_deferrals=$_CEILING_DEFERRAL_COUNT (D-5b restore-priority)"
+        # F-LOG: model:effort, engine-aware (the old line printed the CODEX reasoning
+        # default as "orig_effort" for claude workers); bare model when effort is empty.
+        local _rs_cur_eff="${WORKER_EFFORT:-}" _rs_orig_eff="${_ORIGINAL_WORKER_EFFORT:-}"
+        if [[ "$WORKER_ENGINE" = "codex" ]]; then
+          _rs_cur_eff="${WORKER_CODEX_REASONING:-}"; _rs_orig_eff="${_ORIGINAL_WORKER_CODEX_REASONING:-}"
+        fi
+        log "  Restored auto-upgraded Worker model: ${WORKER_MODEL}${_rs_cur_eff:+:$_rs_cur_eff} ($WORKER_ENGINE), orig=${_ORIGINAL_WORKER_MODEL:-?}${_rs_orig_eff:+:$_rs_orig_eff}, same_us_fails=$_SAME_US_FAIL_COUNT, ceiling_deferrals=$_CEILING_DEFERRAL_COUNT (D-5b restore-priority)"
         log_debug "[FLOW] restored_model_upgrade=true worker_model=$WORKER_MODEL engine=$WORKER_ENGINE same_us_fail=$_SAME_US_FAIL_COUNT"
       fi
     fi
@@ -7109,8 +7145,17 @@ main() {
             CONSECUTIVE_BLOCKS=0
             LAST_BLOCK_REASON=""
             if (( _MODEL_UPGRADED )); then
-              log "  Worker model restored: ${WORKER_MODEL} → ${_ORIGINAL_WORKER_MODEL} (pass verdict)"
-              log_debug "[DECIDE] iter=$ITERATION phase=model_select model_restore=true from=${WORKER_MODEL} to=${_ORIGINAL_WORKER_MODEL}"
+              # F-LOG: model:effort on both sides (engine-aware; bare model when the effort
+              # is empty), symmetric with the "Worker model upgraded" line in the lib.
+              local _rst_from_eff="${WORKER_EFFORT:-}" _rst_to_eff="${_ORIGINAL_WORKER_EFFORT:-}"
+              if [[ "$WORKER_ENGINE" = "codex" ]]; then
+                # A legacy status.json has no original codex reasoning: the restore below
+                # then keeps the ACTIVE reasoning (request-j ③ guard), so log that value.
+                _rst_from_eff="${WORKER_CODEX_REASONING:-}"; _rst_to_eff="${_ORIGINAL_WORKER_CODEX_REASONING:-$WORKER_CODEX_REASONING}"
+              fi
+              local _rst_from_spec="${WORKER_MODEL}${_rst_from_eff:+:$_rst_from_eff}" _rst_to_spec="${_ORIGINAL_WORKER_MODEL}${_rst_to_eff:+:$_rst_to_eff}"
+              log "  Worker model restored: ${_rst_from_spec} → ${_rst_to_spec} (pass verdict)"
+              log_debug "[DECIDE] iter=$ITERATION phase=model_select model_restore=true from=${_rst_from_spec} to=${_rst_to_spec}"
               WORKER_MODEL="$_ORIGINAL_WORKER_MODEL"
               if [[ "$WORKER_ENGINE" = "codex" ]]; then
                 WORKER_CODEX_MODEL="$WORKER_MODEL"
@@ -7271,7 +7316,14 @@ main() {
             # mutate WORKER_MODEL, so the attempt-history entry below records
             # which model actually produced THIS failure (not the model it
             # may be upgraded to as a result of it).
+            # F-LOG: record model:effort (engine-aware; bare model when the effort is
+            # empty) so an effort-only rung shows up in the attempt history.
             local _pre_upgrade_worker_model="$WORKER_MODEL"
+            if [[ "$WORKER_ENGINE" = "codex" ]]; then
+              [[ -n "${WORKER_CODEX_REASONING:-}" ]] && _pre_upgrade_worker_model="${WORKER_MODEL}:${WORKER_CODEX_REASONING}"
+            else
+              [[ -n "${WORKER_EFFORT:-}" ]] && _pre_upgrade_worker_model="${WORKER_MODEL}:${WORKER_EFFORT}"
+            fi
             # Luna-first spec §2.5: environment/harness failures (incl. verifier
             # safety-classifier refusals, capacity stalls) and flaky failures never
             # climb the model ladder — recover the environment, retry the SAME model.
@@ -7449,6 +7501,11 @@ main() {
               fi
               local _at_ceiling=0
               [[ -z "$(get_next_model "$_ceiling_model_str")" ]] && _at_ceiling=1
+              # F-LOG: the texts below name the Worker as model:effort (engine-aware; bare
+              # model when the effort is empty), like the other worker-naming sites.
+              local _cb_eff="${WORKER_EFFORT:-}"
+              [[ "$WORKER_ENGINE" = "codex" ]] && _cb_eff="${WORKER_CODEX_REASONING:-}"
+              local _cb_worker_spec="${WORKER_MODEL}${_cb_eff:+:$_cb_eff}"
               # DEFECT-2a (fix/reaudit-wave-1): check_model_upgrade() runs BEFORE
               # this check and upgrades on the SAME failure that trips the CB
               # when CB_THRESHOLD lands exactly on a ladder-row boundary (default
@@ -7481,7 +7538,7 @@ main() {
                 (( _CEILING_DEFERRAL_COUNT++ ))
               fi
               if (( _MODEL_UPGRADED && _at_ceiling && _SAME_US_FAIL_COUNT < 2 && _CEILING_DEFERRAL_COUNT <= 2 )); then
-                log "  Circuit breaker deferred: Worker just reached ceiling model (${WORKER_MODEL}) — giving it its own attempt window (same-model fail ${_SAME_US_FAIL_COUNT}/2, deferral ${_CEILING_DEFERRAL_COUNT}/2) before blocking."
+                log "  Circuit breaker deferred: Worker just reached ceiling model (${_cb_worker_spec}) — giving it its own attempt window (same-model fail ${_SAME_US_FAIL_COUNT}/2, deferral ${_CEILING_DEFERRAL_COUNT}/2) before blocking."
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=deferred reason=ceiling_not_yet_dispatched same_us_fail_count=$_SAME_US_FAIL_COUNT ceiling_deferral_count=$_CEILING_DEFERRAL_COUNT model=$WORKER_MODEL"
                 update_status "verifier" "fail"
                 _cmu_deferred=1
@@ -7491,9 +7548,9 @@ main() {
                 # this branch actually fires (e.g. #6 for a threshold of 4) —
                 # report the ACTUAL count, with the threshold labeled rather
                 # than printed as if it were the count.
-                log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"architecture escalation: Worker at ceiling (${WORKER_MODEL}), ${CONSECUTIVE_FAILURES} consecutive failures (threshold ${EFFECTIVE_CB_THRESHOLD})\""
-                log_error "Circuit breaker: architecture escalation — Worker at ceiling (${WORKER_MODEL}) failed its own attempt window, ${CONSECUTIVE_FAILURES} consecutive failures (threshold ${EFFECTIVE_CB_THRESHOLD})"
-                write_blocked_sentinel "architecture escalation: Worker at ceiling model (${WORKER_MODEL}) failed after its own attempt window, ${CONSECUTIVE_FAILURES} consecutive verification failures (threshold ${EFFECTIVE_CB_THRESHOLD})" "" "repeat_axis"
+                log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"architecture escalation: Worker at ceiling (${_cb_worker_spec}), ${CONSECUTIVE_FAILURES} consecutive failures (threshold ${EFFECTIVE_CB_THRESHOLD})\""
+                log_error "Circuit breaker: architecture escalation — Worker at ceiling (${_cb_worker_spec}) failed its own attempt window, ${CONSECUTIVE_FAILURES} consecutive failures (threshold ${EFFECTIVE_CB_THRESHOLD})"
+                write_blocked_sentinel "architecture escalation: Worker at ceiling model (${_cb_worker_spec}) failed after its own attempt window, ${CONSECUTIVE_FAILURES} consecutive verification failures (threshold ${EFFECTIVE_CB_THRESHOLD})" "" "repeat_axis"
               else
                 log_debug "[GOV] iter=$ITERATION circuit_breaker=consecutive_failures detail=\"${CONSECUTIVE_FAILURES} consecutive verification failures (threshold ${EFFECTIVE_CB_THRESHOLD})\""
                 log_error "Circuit breaker: ${CONSECUTIVE_FAILURES} consecutive verification failures (threshold ${EFFECTIVE_CB_THRESHOLD})"

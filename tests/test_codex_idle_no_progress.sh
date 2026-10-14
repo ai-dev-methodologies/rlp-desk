@@ -91,6 +91,12 @@ assert_eq "gpt-5.6: terra + ultra effort" 0 $?
 is_codex_idle_ui 'gpt-5.6-luna low · main'
 assert_eq "gpt-5.6: luna + pre-existing effort name" 0 $?
 
+is_codex_idle_ui 'gpt-6.1-sol max · main'
+assert_eq "gpt-6.1: dotted-generation sol + max effort" 0 $?
+
+is_codex_idle_ui 'gpt-6-luna low · main'
+assert_eq "gpt-6: luna + pre-existing effort name" 0 $?
+
 is_codex_idle_ui 'gpt-5.3-codex-spark high · main'
 assert_eq "spark: suffixed model name on model+branch line alone" 0 $?
 

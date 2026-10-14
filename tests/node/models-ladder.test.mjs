@@ -49,11 +49,17 @@ test('override-precedence: a valid override file wins over shipped defaults', as
 
 test('shipped-defaults-when-no-override: absent override falls through to shipped defaults', () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
-  assert.equal(ladder.haiku, 'sonnet:high');
-  // sonnet:medium is a legacy on-ramp now, not a spine rung: an explicit
-  // `--worker-model sonnet:medium` start still escalates once, straight to
-  // the ceiling, instead of becoming a dead start.
+  // Sonnet 5.5 / Opus 5.5 wave: the middle rung is the version-pinned
+  // claude-sonnet-5-5:high, so a floating `sonnet` alias remap can no longer
+  // move the default spine.
+  assert.equal(ladder.haiku, 'claude-sonnet-5-5:high');
+  assert.equal(ladder['claude-sonnet-5-5:high'], 'claude-opus-5-5:high');
+  // sonnet:high / sonnet:medium are legacy on-ramps, not spine rungs (see the
+  // 'legacy sonnet:high and sonnet:medium on-ramps' test below).
   assert.equal(ladder['sonnet:medium'], 'claude-opus-5-5:high');
+  // The brainstorm MEDIUM worker start claude-sonnet-5-5:medium is an
+  // effort-only hop into the high rung (same model id).
+  assert.equal(ladder['claude-sonnet-5-5:medium'], 'claude-sonnet-5-5:high');
   // 2026-09-26 CB=4/3-rung wave: claude-opus-5-5:high is the claude ceiling —
   // claude-fable-5-1:max leaves the worker spine (Final Verifier only). The
   // legacy opus:* on-ramps all point directly at the new ceiling (see the
@@ -96,7 +102,7 @@ test('claude worker ceiling is claude-opus-5-5:high, not fable: opus:xhigh escal
 // omits it for the same reason). Pinned as a walk, not as independent
 // lookups, so a rung inserted in the middle without rewiring its neighbours
 // turns this red.
-test('claude ladder is a 3-rung chain: haiku -> sonnet:high -> claude-opus-5-5:high -> ceiling', () => {
+test('claude ladder is a 3-rung chain: haiku -> claude-sonnet-5-5:high -> claude-opus-5-5:high -> ceiling', () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
   const walked = [];
   let rung = 'haiku';
@@ -108,11 +114,90 @@ test('claude ladder is a 3-rung chain: haiku -> sonnet:high -> claude-opus-5-5:h
   }
   assert.deepEqual(walked, [
     'haiku',
-    'sonnet:high',
+    'claude-sonnet-5-5:high',
     'claude-opus-5-5:high',
   ]);
   assert.equal(ladder['claude-opus-5-5:high'], CEILING_SENTINEL, 'the walk must end at a real ceiling key, not a lookup miss');
   assert.ok(!walked.includes('claude-fable-5-1:max'), 'the default claude walk must never reach fable — it is Final Verifier only now');
+});
+
+// Brainstorm MEDIUM claude worker start (Anthropic's agentic-coding guidance:
+// start at medium, move to high for harder work). Same 2-hop budget shape as
+// the haiku spine so CB_THRESHOLD=4 dispatches every rung; the first hop is
+// an effort-only hop on the same model id.
+test('claude MEDIUM spine is a 3-rung chain: claude-sonnet-5-5:medium -> claude-sonnet-5-5:high -> claude-opus-5-5:high -> ceiling', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  const walked = [];
+  let rung = 'claude-sonnet-5-5:medium';
+  for (let hop = 0; hop < 20; hop += 1) {
+    walked.push(rung);
+    const next = ladder[rung];
+    if (next === undefined || next === CEILING_SENTINEL) break;
+    rung = next;
+  }
+  assert.deepEqual(walked, [
+    'claude-sonnet-5-5:medium',
+    'claude-sonnet-5-5:high',
+    'claude-opus-5-5:high',
+  ]);
+  assert.equal(ladder['claude-opus-5-5:high'], CEILING_SENTINEL, 'the walk must end at a real ceiling key, not a lookup miss');
+});
+
+// Sonnet 5.5 / Opus 5.5 wave: the floating `sonnet` alias left the default
+// spine, but sonnet:high (persisted status.json worker_model=sonnet +
+// worker_effort=high, and flags copied from older docs) and sonnet:medium
+// (what bare `--worker-model sonnet` normalizes to) must stay live keys.
+// Dropping either turns a resumed or copied campaign into a dead start
+// (already_max from iteration 1).
+test('legacy sonnet:high and sonnet:medium on-ramps still escalate to the ceiling', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  for (const legacy of ['sonnet:high', 'sonnet:medium']) {
+    assert.equal(ladder[legacy], 'claude-opus-5-5:high', `legacy on-ramp '${legacy}' must escalate straight to the claude-opus-5-5:high ceiling`);
+    assert.equal(ladder[ladder[legacy]], CEILING_SENTINEL, `'${legacy}' must reach a real ceiling key in one hop`);
+  }
+});
+
+// The point of the wave is that the floating `sonnet:high` rung leaves the
+// default spine. Legacy keys may still EXIST (previous test), but nothing in
+// the ladder may hand off INTO the bare sonnet:high rung any more — that is
+// the exact edge that let an alias remap move the middle rung.
+test('no ladder value targets the retired bare sonnet:high rung', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  for (const [model, next] of Object.entries(ladder)) {
+    assert.notEqual(next, 'sonnet:high', `'${model}' escalates into the floating sonnet:high rung — the default spine must use claude-sonnet-5-5:high`);
+  }
+});
+
+// claude-sonnet-5-5:medium is a START only: an effort-only hop (same model id)
+// into the high rung, and no ladder value may hand off INTO it.
+test('claude-sonnet-5-5:medium is an effort-only hop into the high rung, and nothing escalates INTO it', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  const key = 'claude-sonnet-5-5:medium';
+  const next = ladder[key];
+  assert.equal(next, 'claude-sonnet-5-5:high', `'${key}' must hop to claude-sonnet-5-5:high`);
+  assert.equal(key.split(':')[0], next.split(':')[0], 'the hop is effort-only: model id before the colon is unchanged');
+  assert.ok(!Object.values(ladder).includes(key), `nothing may escalate INTO '${key}' — it is a start, not a spine rung`);
+});
+
+// Every full claude-* id that appears as a ladder key or value must carry an
+// effort the CLI accepts (CLAUDE_EFFORT_VALUES), or the launch would pass an
+// unknown --effort (claude fails open on it, so this is the only guard).
+test('every claude-* ladder key and value carries an effort inside CLAUDE_EFFORT_VALUES', async () => {
+  const { CLAUDE_EFFORT_VALUES } = await import('../../src/node/run.mjs');
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  const claudeIds = new Set();
+  for (const [model, next] of Object.entries(ladder)) {
+    if (model.startsWith('claude-')) claudeIds.add(model);
+    if (next !== CEILING_SENTINEL && next.startsWith('claude-')) claudeIds.add(next);
+  }
+  // Non-vacuity guard: the claude-opus-5-5:high and claude-fable-5-1:max keys are always present.
+  assert.ok(claudeIds.size >= 2, `expected at least the claude-opus-5-5:high and claude-fable-5-1:max ids, saw ${JSON.stringify([...claudeIds])}`);
+  for (const id of claudeIds) {
+    const sep = id.lastIndexOf(':');
+    assert.ok(sep > 0, `'${id}' has no :effort suffix`);
+    const effort = id.slice(sep + 1);
+    assert.ok(CLAUDE_EFFORT_VALUES.includes(effort), `'${id}' carries effort '${effort}', not in CLAUDE_EFFORT_VALUES ${JSON.stringify(CLAUDE_EFFORT_VALUES)}`);
+  }
 });
 
 // The bare claude aliases are NOT ladder keys any more. Every entry point
@@ -167,7 +252,7 @@ test('malformed-JSON warn+fallthrough: malformed override falls through to shipp
   const warnings = [];
   const ladder = loadModelLadder({ overrideFile, shippedFile: realShippedFile, warn: (msg) => warnings.push(msg) });
 
-  assert.equal(ladder.haiku, 'sonnet:high'); // fell through to shipped defaults
+  assert.equal(ladder.haiku, 'claude-sonnet-5-5:high'); // fell through to shipped defaults
   assert.equal(warnings.length, 1, `expected exactly one warning, got ${warnings.length}: ${JSON.stringify(warnings)}`);
   assert.match(warnings[0], /override file .* unreadable or malformed/);
 });
@@ -203,7 +288,7 @@ for (const [label, badValue] of [
     const ladder = loadModelLadder({ overrideFile, shippedFile: realShippedFile, warn: (msg) => warnings.push(msg) });
 
     // Falls through to the REAL shipped defaults, not the non-string value.
-    assert.equal(ladder.haiku, 'sonnet:high');
+    assert.equal(ladder.haiku, 'claude-sonnet-5-5:high');
     assert.notEqual(ladder.haiku, badValue);
     assert.equal(warnings.length, 1, `expected exactly one warning, got ${warnings.length}: ${JSON.stringify(warnings)}`);
     assert.match(warnings[0], /override file .* unreadable or malformed/);
@@ -260,12 +345,18 @@ test('AC9: :low starts now upgrade to :medium (deliberate Node behavior change)'
 test('nextWorkerModel: claude ladder now resolves (previously absent from Node MODEL_UPGRADES)', () => {
   // Before US-001, haiku/sonnet/opus were entirely absent from the Node
   // hardcode, so any claude worker treated as instantly BLOCKED at stage 1.
-  // 2026-09-26 CB=4/3-rung wave: the default spine is haiku -> sonnet:high ->
-  // claude-opus-5-5:high. sonnet:medium is a legacy on-ramp, not on the
-  // default walk any more — it escalates straight to the ceiling.
-  assert.equal(nextWorkerModel('haiku', 3), 'sonnet:high');
-  assert.equal(nextWorkerModel('sonnet:high', 3), 'claude-opus-5-5:high');
+  // Sonnet 5.5 / Opus 5.5 wave: the default spine is haiku ->
+  // claude-sonnet-5-5:high -> claude-opus-5-5:high. sonnet:medium and
+  // sonnet:high are legacy on-ramps, not on the default walk any more — they
+  // escalate straight to the ceiling. The brainstorm MEDIUM start
+  // claude-sonnet-5-5:medium walks the same 3/6/9 stages (effort-only first hop).
+  assert.equal(nextWorkerModel('haiku', 3), 'claude-sonnet-5-5:high');
+  assert.equal(nextWorkerModel('claude-sonnet-5-5:high', 3), 'claude-opus-5-5:high');
+  assert.equal(nextWorkerModel('claude-sonnet-5-5:medium', 3), 'claude-sonnet-5-5:high');
+  assert.equal(nextWorkerModel('claude-sonnet-5-5:medium', 6), 'claude-opus-5-5:high');
+  assert.equal(nextWorkerModel('claude-sonnet-5-5:medium', 9), 'BLOCKED');
   assert.equal(nextWorkerModel('sonnet:medium', 3), 'claude-opus-5-5:high');
+  assert.equal(nextWorkerModel('sonnet:high', 3), 'claude-opus-5-5:high');
 });
 
 test('cross-consumer equivalence: every shipped ladder key normalizes the same way as the zsh loader (""<->BLOCKED)', async () => {
@@ -297,7 +388,7 @@ test('shipped ladder: gpt-5.6-sol:xhigh (no max/ultra climb, no longer escalates
 // terra:max -> sol:xhigh -> astra hop is gone.
 test('shipped ladder: gpt-5.6-terra:xhigh jumps model to gpt-5.6-sol:high, terra:max is the cost-lane ceiling', async () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT });
-  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-5.6-sol:high');
+  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-6.1-sol:high');
   assert.equal(ladder['gpt-5.6-terra:max'], CEILING_SENTINEL);
   assert.equal(ladder['gpt-5.6-terra:ultra'], CEILING_SENTINEL);
 });
@@ -324,7 +415,7 @@ test('luna-first ladder: effort-before-model within luna, terra:max is the cost-
   assert.equal(ladder['gpt-5.6-terra:max'], CEILING_SENTINEL);
   // unchanged guards
   assert.equal(ladder['gpt-5.6-luna:medium'], 'gpt-5.6-luna:high');
-  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-5.6-sol:high');
+  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-6.1-sol:high');
   // sol:xhigh is its own terminal ceiling again — astra left the worker path.
   assert.equal(ladder['gpt-5.6-sol:xhigh'], CEILING_SENTINEL);
   assert.equal(ladder['gpt-5.6-sol:max'], CEILING_SENTINEL);
@@ -371,7 +462,7 @@ test('shipped ladder: a codex family climbs low..xhigh; astra, sol:xhigh and ter
   // (2026-09-26 CB=4/3-rung wave). terra:xhigh still hands off to sol:high —
   // that cross-family handoff is unaffected.
   assert.equal(ladder['gpt-6-astra:xhigh'], CEILING_SENTINEL);
-  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-5.6-sol:high');
+  assert.equal(ladder['gpt-5.6-terra:xhigh'], 'gpt-6.1-sol:high');
 });
 
 // Owner correction (Fable 5.1 / Codex 6 Astra wave): the shipped Worker
@@ -439,22 +530,86 @@ test('invariant: the shipped Worker default is never the ladder ceiling, on eith
 // recommends must be a real ladder key, or the campaign reports
 // already_max from iteration 1 (docs/plans/model-mapping-2026-09-25-findings.md
 // §4 "Dead starts"). Claude recommendations are the new spine
-// (haiku/sonnet:high/claude-opus-5-5:high); codex recommendations are
+// (haiku/claude-sonnet-5-5:medium for MEDIUM/claude-sonnet-5-5:high/
+// claude-opus-5-5:high); codex recommendations are
 // hardcoded here from the CURRENT cross-engine table in
 // src/commands/rlp-desk.md step 7 (~lines 71-116, cost + speed lane Worker
 // columns) — that table is out of this wave's scope and still names these
 // exact starts.
 test('every brainstorm-recommended per-complexity worker start is a ladder key (no dead starts)', () => {
   const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
-  const claudeStarts = ['haiku', 'sonnet:high', 'claude-opus-5-5:high'];
+  const claudeStarts = ['haiku', 'claude-haiku-5-5:medium', 'claude-sonnet-5-5:medium', 'claude-sonnet-5-5:high', 'claude-opus-5-5:high'];
   const codexStarts = [
-    'gpt-5.6-luna:high', // LOW, and MEDIUM/HIGH-cost-lane's predecessor rung
-    'gpt-5.6-luna:xhigh', // MEDIUM
-    'gpt-5.6-luna:max', // HIGH cost lane
-    'gpt-5.6-sol:medium', // HIGH speed lane
-    'gpt-5.6-sol:high', // CRITICAL
+    'gpt-6-luna:high', // LOW, and MEDIUM/HIGH-cost-lane's predecessor rung
+    'gpt-6-luna:xhigh', // MEDIUM
+    'gpt-6-luna:max', // HIGH cost lane
+    'gpt-6.1-sol:medium', // HIGH speed lane
+    'gpt-6.1-sol:high', // CRITICAL
   ];
   for (const start of [...claudeStarts, ...codexStarts]) {
     assert.notEqual(ladder[start], undefined, `'${start}' is a recommended worker start but not a ladder key — it would report already_max from iteration 1`);
   }
+});
+
+// Addendum-4 (generation refresh): the GPT-6.1 Sol / GPT-6 Luna / Haiku 5.5 rungs.
+test('gpt-6.1-sol ladder mirrors the 5.6 sol shape', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  assert.equal(ladder['gpt-6.1-sol:low'], 'gpt-6.1-sol:medium');
+  assert.equal(ladder['gpt-6.1-sol:medium'], 'gpt-6.1-sol:high');
+  assert.equal(ladder['gpt-6.1-sol:high'], 'gpt-6.1-sol:xhigh');
+  assert.equal(ladder['gpt-6.1-sol:xhigh'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-6.1-sol:max'], CEILING_SENTINEL);
+  assert.equal(ladder['gpt-6.1-sol:ultra'], CEILING_SENTINEL);
+});
+
+test('gpt-6-luna ladder: effort before model, terra:max ceiling', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  assert.equal(ladder['gpt-6-luna:low'], 'gpt-6-luna:medium');
+  assert.equal(ladder['gpt-6-luna:medium'], 'gpt-6-luna:high');
+  assert.equal(ladder['gpt-6-luna:high'], 'gpt-6-luna:max');
+  assert.equal(ladder['gpt-6-luna:xhigh'], 'gpt-6-luna:max');
+  assert.equal(ladder['gpt-6-luna:max'], 'gpt-5.6-terra:max');
+  assert.equal(nextWorkerModel('gpt-6-luna:high', 3), 'gpt-6-luna:max');
+  assert.equal(nextWorkerModel('gpt-6-luna:max', 3), 'gpt-5.6-terra:max');
+  assert.equal(nextWorkerModel('gpt-5.6-terra:max', 3), 'BLOCKED');
+});
+
+test('claude-haiku-5-5:medium is a rung and legacy haiku is retained', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  assert.equal(ladder['claude-haiku-5-5:medium'], 'claude-sonnet-5-5:high');
+  assert.equal(ladder.haiku, 'claude-sonnet-5-5:high');
+});
+
+// Guard (GREEN today): legacy 5.6 sol/luna keys stay byte-for-byte so persisted status.json and
+// explicit user pins keep escalating. gpt-6-sol deliberately has no ladder keys: an explicit
+// gpt-6-sol:* start runs without escalation (a dead start, like luna:ultra); adding six mirror keys
+// was judged the larger surface (addendum-4 G01).
+test('legacy gpt-5.6-sol/luna keys are retained unchanged; gpt-6-sol has none', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  const legacy = {
+    'gpt-5.6-sol:low': 'gpt-5.6-sol:medium',
+    'gpt-5.6-sol:medium': 'gpt-5.6-sol:high',
+    'gpt-5.6-sol:high': 'gpt-5.6-sol:xhigh',
+    'gpt-5.6-sol:xhigh': CEILING_SENTINEL,
+    'gpt-5.6-sol:max': CEILING_SENTINEL,
+    'gpt-5.6-sol:ultra': CEILING_SENTINEL,
+    'gpt-5.6-luna:low': 'gpt-5.6-luna:medium',
+    'gpt-5.6-luna:medium': 'gpt-5.6-luna:high',
+    'gpt-5.6-luna:high': 'gpt-5.6-luna:max',
+    'gpt-5.6-luna:xhigh': 'gpt-5.6-luna:max',
+    'gpt-5.6-luna:max': 'gpt-5.6-terra:max',
+  };
+  for (const [key, value] of Object.entries(legacy)) {
+    assert.equal(ladder[key], value, `legacy key '${key}' changed`);
+  }
+  assert.equal(ladder['gpt-6-sol:high'], undefined);
+});
+
+// Guard (GREEN today, 0 dangling): every non-ceiling upgrade target is itself a ladder key.
+test('no ladder value is a dangling hop', () => {
+  const ladder = loadModelLadder({ overrideFile: NONEXISTENT, shippedFile: realShippedFile });
+  const dangling = Object.entries(ladder)
+    .filter(([, next]) => next !== CEILING_SENTINEL && next !== '' && ladder[next] === undefined)
+    .map(([key, next]) => `${key} -> ${next}`);
+  assert.deepEqual(dangling, []);
 });

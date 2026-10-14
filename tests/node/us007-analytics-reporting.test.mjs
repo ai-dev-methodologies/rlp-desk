@@ -528,7 +528,7 @@ test('g1-node: summarizeCost emits sol-equivalent from campaign.jsonl rows', asy
   const prdFile = path.join(deskRoot, 'plans', 'prd-g1-cost-slug.md');
   const statusFile = path.join(deskRoot, 'logs', 'g1-cost-slug', 'runtime', 'status.json');
 
-  // luna 1000 (x0.04=40) + terra 1000 (x0.4=400) + sol 1000 (x1.0=1000) = 1440,
+  // luna 1000 (x0.055=55) + terra 1000 (x0.55=550) + sol 1000 (x1.0=1000) = 1605,
   // same fixture matrix as the zsh g1 "mixed families sum correctly" test.
   await writeAnalyticsLines(analyticsFile, [
     { iter: 1, us_id: 'US-001', worker_model: 'gpt-5.6-luna', worker_engine: 'codex', verdict: 'pass', duration: 1, timestamp: 't1', estimated_tokens: 1000, token_source: 'estimated' },
@@ -540,7 +540,47 @@ test('g1-node: summarizeCost emits sol-equivalent from campaign.jsonl rows', asy
   await generateCampaignReport({ slug: 'g1-cost-slug', reportFile, prdFile, statusFile, analyticsFile, now: new Date('2026-08-09T00:00:00Z') });
 
   const report = await fs.readFile(reportFile, 'utf8');
-  assert.match(report, /Codex legs sol-equivalent: 1440 tokens/);
+  assert.match(report, /Codex legs sol-equivalent: 1605 tokens/);
+  assert.match(report, /\(factors relative to gpt-5\.6-sol = 1\.0: gpt-6\.1-sol 0\.5 \/ gpt-5\.6-terra 0\.55 \/ gpt-6-luna 0\.025 \/ gpt-5\.6-luna 0\.055\)/);
+});
+
+// Addendum-4 (generation refresh) cost fixtures. The sol-equivalent report is a sum of
+// per-row scaled integers (factor * 1000, rounded, times tokens) and one floor(sum / 1000),
+// identical to the zsh leader (tests/test_g1_cost_summary.sh Z19/Z20/Z24).
+async function summarizeCostFixture(t, slug, rows) {
+  const rootDir = await createTempDir(t);
+  const deskRoot = deskPath(rootDir);
+  const analyticsFile = path.join(deskRoot, 'logs', slug, 'campaign.jsonl');
+  const reportFile = path.join(deskRoot, 'logs', slug, 'campaign-report.md');
+  const prdFile = path.join(deskRoot, 'plans', `prd-${slug}.md`);
+  const statusFile = path.join(deskRoot, 'logs', slug, 'runtime', 'status.json');
+  await writeAnalyticsLines(analyticsFile, rows);
+  const { generateCampaignReport } = await import('../../src/node/reporting/campaign-reporting.mjs');
+  await generateCampaignReport({ slug, reportFile, prdFile, statusFile, analyticsFile, now: new Date('2026-08-09T00:00:00Z') });
+  return fs.readFile(reportFile, 'utf8');
+}
+
+const costRow = (iter, model, tokens) => ({ iter, us_id: 'US-001', worker_model: model, worker_engine: 'codex', verdict: 'pass', duration: 1, timestamp: `t${iter}`, estimated_tokens: tokens, token_source: 'estimated' });
+
+test('g1-node: summarizeCost converts 4 x 1000 gpt-6-luna tokens to 100', async (t) => {
+  const report = await summarizeCostFixture(t, 'g1-luna6-slug', [1, 2, 3, 4].map((i) => costRow(i, 'gpt-6-luna', 1000)));
+  assert.match(report, /Codex legs sol-equivalent: 100 tokens/);
+});
+
+test('g1-node: summarizeCost scaled-integer boundary, 40 x 1001 gpt-6-luna tokens -> 1001', async (t) => {
+  const rows = Array.from({ length: 40 }, (_, i) => costRow(i + 1, 'gpt-6-luna', 1001));
+  const report = await summarizeCostFixture(t, 'g1-boundary-slug', rows);
+  assert.match(report, /Codex legs sol-equivalent: 1001 tokens/);
+});
+
+test('g1-node: summarizeCost mixed families 1000 tokens each -> 1130', async (t) => {
+  const report = await summarizeCostFixture(t, 'g1-mixed6-slug', [
+    costRow(1, 'gpt-6.1-sol', 1000),
+    costRow(2, 'gpt-6-luna', 1000),
+    costRow(3, 'gpt-5.6-luna', 1000),
+    costRow(4, 'gpt-5.6-terra', 1000),
+  ]);
+  assert.match(report, /Codex legs sol-equivalent: 1130 tokens/);
 });
 
 test('g1-node: summarizeCost emits the unattributed reconciliation line on rows lacking tokens', async (t) => {
@@ -564,7 +604,7 @@ test('g1-node: summarizeCost emits the unattributed reconciliation line on rows 
   assert.match(report, /\(1 iteration\(s\) unattributed\)/);
 });
 
-test('g1-node: models.json cost_factors has the three families (shared-table pin)', async () => {
+test('g1-node: models.json cost_factors has the five families (shared-table pin)', async () => {
   const { loadCostFactors, defaultShippedModelsFile } = await import('../../src/node/model-ladder.mjs');
   // Hermeticity: force a guaranteed-nonexistent override so this pins the
   // real shipped table regardless of ambient RLP_DESK_MODELS_FILE state
@@ -573,8 +613,10 @@ test('g1-node: models.json cost_factors has the three families (shared-table pin
   const costFactors = loadCostFactors({ overrideFile: nonexistentOverride, shippedFile: defaultShippedModelsFile() });
 
   assert.equal(costFactors['gpt-5.6-sol'], 1.0);
-  assert.equal(costFactors['gpt-5.6-terra'], 0.4);
-  assert.equal(costFactors['gpt-5.6-luna'], 0.04);
+  assert.equal(costFactors['gpt-5.6-terra'], 0.55);
+  assert.equal(costFactors['gpt-5.6-luna'], 0.055);
+  assert.equal(costFactors['gpt-6.1-sol'], 0.5);
+  assert.equal(costFactors['gpt-6-luna'], 0.025);
   // Fable 5.1 / Codex 6 Astra wave: deliberately NOT added, see
   // src/model-upgrade-table.md "Cost Model" — gpt-6-astra has no local
   // pricing evidence (owner number needed), and the claude family (despite

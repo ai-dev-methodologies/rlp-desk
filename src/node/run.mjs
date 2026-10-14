@@ -13,7 +13,7 @@ import {
   buildPaths,
   resolveAnalyticsPointer,
 } from './runner/campaign-main-loop.mjs';
-import { isClaudeEngine, normalizeModelSpec } from './cli/command-builder.mjs';
+import { CODEX_MODEL_ALIASES, MINIMAL_UNSUPPORTED_MODELS, isClaudeEngine, normalizeModelSpec } from './cli/command-builder.mjs';
 import {
   writeGateReceipt,
   verifyGateReceipt,
@@ -190,17 +190,22 @@ export function validateModelFlag(value, flagName) {
     );
   }
 
-  // Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave), mirroring the
-  // zsh _auto_detect_engine check: gpt-6-astra's API rejects 'minimal' with
-  // an HTTP 400 that enumerates the supported set (low/medium/high/xhigh/
-  // max) — see src/model-upgrade-table.md "GPT-6 — Astra". Reject it HERE
-  // for THIS model only ('astra' the alias, or the full 'gpt-6-astra' slug);
-  // 'minimal' remains valid for every other codex model — never a blanket
-  // narrowing of CODEX_REASONING_VALUES.
-  if (!claude && (modelPart === 'astra' || modelPart === 'gpt-6-astra') && levelPart === 'minimal') {
-    throw new Error(
-      `invalid reasoning 'minimal' in ${flagName}='${value}': gpt-6-astra does not support 'minimal' (server enumerates: low|medium|high|xhigh|max).`,
-    );
+  // Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave, widened by the
+  // 2026-10-11 generation refresh), mirroring the zsh _auto_detect_engine
+  // check: gpt-6-astra, gpt-6.1-sol, gpt-6-sol and gpt-6-luna reject 'minimal'
+  // with an HTTP 400 that enumerates the supported set — see
+  // src/model-upgrade-table.md "GPT-6 — Astra". Reject it HERE for THESE
+  // resolved slugs only (aliases such as 'astra'/'sol'/'luna' resolve first);
+  // 'minimal' remains valid for every other codex model (gpt-5.6-* is
+  // unprobed) — never a blanket narrowing of CODEX_REASONING_VALUES.
+  if (!claude && levelPart === 'minimal') {
+    const resolved = CODEX_MODEL_ALIASES.get(modelPart) ?? modelPart;
+    const enumeration = MINIMAL_UNSUPPORTED_MODELS.get(resolved);
+    if (enumeration !== undefined) {
+      throw new Error(
+        `invalid reasoning 'minimal' in ${flagName}='${value}': ${resolved} does not support 'minimal' (rlp-desk accepts: ${enumeration}).`,
+      );
+    }
   }
 }
 
@@ -905,7 +910,7 @@ async function runRunCommand(args, deps) {
   // <project>/.claude/. After v0.13.0, sentinels live in
   // <project>/.rlp-desk/, but if the user pinned RLP_DESK_RUNTIME_DIR
   // back inside .claude/, the hang can return — surface the warning so
-  // they can switch to a codex worker (e.g. gpt-5.6-sol:high) or --mode agent
+  // they can switch to a codex worker (e.g. gpt-6.1-sol:high) or --mode agent
   // quickly.
   if (
     !process.env.RLP_DESK_QUIET_WARNINGS
@@ -923,7 +928,7 @@ async function runRunCommand(args, deps) {
     );
     write(
       deps.stderr,
-      'If hang persists, switch to --worker-model gpt-5.6-sol:high (codex).',
+      'If hang persists, switch to --worker-model gpt-6.1-sol:high (codex).',
     );
   }
 

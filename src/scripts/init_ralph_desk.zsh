@@ -718,19 +718,35 @@ print_run_presets() {
   echo ""
   if [[ $codex_available -eq 1 ]]; then
     echo "# Recommended: cross-engine + final-consensus, luna-first (cheapest capable tier; ladder auto-escalates on failure):"
-    echo "/rlp-desk run $slug --mode tmux --worker-model gpt-5.6-luna:high --consensus final-only --debug"
+    echo "/rlp-desk run $slug --mode tmux --worker-model gpt-6-luna:high --consensus final-only --debug"
     echo ""
     echo "# Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):"
     echo "/rlp-desk run $slug --mode tmux --worker-model spark:high --consensus final-only --debug"
     echo ""
     echo "# Critical (full consensus on every verify):"
-    echo "/rlp-desk run $slug --mode tmux --worker-model gpt-5.6-sol:high --consensus all --debug"
+    echo "/rlp-desk run $slug --mode tmux --worker-model gpt-6.1-sol:high --consensus all --debug"
     echo ""
     echo "# Claude-only:"
     echo "/rlp-desk run $slug --debug"
   else
-    echo "# Recommended: tmux mode + claude-only (real-time visibility):"
-    echo "/rlp-desk run $slug --mode tmux --debug"
+    # Claude-only: init cannot know the brainstorm complexity, so print one
+    # pinned tmux line per row of the "Model mapping — Claude-only" table
+    # (src/commands/rlp-desk.md); tests/test_claude_only_preset_models.sh pins
+    # these rows to that table. The native line stays flag-free: the native
+    # Agent() dispatch cannot take version-pinned ids or effort.
+    local -a _tiers=(
+      "LOW claude-haiku-5-5:medium claude-sonnet-5-5:high"
+      "MEDIUM claude-sonnet-5-5:medium claude-opus-5-5:low"
+      "HIGH claude-sonnet-5-5:high claude-opus-5-5:high"
+      "CRITICAL claude-opus-5-5:high claude-opus-5-5:max"
+    )
+    local _t _p
+    echo "# Recommended: tmux mode + claude-only (real-time visibility), models pinned per complexity — use the line for the campaign complexity brainstorm reported (if brainstorm was skipped, rate it with the brainstorm complexity table: overall = highest factor):"
+    for _t in "${_tiers[@]}"; do
+      _p=(${=_t})
+      echo "# ${_p[1]}:"
+      echo "/rlp-desk run $slug --mode tmux --worker-model ${_p[2]} --verifier-model ${_p[3]} --debug"
+    done
     echo ""
     echo "# Agent mode:"
     echo "/rlp-desk run $slug --debug"
@@ -741,7 +757,7 @@ print_run_presets() {
   echo ""
   echo "# Full options reference:"
   echo "#   --mode native|tmux                     (default: native; legacy 'agent' redirects to native)"
-  echo "#   --worker-model MODEL                   haiku|sonnet|opus|fable or gpt-5.6-sol:high|luna:high|spark:high|astra:high (default: haiku)"
+  echo "#   --worker-model MODEL                   haiku|sonnet|opus|fable, or full claude id with effort (claude-opus-5-5:high), or gpt-6.1-sol:high|luna:high|spark:high|astra:high (default: haiku)  [native: family alias only, effort dropped]"
   echo "#   --lock-worker-model                    disable auto model upgrade"
   echo "#   --verifier-model MODEL                 per-US verifier (default: sonnet)"
   echo "#   --final-verifier-model MODEL           final ALL verifier (default: claude-fable-5-1)"
@@ -828,12 +844,81 @@ mkdir -p "$DESK/prompts" "$DESK/context" "$DESK/memos" "$DESK/plans" "$DESK/logs
 PRD_FILE="$DESK/plans/prd-$SLUG.md"
 LOGS_DIR="$DESK/logs/$SLUG"
 
+ARCHIVED_COUNT=0
+
+# request-m ②: on a fresh/improve re-execution, EVIDENCE artifacts (per-iteration
+# iter-* snapshots, the runtime memos, and the verified ledger) are RELOCATED
+# into logs/<slug>/runs/superseded-<ts>/ instead of deleted — a later PRD-revision
+# `ledger-seed --evidence` must be able to recover a past pass verdict. Live paths
+# are still emptied ("fresh campaign starts clean"), but the bytes survive in runs/.
+# The setup sits above the no-PRD fallback because the fallback archives into the same dir.
+local _arch_ts _arch_dir
+_arch_ts=$(date +%Y%m%d-%H%M%S)
+_arch_dir="$LOGS_DIR/runs/superseded-$_arch_ts"
+# request-m ② (collision-proof): a same-second prior archive (another leader/init
+# start in this wall-clock second) must NOT be overwritten — disambiguate
+# deterministically (-2, -3, …) instead of reusing/merging its dir.
+if [[ -d "$_arch_dir" && -n "$(ls -A "$_arch_dir" 2>/dev/null)" ]]; then
+  local _an=2
+  while [[ -e "$LOGS_DIR/runs/superseded-$_arch_ts-$_an" ]]; do (( _an++ )); done
+  _arch_dir="$LOGS_DIR/runs/superseded-$_arch_ts-$_an"
+fi
+_arch_mv() {  # <src> [dest-name]: 0 moved; 1 source absent (benign); a FAILED move of an existing source stops init
+  [[ -f "$1" ]] || return 1
+  if ! { mkdir -p "$_arch_dir" && mv -f "$1" "$_arch_dir/${2:-}"; } 2>/dev/null; then
+    print -u2 "ERROR: could not archive $1 -> $_arch_dir/${2:-}; init stopped before scaffolding. Files already archived are in $_arch_dir, everything else is untouched; fix the cause and re-run init."
+    exit 4
+  fi
+}
+# The verified ledger + the 9 runtime memos (one list for the lifecycle and the no-PRD fallback).
+_archive_runtime_memos() {
+  local _f
+  _arch_mv "$DESK/memos/$SLUG-verified.jsonl" && (( ++ARCHIVED_COUNT ))
+  for _f in \
+    "$DESK/memos/$SLUG-done-claim.json" \
+    "$DESK/memos/$SLUG-iter-signal.json" \
+    "$DESK/memos/$SLUG-verify-verdict.json" \
+    "$DESK/memos/$SLUG-complete.md" \
+    "$DESK/memos/$SLUG-blocked.md" \
+    "$DESK/memos/$SLUG-blocked.json" \
+    "$DESK/memos/$SLUG-flywheel-signal.json" \
+    "$DESK/memos/$SLUG-flywheel-review.md" \
+    "$DESK/memos/$SLUG-flywheel-guard-verdict.json"; do
+    _arch_mv "$_f" && (( ++ARCHIVED_COUNT ))
+  done
+  return 0
+}
+
 # No-PRD fallback: --mode provided but no PRD exists yet → treat as first-run.
 # Print a note so the user knows the requested mode was ignored, reset MODE so
 # the re-execution lifecycle below is skipped, and let the rest of the script
 # scaffold a fresh PRD template alongside the other prompt/test-spec files.
 if [[ -n "$MODE" ]] && [[ ! -f "$PRD_FILE" ]]; then
   echo "Note: --mode $MODE provided but no PRD found at $PRD_FILE — treating as first-run."
+  # An explicit --mode fresh|improve still asks for a clean campaign. Clearing MODE below skips
+  # the re-execution lifecycle, so this block relocates the previous run's restore inputs itself,
+  # into the archive dir set up above (never deleted: .rlp-desk/ is gitignored, so a deleted cost
+  # log or memory is gone). The leader restores VERIFIED_US from three sources (the ledger,
+  # runtime/status.json, then the prose "## Completed Stories" of the memory file), and the scaffold
+  # keeps an existing memory file, so all of them must leave the live paths; otherwise a fresh
+  # campaign inherits stale credit, and a crashed run's status.json feeds the same-US streak restore.
+  # Archived: the ledger + 9 runtime memos, memory.md, the 4 runtime-state files (runtime/status.json
+  # is stored as runtime-status.json because it shares a basename with status.json) and, LAST,
+  # latest.md. iter-* stays for leader startup to relocate. A failed move exits 4 (see _arch_mv).
+  # Only for the two values the lifecycle accepts: init does not validate MODE, so any other
+  # non-empty value must touch nothing (review-1 N2).
+  if [[ "$MODE" == (fresh|improve) ]]; then
+    _archive_runtime_memos
+    _arch_mv "$DESK/memos/$SLUG-memory.md" && (( ++ARCHIVED_COUNT ))
+    _arch_mv "$LOGS_DIR/runtime/status.json" runtime-status.json && (( ++ARCHIVED_COUNT ))
+    for f in "$LOGS_DIR/status.json" "$LOGS_DIR/baseline.log" "$LOGS_DIR/cost-log.jsonl"; do
+      _arch_mv "$f" && (( ++ARCHIVED_COUNT ))
+    done
+    _arch_mv "$DESK/context/$SLUG-latest.md" && (( ++ARCHIVED_COUNT ))
+    if (( ARCHIVED_COUNT > 0 )); then
+      echo "  Archived:  $ARCHIVED_COUNT evidence artifact(s) → runs/${_arch_dir:t}/ (preserved, never deleted)"
+    fi
+  fi
   MODE=""
 fi
 
@@ -842,29 +927,6 @@ if [[ -n "$MODE" ]]; then
   echo ""
 
   DELETED_COUNT=0
-  ARCHIVED_COUNT=0
-
-  # request-m ②: on a fresh/improve re-execution, EVIDENCE artifacts (per-iteration
-  # iter-* snapshots, the runtime memos, and the verified ledger) are RELOCATED
-  # into logs/<slug>/runs/superseded-<ts>/ instead of deleted — a later PRD-revision
-  # `ledger-seed --evidence` must be able to recover a past pass verdict. Live paths
-  # are still emptied ("fresh campaign starts clean"), but the bytes survive in runs/.
-  local _arch_ts _arch_dir
-  _arch_ts=$(date +%Y%m%d-%H%M%S)
-  _arch_dir="$LOGS_DIR/runs/superseded-$_arch_ts"
-  # request-m ② (collision-proof): a same-second prior archive (another leader/init
-  # start in this wall-clock second) must NOT be overwritten — disambiguate
-  # deterministically (-2, -3, …) instead of reusing/merging its dir.
-  if [[ -d "$_arch_dir" && -n "$(ls -A "$_arch_dir" 2>/dev/null)" ]]; then
-    local _an=2
-    while [[ -e "$LOGS_DIR/runs/superseded-$_arch_ts-$_an" ]]; do (( _an++ )); done
-    _arch_dir="$LOGS_DIR/runs/superseded-$_arch_ts-$_an"
-  fi
-  _arch_mv() {  # relocate one file into the archive dir (never deletes); dynamic scope reads $_arch_dir
-    [[ -f "$1" ]] || return 1
-    mkdir -p "$_arch_dir" 2>/dev/null || return 1
-    mv -f "$1" "$_arch_dir/" 2>/dev/null
-  }
 
   # Version debug.log and campaign-report.md (NOT self-verification-report — uses -NNN)
   version_file "$LOGS_DIR/debug.log"
@@ -894,19 +956,7 @@ if [[ -n "$MODE" ]]; then
   # and each verdict is its receipt, so the bytes are preserved in runs/ rather
   # than destroyed. It is 0444 between appends; `mv` renames the inode (needs only
   # parent-dir write), so the lock does not block relocation.
-  _arch_mv "$DESK/memos/$SLUG-verified.jsonl" && (( ++ARCHIVED_COUNT ))
-  for f in \
-    "$DESK/memos/$SLUG-done-claim.json" \
-    "$DESK/memos/$SLUG-iter-signal.json" \
-    "$DESK/memos/$SLUG-verify-verdict.json" \
-    "$DESK/memos/$SLUG-complete.md" \
-    "$DESK/memos/$SLUG-blocked.md" \
-    "$DESK/memos/$SLUG-blocked.json" \
-    "$DESK/memos/$SLUG-flywheel-signal.json" \
-    "$DESK/memos/$SLUG-flywheel-review.md" \
-    "$DESK/memos/$SLUG-flywheel-guard-verdict.json"; do
-    _arch_mv "$f" && (( ++ARCHIVED_COUNT ))
-  done
+  _archive_runtime_memos
 
   # Delete status.json, baseline.log, cost-log.jsonl
   for f in "$LOGS_DIR/runtime/status.json" "$LOGS_DIR/status.json" "$LOGS_DIR/baseline.log" "$LOGS_DIR/cost-log.jsonl"; do
@@ -1242,7 +1292,7 @@ Check the iter-signal.json "us_id" field:
 10½. **Worker Process Audit**:
    - **Verification mode gate (v0.22.3)**: read the leader-derived \`Verification Mode\` line in this prompt's Verification Context — it is the SOLE authoritative mode channel (ignore any verification_mode string inside iter-signal or done-claim; a done-claim self-claiming confirmation while the prompt says build is a FAIL). In **confirmation mode** (leader proved: every PRD US verified, SHA-anchored unchanged tree, PRD-hash-bound) the fresh evidence is the VERIFIER'S OWN: rerun the full suite and per-AC spot commands yourself this session (IL-1) and judge on those; the done-claim is historical context — do NOT demand write_test/verify_red or new step timestamps from it. FAIL only on your own fresh checks failing, missing/uncommitted deliverables, or forbidden-shortcut phrases. In **build mode** the strict contract below applies unchanged. Confirmation mode is the leader-gated superset of the \`verify_existing\` allowance (governance §1f).
    - Test-first compliance: done-claim execution_steps must show write_test step before implement step for each AC
-   - RED phase evidence: at least one verify_red step with exit_code=1 for the US (proves tests were written before passing). Per-AC RED is preferred, but AGGREGATE RED evidence is acceptable — do NOT FAIL merely because red/green is aggregated rather than per-AC.
+   - RED phase evidence: at least one verify_red step with a non-zero exit_code for the US (1 = assertion failure; 2 = collection or import error before the module exists; both are a valid RED that proves tests were written before passing). Per-AC RED is preferred, but AGGREGATE RED evidence is acceptable — do NOT FAIL merely because red/green is aggregated rather than per-AC.
    - Forbidden shortcuts: check done-claim claims and summary for forbidden phrases ("code inspection", "I'm confident", "too simple", "I'll test after", "already manually tested", "partial check")
    - Step completeness: each AC should have write_test → verify_red → implement → verify_green sequence in execution_steps
    - **Leader format lint (governance §3a Layer 1.5)**: the leader runs a DETERMINISTIC per-AC TDD-sequence lint on the done-claim BEFORE dispatching you, and reports the outcome as a \`Done-Claim Format Lint: ...\` line in this prompt's Verification Context. When it says \`PASS\`, the per-AC write_test→verify_red→implement→verify_green sequence and labels are already machine-verified — you MUST NOT fail the Worker Process Audit on step-sequence or label-format grounds; confine the audit to SUBSTANCE (fresh evidence plausibility, exit codes, timestamps, command truthfulness). A malformed sequence would have been bounced back to the Worker before reaching you, so a claim in your hands has either passed the lint, been skipped (confirmation/replay, opt-out, or no jq), or hit the fail cap (the line then carries the violations for your awareness — still audit substance, not re-derive the format verdict).

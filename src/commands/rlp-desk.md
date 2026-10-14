@@ -72,10 +72,10 @@ Ask about these items one by one (or in small groups):
 
    | Complexity | Worker | per-US Verifier | Final Verifier | Consensus |
    |------------|--------|-----------------|----------------|-----------|
-   | LOW | haiku | claude-sonnet-5:high | claude-fable-5-1:max | off |
-   | MEDIUM | sonnet:high | claude-opus-5:low | claude-fable-5-1:max | off |
-   | HIGH | sonnet:high | claude-opus-5:high | claude-fable-5-1:max | off |
-   | CRITICAL | claude-opus-5-5:high | claude-opus-5:max | claude-fable-5-1:max + human | off |
+   | LOW | claude-haiku-5-5:medium | claude-sonnet-5-5:high | claude-fable-5-1:max | off |
+   | MEDIUM | claude-sonnet-5-5:medium | claude-opus-5-5:low | claude-fable-5-1:max | off |
+   | HIGH | claude-sonnet-5-5:high | claude-opus-5-5:high | claude-fable-5-1:max | off |
+   | CRITICAL | claude-opus-5-5:high | claude-opus-5-5:max | claude-fable-5-1:max + human | off |
 
    **Model mapping — Cross-engine** (codex installed, recommended; luna-first
    per governance §4 — workers start cheap, ladder escalates on observed
@@ -83,10 +83,10 @@ Ask about these items one by one (or in small groups):
 
    | Complexity | Worker (cost lane) | Worker (speed lane) | per-US Verifier | Final Verifier | Consensus (per-US leg) |
    |------------|--------------------|---------------------|-----------------|----------------|------------------------|
-   | LOW | gpt-5.6-luna:high | gpt-5.6-luna:high | claude-sonnet-5:high | claude-fable-5-1:max | gpt-5.6-luna:max (per-US leg if `--consensus all`; default final-only) |
-   | MEDIUM | gpt-5.6-luna:xhigh | gpt-5.6-luna:xhigh | claude-opus-5:low | claude-fable-5-1:max | gpt-5.6-terra:high (per-US leg if `--consensus all`; default final-only) |
-   | HIGH | gpt-5.6-luna:max | gpt-5.6-sol:medium | claude-opus-5:high | claude-fable-5-1:max | gpt-5.6-sol:medium (all) |
-   | CRITICAL | gpt-5.6-sol:high | gpt-5.6-sol:high | claude-opus-5:max | claude-fable-5-1:max + human | gpt-5.6-sol:high (all) |
+   | LOW | gpt-6-luna:high | gpt-6-luna:high | claude-sonnet-5-5:high | claude-fable-5-1:max | gpt-6-luna:max (per-US leg if `--consensus all`; default final-only) |
+   | MEDIUM | gpt-6-luna:xhigh | gpt-6-luna:xhigh | claude-opus-5-5:low | claude-fable-5-1:max | gpt-5.6-terra:high (per-US leg if `--consensus all`; default final-only) |
+   | HIGH | gpt-6-luna:max | gpt-6.1-sol:medium | claude-opus-5-5:high | claude-fable-5-1:max | gpt-6.1-sol:medium (all) |
+   | CRITICAL | gpt-6.1-sol:high | gpt-6.1-sol:high | claude-opus-5-5:max | claude-fable-5-1:max + human | gpt-6.1-sol:high (all) |
 
    Final Consensus (all complexities): `gpt-6-astra:xhigh`.
 
@@ -97,26 +97,27 @@ Ask about these items one by one (or in small groups):
 
    > This campaign contains HIGH-complexity US. Execution profile?
    > - **Long-term / cost lane (recommended for unattended/overnight
-   >   campaigns)**: sol-grade quality is absorbed by terra:max; minimizes
-   >   Sol usage; iterations may be slower.
+   >   campaigns)**: cost lane: starts on gpt-6-luna and escalates
+   >   luna -> terra:max on observed failure, avoiding gpt-6.1-sol; iterations
+   >   may be slower.
    > - **Speed lane**: HIGH US go straight to sol; no terra hop.
 
    Compose the recommended run command from the chosen lane's Worker column
-   (cost: HIGH=`gpt-5.6-luna:max` / speed: HIGH=`gpt-5.6-sol:medium`); the
+   (cost: HIGH=`gpt-6-luna:max` / speed: HIGH=`gpt-6.1-sol:medium`); the
    presets below illustrate the cost lane — adapt per the lane decision. Log
    `[DECIDE] phase=lane lane=<choice>`.
 
-   **Worker model selection** (cross-engine, codex 0.144 / GPT-5.6 generation, luna-first per governance §4 — see model-upgrade-table.md for the full catalog):
-   - **gpt-5.6-luna** — default recommendation for LOW/MEDIUM and the cost-lane HIGH start (see the Cross-engine table above for the exact effort per complexity; `luna:high` ≈ the old `terra:medium` quality tier per the Artificial Analysis index tie at 46, at roughly 1/10 the cost after the 2026-07-30 API price cut). Escalation up the ladder (`luna:high → luna:max` directly — the MEDIUM manual `luna:xhigh` entry also joins the ladder at `:max`, then `luna:max` jumps model to `terra:max`, which is the cost lane's own ceiling) is automatic on observed failure only — CRITICAL rows start above the ladder and are exempt from luna-first.
-   - **gpt-5.6-sol** — HIGH speed-lane start and CRITICAL start (frontier agentic model; HIGH speed lane starts at `sol:medium`, CRITICAL at `sol:high` — `sol:high` escalates to `sol:xhigh`, which is sol's own terminal ceiling now that astra has left the worker escalation path). A claude CRITICAL campaign starts AT the ceiling (`claude-opus-5-5:high`); a codex CRITICAL campaign starts one hop below it (`sol:high` → `sol:xhigh`). Either way, if it fails `CB_THRESHOLD` times, BLOCKED is the correct outcome (a spec problem, not a model-ladder gap).
+   **Worker model selection** (cross-engine, codex 0.162 catalog: GPT-6.1 Sol / GPT-6 Luna / GPT-5.6 Terra / GPT-6 Astra, luna-first per governance §4 — see model-upgrade-table.md for the full catalog):
+   - **gpt-6-luna** — default recommendation for LOW/MEDIUM and the cost-lane HIGH start (effort per complexity in the Cross-engine table above). Cost, from the OpenAI price page of 2026-10-11 (short context): 0.025 relative to gpt-5.6-sol = 1.0, about 1/22 of gpt-5.6-terra (0.55) and 1/20 of gpt-6.1-sol (0.5). The earlier claim that luna:high matches the old terra:medium tier (Artificial Analysis index tie at 46, "roughly 1/10 the cost") belonged to the GPT-5.6 generation and is historical: no benchmark evidence for gpt-6-luna against gpt-5.6-terra is on file, so the luna-first start rests on cost plus automatic escalation on observed failure, not on a quality equivalence. Escalation up the ladder (`luna:high → luna:max` directly — the MEDIUM manual `luna:xhigh` entry also joins the ladder at `:max`, then `luna:max` jumps model to `terra:max`, which is the cost lane's own ceiling) is automatic on observed failure only — CRITICAL rows start above the ladder and are exempt from luna-first.
+   - **gpt-6.1-sol** — HIGH speed-lane start and CRITICAL start (0.5 relative to gpt-5.6-sol = 1.0; frontier agentic model; HIGH speed lane starts at `sol:medium`, CRITICAL at `sol:high` — `sol:high` escalates to `sol:xhigh`, which is sol's own terminal ceiling now that astra has left the worker escalation path). A claude CRITICAL campaign starts AT the ceiling (`claude-opus-5-5:high`); a codex CRITICAL campaign starts one hop below it (`sol:high` → `sol:xhigh`). Either way, if it fails `CB_THRESHOLD` times, BLOCKED is the correct outcome (a spec problem, not a model-ladder gap).
    - **gpt-6-astra** — judge-only (codex 0.153, newest frontier generation): the Final Verifier and Final Consensus seats (`FINAL_VERIFIER_CODEX_MODEL` / `FINAL_CONSENSUS_MODEL`), never a worker escalation target — no worker walk reaches it automatically. Still usable directly as a manual `--worker-model gpt-6-astra:high` start if desired. Confirmed reasoning efforts: `low`/`medium`/`high`/`xhigh`/`max` (`minimal` is rejected by the API for this model; `ultra` is accepted but unconfirmed as a distinct level — see model-upgrade-table.md "GPT-6 — Astra" for the live-probe evidence)
-   - **gpt-5.6-terra** — manual quota-first start, and the cost lane's own ceiling via the `luna:max` escalation (`terra:max` ≈ the sol:high–xhigh quality midpoint, slower than sol) — not a brainstorm default, but available via `--worker-model` when Sol quota is the binding constraint
-   - **gpt-5.5 / gpt-5.4 / gpt-5.4-mini** — previous-generation models, still fully supported (low..xhigh ladders) if the account lacks 5.6 access
+   - **gpt-5.6-terra** — no GPT-6 successor as of 2026-10-11; manual quota-first start, and the cost lane's own ceiling via the `luna:max` escalation (historical GPT-5.6-generation estimate: terra:max ≈ sol:high–xhigh; not re-measured against gpt-6.1-sol; terra is now priced above it per token, 0.55 vs 0.5 — it stays the cost lane ceiling by owner decision) — not a brainstorm default, but available via `--worker-model` when Sol quota is the binding constraint
+   - **gpt-5.5 / gpt-5.4 / gpt-5.4-mini** and **gpt-5.6-sol / gpt-5.6-luna** — older generation models, still supported as explicit ids (retired ids remap on entry; the 5.6 sol and luna ladder keys are kept)
    - **spark:high** — only when US is small enough for spark's 100k context (single-file, AC count <= 4, simple logic). Do NOT use as primary recommendation — spark context window is too small for most tasks
-   - Aliases: `sol`/`terra`/`luna`/`spark`/`astra` expand to their full slugs; `max`/`ultra` reasoning efforts exist on the 5.6 family, and only `max` exists for `luna` (no `luna:ultra`) — astra confirms `max` but not `ultra` (see above). Ladder behavior differs by family: within `luna` the ladder raises effort straight to `:max` before any model jump (`luna:high → luna:max`; the MEDIUM manual `luna:xhigh` start also joins the ladder at `:max` — it is not an extra rung) — `luna:max` then jumps model on a quota-first hop to `terra:max`, which is now the cost lane's own ceiling (astra left the worker escalation path). `terra` keeps its own `:xhigh` ladder ceiling before jumping model (e.g. `terra:high → terra:xhigh → sol:high`); `sol` climbs to `:xhigh`, which is now its own terminal ceiling (astra is judge-only and no longer reachable from the worker ladder). `sol:max` / `sol:ultra` / `terra:ultra` / `astra:max` / `astra:ultra` are manual-only starting keys with no forward escalation (dead ends).
+   - Aliases: `sol`->`gpt-6.1-sol`, `luna`->`gpt-6-luna`, `terra`->`gpt-5.6-terra`, `astra`->`gpt-6-astra` (`spark` is a retired alias and remaps to `gpt-6-luna` on entry); `max`/`ultra` reasoning efforts exist on the sol/terra families, while the luna catalog tops at `max` (the CLI accepted `luna:ultra` on 2026-10-11 but its effect is unverified, and there is no `luna:ultra` ladder key) — astra confirms `max` but not `ultra` (see above). Ladder behavior differs by family: within `luna` the ladder raises effort straight to `:max` before any model jump (`luna:high → luna:max`; the MEDIUM manual `luna:xhigh` start also joins the ladder at `:max` — it is not an extra rung) — `luna:max` then jumps model on a quota-first hop to `terra:max`, which is now the cost lane's own ceiling (astra left the worker escalation path). `terra` keeps its own `:xhigh` ladder ceiling before jumping model (e.g. `terra:high → terra:xhigh → sol:high`); `sol` climbs to `:xhigh`, which is now its own terminal ceiling (astra is judge-only and no longer reachable from the worker ladder). `sol:max` / `sol:ultra` / `terra:ultra` / `astra:max` / `astra:ultra` are manual-only starting keys with no forward escalation (dead ends).
 
    **Verifier model selection** (fully-explicit, version-pinned, per complexity):
-   - **per-US Verifier** — `claude-sonnet-5:high` (LOW) / `claude-opus-5:low` (MEDIUM) / `claude-opus-5:high` (HIGH) / `claude-opus-5:max` (CRITICAL). Version-pinned full ids (not the floating `sonnet`/`opus` aliases) so the verify tier does not silently drift when the alias remaps. The claude engine accepts effort on both short aliases (`opus:max`) AND full ids (`claude-opus-5:high`).
+   - **per-US Verifier** — `claude-sonnet-5-5:high` (LOW) / `claude-opus-5-5:low` (MEDIUM) / `claude-opus-5-5:high` (HIGH) / `claude-opus-5-5:max` (CRITICAL). Version-pinned full ids (not the floating `sonnet`/`opus` aliases) so the verify tier does not silently drift when the alias remaps. The claude engine accepts effort on both short aliases (`opus:max`) AND full ids (`claude-opus-5-5:high`) under `--mode tmux`; in `--mode native` the Agent tool takes only `haiku|sonnet|opus|fable`, so for this whole verifier block (per-US verifier, final verifier, consensus claude leg) the version pin and the effort are NOT applied (native: family alias only, effort dropped — see "Native Agent() model mapping").
    - **Final Verifier `claude-fable-5-1:max`** — the final gate runs the top model at top effort (`:max`), unchanged across all complexities. Version-pinned + explicit effort for the same drift reason.
    - When `--consensus` is on, the **claude leg** of consensus reuses the verifier model+effort for per-US and the final-verifier model+effort for the final pass — so with explicit verifier efforts the consensus claude legs are also fully explicit (no implicit default). `--consensus-model` / `--final-consensus-model` configure only the **codex leg**.
 
@@ -125,7 +126,7 @@ Ask about these items one by one (or in small groups):
    - To request 1M, append the explicit `[1m]` suffix on the full model id:
      - `claude-opus-4-7[1m]` — 1M attempted via `ANTHROPIC_BETA=context-1m-2025-08-07`. Works on most Claude Max accounts.
      - `claude-sonnet-4-6[1m]` — 1M attempted, **but** requires the Anthropic "Extra usage" toggle at https://claude.ai/settings/usage. Without that toggle the worker fails at the first API call with `Extra usage is required for 1M context`.
-   - rlp-desk does NOT pre-check entitlement — the explicit `[1m]` is honored as-is. If the API rejects it, you will see the error immediately and can re-run with the standard alias or the opus 1M form.
+   - rlp-desk does NOT pre-check entitlement — the explicit `[1m]` is honored as-is under `--mode tmux` (native drops it, rule 1 of "Native Agent() model mapping"). If the API rejects it, you will see the error immediately and can re-run with the standard alias or the opus 1M form.
    - **Default recommendation when 1M is genuinely needed:** prefer `claude-opus-4-7[1m]` over `claude-sonnet-4-6[1m]` because opus 1M does not require a separate entitlement toggle.
 
    Present complexity score with evidence to the user, e.g.: "I rate this MEDIUM because: US count=4 (MEDIUM), file scope=2 (MEDIUM), logic=conditionals (MEDIUM), deps=none (LOW), impact=modify (MEDIUM). Highest=MEDIUM."
@@ -135,8 +136,8 @@ Ask about these items one by one (or in small groups):
    **If codex is NOT installed** — say: "Codex is not installed. Defaulting to claude-only Worker. Note: without a second engine, your Verifier shares the same perspective as the Worker — there is a risk of blind spots where both Worker and Verifier miss the same issue. To unlock cross-engine coverage: `npm install -g @openai/codex`"
 
 8. **Batch Capacity Check** — when verify-mode is batch and PRD is large:
-   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to a full-context model (gpt-5.6-luna / gpt-5.6-terra / gpt-5.5) or split smaller"
-   - batch + full-context codex model (gpt-5.6-*, gpt-5.5, gpt-5.4*) + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
+   - batch + spark + AC > 4 → warn "spark 100k context limit — switch to a full-context model (gpt-6-luna / gpt-5.6-terra) or split smaller"
+   - batch + full-context codex model (any non-spark codex model: gpt-6.*, gpt-5.6-*, gpt-5.5, gpt-5.4*) + AC > 15 → warn "too many ACs for single batch — consider wave split (3-4 US per wave)"
    - per-us → no warning (US-level processing, no limit concern)
 9. **Verify Mode** — per-us (default) or batch. Ask: "Verify after each user story (per-us, recommended) or only after all stories are done (batch)?" Default recommendation: per-us for 2+ stories.
 10. **Consensus** — Ask: "Use cross-engine consensus? off (single engine), final-only (cross-engine on final verify only), or all (cross-engine on every verify). Requires codex CLI." Default: off. Recommended: final-only when codex is installed.
@@ -225,14 +226,14 @@ Tell the user:
    Available run commands (copy the one you want):
 
    # ★ Recommended: fully-explicit cross-engine config (every role pinned model:effort, no implicit defaults):
-   # Verifier tier shown (claude-opus-5:high) is the HIGH-complexity example — the per-complexity table above governs; --consensus-model here is the per-US leg (terra:high), --final-consensus-model is the final leg (astra:xhigh, always stricter).
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.6-luna:high --verifier-model claude-opus-5:high --final-verifier-model claude-fable-5-1:max --consensus all --consensus-model gpt-5.6-terra:high --final-consensus-model gpt-6-astra:xhigh --verify-mode per-us --debug
+   # Verifier tier shown (claude-opus-5-5:high) is the HIGH-complexity example — the per-complexity table above governs; --consensus-model here is the per-US leg (terra:high), --final-consensus-model is the final leg (astra:xhigh, always stricter).
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-6-luna:high --verifier-model claude-opus-5-5:high --final-verifier-model claude-fable-5-1:max --consensus all --consensus-model gpt-5.6-terra:high --final-consensus-model gpt-6-astra:xhigh --verify-mode per-us --debug
 
    # Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):
    /rlp-desk run <actual-slug> --mode tmux --worker-model spark:high --consensus final-only --debug
 
    # Critical (full consensus on every verify):
-   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-5.6-sol:high --consensus all --debug
+   /rlp-desk run <actual-slug> --mode tmux --worker-model gpt-6.1-sol:high --consensus all --debug
 
    # Claude-only:
    /rlp-desk run <actual-slug> --debug
@@ -240,9 +241,9 @@ Tell the user:
    # Full options reference:
    #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
    #                                          tmux: run inside a tmux session; the Leader anchors on its own pane and keeps the canonical layout (Leader visible at a readable width; Worker/Verifier/Consensus in one right column). Started outside tmux it fails fast ("start tmux first").
-   #   --worker-model MODEL                   claude (haiku|sonnet|opus|claude-opus-5:high, effort optional) or codex (gpt-5.6-sol:high|luna:high|terra:high|spark:high) (default: haiku)
+   #   --worker-model MODEL                   claude (haiku|sonnet|opus|claude-opus-5-5:high, effort optional) or codex (gpt-6.1-sol:high|luna:high|terra:high|spark:high) (default: haiku)  [native: family alias only, effort dropped — see "Native Agent() model mapping"]
    #   --lock-worker-model                    disable auto model upgrade
-   #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5:high/claude-opus-5:low/claude-opus-5:high/claude-opus-5:max — version-pinned + explicit effort)
+   #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5-5:high/claude-opus-5-5:low/claude-opus-5-5:high/claude-opus-5-5:max — version-pinned + explicit effort)
    #   --final-verifier-model MODEL           final ALL verifier (default: claude-fable-5-1; recommended claude-fable-5-1:max — top model + top effort)
    #   --consensus off|all|final-only         cross-engine consensus; claude leg reuses verifier/final-verifier model+effort (default: off)
    #   --consensus-model MODEL                per-US cross-verifier — codex leg only (default: gpt-5.6-terra:high)
@@ -268,11 +269,13 @@ Tell the user:
 
    **If codex is NOT installed** — show claude-only presets + install recommendation:
 
+   Compose the recommended run command from the Claude-only table row for the campaign complexity decided in step 7 (overall = highest factor): replace `<Worker>` with that row's Worker cell and `<Verifier>` with its per-US Verifier cell (e.g. MEDIUM: `--worker-model claude-sonnet-5-5:medium --verifier-model claude-opus-5-5:low`). If no complexity was decided in this session (init without brainstorm), show the four tmux rows instead of choosing one. The final verifier needs no flag: the shipped default `claude-fable-5-1` already resolves to `claude-fable-5-1:max`, the Final Verifier cell of every row. The CRITICAL row's "+ human" is a process step, not a flag. This applies to the tmux preset only. Never show the user a literal `<Worker>` or `<Verifier>`.
+
    ```
    Available run commands (copy the one you want):
 
-   # ★ Recommended: tmux mode + claude-only (real-time visibility):
-   /rlp-desk run <actual-slug> --mode tmux --debug
+   # ★ Recommended: tmux mode + claude-only (real-time visibility), models pinned to the chosen complexity's Claude-only row:
+   /rlp-desk run <actual-slug> --mode tmux --worker-model <Worker> --verifier-model <Verifier> --debug
 
    # Native Agent() mode (slash leader, short / interactive campaigns):
    /rlp-desk run <actual-slug> --mode native --debug
@@ -283,9 +286,9 @@ Tell the user:
    # Full options reference:
    #   --mode native|tmux                     (default: native; legacy `agent` redirects to native)
    #                                          tmux: run inside a tmux session; the Leader anchors on its own pane and keeps the canonical layout (Leader visible at a readable width; Worker/Verifier/Consensus in one right column). Started outside tmux it fails fast ("start tmux first").
-   #   --worker-model MODEL                   haiku|sonnet|opus, or full claude id with effort (claude-opus-5:high) (default: haiku)
+   #   --worker-model MODEL                   haiku|sonnet|opus, or full claude id with effort (claude-opus-5-5:high) (default: haiku)  [native: family alias only, effort dropped — see "Native Agent() model mapping"]
    #   --lock-worker-model                    disable auto model upgrade
-   #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5:high/claude-opus-5:low/claude-opus-5:high/claude-opus-5:max — version-pinned + explicit effort)
+   #   --verifier-model MODEL                 per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5-5:high/claude-opus-5-5:low/claude-opus-5-5:high/claude-opus-5-5:max — version-pinned + explicit effort)
    #   --final-verifier-model MODEL           final ALL verifier (default: claude-fable-5-1; recommended claude-fable-5-1:max — top model + top effort)
    #   --verify-mode per-us|batch             (default: per-us)
    #   --cb-threshold N                       (default: 4)
@@ -317,16 +320,16 @@ Tell the user:
 
 Options (parse from `$ARGUMENTS`):
 - `--mode native|tmux` (default: `native`) — execution mode. `native` = slash command is the leader, calls `Agent(...)` (claude) and `Bash("codex exec ...")` (codex). `tmux` = slash command spawns the zsh runner via `node run.mjs --mode tmux`. Legacy `--mode agent` typed against the slash command emits a deprecation notice and redirects to `--mode native` (NOT to be confused with `node run.mjs --mode agent`, which is the deprecated Node-leader alpha — see "Direct Node CLI invocation" below).
-- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` (no colon) = claude engine, UNLESS `model` is one of the five known bare codex aliases (`spark`/`sol`/`terra`/`luna`/`astra`) or a bare `gpt-*` id (e.g. `gpt-5.5`), either of which route to codex with no explicit reasoning specified on the command line; `model:effort` = claude engine when `model` is a claude name (short alias `haiku`/`sonnet`/`opus` OR full versioned id `claude-*`), otherwise codex engine (`model:reasoning`). Examples: `haiku`, `sonnet`, `opus`, `opus:max`, `claude-opus-5:high`, `claude-fable-5-1:max`, `claude-opus-5[1m]:high` (1M context + effort), `spark` (bare, no reasoning), `gpt-5.5` (bare, no reasoning), `spark:high`, `gpt-5.6-sol:xhigh`, `gpt-5.5:high`, `gpt-5.6-luna:max` (cost-lane HIGH start), `gpt-5.6-terra:max` (manual quota-first start, also the cost lane's own ceiling — quality ≈ sol:high–xhigh midpoint, slower). Parsed by `parse_model_flag()` which auto-splits engine/model/effort-or-reasoning; a colon-bearing name is codex ONLY when the model part is neither a claude short alias nor a `claude-*`/`claude` name. Any bare name that is neither a claude id, a known codex alias, nor a `gpt-*` id still defaults to claude.
+- `--worker-model MODEL` (default: `haiku`) — Worker model. Format: `model` (no colon) = claude engine, UNLESS `model` is one of the five known bare codex aliases (`spark`/`sol`/`terra`/`luna`/`astra`) or a bare `gpt-*` id (e.g. `gpt-5.5`), either of which route to codex with no explicit reasoning specified on the command line; `model:effort` = claude engine when `model` is a claude name (short alias `haiku`/`sonnet`/`opus` OR full versioned id `claude-*`), otherwise codex engine (`model:reasoning`). Examples: `haiku`, `sonnet`, `opus`, `opus:max`, `claude-opus-5-5:high`, `claude-fable-5-1:max`, `claude-opus-5[1m]:high` (1M context + effort), `spark` (bare, no reasoning), `gpt-5.5` (bare, no reasoning), `spark:high`, `gpt-6.1-sol:xhigh`, `gpt-5.5:high`, `gpt-6-luna:max` (cost-lane HIGH start), `gpt-5.6-terra:max` (manual quota-first start, also the cost lane's own ceiling, slower). Parsed by `parse_model_flag()` which auto-splits engine/model/effort-or-reasoning; a colon-bearing name is codex ONLY when the model part is neither a claude short alias nor a `claude-*`/`claude` name. Any bare name that is neither a claude id, a known codex alias, nor a `gpt-*` id still defaults to claude. Under `--mode native` the Agent tool takes only `haiku|sonnet|opus|fable` (native: family alias only, effort dropped — see "Native Agent() model mapping").
   - **Two user-visible behavior notes (Fable 5.1 / Codex 6 Astra wave):** (1) A `model:` value with a trailing colon and nothing after it (e.g. `--worker-model gpt-5.5:`) now exits 1 at startup instead of silently launching with an unspecified reasoning level — this matches the env-var path's pre-existing behavior, which always rejected an empty reasoning; the CLI-flag path used to accept it, an inconsistency closed by routing both through one shared validator. (2) A bare codex alias or bare `gpt-*` id on the CLI (no `:reasoning` suffix) internally defaults its reasoning to `high` rather than leaving it unset — an unset codex reasoning would otherwise hard-block the campaign at launch (`_require_codex_effort` refuses to assemble `-c model_reasoning_effort=""`, which codex itself would reject).
 - `--lock-worker-model` — disable automatic model upgrade on failure. Worker stays on the specified model regardless of consecutive failures.
-- `--verifier-model MODEL` (default: `sonnet`; recommended per complexity: `claude-sonnet-5:high` (LOW) / `claude-opus-5:low` (MEDIUM) / `claude-opus-5:high` (HIGH) / `claude-opus-5:max` (CRITICAL)) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier. Claude engine accepts `model:effort` on both short aliases (`opus:max`) AND full `claude-*` ids (`claude-opus-5:high`); version-pinning prevents alias drift.
+- `--verifier-model MODEL` (default: `sonnet`; recommended per complexity: `claude-sonnet-5-5:high` (LOW) / `claude-opus-5-5:low` (MEDIUM) / `claude-opus-5-5:high` (HIGH) / `claude-opus-5-5:max` (CRITICAL)) — per-US verification model. Campaign-fixed (no progressive upgrade). Lighter than final verifier. Claude engine accepts `model:effort` on both short aliases (`opus:max`) AND full `claude-*` ids (`claude-opus-5-5:high`); version-pinning prevents alias drift.
 - `--final-verifier-model MODEL` (default: `claude-fable-5-1`; recommended `claude-fable-5-1:max`) — final ALL verification model. Independent from per-US verifier. Used only for the final full-AC verify pass. The final gate runs the top model at top effort (`claude-fable-5-1:max`).
 - `--consensus off|all|final-only` (default: `off`) — cross-engine consensus verification mode.
   - `off`: single-engine verification only
   - `all`: cross-engine consensus on every verify (per-US and final)
   - `final-only`: cross-engine consensus only on the final ALL verify
-- `--consensus-model MODEL` (default: `gpt-5.6-terra:high`) — per-US cross-verifier model. Configures the **codex leg only**; the claude leg of per-US consensus reuses `--verifier-model` (model + effort). Lighter weight for cost efficiency. Brainstorm recommends per complexity: `gpt-5.6-luna:max` (LOW) / `gpt-5.6-terra:high` (MEDIUM) / `gpt-5.6-sol:medium` (HIGH) / `gpt-5.6-sol:high` (CRITICAL).
+- `--consensus-model MODEL` (default: `gpt-5.6-terra:high`) — per-US cross-verifier model. Configures the **codex leg only**; the claude leg of per-US consensus reuses `--verifier-model` (model + effort). Lighter weight for cost efficiency. Brainstorm recommends per complexity: `gpt-6-luna:max` (LOW) / `gpt-5.6-terra:high` (MEDIUM) / `gpt-6.1-sol:medium` (HIGH) / `gpt-6.1-sol:high` (CRITICAL).
 - `--final-consensus-model MODEL` (default: `gpt-6-astra:xhigh`) — final cross-verifier model. Configures the **codex leg only**; the claude leg of final consensus reuses `--final-verifier-model` (model + effort). Stricter. Note: spark is not allowed here (100k output limit).
 - `--consensus-parallel` (default: OFF) — run the claude and codex consensus verifiers **concurrently** (claude in the verifier pane, codex in a 4th consensus pane) instead of sequentially. Both verdict files are polled and merged with the same NO ENGINE PRIORITY rule (both must pass). Because the two verifiers re-run evidence at the same time, both prompts carry an evidence-isolation lock contract (acquire `.rlp-desk/logs/<slug>/runtime/evidence.lock` before any DB-mutating or E2E rerun). When off, the sequential consensus path is byte-identical to before.
 - `--verify-mode per-us|batch` (default: `per-us`) — verification strategy
@@ -434,13 +437,36 @@ The slash command IS the leader. Workers/Verifiers are spawned via `Agent(model=
 This contract MUST be observed in every iteration of the leader loop below. Future PRs deleting any of these guarantees break the slash command's behavior.
 
 1. **Turn-keepalive**: every status report uses `Bash("echo '...'")` to emit messages. NEVER output plain text without an accompanying tool call. Plain text = turn ends = loop stops. (Mitigation for commit `29fd29b` platform constraint, permanent.)
-2. **no `subagent_type` parameter**: the `Agent(...)` call form is exactly `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)`. Do NOT pass `subagent_type`. (Mitigation for commit `920a31c`: `subagent_type="executor"` overrode `bypassPermissions` and surfaced a permission popup; permanent.)
-3. **`mode="bypassPermissions"` mandatory**: every claude `Agent()` worker/verifier dispatch must include `mode="bypassPermissions"`.
-4. **Long-running campaigns: prefer `--mode tmux`** for production. Native Agent() has no timeout API (platform constraint) — if `bypassPermissions` fails to suppress an interactive prompt at the SDK level, the call hangs indefinitely with no rlp-desk-side watchdog.
+2. **no `subagent_type` parameter**: the `Agent(...)` call form is exactly `Agent(description=…, model=<m>, mode="bypassPermissions", prompt=…)`. Do NOT pass `subagent_type`. (Mitigation for commit `920a31c`: `subagent_type="executor"` caused permission prompts because the agent definition can override the inherited permission mode — the schema says "agent-definition frontmatter may override it"; the exact mechanism in that commit is not verified; permanent.)
+3. **Permissions are inherited, `mode="bypassPermissions"` is ignored**: the Agent tool documents `mode` as "Deprecated; ignored. Subagents inherit the parent session's permission mode; agent-definition frontmatter may override it." (tool schema read 2026-10-07, Claude Code 2.1.291; not re-verified on other versions). Worker/Verifier subagents therefore inherit the leader session's permission mode — its current mode, which can be switched during the session. `mode="bypassPermissions"` stays in the call form (accepted, no effect) and is not relied on; rlp-desk cannot change permissions from inside the session. `init` only adds `.rlp-desk/**` allow rules to `.claude/settings.local.json`.
+4. **Long-running campaigns: prefer `--mode tmux`** for production. Native Agent() has no timeout API (platform constraint) — if the inherited permission mode does not auto-approve a tool the Worker/Verifier calls, the call may wait for operator approval or be denied, depending on the mode, and with no timeout API a wait hangs the iteration with no rlp-desk-side watchdog.
 
-**Why Native Agent() is structurally immune to Bug 4/5 (mid-execution prompt hang & A4 premature dispatch)**: Worker/Verifier run non-interactively under the platform's bypass — they have no tmux pane, no TUI surface, and cannot surface a `[y/N]` prompt to the parent Leader. The auto-dismiss / prompt-stall / no-progress timeouts in `run_ralph_desk.zsh` (v5.7 §4.13.b / §4.16 / §4.17) are therefore tmux-only by design.
+**Why the tmux pane-prompt class of Bug 4/5 (mid-execution `[y/N]` prompt hang & A4 premature dispatch) does not apply to Native Agent()**: Worker/Verifier have no tmux pane and no TUI surface, so there is no pane prompt for rlp-desk to auto-dismiss; the auto-dismiss / prompt-stall / no-progress timeouts in `run_ralph_desk.zsh` (v5.7 §4.13.b / §4.16 / §4.17) are therefore tmux-only by design. This does not mean subagents never prompt: permission prompts depend on the inherited permission mode (item 3) and can wait for the operator (item 4).
 
-**Tradeoff**: because `Agent()` has no timeout API, Native Agent() iterations are not bounded — if the platform's `bypassPermissions` ever fails to suppress an interactive prompt at the SDK level, the call hangs indefinitely with no rlp-desk-side watchdog. Use `--mode tmux` if you need bounded execution time.
+**Tradeoff**: because `Agent()` has no timeout API, Native Agent() iterations are not bounded — if the inherited permission mode ever requires an approval, the call may hang with no rlp-desk-side watchdog. Use `--mode tmux` if you need bounded execution time.
+
+### Native Agent() model mapping
+
+The Agent tool's `model` parameter accepts ONLY the aliases `haiku`, `sonnet`, `opus` and `fable`, and the tool has no effort parameter (probed 2026-10-07: `Agent(model="claude-sonnet-5-5")` and `Agent(model="sonnet:high")` are both rejected with `InputValidationError: expected one of "sonnet"|"opus"|"haiku"|"fable"`, before any subagent is spawned). rlp-desk model specs are richer (`claude-sonnet-5-5:medium`, `claude-fable-5-1:max`, ladder promotions such as `claude-opus-5-5:high`). So in `--mode native` every claude Worker / per-US Verifier / final Verifier / consensus claude-leg dispatch maps its spec to a **family alias** first and passes only that alias as `model=` (the `<m>` in the `Agent(...)` call forms above is always such an alias). The leader keeps tracking the full spec (ladder position, `status.json`, logs); only the `Agent(model=...)` argument is mapped.
+
+| Family token | Specs it covers | `Agent(model=...)` | Alias resolution last seen (Agent tool) |
+|--------------|-----------------|--------------------|-------------------------------------------|
+| `haiku` | `haiku`; any `claude-` id containing `haiku` | `haiku` | `claude-haiku-4-5-20251001` |
+| `sonnet` | `sonnet`; any `claude-` id containing `sonnet` | `sonnet` | `claude-sonnet-5-5` |
+| `opus` | `opus`; any `claude-` id containing `opus` | `opus` | `claude-opus-5-5` |
+| `fable` | `fable`; any `claude-` id containing `fable` | `fable` | `claude-fable-5-1` |
+
+Haiku: the Agent-tool probe of 2026-10-08 resolved `haiku` to `claude-haiku-4-5-20251001`, while the CLI alias (`claude --model haiku`, Claude Code 2.1.293 on 2026-10-08 and 2.1.296 on 2026-10-11) resolves to `claude-haiku-5-5`. Whether a session started on 2.1.296 resolves the Agent alias to 5.5 is UNVERIFIED (2026-10-11); a dispatch for `claude-haiku-5-5` may therefore still carry `version_pin_not_honored`.
+
+Rules:
+1. **Mapping**: strip the `:<effort>` suffix and any `[1m]` suffix, find the family token, pass the alias. `claude-sonnet-5-5:medium` → `sonnet`; `claude-opus-5-5:max` → `opus`; `claude-fable-5-1:max` → `fable`; `haiku` → `haiku`; an older id such as `claude-sonnet-4-6` → `sonnet`. `[1m]` (1M context) cannot be requested through Agent(); it is dropped with the same notice.
+2. **The effort is dropped, and said so**: Agent() cannot carry an effort, so a native Worker/Verifier runs at an effort rlp-desk does not control: the subagent inherits the Claude Code session's effort (measured 2026-09-27: a subagent spawned without a pinned effort ran at the session's effort). On the FIRST dispatch of each role and again after every ladder promotion, log one notice to the console AND to the campaign's always-on log: `Bash("echo '[native] <role> <spec> -> Agent(model=<alias>); effort <E> not applied (Agent() has no effort parameter)' | tee -a .rlp-desk/logs/<slug>/baseline.log")` and, with `--debug`, `[DECIDE] iter=N phase=model_select agent_model=<alias> requested=<spec> effort_dropped=<E|none>`.
+3. **Version pins are not honored**: an alias resolves to the platform's current model for that family (fourth column, a dated snapshot that can go stale when an alias remaps; the mapping itself does not depend on it). Compare the requested id with that snapshot by family and version, not as a raw string: read the family token and the version digits (`claude-sonnet-5-5` is sonnet 5-5; `claude-haiku-4-5-20251001` and the undated `claude-haiku-4-5` are both haiku 4-5; a trailing date stamp is ignored). When the version differs from the snapshot (e.g. `claude-sonnet-4-6`), add `version_pin_not_honored=<requested>` to the notice; a bare alias (`sonnet`) carries no pin and never triggers it.
+4. **No family token** (e.g. a bare `claude`): do NOT dispatch and do not guess. Write the BLOCKED sentinel with reason `native cannot map model '<spec>' to an Agent alias (haiku|sonnet|opus|fable); use --mode tmux`.
+5. **Ladder**: in native, promotion and stopping follow the existing native text (steps ③ and ⑦c and the Circuit Breaker section) as written. That text is not internally consistent and is not guaranteed to match the tmux leader's coded ladder and circuit breaker (a known gap). This section only changes which model value reaches `Agent()`: a promoted rung is mapped to its alias at dispatch, and an effort-only hop (`claude-sonnet-5-5:medium` → `claude-sonnet-5-5:high`) maps to the same alias, so the notice says `effort-only hop: alias unchanged`. After mapping, `claude-sonnet-5-5:medium` and `claude-sonnet-5-5:high` both dispatch as `sonnet` at the session effort.
+6. Codex workers/verifiers are dispatched with `Bash("codex exec ...")` and are not affected.
+
+Version-pinned ids and effort are honored only by `--mode tmux` (`claude -p --model <id> --effort <E>`): use `--mode tmux` when a campaign needs them.
 
 #### Direct Node CLI invocation (`node run.mjs run <slug> --mode agent` — deprecated alpha)
 
@@ -458,7 +484,7 @@ External wrappers calling `--mode agent` must migrate to `--mode tmux` by 0.17.0
 
 ### Preparation
 1. Validate scaffold: `.rlp-desk/prompts/<slug>.worker.prompt.md` etc.
-2. **Codex CLI pre-validation**: If `--consensus` is not `off` OR any of `--worker-model` / `--verifier-model` / `--final-verifier-model` / `--consensus-model` / `--final-consensus-model` resolves to the **codex engine**, check that `codex` CLI exists in PATH. Resolve engine via `parse_model_flag()` (the DETECTED engine), NOT by "contains a colon" — a colon-bearing claude id like `claude-opus-5:high` or `opus:max` is still the claude engine and must NOT trip the codex check. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
+2. **Codex CLI pre-validation**: If `--consensus` is not `off` OR any of `--worker-model` / `--verifier-model` / `--final-verifier-model` / `--consensus-model` / `--final-consensus-model` resolves to the **codex engine**, check that `codex` CLI exists in PATH. Resolve engine via `parse_model_flag()` (the DETECTED engine), NOT by "contains a colon" — a colon-bearing claude id like `claude-opus-5-5:high` or `opus:max` is still the claude engine and must NOT trip the codex check. If codex CLI not found → STOP immediately, print install instructions (`npm install -g @openai/codex`), do not start the loop.
 3. Check sentinels (complete/blocked). Found → tell user `/rlp-desk clean <slug>`.
 3a. **Done-claim commit-integrity oracle**: runs AFTER each Worker done-claim, BEFORE the mechanical pre-gate (3b below) and BEFORE dispatching the LLM Verifier — on every signal path (normal Worker signal, codex-exit fallback synth, operator-recovery resume). When done-claim.json asserts a successful `commit` step, the Leader checks it against git ground truth: HEAD must have advanced beyond the iteration-start snapshot, the claimed `commit_sha` (when present) must resolve and be reachable from HEAD, and the tracked working tree must be clean of worker-attributable changes after the claim. Worker MUST record the resulting commit SHA as `commit_sha` on the `commit` step when claiming `exit_code: 0` — a commit-claim without `commit_sha` is tolerated only if HEAD actually advanced; once `commit_sha` is emitted the full check applies. No commit asserted (e.g. `verify_existing`, confirmation mode) → silent no-op. The inverse is also checked: when a done-claim carries **no `write_test` step** (confirmation/verification shape) and its claimed commit's tree equals its parent's, that **empty commit** is rejected (`empty_commit_on_confirmation_claim`) — a verification pass that changed no files must not manufacture a commit to look productive, and the fix contract tells the Worker to DROP it rather than create another. A root commit or shallow clone (no parent to diff against) is an accepted boundary, never an infra failure. On mismatch: LLM verification is skipped and the Worker is redispatched with a machine-generated `COMMIT-INTEGRITY` fix contract (governance §1f½), not a free-text verifier finding.
 3b. **Mechanical pre-gate (optional, TWO layers)**: runs AFTER each Worker done-claim and BEFORE dispatching the LLM Verifier, in order. **Layer 1** — if `.rlp-desk/plans/pregate-<slug>.sh` exists, the tmux leader runs it (plain shell script via `zsh`, from the project root); exit 0 = pass, non-zero = fail. **Layer 2** — after layer 1 passes, the leader replays the verify-* commands the Worker recorded in `done-claim.json` `execution_steps[]` (existing §1f schema) and compares each replayed exit code to the CLAIMED `exit_code` (EQUALITY — a step claiming non-zero that replays to the same non-zero is a MATCH; claimed 0 / actual ≠0 is a FAIL). `verify_red` steps are never replayed: RED is a point-in-time pre-implementation fact that cannot reproduce on the post-implementation tree, so they are skipped (logged, not run, not a fail). Only `^verify*` steps with a non-null command that begins with an allowlisted tool and contains no denylisted pattern are replayed; others are skipped (logged, not run, not a fail). Per-command timeout is `--pre-gate-cmd-timeout` (default 120s); the whole pre-gate is bounded by `--pre-gate-timeout` (default 300s). On fail (either layer) LLM verification is skipped and the Worker is redispatched with a fix contract (`PRE-GATE FAILURE (mechanical)` or `PRE-GATE FAILURE (replay mismatch)`). Keep layer-1 checks deterministic only (compile / lint / file existence / test count) — no LLM-judgment checks; replay only catches false claims, so command omission / test sufficiency stay the Verifier's job. `init` scaffolds a commented `pregate-<slug>.sh.example`; copy it to `pregate-<slug>.sh` to activate layer 1 (layer 2 needs no scaffold — it reads done-claim). Absent gate + no eligible steps = no-op. The pre-gate can only early-FAIL — it never produces a pass (Iron Law preserved; see governance §3a).
@@ -467,7 +493,7 @@ External wrappers calling `--mode agent` must migrate to `--mode tmux` by 0.17.0
    - **Capture recipe 1 (baseline artifact)** — prove a finding predates the campaign: run the gate, save its JSON output as the artifact, then `shasum -a 256 .rlp-desk/plans/baseline/<gate>.json` → paste into `baseline_artifact_sha256`.
    - **Capture recipe 2 (authorization)** — bind `waivers.json` to this (re)start out-of-band: `shasum -a 256 .rlp-desk/plans/waivers.json` → pass as `--waivers-sha256 <hash>`. Both recipes are operator-side, out-of-band — a Worker cannot forge either.
 4. Clean previous `done-claim.json`, `verify-verdict.json`.
-5. **Always**: write baseline log entry to `.rlp-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration for lightweight post-mortem (always-on, no flag needed).
+5. **Always**: write baseline log entry to `.rlp-desk/logs/<slug>/baseline.log`: `[timestamp] iter=0 phase=start slug=<slug> worker_model=<model> verifier_model=<model>`. Baseline.log captures 1 line per iteration, plus the `[native]` model-mapping notice lines (rule 2 of "Native Agent() model mapping"), for lightweight post-mortem (always-on, no flag needed).
 6. If `--debug`: also create/clear `.rlp-desk/analytics/<slug>--<hash8>/debug.log`. Define a helper: to "debug_log" means append a timestamped line to this file via `Bash("echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $msg\" >> .rlp-desk/analytics/<slug>--<hash8>/debug.log")`. When `--debug` is active, debug.log contains all baseline.log fields plus detailed phase logs.
    - **4-category log system**: all debug_log entries use exactly one of: `[GOV]` (governance checks: IL enforcement, CB triggers, scope lock, verdict evaluation), `[DECIDE]` (leader decisions: model selection, fix contracts, escalation), `[OPTION]` (configuration snapshot at loop start: thresholds, modes, models), `[FLOW]` (execution progress: worker/verifier dispatch, signal reads, phase transitions)
    - **Re-execution versioning**: If `debug.log` already exists at `--debug` start, rename it to `debug-v{N}.log` (N = next available integer ≥ 1) before creating a fresh `debug.log`.
@@ -546,17 +572,18 @@ rm -f .rlp-desk/memos/<slug>-verify-verdict.json
 **⑤ Execute Worker**
 - If `--debug`: debug_log `[FLOW] iter=N phase=worker engine=<engine> model=<model> dispatched=true`
 
-Determine engine from `--worker-model` format: plain name (e.g., `haiku`) = claude engine; `model:effort` where `model` is a claude name — short alias `haiku`/`sonnet`/`opus` OR full versioned id `claude-*` (e.g., `opus:max`, `claude-opus-5:high`) — = claude engine; any other `model:reasoning` (e.g., `spark:high`) = codex engine. Use `parse_model_flag()` to split.
+Determine engine from `--worker-model` format: plain name (e.g., `haiku`) = claude engine; `model:effort` where `model` is a claude name — short alias `haiku`/`sonnet`/`opus` OR full versioned id `claude-*` (e.g., `opus:max`, `claude-opus-5-5:high`) — = claude engine; any other `model:reasoning` (e.g., `spark:high`) = codex engine. Use `parse_model_flag()` to split. For a claude engine, map the spec to its Agent family alias before dispatching (see "Native Agent() model mapping").
 
 If claude engine (default):
 ```
 Agent(
   description="rlp-desk worker iter-NNN",
-  model=<worker_model>,
+  model=<worker_agent_alias>,
   mode="bypassPermissions",
   prompt=<full worker prompt text>
 )
 ```
+- `<worker_agent_alias>` is the family alias of `<worker_model>` per "Native Agent() model mapping" (`haiku|sonnet|opus|fable`). Never pass a full `claude-*` id or a `:effort` suffix to `Agent(model=)`.
 - Agent returns synchronously. No polling needed.
 - Each Agent() = fresh context. Guaranteed.
 
@@ -616,17 +643,18 @@ Determine which verifier model to use based on scope:
 - If `us_id` is a specific story (per-US verify) → use `--verifier-model` (default: sonnet)
 - If `us_id` is "ALL" (final verify) → use `--final-verifier-model` (default: claude-fable-5-1)
 
-Determine engine from the selected verifier model format (same as Worker): plain name = claude; `model:effort` with a claude model name (short alias OR full `claude-*` id, e.g. `claude-opus-5:high`) = claude; any other `model:reasoning` = codex.
+Determine engine from the selected verifier model format (same as Worker): plain name = claude; `model:effort` with a claude model name (short alias OR full `claude-*` id, e.g. `claude-opus-5-5:high`) = claude; any other `model:reasoning` = codex. For a claude engine, map the spec to its Agent family alias before dispatching (see "Native Agent() model mapping").
 
 If claude engine (default):
 ```
 Agent(
   description="rlp-desk verifier iter-NNN (us_id)",
-  model=<selected_verifier_model>,
+  model=<selected_verifier_agent_alias>,
   mode="bypassPermissions",
   prompt=<full verifier prompt text with US scope>
 )
 ```
+- `<selected_verifier_agent_alias>` is the family alias of `<selected_verifier_model>` per "Native Agent() model mapping" (the default final verifier `claude-fable-5-1` maps to `fable`; the claude consensus leg `opus` / `claude-fable-5-1` map the same way).
 
 If codex engine:
 ```
@@ -640,7 +668,7 @@ After the primary verifier runs, run a cross-engine second verifier:
   - per-US verify → use `--consensus-model` (default: gpt-5.6-terra:high)
   - final ALL verify → use `--final-consensus-model` (default: gpt-6-astra:xhigh)
 - If primary engine is claude → cross-verifier uses codex (the consensus model) — dispatched with the same `OMX_STATE_ROOT`-prefixed `Bash("...")` form as ④/⑦a above (one shared campaign-scoped omx-state dir per campaign, not a separate one for consensus)
-- If primary engine is codex → cross-verifier uses claude, fixed per scope: per-US verify → `opus`; final ALL verify → `claude-fable-5-1` (see governance.md's Consensus Model Routing table)
+- If primary engine is codex → cross-verifier uses claude, fixed per scope: per-US verify → `opus`; final ALL verify → `claude-fable-5-1` (see governance.md's Consensus Model Routing table; native dispatch maps it to `fable`, see "Native Agent() model mapping")
 - Both produce `verify-verdict.json` (Leader renames to `verify-verdict-claude.json` and `verify-verdict-codex.json`)
 - **Both pass** → proceed (next US or COMPLETE)
 - **Either fails** → combine issues from both verdicts into a single fix contract → Worker retry
@@ -774,8 +802,8 @@ After the loop ends (COMPLETE, BLOCKED, TIMEOUT, or INTERRUPTED), generate `logs
      section is code output, not prose for the LLM to compose. Both leaders
      read `models.json`'s `cost_factors` table (shipped-first) to convert
      codex-leg tokens to a sol-equivalent: total = Σ(iteration tokens ×
-     factor), factors sol 1.0 / terra 0.4 / luna 0.04 (2026-07-30 API
-     prices). Coverage differs by leader (LOW-3, SV gate — doc was
+     factor), factors relative to gpt-5.6-sol = 1.0 (2026-10-11 price page, short context; the 5.6 Sol price is promotional through at least 2026-11-21): gpt-6.1-sol 0.5, gpt-5.6-terra 0.55, gpt-6-luna 0.025, gpt-5.6-luna 0.055; one factor = the input/output ratio when equal, else their mean.
+     Coverage differs by leader (LOW-3, SV gate — doc was
      previously over-scoped for Node):
      - **zsh** (`generate_campaign_report` reading `cost-log.jsonl`):
        full block — per-iter token/duration data, the sol-equivalent line,
@@ -800,7 +828,7 @@ After the loop ends (COMPLETE, BLOCKED, TIMEOUT, or INTERRUPTED), generate `logs
 ### Circuit Breaker
 - context-latest.md unchanged 3 iterations → BLOCKED
 - Same acceptance criterion fails 2 consecutive iterations → upgrade model, retry once, then BLOCKED
-- `cb_threshold` (default 4) consecutive **fail** verdicts on `cb_threshold` unique criterion IDs → climb per the ladder (claude: haiku → sonnet:high → claude-opus-5-5:high; codex: next ladder step); a ceiling reached on the CB-tripping failure gets its own 2-attempt window before BLOCKED
+- `cb_threshold` (default 4) consecutive **fail** verdicts on `cb_threshold` unique criterion IDs → climb per the ladder (claude: `haiku` (floating alias; resolves to `claude-haiku-5-5` in the CLI as of 2026-10-11) → claude-sonnet-5-5:high → claude-opus-5-5:high, and a MEDIUM `claude-sonnet-5-5:medium` start → claude-sonnet-5-5:high → claude-opus-5-5:high; codex: next ladder step); a ceiling reached on the CB-tripping failure gets its own 2-attempt window before BLOCKED
 - max_iter reached → TIMEOUT, report to user
 
 Track `consecutive_failures` in `status.json` (increment on `fail`, reset on `pass`, unchanged by `request_info`). Only **fail** verdicts count for CB chains — `request_info` does not break or contribute.
@@ -925,9 +953,9 @@ Example:
 
 Run options:
   --mode native|tmux                   Execution mode (default: native)
-  --worker-model MODEL                 Worker model: haiku|sonnet|opus|claude-opus-5:high (claude, effort optional) or gpt-5.6-sol:high|luna:high|terra:high|spark:high (codex) (default: haiku)
+  --worker-model MODEL                 Worker model: haiku|sonnet|opus|claude-opus-5-5:high (claude, effort optional) or gpt-6.1-sol:high|luna:high|terra:high|spark:high (codex) (default: haiku)  [native: family alias only, effort dropped — see "Native Agent() model mapping"]
   --lock-worker-model                  Disable auto model upgrade on failure
-  --verifier-model MODEL               per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5:high/claude-opus-5:low/claude-opus-5:high/claude-opus-5:max)
+  --verifier-model MODEL               per-US verifier (default: sonnet; recommended per complexity: claude-sonnet-5-5:high/claude-opus-5-5:low/claude-opus-5-5:high/claude-opus-5-5:max)
   --final-verifier-model MODEL         Final ALL verifier (default: claude-fable-5-1; recommended claude-fable-5-1:max)
   --consensus off|all|final-only       Cross-engine consensus; claude leg reuses verifier/final-verifier (default: off)
   --consensus-model MODEL              per-US cross-verifier — codex leg only (default: gpt-5.6-terra:high)

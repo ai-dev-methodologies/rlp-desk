@@ -91,9 +91,9 @@ if _func_or_fail "AC1-L1-1: gpt-5.5:medium → engine=codex"; then
 fi
 
 _run_parse "gpt-5.5:medium" "worker"
-if _func_or_fail "AC1-L1-2: gpt-5.5:medium → model=gpt-5.6-sol (retired, remapped)"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-sol" \
-    "AC1-L1-2: gpt-5.5:medium → model=gpt-5.6-sol (retired, remapped; level carried over)"
+if _func_or_fail "AC1-L1-2: gpt-5.5:medium → model=gpt-6.1-sol (retired, remapped)"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-6.1-sol" \
+    "AC1-L1-2: gpt-5.5:medium → model=gpt-6.1-sol (retired, remapped; level carried over)"
 fi
 
 _run_parse "gpt-5.5:medium" "worker"
@@ -109,9 +109,9 @@ if _func_or_fail "AC1-L1-4: gpt-5.3-codex-spark:high → engine=codex"; then
 fi
 
 _run_parse "gpt-5.3-codex-spark:high" "worker"
-if _func_or_fail "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.6-luna (retired, remapped)"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-luna" \
-    "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-5.6-luna (retired, remapped; level carried over)"
+if _func_or_fail "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-6-luna (retired, remapped)"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-6-luna" \
+    "AC1-L1-5: gpt-5.3-codex-spark:high → model=gpt-6-luna (retired, remapped; level carried over)"
 fi
 
 # codex 0.144 / GPT-5.6 family: passthrough of suffixed names + new efforts,
@@ -127,9 +127,9 @@ if _func_or_fail "AC1-L1-5a: gpt-5.6-sol:max → engine=codex"; then
 fi
 
 _run_parse "sol:max" "worker"
-if _func_or_fail "AC1-L1-5d: sol:max alias → model=gpt-5.6-sol"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-sol" \
-    "AC1-L1-5d: sol:max alias → model=gpt-5.6-sol"
+if _func_or_fail "AC1-L1-5d: sol:max alias → model=gpt-6.1-sol"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-6.1-sol" \
+    "AC1-L1-5d: sol:max alias → model=gpt-6.1-sol"
 fi
 
 _run_parse "terra:ultra" "worker"
@@ -141,9 +141,9 @@ if _func_or_fail "AC1-L1-5e: terra:ultra alias → model=gpt-5.6-terra reasoning
 fi
 
 _run_parse "luna:high" "worker"
-if _func_or_fail "AC1-L1-5g: luna:high alias → model=gpt-5.6-luna"; then
-  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-5.6-luna" \
-    "AC1-L1-5g: luna:high alias → model=gpt-5.6-luna"
+if _func_or_fail "AC1-L1-5g: luna:high alias → model=gpt-6-luna"; then
+  assert_eq "$(echo "$PARSE_STDOUT" | awk '{print $2}')" "gpt-6-luna" \
+    "AC1-L1-5g: luna:high alias → model=gpt-6-luna"
 fi
 
 # astra alias (GPT-6, codex 0.153) — same convention as sol/terra/luna above.
@@ -262,10 +262,10 @@ if _func_or_fail "AC1-L1-8: gpt-5.5 (no colon) → codex (bare gpt-* id, not a c
   # The routing property is unchanged — a bare gpt-* id goes to codex, not
   # claude. gpt-5.5 is retired, so it lands on its replacement rather than on
   # itself; the classification, not the slug, is what this pins.
-  if [[ "$engine" == "codex" && "$model" == "gpt-5.6-sol" ]]; then
-    pass "AC1-L1-8: gpt-5.5 (no colon) → engine=codex, model=gpt-5.6-sol (bare gpt-* id routes to codex, retired id remapped)"
+  if [[ "$engine" == "codex" && "$model" == "gpt-6.1-sol" ]]; then
+    pass "AC1-L1-8: gpt-5.5 (no colon) → engine=codex, model=gpt-6.1-sol (bare gpt-* id routes to codex, retired id remapped)"
   else
-    fail "AC1-L1-8: gpt-5.5 (no colon) should be engine=codex model=gpt-5.6-sol, got engine=$engine model=$model"
+    fail "AC1-L1-8: gpt-5.5 (no colon) should be engine=codex model=gpt-6.1-sol, got engine=$engine model=$model"
   fi
 fi
 
@@ -412,11 +412,11 @@ touch "$TMP_L3/.rlp-desk/plans/prd-e2eslug.md"
 # log shows the REPLACEMENT the run will actually use, not the id typed.
 L3_OUT_1=$(LOOP_NAME=e2eslug ROOT="$TMP_L3" TMUX=test \
   zsh "$RUN" --worker-model gpt-5.5:medium 2>/dev/null || true)
-c=$(echo "$L3_OUT_1" | grep -c "gpt-5.6-sol" 2>/dev/null) || c=0
+c=$(echo "$L3_OUT_1" | grep -c "gpt-6.1-sol" 2>/dev/null) || c=0
 if [[ "$c" -ge 1 ]]; then
-  pass "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows the remapped gpt-5.6-sol"
+  pass "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows the remapped gpt-6.1-sol"
 else
-  fail "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows the remapped gpt-5.6-sol (output: '$(echo "$L3_OUT_1" | head -5)')"
+  fail "L3-E2E-1: --worker-model gpt-5.5:medium → startup log shows the remapped gpt-6.1-sol (output: '$(echo "$L3_OUT_1" | head -5)')"
 fi
 
 # L3-E2E-2: --verifier-model sonnet → startup log shows sonnet

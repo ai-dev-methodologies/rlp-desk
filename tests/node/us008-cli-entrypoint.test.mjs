@@ -491,9 +491,9 @@ test('main run command warns when claude worker model used in tmux mode', async 
   assert.match(combined, /\.rlp-desk/);
   // gpt-6-astra is judge-only (2026-09-26 CB=4/3-rung wave) — never a worker
   // escalation target — so the suggested fallback must be a real codex
-  // WORKER, not the judge-only model. gpt-5.6-sol:high is the CRITICAL codex
+  // WORKER, not the judge-only model. gpt-6.1-sol:high is the CRITICAL codex
   // worker start.
-  assert.match(combined, /--worker-model gpt-5\.6-sol:high/);
+  assert.match(combined, /--worker-model gpt-6\.1-sol:high/);
   assert.doesNotMatch(combined, /gpt-6-astra/);
 });
 
@@ -760,6 +760,35 @@ test('parseRunOptions still accepts gpt-5.6-sol:minimal (minimal remains valid f
   assert.equal(options.finalVerifierModel, 'gpt-5.6-sol:minimal');
 });
 
+// Addendum-4 (D8): codex-confirmed HTTP 400 for 'minimal' on the GPT-6 generation. Slug and alias
+// forms must be rejected naming the RESOLVED slug and that model's server enumeration.
+test('parseRunOptions rejects minimal for gpt-6.1-sol, gpt-6-sol, gpt-6-luna (slug and alias forms)', async () => {
+  const { parseRunOptions } = await import('../../src/node/run.mjs');
+  const cases = [
+    ['gpt-6.1-sol', 'gpt-6.1-sol', 'low\\|medium\\|high\\|xhigh\\|max'],
+    ['sol', 'gpt-6.1-sol', 'low\\|medium\\|high\\|xhigh\\|max'],
+    ['gpt-6-sol', 'gpt-6-sol', 'low\\|medium\\|high\\|xhigh\\|max'],
+    ['gpt-6-luna', 'gpt-6-luna', 'low\\|medium\\|high\\|xhigh\\|max'],
+    ['luna', 'gpt-6-luna', 'low\\|medium\\|high\\|xhigh\\|max'],
+  ];
+  for (const [model, slug, enumeration] of cases) {
+    assert.throws(
+      () => parseRunOptions(['--worker-model', `${model}:minimal`], '/tmp'),
+      new RegExp(`${slug.replace(/\./g, '\\.')} does not support 'minimal' \\(rlp-desk accepts: ${enumeration}\\)`),
+      `--worker-model ${model}:minimal`,
+    );
+    assert.throws(
+      () => parseRunOptions(['--worker-model', `${model}:minimal`], '/tmp'),
+      (err) => !/none/.test(err.message),
+      `--worker-model ${model}:minimal must not mention none`,
+    );
+  }
+  // The 5.6 generation is not probed as unsupported: both stay accepted.
+  for (const accepted of ['gpt-5.6-sol:minimal', 'gpt-5.6-luna:minimal']) {
+    assert.equal(parseRunOptions(['--final-verifier-model', accepted], '/tmp').finalVerifierModel, accepted);
+  }
+});
+
 // Independent-review finding (MED): --consensus-model and --final-consensus-model
 // never called validateModelFlag at all, unlike --worker-model/--verifier-model/
 // --final-verifier-model — so an invalid value (including gpt-6-astra:minimal,
@@ -916,11 +945,51 @@ test('codex model alias table (sol/terra/luna/astra) agrees across _auto_detect_
   // Pin the actual expected mapping so a coordinated-but-wrong edit across
   // all three sites is still caught.
   assert.deepEqual(autoDetectAliases, {
-    sol: 'gpt-5.6-sol',
+    sol: 'gpt-6.1-sol',
     terra: 'gpt-5.6-terra',
-    luna: 'gpt-5.6-luna',
+    luna: 'gpt-6-luna',
     astra: 'gpt-6-astra',
   });
+});
+
+// Addendum-4 (D8): the model-specific `minimal` exclusion set is duplicated in THREE places —
+// MINIMAL_UNSUPPORTED_MODELS (command-builder.mjs), the `_enum` case in _validate_model_level
+// (lib_ralph_desk.zsh) and the `_enum` case in _auto_detect_engine (run_ralph_desk.zsh). Extract each
+// structurally and pin all three to the same slug -> server-enumerated-levels map.
+test('minimal exclusion set agrees across validateModelFlag, _validate_model_level and _auto_detect_engine', async () => {
+  const runZshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/run_ralph_desk.zsh'), 'utf8');
+  const libZshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/lib_ralph_desk.zsh'), 'utf8');
+  const commandBuilderSource = await fs.readFile(path.join(repoRoot, 'src/node/cli/command-builder.mjs'), 'utf8');
+
+  const sortEntries = (entries) => Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+
+  const nodeBlock = commandBuilderSource.match(/MINIMAL_UNSUPPORTED_MODELS = new Map\(\[([\s\S]*?)\]\);/);
+  assert.ok(nodeBlock, 'could not find MINIMAL_UNSUPPORTED_MODELS in command-builder.mjs');
+  const nodeSet = sortEntries([...nodeBlock[1].matchAll(/\['([^']+)',\s*'([^']+)'\]/g)].map((m) => [m[1], m[2]]));
+
+  const zshSet = (source, fnName) => {
+    const body = source.match(new RegExp(`^${fnName}\\(\\) \\{\\n([\\s\\S]*?)\\n\\}`, 'm'));
+    assert.ok(body, `could not find ${fnName} in the zsh source`);
+    const caseBlocks = [...body[1].matchAll(/case "\$(?:model|model_part)" in([\s\S]*?)\besac/g)].map((m) => m[1]).filter((block) => block.includes('_enum='));
+    assert.equal(caseBlocks.length, 1, `${fnName}: expected exactly one _enum case block, found ${caseBlocks.length}`);
+    const entries = [];
+    for (const arm of caseBlocks[0].matchAll(/([A-Za-z0-9.|*-]+)\)\s*_enum='([^']*)'\s*;;/g)) {
+      if (arm[1] === '*') continue;
+      for (const slug of arm[1].split('|')) entries.push([slug, arm[2]]);
+    }
+    return sortEntries(entries);
+  };
+  const libSet = zshSet(libZshSource, '_validate_model_level');
+  const runSet = zshSet(runZshSource, '_auto_detect_engine');
+
+  assert.deepEqual(libSet, nodeSet, 'lib_ralph_desk.zsh _validate_model_level must match command-builder.mjs');
+  assert.deepEqual(runSet, nodeSet, 'run_ralph_desk.zsh _auto_detect_engine must match command-builder.mjs');
+  assert.deepEqual(nodeSet, sortEntries([
+    ['gpt-6-astra', 'low|medium|high|xhigh|max'],
+    ['gpt-6.1-sol', 'low|medium|high|xhigh|max'],
+    ['gpt-6-sol', 'low|medium|high|xhigh|max'],
+    ['gpt-6-luna', 'low|medium|high|xhigh|max'],
+  ]));
 });
 
 // Parity: the claude bare-alias set (haiku/sonnet/opus/fable) is duplicated
@@ -987,11 +1056,11 @@ test('normalizeModelSpec: every retired family remaps and carries its level over
   const { normalizeModelSpec } = await import('../../src/node/cli/command-builder.mjs');
   const warn = () => {};
   assert.equal(normalizeModelSpec('gpt-5.4:high', { warn }), 'gpt-5.6-terra:high');
-  assert.equal(normalizeModelSpec('gpt-5.4-mini:low', { warn }), 'gpt-5.6-luna:low');
-  assert.equal(normalizeModelSpec('gpt-5.5:xhigh', { warn }), 'gpt-5.6-sol:xhigh');
-  assert.equal(normalizeModelSpec('gpt-5.3-codex-spark:medium', { warn }), 'gpt-5.6-luna:medium');
+  assert.equal(normalizeModelSpec('gpt-5.4-mini:low', { warn }), 'gpt-6-luna:low');
+  assert.equal(normalizeModelSpec('gpt-5.5:xhigh', { warn }), 'gpt-6.1-sol:xhigh');
+  assert.equal(normalizeModelSpec('gpt-5.3-codex-spark:medium', { warn }), 'gpt-6-luna:medium');
   // The bare `spark` alias is retired alongside the id it expanded to.
-  assert.equal(normalizeModelSpec('spark:high', { warn }), 'gpt-5.6-luna:high');
+  assert.equal(normalizeModelSpec('spark:high', { warn }), 'gpt-6-luna:high');
 });
 
 test('normalizeModelSpec: bare claude aliases gain an explicit start level, haiku does not', async () => {
@@ -1005,10 +1074,73 @@ test('normalizeModelSpec: bare claude aliases gain an explicit start level, haik
   // bare start carries no effort, so it must gain one explicitly or it never
   // reaches the ladder key and becomes a dead start.
   assert.equal(normalizeModelSpec('claude-opus-5-5'), 'claude-opus-5-5:high');
-  // haiku has no effort concept, so it is deliberately absent from the table.
+  // The floating bare `haiku` is deliberately absent from the table (the default path stays
+  // unpinned); only the version-pinned claude-haiku-5-5 gains an explicit start level.
   assert.equal(normalizeModelSpec('haiku'), 'haiku');
+  assert.equal(normalizeModelSpec('claude-haiku-5-5'), 'claude-haiku-5-5:medium');
+  assert.equal(normalizeModelSpec('claude-haiku-5-5:high'), 'claude-haiku-5-5:high');
   // An already-levelled spec is left alone.
   assert.equal(normalizeModelSpec('opus:high'), 'opus:high');
+});
+
+// Sonnet 5.5 wave: claude-sonnet-5-5:high is now the ladder's version-pinned
+// MIDDLE rung, and leader.log / status.json print the bare `claude-sonnet-5-5`
+// after a promotion. Pasted back into --worker-model it must gain :high like
+// claude-opus-5-5 / claude-fable-5-1 do, or it misses the effort-qualified
+// ladder key and is a dead start (already_max from iteration 1).
+test('normalizeModelSpec: bare claude-sonnet-5-5 gains :high (same class as claude-opus-5-5 and claude-fable-5-1)', async () => {
+  const { normalizeModelSpec } = await import('../../src/node/cli/command-builder.mjs');
+  assert.equal(normalizeModelSpec('claude-sonnet-5-5'), 'claude-sonnet-5-5:high');
+  // An already-levelled spec is left alone, including a deliberate non-default level.
+  assert.equal(normalizeModelSpec('claude-sonnet-5-5:high'), 'claude-sonnet-5-5:high');
+  assert.equal(normalizeModelSpec('claude-sonnet-5-5:medium'), 'claude-sonnet-5-5:medium');
+});
+
+// Parity: the bare-alias -> levelled-spec table is duplicated in THREE places —
+// BARE_ALIAS_NORMALIZATION in command-builder.mjs, the same-named associative
+// array in lib_ralph_desk.zsh (CLI path via _normalize_model_spec), and the
+// `case "$_adn_head"` block in run_ralph_desk.zsh's _auto_detect_engine (env-var
+// path). Extract each structurally and assert all three agree AND equal the
+// pinned expected table, so a coordinated-but-wrong edit is caught too and an
+// addition to only some sites cannot drift silently.
+test('bare-alias level-normalization table agrees across command-builder.mjs, lib_ralph_desk.zsh, and run_ralph_desk.zsh', async () => {
+  const runZshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/run_ralph_desk.zsh'), 'utf8');
+  const libZshSource = await fs.readFile(path.join(repoRoot, 'src/scripts/lib_ralph_desk.zsh'), 'utf8');
+  const commandBuilderSource = await fs.readFile(path.join(repoRoot, 'src/node/cli/command-builder.mjs'), 'utf8');
+
+  const sortEntries = (entries) => Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+
+  const nodeBlock = commandBuilderSource.match(/BARE_ALIAS_NORMALIZATION = new Map\(\[([\s\S]*?)\]\);/);
+  assert.ok(nodeBlock, 'could not find BARE_ALIAS_NORMALIZATION in command-builder.mjs — has it moved/changed?');
+  const nodeTable = sortEntries([...nodeBlock[1].matchAll(/\['([^']+)',\s*'([^']+)'\]/g)].map((m) => [m[1], m[2]]));
+
+  const libBlock = libZshSource.match(/typeset -gA BARE_ALIAS_NORMALIZATION=\(([\s\S]*?)\n\)/);
+  assert.ok(libBlock, 'could not find BARE_ALIAS_NORMALIZATION in lib_ralph_desk.zsh — has it moved/changed?');
+  const libTable = sortEntries([...libBlock[1].matchAll(/'([^']+)'\s+'([^']+)'/g)].map((m) => [m[1], m[2]]));
+
+  // run_ralph_desk.zsh: `sonnet) model_val="sonnet:medium" ;;` and
+  // `fable|claude-fable-5-1) model_val="..." ;;` lines inside the bare-name case.
+  const runBlock = runZshSource.match(/elif \[\[ -z "\$_adn_tail" \]\]; then\s*case "\$_adn_head" in([\s\S]*?)\n\s*esac/);
+  assert.ok(runBlock, 'could not find the bare-alias case block in run_ralph_desk.zsh _auto_detect_engine — has it moved/changed?');
+  const runEntries = [];
+  for (const m of runBlock[1].matchAll(/^\s*([A-Za-z0-9.|-]+)\)\s*model_val="([^"]+)"\s*;;/gm)) {
+    for (const name of m[1].split('|')) runEntries.push([name, m[2]]);
+  }
+  const runTable = sortEntries(runEntries);
+
+  assert.deepEqual(libTable, nodeTable, 'lib_ralph_desk.zsh BARE_ALIAS_NORMALIZATION must match command-builder.mjs');
+  assert.deepEqual(runTable, nodeTable, 'run_ralph_desk.zsh _auto_detect_engine bare-alias case must match command-builder.mjs');
+
+  // Pin the actual expected table.
+  assert.deepEqual(nodeTable, sortEntries([
+    ['sonnet', 'sonnet:medium'],
+    ['opus', 'opus:medium'],
+    ['fable', 'claude-fable-5-1:max'],
+    ['claude-fable-5-1', 'claude-fable-5-1:max'],
+    ['claude-opus-5-5', 'claude-opus-5-5:high'],
+    ['claude-sonnet-5-5', 'claude-sonnet-5-5:high'],
+    ['claude-haiku-5-5', 'claude-haiku-5-5:medium'],
+  ]));
 });
 
 test('normalizeModelSpec: warns exactly once per remap and not at all otherwise', async () => {
@@ -1017,7 +1149,7 @@ test('normalizeModelSpec: warns exactly once per remap and not at all otherwise'
   const warn = (message) => warnings.push(message);
   normalizeModelSpec('gpt-5.5:high', { warn });
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /^\[model-remap\] WARNING: 'gpt-5\.5:high' is retired — using 'gpt-5\.6-sol:high' instead\./);
+  assert.match(warnings[0], /^\[model-remap\] WARNING: 'gpt-5\.5:high' is retired — using 'gpt-6\.1-sol:high' instead\./);
   assert.match(warnings[0], /rlp-desk-models\.json/, 'the warning must name the escape hatch, not just the substitution');
   normalizeModelSpec('sonnet', { warn });
   normalizeModelSpec('gpt-5.6-sol:high', { warn });
@@ -1041,21 +1173,26 @@ test('remap does NOT launder a malformed retired spec into an accepted one', asy
 
 test('an invalid level on a retired id is reported against the REMAPPED model', async () => {
   const { parseRunOptions } = await import('../../src/node/run.mjs');
-  // The error names gpt-5.6-sol, not gpt-5.5 — the user needs to see the id
+  // The error names gpt-6.1-sol, not gpt-5.5 — the user needs to see the id
   // the run would actually have used.
   assert.throws(
     () => parseRunOptions(['--worker-model', 'gpt-5.5:extreme'], '/tmp'),
-    /invalid reasoning 'extreme' in --worker-model='gpt-5\.6-sol:extreme'/,
+    /invalid reasoning 'extreme' in --worker-model='gpt-6\.1-sol:extreme'/,
   );
 });
 
 test('level vocabulary is judged against the REPLACEMENT model, not the retired one', async () => {
   const { parseRunOptions } = await import('../../src/node/run.mjs');
-  // 'minimal' is rejected for gpt-6-astra alone and stays valid elsewhere, so
-  // gpt-5.5:minimal must survive as gpt-5.6-sol:minimal. Validating against
-  // the retired model (or against astra's narrower set) would wrongly reject.
-  const options = parseRunOptions(['--final-verifier-model', 'gpt-5.5:minimal'], '/tmp');
-  assert.equal(options.finalVerifierModel, 'gpt-5.6-sol:minimal');
+  // gpt-5.5 remaps to gpt-6.1-sol, which rejects 'minimal' (server-confirmed), so the level is
+  // judged against the REPLACEMENT: gpt-5.5:minimal is rejected naming gpt-6.1-sol, while a
+  // retired id that remaps to a model that still accepts 'minimal' (gpt-5.4 -> gpt-5.6-terra)
+  // survives. Validating against the retired model would wrongly accept the first.
+  assert.throws(
+    () => parseRunOptions(['--final-verifier-model', 'gpt-5.5:minimal'], '/tmp'),
+    /gpt-6\.1-sol does not support 'minimal'/,
+  );
+  const options = parseRunOptions(['--final-verifier-model', 'gpt-5.6-terra:minimal'], '/tmp');
+  assert.equal(options.finalVerifierModel, 'gpt-5.6-terra:minimal');
   // ...while the model-specific exclusion still fires for astra itself.
   assert.throws(
     () => parseRunOptions(['--final-consensus-model', 'astra:minimal'], '/tmp'),

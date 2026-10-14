@@ -203,14 +203,23 @@ _validate_model_level() {
   else
     case "$level" in
       minimal|low|medium|high|xhigh|max|ultra)
-        # Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave): gpt-6-astra's
-        # API rejects 'minimal' with an HTTP 400 that enumerates the supported
-        # set (low/medium/high/xhigh/max) — see src/model-upgrade-table.md
-        # "GPT-6 — Astra". Reject it HERE for THIS model only; 'minimal'
-        # remains valid for every other codex model (gpt-5.x, sol/terra/luna,
-        # spark) — never a blanket narrowing of the shared vocabulary.
-        if [[ "$model" == "gpt-6-astra" && "$level" == "minimal" ]]; then
-          print -u2 "[rlp-desk] ERROR: reasoning 'minimal' is not supported by gpt-6-astra in $context (server enumerates: low|medium|high|xhigh|max)."
+        # Model-aware exclusion (Fable 5.1 / Codex 6 Astra wave, widened by the
+        # 2026-10-11 generation refresh): gpt-6-astra, gpt-6.1-sol, gpt-6-sol and
+        # gpt-6-luna reject 'minimal' with an HTTP 400 that enumerates the
+        # supported set — see src/model-upgrade-table.md "GPT-6 — Astra". Reject
+        # it HERE for THESE resolved slugs only; 'minimal' remains valid for
+        # every other codex model (gpt-5.6-* is unprobed, spark) — never a
+        # blanket narrowing of the shared vocabulary. Mirrored by
+        # MINIMAL_UNSUPPORTED_MODELS (command-builder.mjs) and the case in
+        # _auto_detect_engine (run_ralph_desk.zsh); a parity test pins all three.
+        local _enum=''
+        case "$model" in
+          gpt-6-astra|gpt-6.1-sol) _enum='low|medium|high|xhigh|max' ;;
+          gpt-6-sol|gpt-6-luna) _enum='low|medium|high|xhigh|max' ;;
+          *) _enum='' ;;
+        esac
+        if [[ -n "$_enum" && "$level" == "minimal" ]]; then
+          print -u2 "[rlp-desk] ERROR: reasoning 'minimal' is not supported by $model in $context (rlp-desk accepts: $_enum)."
           return 1
         fi
         ;;
@@ -267,15 +276,18 @@ _validate_model_level() {
 # warning text in src/node/cli/command-builder.mjs; a parity test pins the two.
 typeset -gA RETIRED_MODEL_REMAP=(
   'gpt-5.4'              'gpt-5.6-terra'
-  'gpt-5.4-mini'         'gpt-5.6-luna'
-  'gpt-5.5'              'gpt-5.6-sol'
-  'gpt-5.3-codex-spark'  'gpt-5.6-luna'
-  'spark'                'gpt-5.6-luna'
+  'gpt-5.4-mini'         'gpt-6-luna'
+  'gpt-5.5'              'gpt-6.1-sol'
+  'gpt-5.3-codex-spark'  'gpt-6-luna'
+  'spark'                'gpt-6-luna'
 )
 
 # Bare claude aliases carry no effort, so the level falls to claude CLI's own
 # default — a value this project has never confirmed. Pin the start explicitly.
-# haiku is absent on purpose: it has no effort concept. fable resolves to the
+# The floating `haiku` alias is absent on purpose: it carries no effort (CLI
+# default) and normalizing it would flip the default path; the pinned
+# claude-haiku-5-5 (Haiku 5.5 has effort, medium is its documented default)
+# gains an explicit :medium start. fable resolves to the
 # version-pinned id too, matching how the ladder and every doc name it.
 # claude-opus-5-5 (the claude worker ceiling as of the 2026-09-26 CB=4/3-rung
 # wave) gets the same treatment: without it, a bare
@@ -287,6 +299,8 @@ typeset -gA BARE_ALIAS_NORMALIZATION=(
   'fable'             'claude-fable-5-1:max'
   'claude-fable-5-1'  'claude-fable-5-1:max'
   'claude-opus-5-5'   'claude-opus-5-5:high'
+  'claude-sonnet-5-5' 'claude-sonnet-5-5:high'
+  'claude-haiku-5-5'  'claude-haiku-5-5:medium'
 )
 
 # _normalize_model_spec() — remap retired families (level preserved) and give
@@ -297,10 +311,10 @@ typeset -gA BARE_ALIAS_NORMALIZATION=(
 # The remap REWRITES ONLY THE MODEL PART, never the level. That is what makes it
 # safe to normalize BEFORE _validate_model_level: a malformed input stays
 # malformed, so remapping can never launder a rejection into an acceptance
-# ('gpt-5.5:' becomes 'gpt-5.6-sol:' and is still rejected for an empty level).
+# ('gpt-5.5:' becomes 'gpt-6.1-sol:' and is still rejected for an empty level).
 # The level is then validated against the REPLACEMENT model, which matters:
-# 'minimal' is rejected for gpt-6-astra alone, so 'gpt-5.5:minimal' correctly
-# resolves to the accepted 'gpt-5.6-sol:minimal'.
+# 'minimal' is rejected for gpt-6-astra, gpt-6.1-sol, gpt-6-sol and gpt-6-luna,
+# so 'gpt-5.5:minimal' resolves to 'gpt-6.1-sol:minimal' and is rejected.
 # Usage: normalized=$(_normalize_model_spec "$spec")
 _normalize_model_spec() {
   local value="$1"
@@ -348,11 +362,11 @@ _validate_consensus_model_var() {
     model="$value"; level=""
   fi
   # `spark` never reaches here as a head: _normalize_model_spec remaps it to
-  # gpt-5.6-luna first (it is a retired family, not a live alias).
+  # gpt-6-luna first (it is a retired family, not a live alias).
   case "$model" in
-    sol)   model="gpt-5.6-sol" ;;
+    sol)   model="gpt-6.1-sol" ;;
     terra) model="gpt-5.6-terra" ;;
-    luna)  model="gpt-5.6-luna" ;;
+    luna)  model="gpt-6-luna" ;;
     astra) model="gpt-6-astra" ;;
   esac
 
@@ -422,7 +436,7 @@ parse_model_flag() {
       # GPT-5.6 family aliases (codex 0.144): sol=frontier, terra=balanced,
       # luna=fast/affordable. Same convention as the spark alias above.
       sol)
-        model="gpt-5.6-sol"
+        model="gpt-6.1-sol"
         _validate_model_level codex "$model" "$level" "$context" || return 1
         echo "codex $model $level"
         ;;
@@ -432,7 +446,7 @@ parse_model_flag() {
         echo "codex $model $level"
         ;;
       luna)
-        model="gpt-5.6-luna"
+        model="gpt-6-luna"
         _validate_model_level codex "$model" "$level" "$context" || return 1
         echo "codex $model $level"
         ;;
@@ -466,13 +480,13 @@ parse_model_flag() {
         echo "codex gpt-5.3-codex-spark "
         ;;
       sol)
-        echo "codex gpt-5.6-sol "
+        echo "codex gpt-6.1-sol "
         ;;
       terra)
         echo "codex gpt-5.6-terra "
         ;;
       luna)
-        echo "codex gpt-5.6-luna "
+        echo "codex gpt-6-luna "
         ;;
       astra)
         echo "codex gpt-6-astra "
@@ -525,7 +539,7 @@ get_model_string() {
 # get_next_model() — return next model in Worker upgrade path, or empty at ceiling
 # Usage: get_next_model <model_str>
 #   claude: "haiku"|"sonnet"|"opus"
-#   codex:  "gpt-5.5:medium"|"gpt-5.6-sol:max"|"gpt-5.6-terra:ultra"|"gpt-5.3-codex-spark:medium"|...
+#   codex:  "gpt-5.5:medium"|"gpt-6.1-sol:max"|"gpt-5.6-terra:ultra"|"gpt-5.3-codex-spark:medium"|...
 # Output: next model string, or empty string if at ceiling
 #
 # US-001: single-sourced from src/node/models.json (shipped default ladder),
@@ -607,13 +621,17 @@ get_next_model() {
 # callers must invoke this directly, never via `$(...)`. Command substitution
 # forks a subshell in zsh, which would silently discard both globals before
 # the caller could read them):
-#   _COST_FACTOR_X100    — INTEGER x100 value (e.g. 4 for luna's 0.04), so
+#   _COST_FACTOR_X100    — INTEGER x1000 value (e.g. 25 for gpt-6-luna 0.025, 550 for gpt-5.6-terra 0.55), so
 #                           callers can accumulate-then-divide-once in zsh
 #                           integer arithmetic without truncating small
 #                           per-row products to zero (RC-12/F11 — this is for
 #                           deterministic, exact fixture assertions; zsh has
 #                           typeset -F and awk is already a hard dependency,
 #                           so this is not a floating-point workaround).
+#                           The identifier keeps its x100-era name (deliberate shortcut;
+#                           rename if a 3rd consumer appears). Ceiling: factors need
+#                           <= 3 decimals; widen the scale and rename if a 4-decimal
+#                           factor is ever added.
 #   _COST_FACTOR_LAST_UNKNOWN — 1 when the family was absent from the
 #                           resolved table (factor 1.0 assumed; mirrors the
 #                           existing _MODEL_LADDER_WARNED pattern), else 0.
@@ -623,7 +641,7 @@ get_next_model() {
 _cost_factor_x100() {
   local model="$1"
   local family="${model%%:*}"
-  _COST_FACTOR_X100=100
+  _COST_FACTOR_X100=1000
   _COST_FACTOR_LAST_UNKNOWN=0
 
   local shipped_candidate factors_file=""
@@ -646,7 +664,7 @@ _cost_factor_x100() {
 
   local result x100 flag
   result=$(jq -r --arg f "$family" \
-    'if (.cost_factors | has($f)) then (((.cost_factors[$f] * 100) | floor | tostring) + " known") else "100 unknown" end' \
+    'if (.cost_factors | has($f)) then (((.cost_factors[$f] * 1000) | round | tostring) + " known") else "1000 unknown" end' \
     "$factors_file" 2>/dev/null)
   x100="${result%% *}"
   flag="${result##* }"
@@ -812,7 +830,7 @@ check_model_upgrade() {
     local current_model_str
     # Engine-aware ladder key (mirrors the WORKER_ENGINE branch below and the
     # _ceiling_model_str pattern in run_ralph_desk.zsh). run_ralph_desk.zsh
-    # unconditionally defaults WORKER_CODEX_MODEL (gpt-5.6-luna as of the
+    # unconditionally defaults WORKER_CODEX_MODEL (gpt-6-luna as of 2026-10-11; previously gpt-5.6-luna as of the
     # 2026-08-03 luna-first policy; was gpt-6-astra during the Fable 5.1 /
     # Codex 6 Astra wave, gpt-5.5 before that) regardless of engine, so a
     # claude campaign always has WORKER_CODEX_MODEL set. The old
@@ -826,7 +844,7 @@ check_model_upgrade() {
     else
       # Model-mapping refresh (2026-09-26 CB=4/3-rung wave): the claude ladder
       # is a 3-rung chain whose every rung above haiku is effort-qualified
-      # (sonnet:high, claude-opus-5-5:high), so the lookup key must carry
+      # (claude-sonnet-5-5:high, claude-opus-5-5:high), so the lookup key must carry
       # WORKER_EFFORT — keying off the bare
       # WORKER_MODEL would miss every key but `haiku` and silently report
       # already_max from the first upgrade onward (the same silent-no-op class
@@ -862,13 +880,17 @@ check_model_upgrade() {
       WORKER_MODEL="$WORKER_CODEX_MODEL"
     else
       # Fable 5.1 wave: every claude rung above haiku is effort-qualified
-      # ("haiku" -> "sonnet:high" -> "claude-opus-5-5:high" as of the
+      # ("haiku" -> "claude-sonnet-5-5:high" -> "claude-opus-5-5:high" as of the
       # 2026-09-26 CB=4/3-rung wave) — split it the same way the codex branch
       # above splits model:reasoning, so WORKER_MODEL stays a bare id
       # (what `claude --model` expects) and the effort reaches WORKER_EFFORT
       # (what `--effort` expects). Only the starting rung (haiku) has no colon
       # and falls through the else branch unchanged; every rung reached from
-      # here on out carries one.
+      # here on out carries one. A rung may also be an effort-only hop on the
+      # same model id (claude-sonnet-5-5:medium -> claude-sonnet-5-5:high):
+      # WORKER_MODEL is then unchanged, only WORKER_EFFORT rises, the "Worker
+      # model upgraded" log line reads X:medium → X:high (F-LOG), and _MODEL_UPGRADED (a
+      # flag, not a model-id comparison) is what restore keys on.
       if [[ "$next_model" == *:* ]]; then
         WORKER_MODEL="${next_model%%:*}"
         WORKER_EFFORT="${next_model##*:}"
@@ -877,9 +899,18 @@ check_model_upgrade() {
       fi
     fi
 
-    log "  Worker model upgraded: ${_ORIGINAL_WORKER_MODEL} → ${WORKER_MODEL} (same-US consecutive fail threshold)"
+    # F-LOG: name the effort too. A ladder hop can be effort-only and keep the
+    # model id (claude-sonnet-5-5:medium -> :high, gpt-5.6-terra:medium -> :high), so
+    # a bare "X -> X" hides what changed. Engine-aware (claude -> WORKER_EFFORT,
+    # codex -> WORKER_CODEX_REASONING); bare model when the effort is empty (haiku).
+    local _from_eff="${_ORIGINAL_WORKER_EFFORT:-}" _to_eff="${WORKER_EFFORT:-}"
+    if [[ "$WORKER_ENGINE" = "codex" ]]; then
+      _from_eff="${_ORIGINAL_WORKER_CODEX_REASONING:-}"; _to_eff="${WORKER_CODEX_REASONING:-}"
+    fi
+    local _from_spec="${_ORIGINAL_WORKER_MODEL}${_from_eff:+:$_from_eff}" _to_spec="${WORKER_MODEL}${_to_eff:+:$_to_eff}"
+    log "  Worker model upgraded: ${_from_spec} → ${_to_spec} (same-US consecutive fail threshold)"
     log "  [WARN] Same AC failing repeatedly — consider IL-2 re-assessment of AC quality (spec quality check)"
-    log_debug "[DECIDE] iter=${ITERATION:-0} phase=model_select model_upgrade=true reason=consecutive_same_ac_fail from=${_ORIGINAL_WORKER_MODEL} to=${WORKER_MODEL}"
+    log_debug "[DECIDE] iter=${ITERATION:-0} phase=model_select model_upgrade=true reason=consecutive_same_ac_fail from=${_from_spec} to=${_to_spec}"
     _SAME_US_FAIL_COUNT=0  # Reset counter after upgrade
   fi
 
@@ -911,7 +942,7 @@ _effective_iter_timeout() {
   # get_model_string only appends the level for codex, so a claude effort in
   # WORKER_EFFORT never reached the case at all. The multiplier table is
   # engine-agnostic (spec §6) — `--worker-model opus:max` must scale like
-  # `--worker-model gpt-5.6-luna:max`.
+  # `--worker-model gpt-6-luna:max`.
   local effort
   if [[ "${WORKER_ENGINE:-}" = "codex" ]]; then
     effort="${WORKER_CODEX_REASONING:-}"
@@ -2103,7 +2134,7 @@ update_status() {
       _eff_block_reason="waiver rejections: ${WAIVER_REJECTION_SUMMARY}"
     fi
   fi
-  local _lbr_json _owm_json _owcr_json _owe_json
+  local _lbr_json _owm_json _owcr_json _owe_json _lfu_json
   _lbr_json=$(printf '%s' "$_eff_block_reason" | jq -Rs . 2>/dev/null); [[ -z "$_lbr_json" ]] && _lbr_json='""'
   _owm_json=$(printf '%s' "${_ORIGINAL_WORKER_MODEL:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owm_json" ]] && _owm_json='""'
   # request-j ③: persist the ORIGINAL worker codex reasoning effort alongside
@@ -2122,6 +2153,9 @@ update_status() {
   # codex case, since an empty claude effort is not itself a runtime error —
   # but the campaign quietly stops running at the upgraded effort level).
   _owe_json=$(printf '%s' "${_ORIGINAL_WORKER_EFFORT:-}" | jq -Rs . 2>/dev/null); [[ -z "$_owe_json" ]] && _owe_json='""'
+  # F6: persist the US that same_us_fail_count belongs to (_LAST_FAILED_US), so the
+  # D-5b relaunch restore can rehydrate the same-US streak, not just its length.
+  _lfu_json=$(printf '%s' "${_LAST_FAILED_US:-}" | jq -Rs . 2>/dev/null); [[ -z "$_lfu_json" ]] && _lfu_json='""'
 
   # Build consensus fields
   local consensus_json=""
@@ -2156,6 +2190,7 @@ update_status() {
   "last_block_reason": '"$_lbr_json"',
   "model_upgraded": '"${_MODEL_UPGRADED:-0}"',
   "same_us_fail_count": '"${_SAME_US_FAIL_COUNT:-0}"',
+  "last_failed_us": '"$_lfu_json"',
   "ceiling_deferral_count": '"${_CEILING_DEFERRAL_COUNT:-0}"',
   "original_worker_model": '"$_owm_json"',
   "original_worker_codex_reasoning": '"$_owcr_json"',
@@ -2679,13 +2714,19 @@ write_cost_log() {
   # iteration where that arm doesn't run, signal_us_id retains the PRIOR
   # iteration's value — write_campaign_jsonl has always had that same
   # property, so cost-log and campaign.jsonl stay consistent with each
-  # other even then. worker_effort is separate from worker_model for codex
-  # legs (see get_next_model / check_model_upgrade) — ladder moves can be
-  # effort-only.
+  # other even then. worker_effort is the active engine's own effort, separate
+  # from worker_model: WORKER_EFFORT for claude (empty for haiku, which carries
+  # none), WORKER_CODEX_REASONING for codex (see get_next_model /
+  # check_model_upgrade) — ladder moves can be effort-only on both engines.
   local cost_us_id="${signal_us_id:-unknown}"
   local cost_worker_model="$WORKER_MODEL"
   local cost_worker_engine="$WORKER_ENGINE"
-  local cost_worker_effort="${WORKER_CODEX_REASONING:-}"
+  local cost_worker_effort=""
+  if [[ "$cost_worker_engine" == "codex" ]]; then
+    cost_worker_effort="${WORKER_CODEX_REASONING:-}"
+  else
+    cost_worker_effort="${WORKER_EFFORT:-}"
+  fi
   local cost_verifier_engine="$VERIFIER_ENGINE"
 
   # AC1: per-phase timing fields
@@ -3041,10 +3082,10 @@ ${untracked}"
         row_us_id=$(echo "$line" | jq -r '.us_id // "unknown"' 2>/dev/null)
 
         if [[ "$row_worker_engine" == "codex" ]]; then
-          # C1 rounding contract: accumulate estimated_tokens × factor_x100
-          # (integer) across ALL codex rows and divide by 100 exactly ONCE,
+          # C1 rounding contract: accumulate estimated_tokens × factor_x1000
+          # (integer) across ALL codex rows and divide by 1000 exactly ONCE,
           # after the loop — never per-row. Per-row division would truncate
-          # small rows (e.g. 10 luna tokens × 0.04) to zero (RC-12/F11).
+          # small rows (e.g. 10 luna tokens × 0.055) to zero (RC-12/F11).
           _cost_factor_x100 "$row_worker_model"
           codex_sol_x100_sum=$(( codex_sol_x100_sum + t * _COST_FACTOR_X100 ))
           (( _COST_FACTOR_LAST_UNKNOWN )) && unknown_family_seen=1
@@ -3065,8 +3106,8 @@ ${untracked}"
         have_prev=1
 
         # Final model per US: last attributed row per us_id wins (map
-        # overwrite), rendered "model:effort" (or bare model for claude
-        # legs, which have no effort field).
+        # overwrite), rendered "model:effort", or the bare model when the row
+        # has no effort (claude haiku).
         if [[ -z "${final_model_by_us[$row_us_id]:-}" ]]; then
           final_model_us_order+=("$row_us_id")
         fi
@@ -3077,8 +3118,8 @@ ${untracked}"
         fi
       done < "$COST_LOG"
 
-      local codex_sol_equivalent=$(( codex_sol_x100_sum / 100 ))
-      echo "- Codex legs sol-equivalent: ${codex_sol_equivalent} tokens  (factors sol 1.0 / terra 0.4 / luna 0.04)"
+      local codex_sol_equivalent=$(( codex_sol_x100_sum / 1000 ))
+      echo "- Codex legs sol-equivalent: ${codex_sol_equivalent} tokens  (factors relative to gpt-5.6-sol = 1.0: gpt-6.1-sol 0.5 / gpt-5.6-terra 0.55 / gpt-6-luna 0.025 / gpt-5.6-luna 0.055)"
       if (( unknown_family_seen )); then
         echo "- Note: one or more codex rows used an unrecognized model family — factor 1.0 assumed"
       fi

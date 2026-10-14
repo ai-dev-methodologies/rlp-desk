@@ -180,22 +180,22 @@ row() { # $1=tokens $2=model $3=engine $4=effort $5=us_id
     '{estimated_tokens:$t, worker_model:$m, worker_engine:$e, worker_effort:$f, us_id:$u}'
 }
 
-print -r -- "== g1: luna rows convert at 0.04 (3 x 1000 -> 120) =="
+print -r -- "== g1: luna rows convert at 0.055 (3 x 1000 -> 165) =="
 out=$(run_cost_section "" "$(row 1000 gpt-5.6-luna codex high US-001)
 $(row 1000 gpt-5.6-luna codex high US-001)
 $(row 1000 gpt-5.6-luna codex high US-001)" "")
-if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 120 tokens'; then
-  ok "luna 3x1000 -> 120"
+if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 165 tokens'; then
+  ok "luna 3x1000 -> 165"
 else
   no "luna 3x1000 wrong: $(print -r -- "$out" | grep 'sol-equivalent')"
 fi
 
-print -r -- "== g1: mixed families sum correctly (luna+terra+sol 1000 each -> 1440) =="
+print -r -- "== g1: mixed families sum correctly (luna+terra+sol 1000 each -> 1605) =="
 out=$(run_cost_section "" "$(row 1000 gpt-5.6-luna codex high US-001)
 $(row 1000 gpt-5.6-terra codex max US-001)
 $(row 1000 gpt-5.6-sol codex xhigh US-001)" "")
-if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 1440 tokens'; then
-  ok "mixed families -> 1440"
+if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 1605 tokens'; then
+  ok "mixed families -> 1605"
 else
   no "mixed families wrong: $(print -r -- "$out" | grep 'sol-equivalent')"
 fi
@@ -208,6 +208,38 @@ if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 1 tokens'; then
   ok "3x10 luna -> 1 (accumulate-then-divide, not per-row truncation to 0)"
 else
   no "3x10 luna wrong (per-row truncation regression?): $(print -r -- "$out" | grep 'sol-equivalent')"
+fi
+
+print -r -- "== g1: gpt-6-luna rows convert at 0.025 (4 x 1000 -> 100) =="
+out=$(run_cost_section "" "$(row 1000 gpt-6-luna codex high US-001)
+$(row 1000 gpt-6-luna codex high US-001)
+$(row 1000 gpt-6-luna codex high US-001)
+$(row 1000 gpt-6-luna codex high US-001)" "")
+if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 100 tokens'; then
+  ok "gpt-6-luna 4x1000 -> 100 (0.025 is exact only at the x1000 scale; x100 truncation gives 80)"
+else
+  no "gpt-6-luna 4x1000 wrong: $(print -r -- "$out" | grep 'sol-equivalent')"
+fi
+
+print -r -- "== g1: scaled-integer boundary (40 x 1001 gpt-6-luna -> 1001) =="
+rows40=""
+for i in {1..40}; do rows40+="$(row 1001 gpt-6-luna codex high US-001)"$'\n'; done
+out=$(run_cost_section "" "${rows40%$'\n'}" "")
+if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 1001 tokens'; then
+  ok "gpt-6-luna 40x1001 -> 1001 (same fixture as the Node leader test, so both leaders agree to the token)"
+else
+  no "gpt-6-luna 40x1001 wrong: $(print -r -- "$out" | grep 'sol-equivalent')"
+fi
+
+print -r -- "== g1: mixed GPT-6 families sum correctly (gpt-6.1-sol 500 + gpt-6-luna 25 + gpt-5.6-luna 55 + gpt-5.6-terra 550 = 1130) =="
+out=$(run_cost_section "" "$(row 1000 gpt-6.1-sol codex high US-001)
+$(row 1000 gpt-6-luna codex high US-001)
+$(row 1000 gpt-5.6-luna codex high US-001)
+$(row 1000 gpt-5.6-terra codex max US-001)" "")
+if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 1130 tokens'; then
+  ok "mixed GPT-6 + 5.6 families -> 1130"
+else
+  no "mixed GPT-6 + 5.6 families wrong: $(print -r -- "$out" | grep 'sol-equivalent')"
 fi
 
 print -r -- "== g1: claude legs counted, never converted =="
@@ -255,6 +287,25 @@ else
   no "final model per US wrong: $fm_line"
 fi
 
+print -r -- "== g1: claude effort-only hop counts as an escalation (claude-sonnet-5-5:medium -> :high => 1) =="
+out=$(run_cost_section "" "$(row 100 claude-sonnet-5-5 claude medium US-001)
+$(row 100 claude-sonnet-5-5 claude high US-001)" "")
+if print -r -- "$out" | grep -qE '^- Escalation count: 1 ladder move'; then
+  ok "claude effort-only change counted as an escalation"
+else
+  no "claude effort-only escalation not counted: $(print -r -- "$out" | grep 'Escalation count')"
+fi
+
+print -r -- "== g1: final model per US renders claude rows (bare haiku, claude-sonnet-5-5:medium) =="
+out=$(run_cost_section "" "$(row 100 haiku claude '' US-001)
+$(row 100 claude-sonnet-5-5 claude medium US-002)" "")
+fm_line=$(print -r -- "$out" | grep '^- Final model per US:')
+if [[ "$fm_line" == "- Final model per US: US-001 = haiku, US-002 = claude-sonnet-5-5:medium" ]]; then
+  ok "final model per US: bare haiku (no effort) and claude-sonnet-5-5:medium"
+else
+  no "final model per US wrong for claude rows: $fm_line"
+fi
+
 print -r -- "== g1: unknown family falls back to 1.0 with a note =="
 out=$(run_cost_section "" "$(row 1000 totally-unknown-model codex high US-001)" "")
 if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 1000 tokens'; then
@@ -295,8 +346,8 @@ print -r -- "== g1: cost_factors resolves shipped-first (override cannot change 
 OVERRIDE_FILE="$TMP/override-cost-factors.json"
 jq -n '{cost_factors: {"gpt-5.6-luna": 0.99}}' > "$OVERRIDE_FILE"
 out=$(run_cost_section "$OVERRIDE_FILE" "$(row 1000 gpt-5.6-luna codex high US-001)" "")
-if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 40 tokens'; then
-  ok "shipped cost_factors (0.04) win over override (0.99)"
+if print -r -- "$out" | grep -q '^- Codex legs sol-equivalent: 55 tokens'; then
+  ok "shipped cost_factors (0.055) win over override (0.99)"
 else
   no "override leaked into pricing (shipped-first violated): $(print -r -- "$out" | grep 'sol-equivalent')"
 fi

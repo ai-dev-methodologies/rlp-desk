@@ -155,6 +155,38 @@ test('parseModelFlag returns claude engine and effort for claude-fable-5-1:max',
   });
 });
 
+// Sonnet 5.5 wave: the version-pinned claude-sonnet-5-5:high is the MIDDLE
+// rung of the default ladder. It must parse to the claude engine with the
+// effort split off, be recognized by isClaudeEngine, and pass the same
+// vocabulary validation a user-typed --worker-model goes through.
+test('parseModelFlag returns claude engine and effort for claude-sonnet-5-5:high', async () => {
+  const { parseModelFlag, isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
+  const { validateModelFlag } = await import('../../src/node/run.mjs');
+
+  assert.deepEqual(parseModelFlag('claude-sonnet-5-5:high', 'worker'), {
+    engine: 'claude',
+    model: 'claude-sonnet-5-5',
+    effort: 'high',
+  });
+  assert.equal(isClaudeEngine('claude-sonnet-5-5:high'), true);
+  assert.doesNotThrow(() => validateModelFlag('claude-sonnet-5-5:high', '--worker-model'));
+});
+
+// Brainstorm MEDIUM worker start: claude-sonnet-5-5:medium must parse to the
+// claude engine with effort medium and pass the same vocabulary validation.
+test('parseModelFlag returns claude engine and effort for claude-sonnet-5-5:medium', async () => {
+  const { parseModelFlag, isClaudeEngine } = await import('../../src/node/cli/command-builder.mjs');
+  const { validateModelFlag } = await import('../../src/node/run.mjs');
+
+  assert.deepEqual(parseModelFlag('claude-sonnet-5-5:medium', 'worker'), {
+    engine: 'claude',
+    model: 'claude-sonnet-5-5',
+    effort: 'medium',
+  });
+  assert.equal(isClaudeEngine('claude-sonnet-5-5:medium'), true);
+  assert.doesNotThrow(() => validateModelFlag('claude-sonnet-5-5:medium', '--worker-model'));
+});
+
 // gpt-6-astra: new codex model family, typed verbatim (full slug) must still
 // route to the codex engine with reasoning preserved.
 test('parseModelFlag returns codex engine and reasoning for gpt-6-astra:high', async () => {
@@ -240,9 +272,9 @@ test('isClaudeEngine returns true for bare fable and fable:max', async () => {
 // CODEX_MODEL_ALIASES table before defaulting to claude.
 for (const [aliasName, fullSlug] of [
   ['spark', 'gpt-5.3-codex-spark'],
-  ['sol', 'gpt-5.6-sol'],
+  ['sol', 'gpt-6.1-sol'],
   ['terra', 'gpt-5.6-terra'],
-  ['luna', 'gpt-5.6-luna'],
+  ['luna', 'gpt-6-luna'],
   ['astra', 'gpt-6-astra'],
 ]) {
   test(`parseModelFlag treats bare ${aliasName} (no colon) as the codex engine, matching isClaudeEngine`, async () => {
@@ -306,11 +338,11 @@ test('parseModelFlag treats a bare gpt-5.3-codex-spark (the spark alias\'s full 
 });
 
 // codex 0.144 / GPT-5.6 aliases — mirror of the zsh parse sites (spark precedent).
-test('parseModelFlag maps sol:max to gpt-5.6-sol with max reasoning', async () => {
+test('parseModelFlag maps sol:max to gpt-6.1-sol with max reasoning', async () => {
   const { parseModelFlag } = await import('../../src/node/cli/command-builder.mjs');
   assert.deepEqual(parseModelFlag('sol:max'), {
     engine: 'codex',
-    model: 'gpt-5.6-sol',
+    model: 'gpt-6.1-sol',
     reasoning: 'max',
   });
 });
@@ -324,7 +356,7 @@ test('parseModelFlag maps terra:ultra and luna:high to their full slugs', async 
   });
   assert.deepEqual(parseModelFlag('luna:high'), {
     engine: 'codex',
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     reasoning: 'high',
   });
 });

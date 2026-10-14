@@ -335,16 +335,16 @@ HIGH lane question: `rlp-desk.md` Step 7 (mapping tables).
 - **Luna-first start**: Workers start at the cheapest model:effort the US
   complexity allows — escalation requires an *observed* failure, never an
   assumption of difficulty.
-- **Cross-engine defaults (codex installed)**: LOW → `gpt-5.6-luna:high`,
-  MEDIUM → `gpt-5.6-luna:xhigh`, HIGH → lane choice (cost lane: `luna:max`,
+- **Cross-engine defaults (codex installed)**: LOW → `gpt-6-luna:high`,
+  MEDIUM → `gpt-6-luna:xhigh`, HIGH → lane choice (cost lane: `luna:max`,
   escalates via the quota-first `terra:max` hop, which is the cost lane's own
   ceiling; speed lane: `sol:medium`, climbing to `sol:xhigh`, its own
-  terminal ceiling), CRITICAL → `gpt-5.6-sol:high` (starts above the ladder,
+  terminal ceiling), CRITICAL → `gpt-6.1-sol:high` (starts above the ladder,
   exempt from luna-first). `gpt-6-astra` is judge-only and is never reached
   by a worker escalation.
-- **Claude-only fallback (codex absent)**: `haiku` (LOW) → `sonnet:high`
-  (MEDIUM/HIGH) → `claude-opus-5-5:high` (CRITICAL, starts at the ceiling);
-  ladder is haiku → sonnet:high → claude-opus-5-5:high on failure, the real
+- **Claude-only fallback (codex absent)**: `claude-haiku-5-5:medium` (LOW);
+  `claude-sonnet-5-5:medium` (MEDIUM); `claude-sonnet-5-5:high` (HIGH); `claude-opus-5-5:high` (CRITICAL, starts at the ceiling);
+  ladder is claude-haiku-5-5:medium → claude-sonnet-5-5:high → claude-opus-5-5:high on failure, the real
   ceiling of the claude-only ladder. `claude-fable-5-1:max` is Final Verifier
   only, not on the worker spine.
 - **Effort before model, luna only**: within `luna` the ladder raises effort
@@ -463,7 +463,7 @@ The `run` command accepts engine flags to control which CLI executes Worker and 
 | `--codex-model MODEL` | `gpt-5.5` | Model passed to the `codex` CLI (when engine=codex) |
 | `--codex-reasoning low\|medium\|high` | `high` | Reasoning effort for the `codex` CLI |
 
-**Claude engine** (default): uses `Agent()` in agent mode, `claude -p` with `--dangerously-skip-permissions` in tmux mode.
+**Claude engine** (default): uses `Agent()` in agent mode (native: family alias only, effort dropped — see rlp-desk.md "Native Agent() model mapping"), `claude -p` with `--dangerously-skip-permissions` in tmux mode.
 
 **Codex engine** (opt-in): uses `Bash("codex ...")` in agent mode, interactive `codex` TUI in tmux mode. The `codex` binary must be installed separately (`npm install -g @openai/codex`) and is only required when an engine is set to `codex`.
 

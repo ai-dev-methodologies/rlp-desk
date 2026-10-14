@@ -1,7 +1,7 @@
 #!/bin/zsh
 # SV gate — P1 (native-agent-revert plan v7): slash-command mode-label contract.
 #
-# 16 grep/awk guards (G1-G7, some looped per-file) verify that
+# 23 grep/awk guards (G1-G8, some looped per-file) verify that
 # `src/commands/rlp-desk.md` preserves the canonical slash-command mode
 # contract:
 #   - `--mode native` is the default Native Agent() leader path.
@@ -12,6 +12,9 @@
 #   - Worker dispatch snippets retain `Agent(... mode="bypassPermissions" ...)`
 #     and `Bash("OMX_STATE_ROOT='...' codex exec ...")`.
 #   - No `subagent_type=` leaks back into governance.md/rlp-desk.md/docs (G7).
+#   - The safety block states the real permission mechanism (subagents inherit the
+#     leader session's permission mode; `mode=` is ignored), carries no
+#     unconditional-immunity claim and recommends no mode (G2c', G2e-G2i, G8a/G8b).
 #
 # Pattern mirrored from tests/sv-gate-fast.sh.
 
@@ -70,10 +73,28 @@ guard "G2a Turn-keepalive sentinel inside Safety Contract block" \
   grep -qE 'Turn-keepalive.*every status report uses' "$SAFETY_BLOCK"
 guard "G2b no-subagent_type sentinel inside Safety Contract block" \
   grep -q 'no `subagent_type` parameter' "$SAFETY_BLOCK"
-guard "G2c bypassPermissions mandatory sentinel inside Safety Contract block" \
-  grep -qE 'bypassPermissions.*mandatory' "$SAFETY_BLOCK"
+guard "G2c' bypassPermissions-is-ignored sentinel inside Safety Contract block" \
+  grep -qE 'bypassPermissions.*ignored' "$SAFETY_BLOCK"
 guard "G2d long-running tmux recommendation inside Safety Contract block" \
   grep -qi 'long-running.*tmux' "$SAFETY_BLOCK"
+# Addendum-5: the block states the real mechanism and nothing stronger.
+guard "G2e inherited-permission-mode sentence inside Safety Contract block" \
+  grep -q "inherit the leader session.s permission mode" "$SAFETY_BLOCK"
+STALE_HIT=$(grep -cE -e 'fails to suppress' -e 'bypassPermissions.*mandatory' -e "under the platform's bypass" -e 'overrode .bypassPermissions' "$FILE" || true)
+guard "G2f no stale bypass-claim phrase anywhere in rlp-desk.md (got ${STALE_HIT})" \
+  test "${STALE_HIT:-0}" -eq 0
+# Q1 guard: facts only. Pins this narrow word list on lines about the permission mode; it does not
+# prove "facts only" in general.
+REC_HIT=$(grep -i 'permission mode' "$SAFETY_BLOCK" | grep -ciE -e 'recommend' -e 'should' -e 'must start' -e 'start the leader' -e 'use bypass' -e 'run the leader in' -e 'pick ' -e 'choose ' || true)
+guard "G2g no mode recommendation on a permission-mode line in the Safety Contract block (got ${REC_HIT})" \
+  test "${REC_HIT:-0}" -eq 0
+BANNED_HIT=$(grep -ciE -e 'run non-interactively' -e 'structurally immune' -e 'cannot surface' "$SAFETY_BLOCK" || true)
+guard "G2h no unconditional-immunity wording inside Safety Contract block (got ${BANNED_HIT})" \
+  test "${BANNED_HIT:-0}" -eq 0
+PANE_HIT=$(grep -c 'no tmux pane' "$SAFETY_BLOCK" || true)
+ITEM4_HIT=$(grep -c 'item 4' "$SAFETY_BLOCK" || true)
+guard "G2i block separates 'no tmux pane' from the permission-prompt pointer 'item 4' (pane ${PANE_HIT}, item4 ${ITEM4_HIT})" \
+  test "$(( ${PANE_HIT:-0} > 0 && ${ITEM4_HIT:-0} > 0 ))" -eq 1
 
 # 3. Worker dispatch snippets preserved
 guard "G3a claude worker dispatch retains Agent( call" \
@@ -118,6 +139,14 @@ done
 RLP_DESK_MD_HITS=$(grep -c 'subagent_type=' "$FILE")
 guard "G7 rlp-desk.md has exactly 1 subagent_type= mention (prohibition prose only, got ${RLP_DESK_MD_HITS})" \
   test "$RLP_DESK_MD_HITS" -eq 1
+
+# 8. Addendum-5: the inheritance fact is carried by governance §5a and architecture.md too.
+guard "G8a governance.md states that subagents inherit the leader session's permission mode" \
+  grep -q "inherit the leader session.s permission mode" src/governance.md
+ARCH_AUTO=$(grep -c 'Autonomous execution' docs/rlp-desk/architecture.md || true)
+ARCH_INH=$(grep -c "inherit the leader session.s permission mode" docs/rlp-desk/architecture.md || true)
+guard "G8b architecture.md: no 'Autonomous execution' comment, states inheritance (autonomous ${ARCH_AUTO}, inherit ${ARCH_INH})" \
+  test "$(( ${ARCH_AUTO:-0} == 0 && ${ARCH_INH:-0} > 0 ))" -eq 1
 
 print ""
 bold "─────────────────────────────────────────────────"
