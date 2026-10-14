@@ -10,6 +10,51 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 - Cost-log campaign-exit row attribution (`final-verify` / `campaign-exit` buckets instead of `unknown`) — spec ready in `docs/plans/manifest-followup-handoff.md`.
 
+## [0.27.0] — 2026-10-14
+
+### Changed
+- **Model catalog refreshed** for Claude Haiku 5.5 / Sonnet 5.5 / Opus 5.5
+  and codex-cli 0.162:
+  - claude ladder is pinned: `claude-haiku-5-5:medium → claude-sonnet-5-5:high
+    → claude-opus-5-5:high` (ceiling). MEDIUM-complexity work starts on
+    `claude-sonnet-5-5:medium`. Bare `haiku` / `sonnet` keep working.
+  - codex aliases follow the new generation: `sol` → `gpt-6.1-sol`,
+    `luna` → `gpt-6-luna` (cost lane `gpt-6-luna:high → gpt-6-luna:max →
+    gpt-5.6-terra:max`). Explicit `gpt-5.6-sol` / `gpt-5.6-luna` ids still
+    work for accounts without GPT-6 access.
+  - `minimal` reasoning is rejected up front for the GPT-6 models that refuse
+    it, and the error lists the levels rlp-desk accepts.
+  - Cost reporting uses refreshed per-model price factors (sol-equivalent).
+- `init` prints one pinned tmux run line per complexity tier.
+- `--mode native` maps every claude model spec to the Agent tool's family
+  alias (`haiku|sonnet|opus|fable`); effort is not passed in native mode.
+- Logs and reports name the worker as `model:effort`, so an effort-only
+  ladder step is visible.
+- RED evidence in the Verifier contract is any non-zero test exit (pytest
+  exits 2 when a test module cannot be collected yet).
+
+### Fixed
+- **claude CLI 2.1.296 trust dialog**: the folder-trust prompt now defaults to
+  "No, exit"; the leader used to press Enter there, claude quit and the
+  campaign blocked. The leader now selects the trust option deliberately,
+  waits for claude's own input UI before sending work, and never types into
+  an unrecognized dialog.
+- **codex 0.162 launch**: a shell prompt that uses `❯` was mistaken for codex
+  being ready; readiness now requires the codex process and its own input
+  surface, accepts codex's new "Trust and continue" dialog, and ignores the
+  non-modal promo shown above codex's input.
+- A done-claim rejected by the mechanical pre-gate is now archived instead of
+  being overwritten by the next Worker.
+- `init --mode fresh|improve` without a PRD archives the previous run's state
+  (ledger, memos, status, cost log) instead of deleting it, and stops if an
+  archive move fails.
+- A relaunched campaign restores the same-story failure streak correctly.
+- Polling-loop locals no longer echo their values into `leader.log`.
+
+### Docs
+- The native-mode safety text states the real permission behaviour
+  (subagents inherit the leader session's permission mode).
+
 ## [0.26.0] — 2026-09-28
 
 ### Changed
