@@ -1143,6 +1143,98 @@ _dismiss_codex_update_prompt() {
   return 0
 }
 
+# --- codex TUI readiness / submit safety (SV g55luna-a1 + codex reviews) ---------
+# Active codex dialog at the BOTTOM of the screen (last 15 non-blank logical lines of a
+# `capture-pane -J`): trust | update | other | none.
+#   trust   numbered "1. Trust and continue"|"1. Yes, continue" WITH "2. Quit"|"2. No, quit"
+#   update  "Update available" / "1. Update now"
+#   other   any other numbered menu (option 1 + option 2 or a menu hint such as
+#           "enter continue" / "esc to dismiss" / "Press a number to choose" — e.g. the
+#           "Set up security for Daybreak mode" promo) or a codex error line
+#           ("■ ..." / model does not exist / at capacity)
+# Trust words quoted in chat are NOT a dialog (no option lines at the bottom).
+_codex_dialog_kind() {
+  local -a _L
+  _L=("${(@f)1}")
+  local _n=${#_L[@]} _i _l _o1="" _o2="" _hint=0 _err=0 _upd=0
+  while (( _n > 0 )) && [[ -z "${_L[_n]//[[:space:]]/}" ]]; do _n=$(( _n - 1 )); done
+  local _from=$(( _n - 14 ))
+  (( _from < 1 )) && _from=1
+  for (( _i = _from; _i <= _n; _i++ )); do
+    _l="${_L[_i]}"
+    # Round 8: codex's OWN input surface (placeholder / model status line / shortcuts hint)
+    # BELOW a menu makes that menu non-blocking (a chat-quoted menu, or the Daybreak promo
+    # that codex shows with its prompt active underneath): forget everything above it.
+    # (Error lines are kept — they are not menus.)
+    if [[ "$_l" =~ 'Ask Codex|\? for shortcuts|Context [0-9]+% left' ]]; then
+      _o1=""; _o2=""; _hint=0; _upd=0
+      continue
+    fi
+    if [[ "$_l" =~ '^[[:space:]]*(›|❯)?[[:space:]]*1\.[[:space:]]+(.*)$' ]]; then _o1="${match[2]}"
+    elif [[ "$_l" =~ '^[[:space:]]*(›|❯)?[[:space:]]*2\.[[:space:]]+(.*)$' ]]; then _o2="${match[2]}"
+    fi
+    [[ "$_l" == *"Update available"* ]] && _upd=1
+    [[ "$_l" =~ 'enter continue|esc (quit|to dismiss|to cancel)|Press a number to choose' ]] && _hint=1
+    [[ "$_l" =~ '^[[:space:]]*■' || "$_l" =~ 'does not exist or you do not have access|Selected model is at capacity' ]] && _err=1
+  done
+  if [[ "$_o1" =~ '^(Trust and continue|Yes, continue)' && "$_o2" =~ '^(Quit|No, quit)' ]]; then print -r -- trust
+  elif (( _upd )) || [[ "$_o1" == "Update now"* ]]; then print -r -- update
+  elif [[ -n "$_o1" && ( -n "$_o2" || _hint -eq 1 ) ]]; then print -r -- other
+  elif (( _err )); then print -r -- other
+  else print -r -- none; fi
+}
+
+# codex's OWN input surface is on screen: a `›`/`❯` prompt glyph BELOW the last echo of
+# the launch command (the shell prompt echoing it also starts with `❯`). When the echo
+# anchor cannot be found (wrapped echo split the suffix, or codex cleared the screen) the
+# glyph alone proves nothing — require a codex marker too (banner / footer / placeholder).
+# $1 = capture (-J), $2 = launch command.
+_codex_ready_surface() {
+  local _mk="${2[-14,-1]}" _below="$1" _anchored=0
+  if [[ -n "$_mk" && "$1" == *"$_mk"* ]]; then _below="${1##*"$_mk"}"; _anchored=1; fi
+  [[ "$_below" == *›* || "$_below" == *❯* ]] || return 1
+  (( _anchored )) && return 0
+  [[ "$1" =~ 'OpenAI Codex|Context [0-9]+% left|\? for shortcuts|Ask Codex' ]]
+}
+
+# Right before the instruction paste+Enter: codex must still own the pane, no dialog of any
+# kind may be at the bottom (the trust dialog is accepted, bounded; update / Daybreak /
+# model error / any other menu -> refuse, never paste into it) and its input surface must
+# be active. Returns 1 = do NOT submit (loud). $1=pane $2=launch command $3=site label.
+_codex_presubmit_guard() {
+  local pane_id="$1" launch="$2" site="${3:-submit}" _cmd="" _cap="" _kind="" _accepts=0 _waits=0
+  while true; do
+    _cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null)
+    if [[ -z "$_cmd" || "$_cmd" == (zsh|bash|sh|fish) ]]; then
+      log_error "Pane $pane_id (site=$site): codex is not running (pane_current_command='${_cmd}') — not submitting"
+      return 1
+    fi
+    _cap=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)
+    _kind=$(_codex_dialog_kind "$_cap")
+    case "$_kind" in
+      trust)
+        if (( _accepts >= 3 )); then
+          log_error "Pane $pane_id (site=$site): codex trust dialog still present after $_accepts accepts — not submitting"
+          return 1
+        fi
+        log "  codex directory-trust dialog at submit time (site=$site) — accepting (F-16)."
+        log_debug "[GOV] codex_trust_prompt=accepted_late site=$site"
+        tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
+        _accepts=$(( _accepts + 1 )) ;;
+      none)
+        _codex_ready_surface "$_cap" "$launch" && return 0
+        if (( _waits >= 5 )); then
+          log_error "Pane $pane_id (site=$site): codex input surface not active — not submitting"
+          return 1
+        fi
+        _waits=$(( _waits + 1 )); sleep 1 ;;
+      *)
+        log_error "Pane $pane_id (site=$site): unhandled codex dialog ($_kind) at the bottom of the screen — not submitting (no auto-handling for it)"
+        return 1 ;;
+    esac
+  done
+}
+
 # launch_worker_codex() — launch codex Worker TUI, send instruction, verify submission
 # Matches launch_worker_claude() pattern for consistent tmux-visible execution.
 # Args: $1=pane_id  $2=prompt_file  $3=iteration  $4=worker_launch_cmd
@@ -1180,8 +1272,12 @@ launch_worker_codex() {
   local _codex_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   while (( _codex_wait < 30 )); do
     sleep 1
+    # owner BEFORE text: a shell that hands the pane to codex between the two reads
+    # can only make us wait one more tick, never accept the shell's stale prompt
+    local _codex_cmd=""
+    _codex_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || true)
     local _pane_text=""
-    _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    _pane_text=$(tmux capture-pane -t "$pane_id" -p -J 2>/dev/null || true)
     # F-1 (v0.22.21): dismiss codex's "✨ Update available!" launch dialog via the
     # shared dismisser BEFORE the '›' ready check — the update menu also renders
     # '›' (on "› 1. Update now"), and confirming its default option runs
@@ -1201,13 +1297,19 @@ launch_worker_codex() {
     # worker instruction sent into that menu can land on "No, quit" → codex exits
     # → "worker not active" BLOCK. Accept it (Enter = default "1. Yes, continue")
     # before the ready check. Validated end-to-end: codex then runs the task.
-    if echo "$_pane_text" | grep -qiE 'Do you trust|1\. Yes, continue' 2>/dev/null; then
+    if [[ "$(_codex_dialog_kind "$_pane_text")" == trust ]]; then
       log "  Worker codex: directory-trust prompt — accepting (F-16)."
       log_debug "[GOV] iter=$iter codex_trust_prompt=accepted role=worker"
       tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
       (( _codex_wait++ )); continue
     fi
-    if echo "$_pane_text" | grep -qE '[›❯]' 2>/dev/null; then
+    # SV g55luna-a1: the user's zsh prompt (`❯`, echoed with the launch command) matched
+    # the glyph before codex rendered. Require codex to OWN the pane (not a shell) too.
+    # ...and the glyph must come from codex, not from the shell prompt echoing the launch
+    # command (live smoke: codex booting, cmd already non-shell, only `❯ codex ...` on
+    # screen): look only below the last echo of the launch command.
+    if [[ -n "$_codex_cmd" && "$_codex_cmd" != (zsh|bash|sh|fish) ]] \
+       && _codex_ready_surface "$_pane_text" "$worker_launch"; then
       _codex_ready=1
       log_debug "Worker codex TUI ready after ${_codex_wait}s"
       break
@@ -1235,6 +1337,11 @@ launch_worker_codex() {
   # Send instruction to codex TUI
   sleep 1
   local worker_instruction="Read and execute the instructions in $prompt_file"
+  # Re-validate right before the submit (codex >= 0.162 shows its trust dialog AFTER the main prompt;
+  # update / Daybreak / model-error / unknown dialogs must never receive the instruction): the
+  # trust dialog is accepted (bounded), anything else at the bottom or an inactive input surface
+  # -> no paste, loud failure.
+  _codex_presubmit_guard "$pane_id" "$worker_launch" worker_submit || { log_error "Worker codex not submittable — aborting launch"; return 1; }
   paste_to_pane "$pane_id" "$worker_instruction"
   tmux send-keys -t "$pane_id" C-m
   log_debug "Worker codex instruction sent (${#worker_instruction} chars)"
@@ -1293,8 +1400,9 @@ launch_worker_claude() {
   fi
   tmux send-keys -t "$pane_id" C-m
 
-  # Wait for claude TUI to be ready
-  if ! wait_for_pane_ready "$pane_id" 30; then
+  # Wait for claude TUI to be ready (claude mode: process owns the pane + own input
+  # UI rendered; the trust dialog is answered during this wait)
+  if ! wait_for_pane_ready "$pane_id" 30 claude; then
     log_error "Worker claude failed to start"
     return 1
   fi
@@ -1302,6 +1410,8 @@ launch_worker_claude() {
   # Send instruction to claude TUI
   sleep 3
   local worker_instruction="Read and execute the instructions in $prompt_file"
+  # Trust dialog / claude-still-running re-check right before the direct submit
+  _claude_presubmit_guard "$pane_id" worker_submit || { log_error "Worker claude not submittable — aborting launch"; return 1; }
   paste_to_pane "$pane_id" "$worker_instruction"
   tmux send-keys -t "$pane_id" C-m
   log_debug "Worker instruction sent directly (${#worker_instruction} chars)"
@@ -1320,6 +1430,7 @@ launch_worker_claude() {
     # Every 3 failed attempts, re-send full instruction
     if (( submit_attempts > 0 && submit_attempts % 3 == 0 )); then
       log_debug "Re-sending full worker instruction (attempt $submit_attempts)"
+      _claude_presubmit_guard "$pane_id" worker_resend || { log_error "Worker claude not submittable — aborting launch"; return 1; }
       tmux send-keys -t "$pane_id" C-u 2>/dev/null
       sleep 0.2
       paste_to_pane "$pane_id" "$worker_instruction"
@@ -1344,8 +1455,9 @@ launch_worker_claude() {
     wait_for_pane_ready "$pane_id" 10 2>/dev/null || true
     paste_to_pane "$pane_id" "$worker_launch"
     tmux send-keys -t "$pane_id" C-m
-    if wait_for_pane_ready "$pane_id" 30; then
+    if wait_for_pane_ready "$pane_id" 30 claude && _claude_presubmit_guard "$pane_id" worker_restart; then
       sleep 3
+      _claude_presubmit_guard "$pane_id" worker_restart || { log_error "Worker claude not submittable after restart"; return 1; }
       paste_to_pane "$pane_id" "$worker_instruction"
       tmux send-keys -t "$pane_id" C-m
       log "  Worker restarted and instruction re-sent"
@@ -1389,8 +1501,12 @@ launch_verifier_codex() {
   local _codex_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   while (( _codex_wait < 30 )); do
     sleep 1
+    # owner BEFORE text: a shell that hands the pane to codex between the two reads
+    # can only make us wait one more tick, never accept the shell's stale prompt
+    local _codex_cmd=""
+    _codex_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || true)
     local _pane_text=""
-    _pane_text=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null || true)
+    _pane_text=$(tmux capture-pane -t "$pane_id" -p -J 2>/dev/null || true)
     # F-1 (v0.22.21): dismiss codex's "✨ Update available!" launch dialog via the
     # shared dismisser before it hijacks the pane (default option is "1. Update
     # now"). See launch_worker_codex / _dismiss_codex_update_prompt for detail.
@@ -1404,13 +1520,19 @@ launch_verifier_codex() {
     # (Enter = default "1. Yes, continue") before the ready check — see
     # launch_worker_codex for detail. Otherwise the instruction lands in the menu
     # and can select "No, quit" → codex exits → "verifier not active".
-    if echo "$_pane_text" | grep -qiE 'Do you trust|1\. Yes, continue' 2>/dev/null; then
+    if [[ "$(_codex_dialog_kind "$_pane_text")" == trust ]]; then
       log "  Verifier codex: directory-trust prompt — accepting (F-16)."
       log_debug "[GOV] iter=$iter codex_trust_prompt=accepted role=verifier"
       tmux send-keys -t "$pane_id" C-m 2>/dev/null; sleep 1
       (( _codex_wait++ )); continue
     fi
-    if echo "$_pane_text" | grep -qE '[›❯]' 2>/dev/null; then
+    # SV g55luna-a1: the user's zsh prompt (`❯`, echoed with the launch command) matched
+    # the glyph before codex rendered. Require codex to OWN the pane (not a shell) too.
+    # ...and the glyph must come from codex, not from the shell prompt echoing the launch
+    # command (live smoke: codex booting, cmd already non-shell, only `❯ codex ...` on
+    # screen): look only below the last echo of the launch command.
+    if [[ -n "$_codex_cmd" && "$_codex_cmd" != (zsh|bash|sh|fish) ]] \
+       && _codex_ready_surface "$_pane_text" "$verifier_launch"; then
       _codex_ready=1
       log_debug "Verifier codex TUI ready after ${_codex_wait}s"
       break
@@ -1437,6 +1559,11 @@ launch_verifier_codex() {
 
   sleep 1
   local verifier_instruction="Read and execute the instructions in $prompt_file"
+  # Re-validate right before the submit (codex >= 0.162 shows its trust dialog AFTER the main prompt;
+  # update / Daybreak / model-error / unknown dialogs must never receive the instruction): the
+  # trust dialog is accepted (bounded), anything else at the bottom or an inactive input surface
+  # -> no paste, loud failure.
+  _codex_presubmit_guard "$pane_id" "$verifier_launch" verifier_submit || { log_error "Verifier codex not submittable — aborting launch"; return 1; }
   paste_to_pane "$pane_id" "$verifier_instruction"
   tmux send-keys -t "$pane_id" C-m
   log_debug "Verifier codex instruction sent"
@@ -1492,13 +1619,15 @@ launch_verifier_claude() {
   paste_to_pane "$pane_id" "$verifier_launch"
   tmux send-keys -t "$pane_id" C-m
 
-  if ! wait_for_pane_ready "$pane_id" 30; then
+  if ! wait_for_pane_ready "$pane_id" 30 claude; then
     log_error "Verifier failed to start"
     return 1
   fi
 
   sleep 3
   local verifier_instruction="Read and execute the instructions in $prompt_file"
+  # Trust dialog / claude-still-running re-check right before the direct submit
+  _claude_presubmit_guard "$pane_id" verifier_submit || { log_error "Verifier claude not submittable — aborting launch"; return 1; }
   paste_to_pane "$pane_id" "$verifier_instruction"
   tmux send-keys -t "$pane_id" C-m
   log_debug "Verifier instruction sent directly"
@@ -1515,6 +1644,7 @@ launch_verifier_claude() {
     fi
     if (( submit_attempts == 8 )); then
       log_debug "Adaptive instruction retry: clearing line and re-typing"
+      _claude_presubmit_guard "$pane_id" verifier_resend || { log_error "Verifier claude not submittable — aborting launch"; return 1; }
       tmux send-keys -t "$pane_id" C-u 2>/dev/null
       sleep 0.1
       paste_to_pane "$pane_id" "$verifier_instruction"
@@ -2515,15 +2645,31 @@ safe_send_keys() {
 
   # Check for trust prompt and auto-dismiss
   local initial_capture
-  initial_capture=$(tmux capture-pane -t "$pane_id" -p -S -20 2>/dev/null)
+  initial_capture=$(tmux capture-pane -t "$pane_id" -p -J -S -20 2>/dev/null)
   local pane_busy=0
   if echo "$initial_capture" | grep -q "esc to interrupt" 2>/dev/null; then
     pane_busy=1
   fi
-  if echo "$initial_capture" | grep -q "Do you trust" 2>/dev/null; then
-    log_debug " Trust prompt detected, dismissing"
-    tmux send-keys -t "$pane_id" C-m
-    sleep 0.12
+  # Claude 2.1.296+ trust dialog defaults the cursor to "No, exit": Enter alone would
+  # quit claude. _claude_trust_dialog_accept reads the cursor and only confirms Yes;
+  # if it cannot, never paste the instruction into the dialog.
+  local _trust_rc=0
+  _claude_trust_dialog_accept "$pane_id" send || _trust_rc=$?
+  if (( _trust_rc == 2 )); then
+    log_error "safe_send_keys: claude trust dialog could not be accepted in pane $pane_id — not sending"
+    return 1
+  fi
+  # A dialog footer owns the bottom of the screen but it is not a recognized trust
+  # dialog (incomplete heading/options, another dialog such as the bypass-permissions
+  # warning): paste+Enter could confirm its default (No). Refuse. Permission prompts
+  # ("Do you want to ...") keep their existing auto-approve path below.
+  if (( _trust_rc == 1 )); then
+    local _sk_cap
+    _sk_cap=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)
+    if _claude_dialog_footer_at_bottom "$_sk_cap" && [[ "$initial_capture" != *"Do you want to"* ]]; then
+      log_error "safe_send_keys: unrecognized dialog (confirm footer) at the bottom of pane $pane_id — not sending"
+      return 1
+    fi
   fi
   # Auto-approve permission prompts ("Do you want to create/overwrite X?")
   if echo "$initial_capture" | grep -q "Do you want to" 2>/dev/null; then
@@ -2614,23 +2760,49 @@ safe_send_keys() {
 # Wait for Pane Ready (tmux pattern: paneLooksReady)
 # =============================================================================
 
+# Args: $1=pane_id  $2=timeout (default 10s)  $3=mode ("claude" = the pane must be owned
+# by a claude process with its OWN input UI rendered; default = legacy shell/TUI wait
+# used to reset a pane to a shell prompt). Claude mode returns 1 on timeout.
 wait_for_pane_ready() {
   local pane_id="$1"
   local timeout="${2:-10}"  # tmux default: 10s
+  local mode="${3:-}"
   local start=$(date +%s)
   local _wfpr_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
   log "  Waiting for pane $pane_id ready..."
   while (( $(date +%s) - start < timeout )); do
     local captured=""
-    captured=$(tmux capture-pane -t "$pane_id" -p -S -20 2>/dev/null)
+    captured=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)
 
-    # Auto-dismiss trust prompt (tmux pattern: paneHasTrustPrompt)
-    if echo "$captured" | grep -q "Do you trust" 2>/dev/null; then
-      log "  Trust prompt detected, auto-dismissing..."
-      tmux send-keys -t "$pane_id" C-m
-      sleep 0.12
-      tmux send-keys -t "$pane_id" C-m
-      sleep 2
+    # Auto-accept trust dialog (tmux pattern: paneHasTrustPrompt). Claude 2.1.296+
+    # defaults the cursor to "No, exit", and the dialog's "❯ No, exit" line also
+    # looks like a ready prompt below — so the cursor is read and moved to Yes
+    # first; the pane is never reported ready while the dialog is visible.
+    if _claude_trust_dialog_visible "$captured"; then
+      local _trust_rc=0
+      _claude_trust_dialog_accept "$pane_id" ready || _trust_rc=$?
+      if (( _trust_rc == 2 )); then
+        log_error "Pane $pane_id: claude trust dialog could not be accepted — pane NOT ready"
+        return 1
+      fi
+      continue
+    fi
+
+    # Claude mode (a3 incident): the shell's echo of the launch command starts with
+    # the user's `❯` prompt and matched the ready regex before claude rendered
+    # anything. Require claude to OWN the pane (pane_current_command not a shell) and
+    # its own input UI on screen; the trust dialog above is handled whenever it
+    # appears during this wait.
+    if [[ "$mode" == claude ]]; then
+      local _wfpr_cmd=""
+      _wfpr_cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null)
+      if [[ -n "$_wfpr_cmd" && "$_wfpr_cmd" != (zsh|bash|sh|fish) ]] \
+         && _claude_input_ui_rendered "$captured" \
+         && ! echo "$captured" | grep -q "esc to interrupt" 2>/dev/null; then
+        log "  Pane $pane_id is ready (claude input UI, cmd=$_wfpr_cmd)."
+        return 0
+      fi
+      sleep 0.25
       continue
     fi
 
@@ -2675,7 +2847,17 @@ wait_for_pane_ready() {
     fi
     sleep 0.25
   done
-  # Timeout — return success anyway (fail-open, let safe_send_keys handle it)
+  # Timeout. Never claim ready while the trust dialog is still on screen, and in
+  # claude mode never claim ready at all (claude did not render its input UI).
+  if _claude_trust_dialog_visible "$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)"; then
+    log_error "Pane $pane_id: claude trust dialog still visible after ${timeout}s — pane NOT ready"
+    return 1
+  fi
+  if [[ "$mode" == claude ]]; then
+    log_error "Pane $pane_id: claude did not render its input UI within ${timeout}s — pane NOT ready"
+    return 1
+  fi
+  # Otherwise fail-open (let safe_send_keys handle it)
   log "  Pane $pane_id ready timeout after ${timeout}s (proceeding anyway)"
   return 0
 }
@@ -2790,6 +2972,169 @@ typeset -g _AFFORDANCE_RE='\(y/n\)|\[Y/n\]|\[y/N\]|\(yes/no|❯[[:space:]]*[0-9]
 # suspected-unknown prompt because the affordance text is just transcript.
 typeset -g _ACTIVE_TASK_RE='esc to interrupt|background terminal running|^[[:space:]]*[·✻][[:space:]]+[A-Za-z]+(\.{3}|…)'
 
+# claude trust dialog (2.1.296+: "Quick safety check: Is this a project you ... trust?",
+# unnumbered options, cursor DEFAULTS TO "No, exit"; <=2.1.1xx: "Do you trust the
+# files ...", numbered, default Yes). Enter confirms whatever the cursor is on, so
+# every site that answers this dialog must read the cursor first — never assume it.
+#
+# _claude_trust_dialog_state <capture> prints one of:
+#   none     no ACTIVE trust dialog (also: trust words in prose, a quoted menu in
+#            scrollback, heading/footer without options, a DIFFERENT dialog such as
+#            bypass-permissions "Yes, I accept")
+#   yes/no   active trust dialog, `❯`/`›` cursor on the Yes / No option
+#   unknown  active trust dialog but no cursor on either option (mid-render)
+# "Active" = the footer ("Enter to confirm" / "Press enter to continue") is the LAST
+# non-blank screen line, directly above it exactly one trust-Yes and one trust-No
+# option ("Yes, I trust this folder|Yes, proceed|Yes, continue" /
+# "No, exit|No, quit", optional cursor, optional "N."), and above those a trust
+# heading ("Quick safety check" / "Is this a project you" / "Do you trust the
+# files|contents"). Any other Yes/No option line in the block voids it. The cursor is
+# read from those option lines only.
+_claude_trust_dialog_state() {
+  local -a _L
+  _L=("${(@f)1}")
+  local _n=${#_L[@]} _j _l _cur _rest
+  while (( _n > 0 )) && [[ -z "${_L[_n]//[[:space:]]/}" ]]; do _n=$(( _n - 1 )); done
+  (( _n >= 3 )) || { print -r -- none; return 0; }
+  [[ "${_L[_n]}" == *"Enter to confirm"* || "${_L[_n]}" == *"Press enter to continue"* ]] \
+    || { print -r -- none; return 0; }
+  local _first_opt=0 _yes=0 _no=0 _bad=0 _cur_yes=0 _cur_no=0
+  _j=$(( _n - 1 ))
+  while (( _j >= 1 )); do
+    _l="${_L[_j]}"
+    if [[ -z "${_l//[[:space:]]/}" ]]; then _j=$(( _j - 1 )); continue; fi
+    [[ "$_l" =~ '^[[:space:]]*(❯|›)?[[:space:]]*([0-9]+\.)?[[:space:]]*(.*)$' ]] || break
+    _cur="${match[1]}"; _rest="${match[3]}"
+    [[ "$_rest" =~ '^(Yes|No)([^[:alpha:]]|$)' ]] || break
+    _first_opt=$_j
+    if [[ "$_rest" =~ '^Yes, (I trust this (folder|directory)|proceed|continue)' ]]; then
+      _yes=$(( _yes + 1 )); [[ -n "$_cur" ]] && _cur_yes=$(( _cur_yes + 1 ))
+    elif [[ "$_rest" =~ '^No, (exit|quit)' ]]; then
+      _no=$(( _no + 1 )); [[ -n "$_cur" ]] && _cur_no=$(( _cur_no + 1 ))
+    else
+      _bad=1
+    fi
+    _j=$(( _j - 1 ))
+  done
+  (( _first_opt > 0 && _bad == 0 && _yes == 1 && _no == 1 )) || { print -r -- none; return 0; }
+  # Heading: the LAST trust question above the option block, and nothing after its
+  # own "?" up to the first option may be another question (a stale heading in
+  # prose followed by an unrelated "Do you want to ...?" dialog is not ours).
+  local _norm_capture="" _k=$(( _first_opt - 1 )) _hn=0
+  while (( _k >= 1 && _hn < 40 )); do _norm_capture="${_L[_k]} $_norm_capture"; _k=$(( _k - 1 )); _hn=$(( _hn + 1 )); done
+  _norm_capture="${_norm_capture//[$'\n\r\t']/ }"
+  while [[ "$_norm_capture" == *"  "* ]]; do _norm_capture="${_norm_capture//  / }"; done
+  [[ "$_norm_capture" =~ '^.*(Is this a project you[^?]*\?|Do you trust the (files|contents) (in|of) this (folder|directory)\?)(.*)$' ]] \
+    || { print -r -- none; return 0; }
+  [[ "${match[5]}" != *"?"* ]] || { print -r -- none; return 0; }
+  if (( _cur_yes == 1 && _cur_no == 0 )); then print -r -- yes
+  elif (( _cur_no == 1 && _cur_yes == 0 )); then print -r -- no
+  else print -r -- unknown; fi
+}
+
+_claude_trust_dialog_visible() { [[ "$(_claude_trust_dialog_state "$1")" != none ]]; }
+
+# Accept the claude trust dialog deterministically. Returns 0 = accepted (Enter sent
+# with the cursor confirmed on Yes), 1 = no active dialog visible, 2 = the cursor
+# could not be put on Yes within the bounded tries (NO Enter was sent — caller must
+# fail loudly). An unknown cursor is retried, never confirmed.
+_claude_trust_dialog_accept() {
+  local pane_id="$1" site="${2:-pane}"
+  local _cap _state _tries=0 _max_tries=3
+  _cap=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)
+  while true; do
+    _state=$(_claude_trust_dialog_state "$_cap")
+    case "$_state" in
+      none) return 1 ;;
+      yes)
+        log "  Claude trust dialog in pane $pane_id (site=$site, cursor on Yes) — accepting (Enter)"
+        log_debug "[GOV] claude_trust_prompt=accepted pane=$pane_id site=$site downs=$_tries"
+        tmux send-keys -t "$pane_id" Enter 2>/dev/null
+        sleep 1
+        return 0 ;;
+    esac
+    if (( _tries >= _max_tries )); then
+      log_error "Claude trust dialog in pane $pane_id (site=$site): cursor still '$_state' after $_tries attempts — NOT pressing Enter (would select No/exit or an unknown option)"
+      log_debug "[GOV] claude_trust_prompt=failed pane=$pane_id site=$site cursor=$_state downs=$_tries"
+      return 2
+    fi
+    if [[ "$_state" == no ]]; then
+      log "  Claude trust dialog in pane $pane_id (site=$site): cursor on 'No' — moving Down to the trust option"
+      log_debug "[GOV] claude_trust_prompt=cursor_down pane=$pane_id site=$site attempt=$((_tries + 1))"
+      tmux send-keys -t "$pane_id" Down 2>/dev/null
+    fi
+    _tries=$(( _tries + 1 ))
+    sleep 0.3
+    _cap=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)
+  done
+}
+
+# claude's OWN input UI is on screen AND is the bottom-most UI element: not the
+# shell's echo of the launch command (its zsh prompt also starts with `❯`), and not
+# input UI left in scrollback above a dialog. The prompt line sits between two
+# horizontal rules (claude >= 2.1) or inside the boxed input (`│ >`, older); nothing
+# below it may be dialog furniture (a footer or a Yes/No option line). Capture with -J
+# so soft-wrapped narrow panes are logical lines.
+_claude_input_ui_rendered() {
+  local -a _L
+  _L=("${(@f)1}")
+  local _i _n=${#_L[@]} _last=0
+  for (( _i = 1; _i <= _n; _i++ )); do
+    [[ "${_L[_i]}" =~ '^[[:space:]]*│[[:space:]]*(>|❯)' ]] && _last=$_i
+    if (( _i > 1 && _i < _n )) && [[ "${_L[_i]}" =~ '^[[:space:]]*(>|❯)' ]] \
+       && [[ "${_L[_i-1]}" =~ '^[[:space:]]*(─){8,}' ]] && [[ "${_L[_i+1]}" =~ '^[[:space:]]*(─){8,}' ]]; then
+      _last=$_i
+    fi
+  done
+  (( _last > 0 )) || return 1
+  for (( _i = _last + 1; _i <= _n; _i++ )); do
+    [[ "${_L[_i]}" == *"Enter to confirm"* || "${_L[_i]}" == *"Press enter to continue"* || "${_L[_i]}" == *"Esc to cancel"* ]] && return 1
+    [[ "${_L[_i]}" =~ '^[[:space:]]*(❯|›)?[[:space:]]*([0-9]+\.)?[[:space:]]*(Yes|No)([^[:alpha:]]|$)' ]] && return 1
+  done
+  return 0
+}
+
+# A trust-style dialog footer is the last non-blank screen line (an active dialog of
+# some kind owns the keyboard).
+_claude_dialog_footer_at_bottom() {
+  local -a _L
+  _L=("${(@f)1}")
+  local _n=${#_L[@]}
+  while (( _n > 0 )) && [[ -z "${_L[_n]//[[:space:]]/}" ]]; do _n=$(( _n - 1 )); done
+  (( _n > 0 )) || return 1
+  [[ "${_L[_n]}" == *"Enter to confirm"* || "${_L[_n]}" == *"Press enter to continue"* ]]
+}
+
+# Immediately before a direct paste+Enter into a claude TUI: claude must still own
+# the pane (never paste the instruction into a bare shell) and any trust dialog that
+# appeared after the readiness check is answered first. Returns 1 = do NOT submit.
+_claude_presubmit_guard() {
+  local pane_id="$1" site="${2:-submit}" _cmd _rc=0
+  _cmd=$(tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null)
+  if [[ -z "$_cmd" || "$_cmd" == (zsh|bash|sh|fish) ]]; then
+    log_error "Pane $pane_id (site=$site): claude is not running (pane_current_command='${_cmd}') — not submitting"
+    return 1
+  fi
+  _claude_trust_dialog_accept "$pane_id" "$site" || _rc=$?
+  if (( _rc == 2 )); then
+    log_error "Pane $pane_id (site=$site): claude trust dialog could not be accepted — not submitting"
+    return 1
+  fi
+  # Submit only into claude's own input UI as the bottom-most element — never into an
+  # unrecognized dialog (bypass-permissions warning, incomplete trust dialog). After a
+  # just-accepted dialog the input UI needs a moment to render.
+  local _cap _tries=1
+  (( _rc == 0 )) && _tries=20
+  while (( _tries > 0 )); do
+    _cap=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)
+    _claude_input_ui_rendered "$_cap" && return 0
+    _tries=$(( _tries - 1 ))
+    (( _tries > 0 )) && sleep 0.5
+  done
+  log_error "Pane $pane_id (site=$site): claude input UI is not the bottom-most element (unrecognized dialog or not rendered) — not submitting"
+  return 1
+}
+
 auto_dismiss_prompts() {
   local pane_id="$1"
   local now
@@ -2800,37 +3145,29 @@ auto_dismiss_prompts() {
   # v5.7 §4.21 (E2E real-claude-CLI finding): claude v2.x trust prompt wraps
   # to ~30 lines on narrow panes. -S -10 missed the question header. -50
   # covers the full prompt.
-  capture=$(tmux capture-pane -t "$pane_id" -p -S -50 2>/dev/null) || return 0
+  capture=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null) || return 0
 
   # v5.7 §4.21 (E2E real-claude-CLI finding): claude v2.x trust prompt is
   # multi-line and wraps narrowly, so per-line PROMPT_RE+AFFORDANCE adjacency
-  # misses it. Special-case the signature ("Quick safety check ... Enter to
-  # confirm" with `❯N.Yes` cursor on option 1). This is default-Yes — Enter
-  # approves trust.
-  # §4.21.b: tmux narrow-pane wrap breaks the question phrase across lines
-  # (`Quick safety\n check`). Normalize all whitespace to single spaces so
-  # substring matching works regardless of pane width.
-  local _norm_capture="${capture//[$'\n\r\t']/ }"
-  while [[ "$_norm_capture" == *"  "* ]]; do _norm_capture="${_norm_capture//  / }"; done
-  if { [[ "$_norm_capture" == *"Quick safety check"* ]] || [[ "$_norm_capture" == *"trust this folder"* ]] || [[ "$_norm_capture" == *"trust this directory"* ]]; } \
-     && [[ "$_norm_capture" == *"Enter to confirm"* ]] \
-     && [[ "$_norm_capture" =~ '❯ ?[0-9]+\. ?Yes' ]]; then
+  # misses it. §4.21.b: narrow-pane wrap can also split the question phrase
+  # across lines — _claude_trust_dialog_visible normalizes whitespace.
+  # Claude 2.1.296+: the cursor DEFAULTS TO "No, exit" (unnumbered options), so
+  # the old "default-Yes, Enter approves" assumption (§4.20/§4.21) is wrong —
+  # the generic PROMPT+AFFORDANCE branch below would also Enter on it. The cursor
+  # is read and moved to Yes by _claude_trust_dialog_accept; Enter never lands on No.
+  if _claude_trust_dialog_visible "$capture"; then
     if (( now - last >= 3 )); then
-      log "  Claude v2.x trust prompt detected in pane $pane_id, auto-approving (Enter)"
-      log_debug "[FLOW] claude_trust_prompt_auto_approved=true pane=$pane_id"
-      tmux send-keys -t "$pane_id" Enter 2>/dev/null
+      local _trust_rc=0
+      _claude_trust_dialog_accept "$pane_id" auto_dismiss || _trust_rc=$?
       LAST_AUTO_APPROVE_TS[$pane_id]=$now
-    fi
-    return 0
-  fi
-  # Older claude trust prompt format (omc-team parity).
-  if [[ "$_norm_capture" == *"Do you trust the contents of this directory"* ]] \
-     && { [[ "$_norm_capture" =~ 'Yes,[[:space:]]*continue' ]] || [[ "$_norm_capture" == *"Press enter to continue"* ]]; }; then
-    if (( now - last >= 3 )); then
-      log "  Claude (legacy) trust prompt detected in pane $pane_id, auto-approving (Enter)"
-      log_debug "[FLOW] claude_trust_prompt_auto_approved=true pane=$pane_id"
-      tmux send-keys -t "$pane_id" Enter 2>/dev/null
-      LAST_AUTO_APPROVE_TS[$pane_id]=$now
+      if (( _trust_rc == 0 )); then
+        log_debug "[FLOW] claude_trust_prompt_auto_approved=true pane=$pane_id"
+      elif (( _trust_rc == 2 )); then
+        write_blocked_sentinel \
+          "Claude trust dialog could not be accepted: the cursor could not be moved onto the 'Yes, I trust this folder' option. Pressing Enter would select 'No, exit' and quit claude. Operator must accept the dialog manually and re-run." \
+          "${CURRENT_US:-ALL}" \
+          "infra_failure"
+      fi
     fi
     return 0
   fi
@@ -2854,7 +3191,15 @@ auto_dismiss_prompts() {
   while [[ "$_tail_normalized" == *"  "* ]]; do _tail_normalized="${_tail_normalized//  / }"; done
   local default_no_seen=0
   local sample_pattern="${_tail_normalized:0:120}"
-  if [[ "$_tail_normalized" =~ $_PROMPT_RE ]] && [[ "$_tail_normalized" =~ $_AFFORDANCE_RE ]]; then
+  # Trust wording alone (worker prose, a quoted menu, a heading/footer without its
+  # options, another dialog) must never authorize the generic Enter: an ACTIVE trust
+  # dialog was already handled above with the cursor read; anything else is not ours
+  # to confirm. Strip the trust phrases before the PROMPT_RE test.
+  local _tail_wo_trust="$_tail_normalized" _tw
+  for _tw in "Quick safety check" "Is this a project you" "trust this folder" "trust this directory" "Do you trust"; do
+    _tail_wo_trust="${_tail_wo_trust//$_tw/}"
+  done
+  if [[ "$_tail_wo_trust" =~ $_PROMPT_RE ]] && [[ "$_tail_normalized" =~ $_AFFORDANCE_RE ]]; then
     prompt_visible=1
   fi
   # Default-No scan: full capture, not just tail (scrollback contamination guard).
@@ -6716,6 +7061,13 @@ main() {
           # Short-circuit: LLM verification skipped, Worker redispatched with the
           # fix contract written by the register-fail helper (L1 or L2).
           log_debug "[DECIDE] iter=$ITERATION phase=pregate_fail trigger=pregate pregate_failures=$PREGATE_FAILURES fix_contract=$LOGS_DIR/iter-$(printf '%03d' $ITERATION).fix-contract.md"
+          # F1 (r19-sv-s2-s5): archive the REJECTED iteration's done-claim (+ iter-signal)
+          # as iter-NNN-done-claim.json BEFORE the continue — this path used to return ahead of
+          # the step-7d archive_iter_artifacts, so the bounced claim (and its RED/GREEN record)
+          # was overwritten by the next Worker. The iter-NNN.fix-contract.md sibling marks the
+          # iteration as pre-gate-rejected.
+          archive_iter_artifacts "$ITERATION" claim_only
+          log_debug "[GOV] iter=$ITERATION phase=pregate_fail action=archive_rejected_claim"
           update_status "verifier" "pregate_fail"
           continue
         elif (( ! _pg_force )); then

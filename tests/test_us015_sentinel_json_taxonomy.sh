@@ -146,7 +146,9 @@ rm -rf "$TMP_DIR"
 # one new BLOCK — the attempt-history persist failure in write_worker_trigger
 # (infra_failure); the ceiling-aware circuit-breaker branch's existing
 # repeat_axis callsite was reworded in the same wave (still one callsite, not a
-# new one). The invariant is unchanged: total callsites == categorized
+# new one). claude 2.1.296 trust dialog: grew 48 → 49 for one new BLOCK —
+# auto_dismiss_prompts cannot move the trust-dialog cursor onto Yes
+# (infra_failure). The invariant is unchanged: total callsites == categorized
 # callsites (no implicit default). Category is passed either inline
 # (single-line calls) or on the last continuation line (multi-line calls). All
 # AC4 greps skip comment lines (first non-blank char '#') so instructional
@@ -159,10 +161,10 @@ _ac4_count() {
   printf '%s' "$n"
 }
 zsh_callsites=$(_ac4_count "$RUN" 'write_blocked_sentinel ')
-if [[ "$zsh_callsites" -eq 48 ]]; then
-  pass "AC4-a: 48 zsh write_blocked_sentinel callsites (27 pre-request-j + 12 request-j pane-pinning/capacity + 8 request-l width/geometry fail-fast BLOCKs + 1 model-generation-wave attempt-history-persist BLOCK)"
+if [[ "$zsh_callsites" -eq 49 ]]; then
+  pass "AC4-a: 49 zsh write_blocked_sentinel callsites (27 pre-request-j + 12 request-j pane-pinning/capacity + 8 request-l width/geometry fail-fast BLOCKs + 1 model-generation-wave attempt-history-persist BLOCK + 1 claude-trust-dialog-cursor BLOCK)"
 else
-  fail "AC4-a: expected 48 callsites, got $zsh_callsites"
+  fail "AC4-a: expected 49 callsites, got $zsh_callsites"
 fi
 # All callsites must pass one of the 6 known categories. Inline calls carry it
 # on the call line; multi-line calls carry it on a standalone continuation line.
@@ -170,10 +172,10 @@ sites_with_category=$(_ac4_count "$RUN" 'write_blocked_sentinel.*"(metric_failur
 sites_with_dynamic=$(_ac4_count "$RUN" 'write_blocked_sentinel.*"\$_(verdict|signal)_cat"')
 sites_with_continuation=$(_ac4_count "$RUN" '^[[:space:]]*"(metric_failure|cross_us_dep|context_limit|infra_failure|repeat_axis|mission_abort)"[[:space:]]*$')
 total_categorized=$(( sites_with_category + sites_with_dynamic + sites_with_continuation ))
-if [[ "$total_categorized" -eq 48 ]]; then
-  pass "AC4-b: all 48 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
+if [[ "$total_categorized" -eq 49 ]]; then
+  pass "AC4-b: all 49 zsh callsites pass an explicit category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
 else
-  fail "AC4-b: only $total_categorized of 48 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
+  fail "AC4-b: only $total_categorized of 49 callsites have category (literal=$sites_with_category, dynamic=$sites_with_dynamic, continuation=$sites_with_continuation)"
 fi
 
 # ----------------------------------------------------------------------------

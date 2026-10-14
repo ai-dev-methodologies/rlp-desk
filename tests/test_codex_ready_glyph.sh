@@ -30,10 +30,13 @@ printf 'loading model catalog...\n' | grep -qE "$READY_PATTERN" \
   || pass "behavioral: promptless boot text does not match (no false-ready)"
 
 # --- Structural: BOTH launch ready-loops use the dual-glyph pattern ---
-n_sites=$(grep -c "grep -qE '\[›❯\]'" "$RUN")
-[[ "$n_sites" -eq 2 ]] \
-  && pass "structural: both launch ready-loops accept ›|❯ ($n_sites sites)" \
-  || fail "structural: expected 2 dual-glyph ready sites, got $n_sites"
+# Round 7: the glyph test lives in one helper (_codex_ready_surface: ›|❯ below the launch echo,
+# plus a codex marker when the echo anchor is absent); BOTH launch ready-loops call it.
+n_sites=$(grep -c '_codex_ready_surface "$_pane_text"' "$RUN")
+helper=$(awk '/^_codex_ready_surface\(\) \{/{p=1} p{print} p&&/^}/{exit}' "$RUN")
+[[ "$n_sites" -eq 2 && "$helper" == *"›"* && "$helper" == *"❯"* ]] \
+  && pass "structural: both launch ready-loops use the dual-glyph helper ($n_sites sites)" \
+  || fail "structural: expected 2 ready-loop calls to a dual-glyph helper, got $n_sites"
 
 # --- Structural: no launch ready-loop still greps the single legacy glyph ---
 n_stale=$(grep -c "grep -q '›'" "$RUN")

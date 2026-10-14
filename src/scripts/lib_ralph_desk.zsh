@@ -2242,8 +2242,11 @@ ${result_untracked}"
 }
 
 # --- step 7d: Archive iteration artifacts (done-claim + verdict) to logs/ ---
+# $2 = "claim_only": archive ONLY the done-claim + iter-signal (the pre-gate rejection site —
+# no verifier ran, and a verdict still sitting in memos/ belongs to the PREVIOUS iteration:
+# leader finalization sets SKIP_NEXT_WORKER and bypasses memo cleanup).
 archive_iter_artifacts() {
-  local iter="$1"
+  local iter="$1" claim_only="${2:-}"
   local iter_padded
   iter_padded=$(printf '%03d' "$iter")
   if [[ -f "$DONE_CLAIM_FILE" ]]; then
@@ -2259,7 +2262,7 @@ archive_iter_artifacts() {
     # (e.g. this iteration never reached a done-claim lock site).
     _lifecycle_mark_unlock "${DONE_CLAIM_FILE:t}" "$iter" "archival"
   fi
-  if [[ -f "$VERDICT_FILE" ]]; then
+  if [[ "$claim_only" != claim_only && -f "$VERDICT_FILE" ]]; then
     cp "$VERDICT_FILE" "$LOGS_DIR/iter-${iter_padded}-verify-verdict.json" 2>/dev/null
   fi
   # request-m ②: also archive the iter-signal — it is the third per-iteration

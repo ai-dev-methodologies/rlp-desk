@@ -87,7 +87,16 @@ assert_dismissed "prompt with affordance on prev line (rare TUI layout)" \
 Do you want to create test.json?
 "
 
-assert_dismissed "Do you trust + numeric picker" \
+# claude <=2.1.1xx legacy trust dialog: heading + its own Yes/No options + footer, cursor on Yes.
+assert_dismissed "Do you trust + numeric picker (legacy claude trust dialog, cursor on Yes)" \
+"Do you trust the files in this folder?
+❯ 1. Yes, proceed
+  2. No, exit
+Enter to confirm · Esc to cancel"
+
+# Trust wording + a bare "1) Yes" is NOT an identifiable active trust dialog (no No option,
+# no cursor, no footer) — Enter could land on anything, so no key is sent (TRUST-A/B).
+assert_not_dismissed "bare \"Do you trust this directory?\" + \"1) Yes\" (not an active trust dialog)" \
 "Do you trust this directory?
 1) Yes
 "
@@ -158,9 +167,12 @@ Enter to confirm"
 assert_dismissed "claude v2.x trust prompt: with-space (❯ 1.)" \
 "Is this a project you trust?
 ❯ 1. Yes, I trust this folder
-2. No, exit"
+2. No, exit
+Enter to confirm · Esc to cancel"
 
-assert_dismissed "claude v2.x trust prompt: 'trust this folder' + Enter to confirm" \
+# Heading/footer without the dialog's own Yes/No options: not an active trust dialog, so no
+# Enter (TRUST-B: unknown selection never becomes Enter). Was assert_dismissed pre-2.1.296.
+assert_not_dismissed "claude v2.x trust prompt: 'trust this folder' + Enter to confirm only (no options)" \
 "Will trust this folder
 Enter to confirm"
 
