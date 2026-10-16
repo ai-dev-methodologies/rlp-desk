@@ -67,11 +67,15 @@ async function defaultCapturePane(paneId) {
   // never matched and the unknown-prompt fast-fail BLOCKed instead of
   // auto-dismissing. -50 covers the full prompt with margin for typical
   // pane heights.
+  // -J joins soft-wrapped rows into logical lines (same capture as the zsh leader's
+  // `capture-pane -p -J -S -50`): the prompt dismisser's fail-closed rule (P2) has no
+  // continuation-line joining heuristics, so a wrapped option must arrive as ONE line.
   const { stdout } = await execFileAsync('tmux', [
     'capture-pane',
     '-t',
     paneId,
     '-p',
+    '-J',
     '-S',
     '-50',
   ]);

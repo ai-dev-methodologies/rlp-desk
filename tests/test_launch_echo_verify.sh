@@ -46,11 +46,23 @@ trap 'rm -rf "$TMPDIR_T"' EXIT
 # `tail`, which runs the tmux stub in a SUBSHELL — so the per-attempt counter is
 # tracked in a file (in-memory increments would not survive the subshell).
 CNT="$TMPDIR_T/cnt"
+# W5: the helper no longer pastes the (long) command — it writes it to a launcher file under
+# $RUNTIME_DIR and pastes the SHORT line  source '<launcher>'  (first launcher of an iteration:
+# launch-worker-iter001.zsh). The mock captures below therefore echo that short line:
+# @LINE@ = the intact echo, @LINE1@ = the same with its first character swallowed. Each drive
+# gets a fresh runtime dir (recorded in $TMPDIR_T/last_rt for post-checks; _drive runs in a
+# subshell). $_RT_BASE lets a case choose the runtime dir (bracket test).
+_RT_BASE=""
 _drive() {
   local cmd="$1"; shift
   local -a CAPS=("$@")
   print -r -- 0 > "$CNT"
-  paste_to_pane() { print -r -- "PASTE" >> "$REC"; }
+  RUNTIME_DIR="${_RT_BASE:-$(mktemp -d "$TMPDIR_T/rt.XXXXXX")}"   # mktemp: $RANDOM repeats across $(...) subshells
+  print -r -- "$RUNTIME_DIR" > "$TMPDIR_T/last_rt"
+  local _line="source '$RUNTIME_DIR/launch-worker-iter001.zsh'"
+  CAPS=("${(@)CAPS//@LINE@/$_line}")
+  CAPS=("${(@)CAPS//@LINE1@/${_line[2,-1]}}")
+  paste_to_pane() { print -r -- "PASTE $2" >> "$REC"; }
   tmux() {
     case "$1" in
       capture-pane)
@@ -66,8 +78,8 @@ _drive() {
 }
 
 CMD='/opt/homebrew/bin/codex -m gpt-5.6-terra -c model_reasoning_effort="high"'
-INTACT='user@host ~ % /opt/homebrew/bin/codex -m gpt-5.6-terra -c model_reasoning_effort="high"'
-SWALLOWED='user@host ~ % opt/homebrew/bin/codex -m gpt-5.6-terra -c model_reasoning_effort="high"'
+INTACT='user@host ~ % @LINE@'
+SWALLOWED='user@host ~ % @LINE1@'
 
 # 1) clean echo → 1 paste, 0 C-u, RC=0
 : > "$REC"; out=$(_drive "$CMD" "$INTACT")
@@ -90,9 +102,9 @@ _p=$(grep -c 'PASTE' "$REC"); _cu=$(grep -c 'send-keys.*C-u' "$REC")
 # 4) bracketed model id in the prefix matches LITERALLY (grep -F, not glob).
 #    A pattern-based match would treat '[1m]' as a char class and FAIL on the
 #    literal pane text — proving the fixed-string match.
-BCMD='[1m]/opt/bin/tool run --now here-we-go extra'
-BINTACT='shell$ [1m]/opt/bin/tool run --now here-we-go extra'
-: > "$REC"; out=$(_drive "$BCMD" "$BINTACT")
+BCMD='/opt/bin/tool run --now here-we-go extra'
+BINTACT='shell$ @LINE@'   # W5: the pasted short line carries the bracketed (relative) runtime dir in its prefix
+: > "$REC"; _RT_BASE='[1m]rt'; out=$(cd "$TMPDIR_T" && _drive "$BCMD" "$BINTACT"); _RT_BASE=''
 _p=$(grep -c 'PASTE' "$REC")
 { [[ "$_p" == 1 && "$out" == "RC=0" ]] } \
   && ok "bracketed-model-id prefix matches literally (grep -F, glob-safe) ($out)" || no "bracket prefix not matched literally (paste=$_p $out)"
@@ -101,7 +113,7 @@ _p=$(grep -c 'PASTE' "$REC")
 #    rows. A raw `tail -10` would see only blanks → _tail="" → false mismatch → launch
 #    failure (the shipped-0.22.18 bug). The blank-line filter must recover the echo.
 #    Fixture: intact echo on row 1 + 14 trailing blank rows (models a 34-row pane).
-REGR=$'user@host ~ % /opt/homebrew/bin/codex -m gpt-5.6-terra -c model_reasoning_effort="high"\n\n\n\n\n\n\n\n\n\n\n\n\n\n'
+REGR=$'user@host ~ % @LINE@\n\n\n\n\n\n\n\n\n\n\n\n\n\n'
 : > "$REC"; out=$(_drive "$CMD" "$REGR")
 _p=$(grep -c 'PASTE' "$REC"); _cu=$(grep -c 'send-keys.*C-u' "$REC")
 { [[ "$_p" == 1 && "$_cu" == 0 && "$out" == "RC=0" ]] } \
@@ -110,6 +122,45 @@ _p=$(grep -c 'PASTE' "$REC"); _cu=$(grep -c 'send-keys.*C-u' "$REC")
 # guard the fix is present in source (blank-line filter before tail)
 grep -q "grep -v '\^\[\[:space:\]\]\*\$' | tail -10" "$RUN" \
   && ok "REGRESSION(k①): source strips blank lines before tail -10" || no "blank-line filter missing from source"
+
+# --- W5: short pasted line + per-launch launcher file (mock tmux; the REAL-tmux geometry
+#     proof lives in tests/test_w5_launch_echo_real_tmux.zsh) ------------------------------
+_mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }
+LONGCMD="OMX_STATE_ROOT=/x/y claude --model m --dangerously-skip-permissions $(printf 'a%.0s' {1..400}) --end"
+: > "$REC"; out=$(_drive "$LONGCMD" "x @LINE@"); _rt=$(<"$TMPDIR_T/last_rt")
+_LF="$_rt/launch-worker-iter001.zsh"
+_pasted=$(grep '^PASTE ' "$REC" | head -1); _pasted="${_pasted#PASTE }"
+{ [[ "$out" == "RC=0" && "$_pasted" == "source '$_LF'" && ${#_pasted} -lt 200 ]] } \
+  && ok "W5: the pasted text is the short  source '<launcher>'  line (${#_pasted} chars), not the ${#LONGCMD}-char command" \
+  || no "W5: pasted text wrong (out=$out pasted='$_pasted')"
+{ [[ -f "$_LF" && "$(<"$_LF")" == "$LONGCMD" && "$(_mode "$_LF")" == 600 ]] } \
+  && ok "W5: launcher holds the exact command, mode 0600" || no "W5: launcher content/mode wrong ($(_mode "$_LF" 2>/dev/null))"
+# retry (swallow then intact) re-pastes the SAME short line and writes ONE launcher
+: > "$REC"; out=$(_drive "$CMD" "$SWALLOWED" "$INTACT"); _rt=$(<"$TMPDIR_T/last_rt")
+_n_launch=$(ls "$_rt" | wc -l | tr -d ' '); _uniq=$(grep '^PASTE ' "$REC" | sort -u | wc -l | tr -d ' ')
+{ [[ "$out" == "RC=0" && "$_n_launch" == 1 && "$_uniq" == 1 && $(grep -c '^PASTE ' "$REC") == 2 ]] } \
+  && ok "W5: retry re-pastes the same short line; one launcher file (pastes=2, distinct=$_uniq, launchers=$_n_launch)" \
+  || no "W5: retry wrong (out=$out launchers=$_n_launch distinct=$_uniq)"
+# collision: a second launch in the same iteration never overwrites the first launcher
+RUNTIME_DIR="$TMPDIR_T/rt-coll"; mkdir -p "$RUNTIME_DIR"; print -r -- FIRST > "$RUNTIME_DIR/launch-worker-iter001.zsh"
+( paste_to_pane() { print -r -- "PASTE $2" > "$TMPDIR_T/coll.paste"; }
+  tmux() { print -r -- "source '$RUNTIME_DIR/launch-worker-iter001-2.zsh'"; return 0; }
+  _paste_cmd_echo_verified "%9" "$CMD"; print "RC=$?" > "$TMPDIR_T/coll.rc" )
+{ [[ "$(<"$RUNTIME_DIR/launch-worker-iter001.zsh")" == FIRST && "$(<"$RUNTIME_DIR/launch-worker-iter001-2.zsh")" == "$CMD" \
+      && "$(<"$TMPDIR_T/coll.paste")" == "PASTE source '$RUNTIME_DIR/launch-worker-iter001-2.zsh'" ]] } \
+  && ok "W5: same-iteration relaunch gets launch-worker-iter001-2.zsh; the first launcher is untouched" \
+  || no "W5: launcher collision not handled"
+# a single quote in the launcher path → refuse (the pasted line is single-quoted): rc=1, nothing pasted
+: > "$REC"; _RT_BASE="$TMPDIR_T/o'q"; out=$(_drive "$CMD" "x"); _RT_BASE=""
+{ [[ "$out" == "RC=1" && ! -s "$REC" ]] } \
+  && ok "W5: runtime path containing a single quote → refused (rc=1, no paste)" || no "W5: quote path not refused (out=$out)"
+# no runtime dir at all → refuse, nothing pasted
+: > "$REC"
+out=$( unset RUNTIME_DIR LOGS_DIR
+  paste_to_pane() { print -r -- "PASTE $2" >> "$REC"; }; tmux() { return 0; }
+  _paste_cmd_echo_verified "%9" "$CMD"; print "RC=$?" )
+{ [[ "$out" == "RC=1" && ! -s "$REC" ]] } \
+  && ok "W5: no RUNTIME_DIR/LOGS_DIR → refused (rc=1, no paste)" || no "W5: missing runtime dir not refused (out=$out)"
 
 # --- request-k/-m companion: _wait_pane_shell_ready (real) --------------------
 # request-m ①: readiness is now PROCESS-based (#{pane_current_command} ∈ zsh/bash)

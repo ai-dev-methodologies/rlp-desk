@@ -51,14 +51,16 @@ Do you want to create test.json?
   assert.equal(sent.length, 1);
 });
 
-test('positive: Do you trust + numeric picker', async () => {
+// TRUST-F: Enter needs a selected option identified as an accept option. A numbered
+// "1) Yes" line with no cursor marker (and trust wording only) never authorizes it.
+test('negative: Do you trust + numeric picker without a cursor → no Enter', async () => {
   _resetForTesting();
   const { deps, sent } = makeDeps(`Do you trust this directory?
 1) Yes
 `);
   const result = await autoDismissPrompts('%w', deps);
-  assert.equal(result, true);
-  assert.equal(sent.length, 1);
+  assert.equal(result, false);
+  assert.equal(sent.length, 0);
 });
 
 test('negative: non-prompt text containing "Do you want to"', async () => {
@@ -262,10 +264,10 @@ test('codex: "Approve this command?" with [y/N] → BLOCK (default-No)', async (
   assert.equal(blocks.length, 1);
 });
 
-test('codex: numeric picker "1) Yes / 2) No" → auto-dismiss', async () => {
+test('codex: numeric picker with the cursor on "1) Yes" → auto-dismiss', async () => {
   _resetForTesting();
   const { deps, sent } = makeDeps(`Choose an option:
-1) Yes
+› 1) Yes
 2) No
 `);
   const result = await autoDismissPrompts('%w', deps);
@@ -309,35 +311,53 @@ Enter to confirm
   assert.equal(sent.length, 1);
 });
 
-test('claude v2.x trust prompt: with-space ❯ 1. variant → auto-dismiss', async () => {
+// R1-02 (deliberate parity spec change): this fixture used to auto-dismiss WITHOUT a
+// footer. The zsh `_claude_trust_dialog_state` requires the footer ("Enter to confirm" /
+// "Press enter to continue") as the last non-blank line, so the Node dismisser now does too:
+// a footerless trust prompt is not an active dialog and must be refused, not confirmed.
+test('claude v2.x trust prompt: with-space ❯ 1. variant WITH footer → auto-dismiss', async () => {
+  _resetForTesting();
+  const { deps, sent } = makeDeps(`Is this a project you trust?
+❯ 1. Yes, I trust this folder
+2. No, exit
+Enter to confirm
+`);
+  const result = await autoDismissPrompts('%w', deps);
+  assert.equal(result, true);
+  assert.equal(sent.length, 1);
+});
+
+test('claude v2.x trust prompt: with-space ❯ 1. variant WITHOUT footer → no Enter (R1-02 parity with zsh)', async () => {
   _resetForTesting();
   const { deps, sent } = makeDeps(`Is this a project you trust?
 ❯ 1. Yes, I trust this folder
 2. No, exit
 `);
   const result = await autoDismissPrompts('%w', deps);
-  assert.equal(result, true);
-  assert.equal(sent.length, 1);
+  assert.equal(result, false);
+  assert.equal(sent.length, 0);
 });
 
-test('claude v2.x trust prompt: PROMPT_RE matches "Quick safety check"', async () => {
+// TRUST-F: a trust heading/footer WITHOUT its Yes/No options is not an active trust
+// dialog (prose, a quoted menu): it must never authorize Enter.
+test('claude v2.x trust prompt: "Quick safety check" heading + footer without options → no Enter', async () => {
   _resetForTesting();
   const { deps, sent } = makeDeps(`Quick safety check
 Enter to confirm
 `);
   const result = await autoDismissPrompts('%w', deps);
-  assert.equal(result, true);
-  assert.equal(sent.length, 1);
+  assert.equal(result, false);
+  assert.equal(sent.length, 0);
 });
 
-test('claude v2.x trust prompt: "trust this folder" phrase + Enter to confirm', async () => {
+test('claude v2.x trust prompt: "trust this folder" phrase + Enter to confirm without options → no Enter', async () => {
   _resetForTesting();
   const { deps, sent } = makeDeps(`Will trust this folder
 Enter to confirm
 `);
   const result = await autoDismissPrompts('%w', deps);
-  assert.equal(result, true);
-  assert.equal(sent.length, 1);
+  assert.equal(result, false);
+  assert.equal(sent.length, 0);
 });
 
 // v5.7 §4.18 — unknown-prompt fast-fail (omc benchmarking parity).
@@ -450,10 +470,10 @@ Do you want to create B? (y/n)
   assert.equal(sent.length, 1);
 });
 
-test('codex: "Select [" picker prompt → auto-dismiss', async () => {
+test('codex: "Select [" picker prompt with the cursor on Yes → auto-dismiss', async () => {
   _resetForTesting();
   const { deps, sent } = makeDeps(`Select [an option below]:
-1) Yes
+› 1) Yes
 2) No
 `);
   const result = await autoDismissPrompts('%w', deps);

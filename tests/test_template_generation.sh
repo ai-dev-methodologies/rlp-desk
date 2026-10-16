@@ -35,7 +35,7 @@ assert_not_contains "$SCRIPT" "\-\-final-consensus[^-]" "C1.1: no --final-consen
 assert_not_contains "$SCRIPT" "gpt-5\.3-codex-spark" "C1.2: no gpt-5.3-codex-spark"
 assert_not_contains "$SCRIPT" "\-\-verify-consensus" "C1.3: no --verify-consensus"
 assert_contains "$SCRIPT" "\-\-consensus final-only" "C1.4: --consensus final-only present"
-assert_contains "$SCRIPT" "spark:high" "C1.5: spark:high present"
+assert_not_contains "$SCRIPT" "spark:high" "C1.5: no spark:high (retired alias; W3 J-08 removed the spark preset)"
 assert_contains "$SCRIPT" "default: haiku" "C1.6: worker default haiku"
 assert_contains "$SCRIPT" "\-\-lock-worker-model" "C1.7: --lock-worker-model in options"
 assert_contains "$SCRIPT" "\-\-cb-threshold" "C1.8: --cb-threshold in options"

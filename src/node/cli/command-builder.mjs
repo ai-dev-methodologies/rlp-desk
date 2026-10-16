@@ -102,7 +102,7 @@ export function normalizeModelSpec(value, { warn = (message) => process.stderr.w
   const replacement = RETIRED_MODEL_REMAP.get(head);
   if (replacement !== undefined) {
     const normalized = `${replacement}${tail}`;
-    warn(`[model-remap] WARNING: '${value}' is retired — using '${normalized}' instead. To keep the old id (API-key logins still serve it), pin it in ~/.claude/rlp-desk-models.json.`);
+    warn(`[model-remap] WARNING: '${value}' is retired — using '${normalized}' instead.`);
     return normalized;
   }
 

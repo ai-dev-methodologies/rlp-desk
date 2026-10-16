@@ -332,7 +332,7 @@ _normalize_model_spec() {
   local replacement="${RETIRED_MODEL_REMAP[$head]:-}"
   if [[ -n "$replacement" ]]; then
     local normalized="${replacement}${tail}"
-    print -u2 -r -- "[model-remap] WARNING: '${value}' is retired — using '${normalized}' instead. To keep the old id (API-key logins still serve it), pin it in ~/.claude/rlp-desk-models.json."
+    print -u2 -r -- "[model-remap] WARNING: '${value}' is retired — using '${normalized}' instead."
     printf '%s' "$normalized"
     return 0
   fi

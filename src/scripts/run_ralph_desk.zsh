@@ -507,7 +507,7 @@ _auto_detect_engine() {
   esac
   if [[ -n "$_adn_repl" ]]; then
     local _adn_new="${_adn_repl}${_adn_tail}"
-    print -u2 -r -- "[model-remap] WARNING: '${model_val}' is retired — using '${_adn_new}' instead. To keep the old id (API-key logins still serve it), pin it in ~/.claude/rlp-desk-models.json."
+    print -u2 -r -- "[model-remap] WARNING: '${model_val}' is retired — using '${_adn_new}' instead."
     model_val="$_adn_new"
     typeset -g "$model_var=$model_val"
   elif [[ -z "$_adn_tail" ]]; then
@@ -1073,8 +1073,28 @@ _wait_pane_shell_ready() {
 #   $1 pane_id   $2 command text (the caller sends Enter AFTER this returns 0)
 #   $3 accept_re (optional) — shell-ready accept-set forwarded to
 #      _wait_pane_shell_ready; codex launches pass `zsh` (see that helper).
+#   $4 label     (optional, default "worker" — its only callers are the worker launches)
+#      — names the launcher file.
+# W5 (r19-trust-echo.md Part 2): the ~350-460 char command is NOT pasted BY THIS HELPER (the first
+# launch of launch_worker_claude / launch_worker_codex goes through it). Paths that still paste the
+# FULL command, unverified: the 15-attempt claude restart inside launch_worker_claude,
+# launch_verifier_claude / launch_verifier_codex and restart_worker (backlog S-8 — they never had echo
+# verification). Real tmux does not
+# soft-wrap-join the rows ZLE draws (capture-pane -J cannot rebuild them), so reading a long
+# pasted line back off the screen fails on narrow panes (rows needed > the tail window, or
+# > the pane height where ZLE truncates the line and nothing can recover it). Instead the
+# exact command is written to a per-launch 0600 launcher file under $RUNTIME_DIR and the
+# SHORT line  source '<launcher>'  is pasted and echo-verified. `source` (not `zsh <file>`)
+# runs the command in the SAME interactive shell, so aliases/functions/env/exec behave as if
+# it had been pasted. The launcher is kept as an audit record; its name is unique per
+# attempt (launch-<label>-iter<NNN>[-<k>].zsh), never overwritten. The line actually pasted
+# is published in _LAUNCH_ECHO_LINE for callers that anchor on the pane echo.
+# Ceiling: the verified line must stay within the tail window, i.e. the short line plus
+# the shell prompt must fit in ~9 pane rows (path <= ~9*pane_width - prompt); upgrade to a
+# physical-row window sized from #{pane_width} if launcher paths ever get that long.
 _paste_cmd_echo_verified() {
-  local pane_id="$1" cmd="$2" accept_re="${3:-}"
+  local pane_id="$1" cmd="$2" accept_re="${3:-}" label="${4:-worker}"
+  typeset -g _LAUNCH_ECHO_LINE="$cmd"
   local prefix="${cmd[1,24]}"
   # request-k/-m companion: let the shell reclaim the pane before the first paste
   # (fail-open — process+content readiness, covers fresh AND reused panes).
@@ -1085,9 +1105,52 @@ _paste_cmd_echo_verified() {
     paste_to_pane "$pane_id" "$cmd"
     return 0
   fi
-  local attempt=0 _tail
+  # W5: write the launcher (sysopen O_EXCL, mode 0600, unique per attempt).
+  local _rt="${RUNTIME_DIR:-${LOGS_DIR:+$LOGS_DIR/runtime}}"
+  if [[ -z "$_rt" ]]; then
+    log_error "  launch launcher: no RUNTIME_DIR/LOGS_DIR set — cannot write the launcher file"
+    return 1
+  fi
+  local _lbase="$_rt/launch-${label}-iter$(printf '%03d' "${ITERATION:-0}")" _lf _k=1
+  if [[ "$_lbase" == *"'"* ]]; then
+    log_error "  launch launcher: path contains a single quote ($_lbase) — refusing (the pasted source line is single-quoted)"
+    return 1
+  fi
+  mkdir -p "$_rt" 2>/dev/null
+  # W5 / S-6: create the launcher with zsh/system sysopen O_EXCL|O_CREAT mode 0600 (unique per
+  # attempt). O_EXCL refuses ANY existing path — regular file, FIFO, symlink (dangling or not) —
+  # without opening it, so nothing blocks (the old noclobber redirect hung on a FIFO and on a
+  # symlink to one) and nothing is written through a link.
+  zmodload zsh/system 2>/dev/null || { log_error "  launch launcher: zsh/system (sysopen) is unavailable — cannot create the launcher safely"; return 1; }
+  while true; do
+    (( _k == 1 )) && _lf="${_lbase}.zsh" || _lf="${_lbase}-${_k}.zsh"
+    if ( umask 077; local _fd=""; sysopen -w -o excl,creat -m 600 -u _fd -- "$_lf" 2>/dev/null && print -r -u $_fd -- "$cmd" ); then break; fi
+    # an existing REGULAR file is a previous attempt's launcher (next name); anything else
+    # (FIFO, symlink, directory, ...) at our path is refused outright
+    if [[ -L "$_lf" ]] || { [[ -e "$_lf" ]] && [[ ! -f "$_lf" ]]; }; then
+      log_error "  launch launcher: $_lf exists and is not a regular file (FIFO/symlink/other) — refusing"
+      return 1
+    fi
+    if [[ ! -e "$_lf" ]] || (( _k >= 200 )); then
+      log_error "  launch launcher: cannot write $_lf"
+      return 1
+    fi
+    (( _k++ ))
+  done
+  # Ceiling: a swap of the file between this check and the shell's `source` is not prevented
+  # (the runtime dir is user-owned); upgrade to fd-based sourcing if it ever becomes shared.
+  if [[ ! -f "$_lf" || -L "$_lf" ]]; then
+    log_error "  launch launcher: $_lf is not a regular non-symlink file after creation — refusing"
+    return 1
+  fi
+  local _line="source '$_lf'"
+  _LAUNCH_ECHO_LINE="$_line"
+  local _line_s="${_line//[[:space:]]/}"
+  log_debug "[GOV] iter=${ITERATION:-0} launch_launcher=$_lf pasted_line_chars=${#_line} cmd_chars=${#cmd}"
+  local attempt=0 _tail _kk _jn _ab _okc
+  local -a _rows
   while (( attempt < 3 )); do
-    paste_to_pane "$pane_id" "$cmd"
+    paste_to_pane "$pane_id" "$_line"
     sleep 0.2
     # request-k ① (P1 regression fix): STRIP BLANK LINES before tail. A freshly split
     # pane draws its first prompt at the TOP of the viewport with ~30 trailing blank
@@ -1097,9 +1160,24 @@ _paste_cmd_echo_verified() {
     # restart deaths). Filtering blanks makes the window viewport-position-independent;
     # tail -10 is kept for the wrapped-line case (a ~150-char line spans several rows).
     _tail=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -10)
-    # Fixed-string, prefix-anchored: the TRUE leading char is inside $prefix, so a
-    # swallowed first char makes this search miss. -- guards a prefix starting with '-'.
-    if print -r -- "$_tail" | grep -qF -- "$prefix" 2>/dev/null; then
+    # R2-F / S-7: the CURRENT input must hold the ENTIRE short line, unique filename included
+    # (a shared 24-char prefix is satisfied by an intact echo of a PREVIOUS launch above a
+    # corrupted current line). Take the bottom-most k non-blank rows (k = 1..10) joined with
+    # no separator (real tmux leaves ZLE rows un-joined, each exactly pane-wide) and compare
+    # whitespace-insensitively (tmux trims a row's trailing space, which may be the space after
+    # `source`): success needs a window that contains the line AND whose rows above the last
+    # one do not already contain it, i.e. the line ends on the bottom-most row — text after it
+    # on that row (a right prompt) is tolerated.
+    _rows=("${(@f)_tail}")
+    _okc=0
+    for (( _kk = 1; _kk <= ${#_rows} && _kk <= 10; _kk++ )); do
+      _jn="${(j::)_rows[-_kk,-1]}"; _jn="${_jn//[[:space:]]/}"
+      [[ "$_jn" == *"$_line_s"* ]] || continue
+      if (( _kk == 1 )); then _okc=1; break; fi
+      _ab="${(j::)_rows[-_kk,-2]}"; _ab="${_ab//[[:space:]]/}"
+      [[ "$_ab" == *"$_line_s"* ]] || { _okc=1; break; }
+    done
+    if (( _okc )); then
       (( attempt > 0 )) && log "  launch command echoed intact after $((attempt + 1)) paste attempt(s) (request-j ④)"
       return 0
     fi
@@ -1309,7 +1387,7 @@ launch_worker_codex() {
     # command (live smoke: codex booting, cmd already non-shell, only `❯ codex ...` on
     # screen): look only below the last echo of the launch command.
     if [[ -n "$_codex_cmd" && "$_codex_cmd" != (zsh|bash|sh|fish) ]] \
-       && _codex_ready_surface "$_pane_text" "$worker_launch"; then
+       && _codex_ready_surface "$_pane_text" "${_LAUNCH_ECHO_LINE:-$worker_launch}"; then
       _codex_ready=1
       log_debug "Worker codex TUI ready after ${_codex_wait}s"
       break
@@ -1341,7 +1419,7 @@ launch_worker_codex() {
   # update / Daybreak / model-error / unknown dialogs must never receive the instruction): the
   # trust dialog is accepted (bounded), anything else at the bottom or an inactive input surface
   # -> no paste, loud failure.
-  _codex_presubmit_guard "$pane_id" "$worker_launch" worker_submit || { log_error "Worker codex not submittable — aborting launch"; return 1; }
+  _codex_presubmit_guard "$pane_id" "${_LAUNCH_ECHO_LINE:-$worker_launch}" worker_submit || { log_error "Worker codex not submittable — aborting launch"; return 1; }
   paste_to_pane "$pane_id" "$worker_instruction"
   tmux send-keys -t "$pane_id" C-m
   log_debug "Worker codex instruction sent (${#worker_instruction} chars)"
@@ -2659,23 +2737,49 @@ safe_send_keys() {
     log_error "safe_send_keys: claude trust dialog could not be accepted in pane $pane_id — not sending"
     return 1
   fi
+  # TRUST-F: the "Do you want to" wording anywhere in the window authorizes nothing by
+  # itself — Enter is bound to the BOTTOM-MOST prompt block and only an accept option
+  # under the cursor counts (stale worker prose above the bypass-permissions warning
+  # used to press Enter on "No, exit").
+  local _sk_perm=0 _sk_sel
+  echo "$initial_capture" | grep -q "Do you want to" 2>/dev/null && _sk_perm=1
+  _sk_sel=$(_bottom_prompt_selection "$initial_capture" "$(_pane_width "$pane_id")")
+  # A shell in the foreground cannot be showing a claude/codex dialog: stale scrollback is not a
+  # live dialog (no Enter for its wording, no refusal — a restart must be able to paste).
+  local _sk_shell=0
+  if _pane_fg_is_shell "$pane_id"; then _sk_shell=1; _sk_perm=0; _sk_sel=none; fi
+  # The positively identified bypass-permissions warning is never answered (OWN-1) and never pasted
+  # into: its default is "No, exit". One actionable log_error, nothing is sent.
+  if [[ "$_sk_sel" == bypass ]]; then
+    _log_bypass_warning_refusal "$pane_id" safe_send_keys
+    return 1
+  fi
   # A dialog footer owns the bottom of the screen but it is not a recognized trust
   # dialog (incomplete heading/options, another dialog such as the bypass-permissions
-  # warning): paste+Enter could confirm its default (No). Refuse. Permission prompts
-  # ("Do you want to ...") keep their existing auto-approve path below.
-  if (( _trust_rc == 1 )); then
+  # warning): paste+Enter could confirm its default (No). Refuse. Only a permission
+  # prompt ("Do you want to ...") whose selected option is accept keeps its
+  # auto-approve path below.
+  if (( _trust_rc == 1 && ! _sk_shell )); then
     local _sk_cap
     _sk_cap=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)
-    if _claude_dialog_footer_at_bottom "$_sk_cap" && [[ "$initial_capture" != *"Do you want to"* ]]; then
+    if _claude_dialog_footer_at_bottom "$_sk_cap" && { (( ! _sk_perm )) || [[ "$_sk_sel" != accept ]]; }; then
       log_error "safe_send_keys: unrecognized dialog (confirm footer) at the bottom of pane $pane_id — not sending"
       return 1
     fi
   fi
   # Auto-approve permission prompts ("Do you want to create/overwrite X?")
-  if echo "$initial_capture" | grep -q "Do you want to" 2>/dev/null; then
-    log_debug " Permission prompt detected, auto-approving"
-    tmux send-keys -t "$pane_id" C-m
-    sleep 0.3
+  if (( _sk_perm )); then
+    case "$_sk_sel" in
+      accept|none)
+        log_debug " Permission prompt detected, auto-approving"
+        tmux send-keys -t "$pane_id" C-m
+        sleep 0.3
+        ;;
+      *)
+        log_error "safe_send_keys: permission-prompt wording is on screen but the bottom prompt of pane $pane_id has selection '$_sk_sel', not an accept option — not pressing Enter, not sending"
+        return 1
+        ;;
+    esac
   fi
   # F-1 (v0.22.21): auto-dismiss codex update dialog via the shared dismisser
   # (canonical _RLP_CODEX_UPDATE_RE — the previous substring pattern here never
@@ -2769,6 +2873,7 @@ wait_for_pane_ready() {
   local mode="${3:-}"
   local start=$(date +%s)
   local _wfpr_update_attempts=0   # F-1: dismiss-attempt counter (drives Down→"2" escalation)
+  local _wfpr_sel="" _wfpr_refused=0   # TRUST-F: bottom-prompt verdict / refusal logged once
   log "  Waiting for pane $pane_id ready..."
   while (( $(date +%s) - start < timeout )); do
     local captured=""
@@ -2786,6 +2891,14 @@ wait_for_pane_ready() {
         return 1
       fi
       continue
+    fi
+
+    # The positively identified bypass-permissions warning is never answered (OWN-1): in claude
+    # mode it cannot become ready, so refuse at once with the actionable message instead of
+    # waiting out the timeout. (A shell foreground is not a live dialog.)
+    if [[ "$mode" == claude ]] && _claude_bypass_dialog_visible "$captured" && ! _pane_fg_is_shell "$pane_id"; then
+      _log_bypass_warning_refusal "$pane_id" wait_for_pane_ready
+      return 1
     fi
 
     # Claude mode (a3 incident): the shell's echo of the launch command starts with
@@ -2806,12 +2919,32 @@ wait_for_pane_ready() {
       continue
     fi
 
-    # Auto-approve permission prompts ("Do you want to create/overwrite X?")
-    if echo "$captured" | grep -q "Do you want to" 2>/dev/null; then
-      log "  Permission prompt detected, auto-approving..."
-      tmux send-keys -t "$pane_id" C-m
-      sleep 0.5
-      continue
+    # Auto-approve permission prompts ("Do you want to create/overwrite X?"). TRUST-F:
+    # Enter only when the BOTTOM-MOST prompt block's selected option is an accept (or
+    # there is no cursor-marked picker to bind to); stale wording above a default-No
+    # dialog (bypass-permissions warning) must not press Enter. A refused dialog is not
+    # "ready" either — keep waiting; the timeout path below decides.
+    # A shell in the foreground cannot be showing a dialog: stale "Do you want to" scrollback is
+    # neither approved nor refused (it used to hold the pane "not ready" until the fail-open timeout).
+    if echo "$captured" | grep -q "Do you want to" 2>/dev/null && ! _pane_fg_is_shell "$pane_id"; then
+      _wfpr_sel=$(_bottom_prompt_selection "$captured" "$(_pane_width "$pane_id")")
+      case "$_wfpr_sel" in
+        accept|none)
+          log "  Permission prompt detected, auto-approving..."
+          tmux send-keys -t "$pane_id" C-m
+          sleep 0.5
+          continue
+          ;;
+        *)
+          if (( ! _wfpr_refused )); then
+            _wfpr_refused=1
+            [[ "$_wfpr_sel" == bypass ]] && _log_bypass_warning_refusal "$pane_id" wait_for_pane_ready
+            log_error "Pane $pane_id: permission-prompt wording is on screen but the bottom prompt has selection '$_wfpr_sel', not an accept option — NOT pressing Enter"
+          fi
+          sleep 0.25
+          continue
+          ;;
+      esac
     fi
 
     # F-1 (v0.22.21): auto-dismiss codex update dialog via the shared dismisser
@@ -3105,6 +3238,326 @@ _claude_dialog_footer_at_bottom() {
   [[ "${_L[_n]}" == *"Enter to confirm"* || "${_L[_n]}" == *"Press enter to continue"* ]]
 }
 
+# TRUST-F: bind the Enter-to-approve decision to the BOTTOM-MOST prompt block. The
+# "Do you want to" wording anywhere in the window (worker prose, scrollback) says
+# nothing about which dialog owns the keyboard: stale wording above a default-No
+# dialog (the claude bypass-permissions warning) used to authorize Enter and select
+# "No, exit". Capture with -J so terminal-wrapped options are logical lines; the only
+# continuation rows allowed are Ink's own word-wrapped option text (R2-02, see below).
+#
+# Fail-closed rule (R2-A, FROZEN; the Node prompt-dismisser implements the same):
+#   option line  `N.`/`N)`-numbered, or a bare Yes/No label, optionally behind a `❯`/`›`
+#                cursor and a box `│`.
+#   picker       a block of >= 2 option lines (a single blank line may sit between two
+#                options) in the bottom region (the last 15 non-blank lines) with exactly
+#                ONE cursor-marked. A lone cursor line (the input box `❯ hello`) is not a
+#                picker; a block without any cursor is not one either.
+#   R3-A         a picker is ALSO detected without that block (an unnumbered, non-Yes/No menu such as
+#                `❯ Destroy workspace` / `  Open settings`): a cursor-marked row with an adjacent row aligned
+#                to its text column, or an adjacent cursor-marked row, in the bottom region. Such a picker that
+#                is not an identified active dialog is `unknown`, whatever sits after it.
+#   P1 active    the block is the last non-blank content, followed ONLY by footer lines
+#                ("Enter to confirm", "Esc to cancel", ...), blank or box-border lines.
+#   P3 question  directly above the block (at most ONE blank line between) a line that
+#                BEGINS with the prompt wording (_PROMPT_RE).
+#   P4           accept/decline classification only when P1 and P3 hold; a picker that
+#                fails P1-P3 is `unknown` (REFUSE) — never `none`, so no caller may fall
+#                back to inline-text authorization for it.
+#   R2-02        Ink wraps option text with its own newlines (tmux -J does not join them). A
+#                row right below an option row (or another continuation row) belongs to that
+#                option ONLY with word-wrap evidence — length(previous row) + 1 +
+#                length(its first word) > pane width — AND when it is indented exactly to
+#                the option text column. $2 = the pane width (#{pane_width}); without a
+#                valid width no continuation is allowed (the frozen rule refuses).
+#   R3-01        a continuation row after the LAST option row additionally needs the block to be
+#                terminated by a recognized footer line; continuations between options do not.
+#
+# _bottom_prompt_selection <capture> [pane_width] prints one of:
+#   accept   P1-P3 hold and the cursor option is a "Yes..." option
+#   decline  P1-P3 hold and the cursor option is No / Exit / Reject / Cancel / Decline /
+#            Deny / Quit / Stop / Don't...
+#   bypass   the claude bypass-permissions warning: positively identified at the bottom
+#            (_claude_bypass_dialog_visible) or, as a version-robust fail-closed backstop, an
+#            ACTIVE cursor picker whose dialog block carries its heading (R2-03). Never ours to
+#            answer, whatever the cursor says
+#   unknown  a dialog owns the bottom but it is not an active, question-bound picker with
+#            an identifiable accept selection (see above), or a confirm footer sits at the
+#            bottom with no recognizable options
+#   none     no picker at all (inline "(y/n)" prompts, plain screens, option lists without
+#            a cursor): the caller keeps its own inline-prompt logic
+_bottom_prompt_selection() {
+  _claude_bypass_dialog_visible "$1" && { print -r -- bypass; return 0; }
+  local -a _L _kind _lab _cur _tc _len _pk _bc _ix
+  _L=("${(@f)1}")
+  local _w="${2:-}"
+  [[ "$_w" == <1-> ]] || _w=0
+  local _n=${#_L[@]} _i _l _t _footer=0 _ind _rest _fw
+  for (( _i = 1; _i <= _n; _i++ )); do
+    _l="${_L[_i]}"; _cur[_i]=0; _lab[_i]=""; _tc[_i]=0; _pk[_i]=0; _bc[_i]=0; _ix[_i]=0
+    [[ "$_l" =~ '^(.*[^[:space:]])[[:space:]]*$' ]] && _l="${match[1]}"
+    _len[_i]=${#_l}
+    if [[ -z "${_l//[[:space:]]/}" ]]; then
+      _kind[_i]=b
+    elif [[ "$_l" == *"Enter to confirm"* || "$_l" == *"Esc to cancel"* || "$_l" == *"Press enter to continue"* || "$_l" == *"Tab to amend"* ]]; then
+      _kind[_i]=f
+    elif [[ "$_l" =~ '^[[:space:]]*((╭|╰|─|╮|╯|│)[[:space:]]*)*$' ]]; then
+      _kind[_i]=r
+    else
+      _t="$_l"
+      [[ "$_l" =~ '^([[:space:]]*(│[[:space:]]*)?)' ]] && _ix[_i]=${#match[1]}
+      if [[ "$_l" =~ '^[[:space:]]*(│[[:space:]]*)?(❯|›)[[:space:]]*(.*)$' ]]; then
+        _cur[_i]=1; _t="${match[3]}"
+        # R3-A: remember the cursor mark and its text column whatever the label is (picker detection below)
+        [[ -n "$_t" ]] && { _pk[_i]=1; _bc[_i]=$(( ${#_l} - ${#_t} )); }
+      elif [[ "$_l" =~ '^[[:space:]]*(│[[:space:]]*)?(.*)$' ]]; then
+        _t="${match[2]}"
+      fi
+      if [[ "$_t" =~ '^[0-9]+[.)][[:space:]]*(.+)$' ]]; then
+        _kind[_i]=o; _lab[_i]="${match[1]}"
+      elif [[ "$_t" =~ '^(Yes|No)([^[:alpha:]].*)?$' ]]; then
+        _kind[_i]=o; _lab[_i]="$_t"
+      else
+        _kind[_i]=x; _cur[_i]=0
+      fi
+      if [[ "${_kind[_i]}" == o ]]; then
+        _tc[_i]=$(( ${#_l} - ${#_lab[_i]} ))
+      elif (( _w > 0 && _i > 1 )) && [[ "${_kind[_i-1]}" == (o|w) ]] \
+           && [[ "$_l" =~ '^([[:space:]]*(│[[:space:]]*)?)([^[:space:]].*)$' ]]; then
+        # R2-02: a word-wrapped continuation of the option row above (evidence + option-text indent)
+        _ind=${#match[1]}; _rest="${match[3]}"; _fw="${_rest%%[[:space:]]*}"
+        if (( _ind == _tc[_i-1] && _len[_i-1] + 1 + ${#_fw} > _w )); then
+          _kind[_i]=w; _tc[_i]=${_tc[_i-1]}
+        fi
+      fi
+    fi
+  done
+  # trailing layout/footer rows (and whether a footer is among them)
+  local _e=$_n
+  while (( _e > 0 )) && [[ "${_kind[_e]}" == (b|f|r) ]]; do
+    [[ "${_kind[_e]}" == f ]] && _footer=1
+    _e=$(( _e - 1 ))
+  done
+  # R3-01: a continuation row may follow the LAST option row only when the block is then terminated by a
+  # recognized footer. Without one, aligned trailing output after a near-full-width last option row
+  # ("Status: finished") is output, not wrapped option text: demote the trailing continuation rows to
+  # plain output so P1 (nothing but footer/blank/border after the block) fails => unknown.
+  if (( ! _footer )); then
+    while (( _e > 0 )) && [[ "${_kind[_e]}" == w ]]; do
+      _kind[_e]=x; _e=$(( _e - 1 ))
+    done
+  fi
+  # bottom region = the last 15 non-blank lines
+  local _start=1 _cnt=0
+  for (( _i = _n; _i >= 1; _i-- )); do
+    [[ "${_kind[_i]}" == b ]] && continue
+    _cnt=$(( _cnt + 1 ))
+    if (( _cnt >= 15 )); then _start=$_i; break; fi
+  done
+  # R3-A: a picker exists in the bottom region independently of label classification and footer placement.
+  # A cursor-marked line (non-empty text) is a picker member when it is numbered / Yes-No-worded (an option
+  # row), OR a directly adjacent row is aligned to its text column, OR a directly adjacent row is also
+  # cursor-marked (mirrors isPickerCursorLine in src/node/runner/prompt-dismisser.mjs). A lone cursor line
+  # (`❯ hello`, an input box) is not one. Detection only ever REFUSES; it never authorizes Enter.
+  local _picker=0 _sb
+  for (( _i = _start; _i <= _n && ! _picker; _i++ )); do
+    (( _pk[_i] )) || continue
+    if [[ "${_kind[_i]}" == o ]]; then _picker=1; break; fi
+    for _sb in $(( _i - 1 )) $(( _i + 1 )); do
+      (( _sb >= 1 && _sb <= _n )) || continue
+      [[ "${_kind[_sb]}" == (b|f|r) ]] && continue
+      if (( _ix[_sb] == _bc[_i] || _pk[_sb] )); then _picker=1; break; fi
+    done
+  done
+  # the bottom-most block of >= 2 option lines inside the region (continuation rows belong to the
+  # option above them and are not counted as options)
+  local _of=0 _oe=0 _rf _no _j=$_n
+  while (( _j >= _start )); do
+    if [[ "${_kind[_j]}" == (o|w) ]]; then
+      _rf=$_j; _no=0; [[ "${_kind[_j]}" == o ]] && _no=1
+      while (( _rf - 1 >= _start )); do
+        if [[ "${_kind[_rf-1]}" == (o|w) ]]; then
+          _rf=$(( _rf - 1 )); [[ "${_kind[_rf]}" == o ]] && _no=$(( _no + 1 ))
+        elif (( _rf - 2 >= _start )) && [[ "${_kind[_rf-1]}" == b && "${_kind[_rf-2]}" == (o|w) ]]; then
+          _rf=$(( _rf - 2 )); [[ "${_kind[_rf]}" == o ]] && _no=$(( _no + 1 ))
+        else
+          break
+        fi
+      done
+      while (( _rf < _j )) && [[ "${_kind[_rf]}" == w ]]; do _rf=$(( _rf + 1 )); done   # a block starts at an option row
+      if (( _no >= 2 )); then _of=$_rf; _oe=$_j; break; fi
+      _j=$(( _rf - 1 ))
+    else
+      _j=$(( _j - 1 ))
+    fi
+  done
+  if (( _of == 0 )); then
+    (( _footer || _picker )) && print -r -- unknown || print -r -- none
+    return 0
+  fi
+  # P1: nothing but footer / blank / border rows after the block
+  local _active=1
+  for (( _i = _oe + 1; _i <= _n; _i++ )); do
+    [[ "${_kind[_i]}" == (b|f|r) ]] || { _active=0; break; }
+  done
+  # Fail-closed backstop (version-robust): an ACTIVE cursor picker whose dialog block carries the bypass-
+  # permissions heading is the warning even when its footer or labels differ from the exact form above —
+  # Enter / a paste on it would select "No, exit". Never answered, named specifically.
+  if (( _active )); then
+    local _bk=$(( _of - 1 ))
+    while (( _bk >= 1 )) && [[ "${_kind[_bk]}" == b ]]; do _bk=$(( _bk - 1 )); done
+    (( _bk >= 1 )) && _claude_bypass_heading_above "$1" "$_bk" && { print -r -- bypass; return 0; }
+  fi
+  local _c=0 _sel=""
+  for (( _i = _of; _i <= _oe; _i++ )); do
+    if [[ "${_kind[_i]}" == o && "${_cur[_i]}" == 1 ]]; then _c=$(( _c + 1 )); _sel="${_lab[_i]}"; fi
+  done
+  if (( _c == 0 )); then
+    (( _footer || _picker )) && print -r -- unknown || print -r -- none
+    return 0
+  fi
+  (( _c == 1 && _active )) || { print -r -- unknown; return 0; }
+  # P3: the question line sits directly above the block (at most one blank between)
+  local _q=$(( _of - 1 ))
+  (( _q >= 1 )) && [[ "${_kind[_q]}" == b ]] && _q=$(( _q - 1 ))
+  if (( _q >= 1 )) && [[ "${_kind[_q]}" == x ]]; then
+    _t="${_L[_q]}"
+    [[ "$_t" =~ '^(([[:space:]]|│)*)(.*)$' ]] && _t="${match[3]}"
+    [[ "$_t" =~ "^(${_PROMPT_RE})" ]] || { print -r -- unknown; return 0; }
+  else
+    print -r -- unknown; return 0
+  fi
+  if [[ "$_sel" =~ '^Yes([^[:alpha:]]|$)' ]]; then print -r -- accept
+  elif [[ "$_sel" =~ '^(No|Exit|Reject|Cancel|Decline|Deny|Quit|Stop|Don.t)([^[:alpha:]]|$)' ]]; then print -r -- decline
+  else print -r -- unknown; fi
+}
+
+# The pane's width in columns, or nothing when tmux cannot say (R2-02: no width => no wrapped
+# option row can be proven, the frozen rule refuses). $1 = pane id.
+_pane_width() {
+  local _w
+  _w=$(tmux display-message -p -t "$1" '#{pane_width}' 2>/dev/null)
+  [[ "$_w" == <1-> ]] && print -r -- "$_w"
+  return 0
+}
+
+# True when the pane may host a CODEX process under a `bash` foreground (F1-RISK): a codex worker /
+# verifier is launched from a trigger / launch script that runs under bash, so for codex `bash` is
+# the NORMAL foreground, not "claude is gone" (check_dead_pane: bash = alive for codex, dead for
+# claude). Existing engine/pane knowledge only: WORKER_PANE follows WORKER_ENGINE; VERIFIER_PANE
+# follows VERIFIER_ENGINE / FINAL_VERIFIER_ENGINE, and also hosts the codex verifier of a SEQUENTIAL
+# consensus round (parallel consensus keeps claude there); CONSENSUS_PANE is the codex cross-verifier.
+# Conservative on purpose: when the pane MAY host codex it keeps full prompt handling. $1 = pane id.
+_pane_may_host_codex() {
+  local _p="$1"
+  [[ -n "${CONSENSUS_PANE:-}" && "$_p" == "$CONSENSUS_PANE" ]] && return 0
+  [[ -n "${WORKER_PANE:-}" && "$_p" == "$WORKER_PANE" && "${WORKER_ENGINE:-claude}" == codex ]] && return 0
+  if [[ -n "${VERIFIER_PANE:-}" && "$_p" == "$VERIFIER_PANE" ]]; then
+    [[ "${VERIFIER_ENGINE:-claude}" == codex || "${FINAL_VERIFIER_ENGINE:-claude}" == codex ]] && return 0
+    [[ "${CONSENSUS_MODE:-off}" != off && "${CONSENSUS_PARALLEL:-0}" != 1 ]] && return 0
+  fi
+  return 1
+}
+
+# True when the pane's foreground command is positively a shell with no live dialog behind it: zsh|sh|fish
+# anywhere, and bash everywhere EXCEPT a pane that may host codex (_pane_may_host_codex: codex runs under
+# bash there — check_dead_pane). A shell cannot be showing a claude dialog, so the permission-prompt /
+# picker evaluation of safe_send_keys, wait_for_pane_ready and auto_dismiss_prompts treats such a pane as
+# having NO live dialog (stale scrollback must neither get Enter nor block a restart/readiness). An
+# empty/unknown command is NOT treated as a shell (keeps the frozen fail-closed rule). Does not touch the
+# trust-dialog / update-dialog handling. $1 = pane id.
+_pane_fg_is_shell() {
+  local _c
+  _c=$(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null)
+  [[ -n "$_c" ]] || return 1
+  [[ "$_c" == (zsh|sh|fish) ]] && return 0
+  [[ "$_c" == bash ]] && ! _pane_may_host_codex "$1"
+}
+
+# R2-03: is the bypass-permissions heading "Claude Code running in Bypass Permissions mode" in the dialog
+# block that ends at row $2 of capture $1? Up to 40 rows are searched upward, stopping at a question line
+# (ending in "?") or a shell-prompt line; the rows are whitespace-normalized and joined because Ink wraps
+# the title on narrow panes. rc 0 = found.
+_claude_bypass_heading_above() {
+  local -a _L
+  _L=("${(@f)1}")
+  local _k=$2 _blk="" _sk _stop=$(( $2 - 40 ))
+  (( _stop < 0 )) && _stop=0
+  for (( _sk = _k; _sk > _stop; _sk-- )); do
+    [[ "${_L[_sk]}" =~ '\?[[:space:]]*$' ]] && break
+    [[ "${_L[_sk]}" =~ '[%$#❯][[:space:]]*$' ]] && break
+    _blk="${_L[_sk]} $_blk"
+  done
+  while [[ "$_blk" == *"  "* ]]; do _blk="${_blk//  / }"; done
+  [[ "$_blk" == *"Claude Code running in Bypass Permissions mode"* ]]
+}
+
+# The claude bypass-permissions warning: "WARNING: Claude Code running in Bypass Permissions mode",
+# body paragraphs and a docs link, options "1. No, exit" (the cursor DEFAULTS here) and "2. Yes, I
+# accept", footer "Enter to confirm · Esc to cancel". Owner decision 2026-10-15: accepting it persists
+# skipDangerousModePermissionPrompt in the user's GLOBAL Claude settings, so rlp-desk never answers it,
+# not even in a pane it launched itself with the bypass flag. This function only IDENTIFIES it (for the
+# specific refusal message); every caller refuses.
+#
+# _claude_bypass_dialog_visible <capture>  rc 0 = positively identified, rc 1 = not (R2-B, exact):
+# the confirm footer is the LAST non-blank line; directly above it (at most one blank line) EXACTLY two
+# options whose full labels — after stripping the cursor and the number — are "No, exit" and "Yes, I
+# accept" (a label prefix, a third option, an unrecognized option line, any other label => not); the
+# line above the options ends the warning text (body prose ending with a period, the heading, or a
+# URL / URL fragment); and the heading "Claude Code running in Bypass Permissions mode" sits in the dialog
+# block above the options (R2-03: up to 40 rows, searched on the whitespace-normalized rows because
+# Ink wraps the title on narrow panes) with no question line (ending in "?") and no shell-prompt line
+# between it and the options. The cursor position is irrelevant (nothing is ever pressed). The caller
+# additionally requires that the pane's foreground command is not a shell (a lookalike printed by a
+# command is not claude's dialog).
+_claude_bypass_dialog_visible() {
+  local -a _L
+  _L=("${(@f)1}")
+  local _n=${#_L[@]} _j _l _cur _num _rest
+  while (( _n > 0 )) && [[ -z "${_L[_n]//[[:space:]]/}" ]]; do _n=$(( _n - 1 )); done
+  (( _n >= 3 )) || return 1
+  [[ "${_L[_n]}" == *"Enter to confirm"* ]] || return 1
+  _j=$(( _n - 1 ))
+  (( _j >= 1 )) && [[ -z "${_L[_j]//[[:space:]]/}" ]] && _j=$(( _j - 1 ))
+  local _first_opt=0 _opts=0 _yes=0 _no=0
+  while (( _j >= 1 )); do
+    _l="${_L[_j]}"
+    [[ "$_l" =~ '^[[:space:]]*(❯|›)?[[:space:]]*([0-9]+[.)])?[[:space:]]*(.*[^[:space:]])[[:space:]]*$' ]] || break
+    _cur="${match[1]}"; _num="${match[2]}"; _rest="${match[3]}"
+    if [[ -z "$_cur" && -z "$_num" && ! "$_rest" =~ '^(Yes|No)([^[:alpha:]]|$)' ]]; then break; fi
+    _opts=$(( _opts + 1 )); _first_opt=$_j
+    if [[ "$_rest" == "Yes, I accept" ]]; then _yes=$(( _yes + 1 ))
+    elif [[ "$_rest" == "No, exit" ]]; then _no=$(( _no + 1 ))
+    else return 1
+    fi
+    _j=$(( _j - 1 ))
+  done
+  (( _first_opt > 0 && _opts == 2 && _yes == 1 && _no == 1 )) || return 1
+  # directly above the options (one blank allowed): the end of the warning text, never another
+  # option-like line — body prose ends with a period, the heading names the mode, or a URL (a wrapped
+  # URL leaves a single-token fragment)
+  local _k=$(( _first_opt - 1 )) _t
+  (( _k >= 1 )) && [[ -z "${_L[_k]//[[:space:]]/}" ]] && _k=$(( _k - 1 ))
+  (( _k >= 1 )) || return 1
+  _t="${_L[_k]}"
+  if ! { [[ "$_t" == *"Bypass Permissions mode"* ]] || [[ "$_t" =~ '\.[[:space:]]*$' ]]; }; then
+    # a URL, or the tail fragment of a wrapped URL (a single token in a row group that holds the "http" start)
+    [[ "$_t" =~ '^[[:space:]]*[^[:space:]]+[[:space:]]*$' ]] || return 1
+    local _u=$_k _urlseen=0
+    while (( _u >= 1 )) && [[ -n "${_L[_u]//[[:space:]]/}" ]]; do
+      [[ "${_L[_u]}" =~ '^[[:space:]]*https?://' ]] && { _urlseen=1; break; }
+      _u=$(( _u - 1 ))
+    done
+    (( _urlseen )) || return 1
+  fi
+  _claude_bypass_heading_above "$1" "$_k"
+}
+
+# Every refusal that lands on the positively identified bypass-permissions warning logs THIS one
+# actionable message (OWN-1). $1 = pane id, $2 = site.
+_log_bypass_warning_refusal() {
+  log_error "Pane $1 (site=$2): the claude bypass-permissions warning (\"WARNING: Claude Code running in Bypass Permissions mode\") is on screen. rlp-desk will not accept it: accepting it persists skipDangerousModePermissionPrompt=true in your global Claude settings and silences the warning for every claude session on this machine. Accept it once yourself in a manual claude session started with --dangerously-skip-permissions (the dialog then stops appearing), then re-run."
+}
+
 # Immediately before a direct paste+Enter into a claude TUI: claude must still own
 # the pane (never paste the instruction into a bare shell) and any trust dialog that
 # appeared after the readiness check is answered first. Returns 1 = do NOT submit.
@@ -3122,16 +3575,21 @@ _claude_presubmit_guard() {
   fi
   # Submit only into claude's own input UI as the bottom-most element — never into an
   # unrecognized dialog (bypass-permissions warning, incomplete trust dialog). After a
-  # just-accepted dialog the input UI needs a moment to render.
+  # just-accepted trust dialog the input UI needs a moment to render.
   local _cap _tries=1
   (( _rc == 0 )) && _tries=20
   while (( _tries > 0 )); do
     _cap=$(tmux capture-pane -t "$pane_id" -p -J -S -50 2>/dev/null)
     _claude_input_ui_rendered "$_cap" && return 0
+    _claude_bypass_dialog_visible "$_cap" && break   # the warning never goes away by itself: refuse now, not after the wait
     _tries=$(( _tries - 1 ))
     (( _tries > 0 )) && sleep 0.5
   done
-  log_error "Pane $pane_id (site=$site): claude input UI is not the bottom-most element (unrecognized dialog or not rendered) — not submitting"
+  if _claude_bypass_dialog_visible "$_cap"; then
+    _log_bypass_warning_refusal "$pane_id" "$site"
+  else
+    log_error "Pane $pane_id (site=$site): claude input UI is not the bottom-most element (unrecognized dialog or not rendered) — not submitting"
+  fi
   return 1
 }
 
@@ -3172,6 +3630,15 @@ auto_dismiss_prompts() {
     return 0
   fi
 
+  # The bypass-permissions warning is NOT answered here (OWN-1): it falls through to the BLOCK
+  # paths below, which name it specifically.
+
+  # A shell in the foreground cannot be showing a claude/codex dialog: whatever the capture holds
+  # is stale scrollback, so nothing below (Enter, default-No / picker refusal, unknown-prompt
+  # BLOCK) may act on it. (The trust handling above is unchanged.) A pane that may host codex under
+  # a bash foreground (F1-RISK, _pane_may_host_codex) is not skipped.
+  _pane_fg_is_shell "$pane_id" && capture=""
+
   local -a lines
   lines=("${(@f)capture}")
   local i n=${#lines[@]} prompt_visible=0
@@ -3207,15 +3674,38 @@ auto_dismiss_prompts() {
     default_no_seen=1
   fi
 
-  if (( default_no_seen )); then
+  # TRUST-F / N-1: the PROMPT_RE wording matched somewhere in the last 15 logical lines
+  # says nothing about which dialog owns the keyboard (worker prose above the
+  # bypass-permissions warning matched it). Bind Enter to the BOTTOM-MOST prompt block:
+  # a cursor-marked picker there must have an accept option selected, otherwise this
+  # takes the same BLOCK path as a default-No prompt.
+  local _ad_sel _ad_nonaccept=0
+  _ad_sel=$(_bottom_prompt_selection "$capture" "$(_pane_width "$pane_id")")
+  if (( prompt_visible )) && [[ "$_ad_sel" == (decline|unknown|bypass) ]]; then
+    _ad_nonaccept=1
+  fi
+
+  if (( default_no_seen || _ad_nonaccept )); then
     # v5.7 §4.17 + §4.17.b: default-No prompts ([y/N], "default: no") cannot
     # be auto-Enter'd safely — pressing Enter would CANCEL the operation.
     # If the pane has ANY default-No prompt visible (even alongside older
     # default-Yes prompts in scrollback), BLOCK with traceability.
-    log_error "Default-No prompt detected in pane $pane_id — cannot safely auto-dismiss"
-    log_debug "[GOV] default_no_prompt_detected=true pane=$pane_id action=block"
+    local _ad_block_reason="Pane shows a default-No / explicit-No-default permission prompt. Auto-Enter would CANCEL the operation rather than approve it. Operator must manually respond with 'y' or extend prompt-handling logic. Pattern: $sample_pattern"
+    if (( _ad_nonaccept )); then
+      if [[ "$_ad_sel" == bypass ]]; then
+        _log_bypass_warning_refusal "$pane_id" auto_dismiss_prompts
+        _ad_block_reason="Pane shows the claude bypass-permissions warning (permission-prompt wording above it is stale). rlp-desk will not accept it on the user's behalf and Enter would select 'No, exit'. Operator must accept the warning once in a manual claude session started with --dangerously-skip-permissions (the acceptance is stored as skipDangerousModePermissionPrompt in the user's Claude settings, after which the dialog stops appearing) and re-run. Pattern: $sample_pattern"
+      else
+        _ad_block_reason="Pane shows permission-prompt wording but the bottom-most prompt block's selected option is '$_ad_sel', not an accept option. Auto-Enter would select the wrong option. Operator must respond manually. Pattern: $sample_pattern"
+      fi
+      log_error "Permission-prompt wording in pane $pane_id but the bottom prompt's selection is '$_ad_sel' (not accept) — NOT pressing Enter"
+      log_debug "[GOV] prompt_selection_not_accept=true pane=$pane_id selection=$_ad_sel action=block"
+    else
+      log_error "Default-No prompt detected in pane $pane_id — cannot safely auto-dismiss"
+      log_debug "[GOV] default_no_prompt_detected=true pane=$pane_id action=block"
+    fi
     write_blocked_sentinel \
-      "Pane shows a default-No / explicit-No-default permission prompt. Auto-Enter would CANCEL the operation rather than approve it. Operator must manually respond with 'y' or extend prompt-handling logic. Pattern: $sample_pattern" \
+      "$_ad_block_reason" \
       "${CURRENT_US:-ALL}" \
       "infra_failure"
     return 0
@@ -3287,6 +3777,10 @@ auto_dismiss_prompts() {
       reason="Pane shows a default-No affordance ([y/N], 'default: no') but the surrounding prompt phrasing is not in PROMPT_RE. Auto-Enter would CANCEL. Operator must respond manually or extend PROMPT_RE. Sample: $sample"
     else
       reason="Pane shows a y/n affordance marker without a recognized prompt phrasing — likely an unknown CLI prompt variant. Refusing to guess auto-Enter (which could be the wrong default). Operator must respond manually or extend PROMPT_RE. Sample: $sample"
+    fi
+    if [[ "$_ad_sel" == bypass ]]; then
+      _log_bypass_warning_refusal "$pane_id" auto_dismiss_prompts
+      reason="Pane shows the claude bypass-permissions warning. rlp-desk will not accept it on the user's behalf and Enter would select 'No, exit'. Operator must accept the warning once in a manual claude session started with --dangerously-skip-permissions (the acceptance is stored as skipDangerousModePermissionPrompt in the user's Claude settings, after which the dialog stops appearing) and re-run. Sample: $sample"
     fi
     log_error "Unknown-prompt affordance detected in pane $pane_id — fast-fail BLOCK"
     log_debug "[GOV] unknown_prompt_detected=true pane=$pane_id action=block default_no=$default_no_in_tail"
@@ -3736,7 +4230,8 @@ write_worker_trigger() {
       echo "---"
       echo "## IMPORTANT: Fix Contract from Verifier (iteration $prev_iter)"
       echo "The Verifier REJECTED your previous work. You MUST fix the issues below."
-      echo "Do NOT just resubmit — actually change the code to address each issue."
+      echo "Where an issue is in the code, change the code — do not just resubmit the same work."
+      echo "Where the contract asks you only to correct the done-claim record (format or TDD evidence), correct the record and resubmit it: keep the RED/GREEN evidence you already recorded, never reorder or relabel steps to differ from what you actually ran, and do not re-implement the deliverable."
       echo ""
       cat "$fix_contract_file"
     fi
@@ -4118,6 +4613,76 @@ TRIGGER_EOF
 # Cleanup (trap handler)
 # =============================================================================
 
+# F5 (judge-a4, owner decision 2026-10-14: WARNING ONLY): a campaign can reach
+# COMPLETE with deliverables that were never `git add`ed — completeness is
+# LLM-judged and the §1f½ commit oracle is a no-op when no commit is claimed.
+# _untracked_names lists git-untracked, NOT-ignored files under $1, minus the
+# desk dir ($2) — the leader's own artifacts. Prints newline-separated names;
+# returns non-zero (prints nothing) when $1 is not a git work tree or git
+# errors. Deliberately NOT _git_snapshot: that helper sleeps 2s and logs to
+# stderr on failure, and this check is advisory — a git failure skips it.
+_untracked_names() {
+  local root="$1" desk="$2" _raw _rel=""
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  _raw=$(git -C "$root" ls-files --others --exclude-standard -z 2>/dev/null) || return 1
+  [[ "$desk" == "$root"/* ]] && _rel="${desk#$root/}"
+  local -a _arr=("${(@0)_raw}")
+  _arr=("${_arr[@]:#}")
+  [[ -n "$_rel" ]] && _arr=("${_arr[@]:#${_rel}/*}")
+  print -rn -- "${(F)${(@o)_arr}}"
+  return 0
+}
+
+# Campaign-start snapshot of the untracked set; the COMPLETE check reports only
+# files that appeared after it. Ceiling: in-process only (like
+# CAMPAIGN_PREEXISTING_DIRTY, D-25) — after a leader relaunch the new process
+# re-snapshots, so untracked files created before the relaunch are treated as
+# pre-existing (a missed warning, never a false one). Upgrade trigger: persist
+# it under $RUNTIME_DIR if relaunch-masked warnings are ever observed.
+typeset -g CAMPAIGN_PREEXISTING_UNTRACKED=""
+typeset -g CAMPAIGN_UNTRACKED_SNAPSHOT_OK=0
+_untracked_snapshot_t0() {
+  CAMPAIGN_UNTRACKED_SNAPSHOT_OK=0
+  if CAMPAIGN_PREEXISTING_UNTRACKED=$(_untracked_names "$ROOT" "$DESK"); then
+    CAMPAIGN_UNTRACKED_SNAPSHOT_OK=1
+  else
+    CAMPAIGN_PREEXISTING_UNTRACKED=""
+    log_debug "[F5] untracked t0 snapshot unavailable (not a git work tree or git error) — COMPLETE untracked-deliverables warning disabled"
+  fi
+  return 0
+}
+
+# Advisory only: on COMPLETE, log ONE warning line (count + up to 10 paths) and
+# append it to campaign-report.md. Never blocks, never touches the sentinel,
+# the verdict or the exit status; always returns 0. Called from cleanup()
+# right after the campaign report is written.
+_untracked_complete_warning() {
+  (( ${CAMPAIGN_UNTRACKED_SNAPSHOT_OK:-0} )) || return 0
+  [[ -f "$COMPLETE_SENTINEL" ]] || return 0
+  local _now
+  if ! _now=$(_untracked_names "$ROOT" "$DESK"); then
+    log_debug "[F5] untracked COMPLETE check skipped (git error)"
+    return 0
+  fi
+  local -a _cur=("${(@f)_now}") _pre=("${(@f)CAMPAIGN_PREEXISTING_UNTRACKED}") _new
+  _cur=("${_cur[@]:#}"); _pre=("${_pre[@]:#}")
+  _new=("${(@)_cur:|_pre}")
+  local _n=${#_new}
+  (( _n > 0 )) || return 0
+  local _shown="${(j:, :)_new[1,10]}" _more=""
+  (( _n > 10 )) && _more=" (+$(( _n - 10 )) more)"
+  local _msg="WARNING: campaign reached COMPLETE with ${_n} untracked (not git-ignored) file(s) that became untracked during the campaign — possibly uncommitted deliverables: ${_shown}${_more}. Advisory only; the verdict is unchanged."
+  log "  $_msg"
+  local _report="${LOGS_DIR:-}/campaign-report.md"
+  if [[ -n "${LOGS_DIR:-}" && -f "$_report" ]]; then
+    print -r -- "" >> "$_report" 2>/dev/null
+    print -r -- "## Warnings" >> "$_report" 2>/dev/null
+    print -r -- "" >> "$_report" 2>/dev/null
+    print -r -- "- $_msg" >> "$_report" 2>/dev/null
+  fi
+  return 0
+}
+
 # A-5: bare signal handler for INT/TERM/HUP. In zsh, a trap that returns
 # normally (exit status 0) marks the signal as handled and RESUMES execution
 # at the interruption point instead of terminating the process — so the
@@ -4250,6 +4815,9 @@ cleanup() {
   if (( ! _skip_campaign_artifacts )); then
     # AC4: Generate campaign report on all terminal states (always-on)
     generate_campaign_report
+
+    # F5: advisory COMPLETE-with-untracked-deliverables warning (log + report).
+    _untracked_complete_warning
 
     # US-001: Generate SV report after campaign report (tmux mode)
     generate_sv_report
@@ -6223,6 +6791,10 @@ main() {
     exit 1
   fi
 
+  # F5: untracked-file baseline for the advisory COMPLETE warning (never blocks;
+  # a non-git ROOT or git error just disables the check).
+  _untracked_snapshot_t0
+
   # US-002A: the SECOND half of the F-8 exclusion set — re-snapshotted at every
   # worker dispatch (see the capture just after write_worker_trigger) so a file
   # dirtied by a foreign editor mid-campaign is excluded too. Empty until the
@@ -6345,6 +6917,21 @@ main() {
       # Missing field (a status.json from before this fix) -> 0, same as
       # same_us_fail_count above — backward compatible.
       _s_cdc=$(jq -r '.ceiling_deferral_count // 0' "$STATUS_FILE" 2>/dev/null)
+      # J-07: a saved status.json can carry a RETIRED id (an older leader wrote it, or
+      # it was hand-edited); assigned verbatim it would dispatch `codex -m <retired id>`.
+      # Run the saved ids through the same retired-id remap the CLI flags get
+      # (_normalize_model_spec: standard [model-remap] WARNING, level preserved). Only
+      # ids whose head is a RETIRED_MODEL_REMAP key go through it: the bare-alias half
+      # of _normalize_model_spec would give a saved bare `sonnet` a `:medium` it never
+      # had (the effort is a separate status.json field here).
+      local _s_rv _s_rn
+      for _s_rv in _s_wm _s_wcm _s_owm; do
+        _s_rn="${(P)_s_rv}"
+        if [[ -n "$_s_rn" && -n "${RETIRED_MODEL_REMAP[${_s_rn%%:*}]:-}" ]] && (( $+functions[_normalize_model_spec] )); then
+          _s_rn=$(_normalize_model_spec "$_s_rn")
+          typeset "$_s_rv=$_s_rn"
+        fi
+      done
       if [[ -n "$_s_wm" && -n "$_s_we" ]]; then
         _MODEL_UPGRADED=1
         WORKER_MODEL="$_s_wm"; WORKER_ENGINE="$_s_we"

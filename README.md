@@ -252,7 +252,7 @@ Codex worker + claude verifier — different engines catch each other's blind sp
 
 HIGH-complexity campaigns also get a **speed lane** (`gpt-6.1-sol:medium` worker, skipping the terra quota hop) for time-sensitive work; `brainstorm` asks which lane to use whenever HIGH-complexity US are present (no question when all US are LOW/MEDIUM, none for CRITICAL — those are lane-independent). Final consensus (all complexities): **gpt-6-astra:xhigh**. Both engines must PASS → COMPLETE. Worker auto-upgrade — cost lane: `luna:high → luna:max → terra:max` (ceiling); speed lane HIGH: `sol:medium → sol:high → sol:xhigh` (ceiling). `gpt-6-astra` is judge-only and is never reached by a worker escalation.
 
-> **Alternatives (still supported, not headline presets):** older generation codex models `gpt-5.6-sol` / `gpt-5.6-luna` (explicit ids; these are the ones to use if the account lacks GPT-6 access); the retired ids are still accepted but remap on entry (`gpt-5.5` → `gpt-6.1-sol`, `gpt-5.4-mini` → `gpt-6-luna`, `gpt-5.4` → `gpt-5.6-terra`), so `gpt-5.5` and `gpt-5.4-mini` do not avoid GPT-6; and `spark` (`gpt-5.3-codex-spark`) — ultra-fast, but only for small tasks that fit its 100k context window (single-file, AC ≤ 4). See `src/model-upgrade-table.md` for the full catalog.
+> **Alternatives (still supported, not headline presets):** older generation codex models `gpt-5.6-sol` / `gpt-5.6-luna` (explicit ids; these are the ones to use if the account lacks GPT-6 access); the retired ids are still accepted but remap on entry (`gpt-5.5` → `gpt-6.1-sol`, `gpt-5.4-mini` → `gpt-6-luna`, `gpt-5.4` → `gpt-5.6-terra`), so `gpt-5.5` and `gpt-5.4-mini` do not avoid GPT-6; and `spark` (`gpt-5.3-codex-spark`) is a retired alias that remaps to `gpt-6-luna` on entry with a `[model-remap] WARNING`. See `src/model-upgrade-table.md` for the full catalog.
 
 #### Final Verify
 
@@ -298,7 +298,7 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--mode tmux\|native\|agent` | tmux | tmux=zsh Leader (production default); native=slash-command-only; agent=hard-errors (ADR-001) |
-| `--worker-model MODEL` | haiku | Worker model. Plain name or claude id incl. `:effort` = claude; any other `model:reasoning` = codex. A colon alone does NOT mean codex. E.g. `opus:max`, `claude-fable-5-1:max`, `spark:high` |
+| `--worker-model MODEL` | haiku | Worker model. Plain name or claude id incl. `:effort` = claude; any other `model:reasoning` = codex. A colon alone does NOT mean codex. E.g. `opus:max`, `claude-fable-5-1:max`, `gpt-6-luna:high` |
 | `--lock-worker-model` | off | Disable auto model upgrade on failure |
 | `--verifier-model MODEL` | sonnet | per-US verification model (lighter; recommended per complexity: `claude-sonnet-5-5:high`/`claude-opus-5-5:low`/`claude-opus-5-5:high`/`claude-opus-5-5:max`) |
 | `--final-verifier-model MODEL` | claude-fable-5-1 | final ALL verification model (stricter; recommended `claude-fable-5-1:max`) |
@@ -330,7 +330,6 @@ When `--consensus` is enabled, a second cross-engine verifier runs alongside eac
 After `brainstorm`, `init` detects your environment and presents run command presets:
 
 - **Codex detected (recommended)** → cross-engine + final consensus, luna-first cost lane (`--worker-model gpt-6-luna:high --consensus final-only`)
-- **Codex detected (small tasks: single-file, AC <= 4)** → spark preset (`--worker-model spark:high --consensus final-only`; spark has a 100k context limit)
 - **Codex detected (critical)** → full consensus on every verify (`--worker-model gpt-6.1-sol:high --consensus all`)
 - **Claude-only (no codex)** → tmux presets pinned per brainstorm complexity: one line each for LOW, MEDIUM, HIGH and CRITICAL with `--worker-model` and `--verifier-model` from the Claude-only table (the final verifier default `claude-fable-5-1:max` needs no flag), plus the unchanged native `--debug` line
 - **Basic** → minimal flags for quick iteration
@@ -463,14 +462,11 @@ npm install -g @openai/codex
 # Frontier model + reasoning effort (HIGH/CRITICAL work)
 /rlp-desk run calculator --worker-model gpt-6.1-sol:high
 
-# spark — ultra-fast, small tasks only (100k context: single-file, AC <= 4)
-/rlp-desk run calculator --worker-model spark:high
-
 # Cross-engine: codex worker, claude verifier (recommended)
 /rlp-desk run calculator --worker-model gpt-6-luna:high --consensus final-only --debug
 ```
 
-The engine is inferred automatically from the `--worker-model` value: a plain model name (`haiku`) OR any claude id — short alias or full `claude-*`, with or without an effort suffix (`opus:max`, `claude-opus-5-5:high`) — routes to Claude; any other `model:reasoning` (`spark:high`, `gpt-6-luna:high`) routes to Codex. A colon does NOT imply Codex. In `--mode native` the Agent tool takes only `haiku|sonnet|opus|fable` (native: family alias only, effort dropped). The `codex` binary is only required when a codex model is specified.
+The engine is inferred automatically from the `--worker-model` value: a plain model name (`haiku`) OR any claude id — short alias or full `claude-*`, with or without an effort suffix (`opus:max`, `claude-opus-5-5:high`) — routes to Claude; any other `model:reasoning` (`gpt-6-luna:high`, `gpt-6.1-sol:high`) routes to Codex. A colon does NOT imply Codex. In `--mode native` the Agent tool takes only `haiku|sonnet|opus|fable` (native: family alias only, effort dropped). The `codex` binary is only required when a codex model is specified.
 
 Every codex launch injects `-c check_for_update_on_startup=false` (v0.22.21) to suppress the startup "Update available!" dialog, which can otherwise freeze a TUI pane since its key handling shifts between codex releases; set `RLP_CODEX_UPDATE_CHECK=1` to restore codex's default update check.
 

@@ -186,7 +186,7 @@ test_ac7_version_counter_increments() {
 }
 
 # =============================================================================
-# AC8: baseline.log documented as deleted on re-execution
+# AC8: baseline.log documented as archived (not deleted) on re-execution — W3 Q5: init relocates it to runs/superseded-<ts>/
 # =============================================================================
 test_ac8_baseline_lifecycle_documented() {
   local found; found=$(grep_exists 'baseline.log' "$CMD")
@@ -194,13 +194,13 @@ test_ac8_baseline_lifecycle_documented() {
 }
 
 test_ac8_deleted_keyword_present() {
-  local found; found=$(grep_exists 'baseline.*deleted\|deleted.*baseline' "$CMD")
-  assert_ge "$found" 1 "AC8-negative: 'deleted' keyword associated with baseline.log"
+  local found; found=$(grep_exists 'baseline.*archived\|archived.*baseline' "$CMD")
+  assert_ge "$found" 1 "AC8-negative: 'archived' keyword associated with baseline.log (W3 Q5: archived, no longer deleted)"
 }
 
 test_ac8_baseline_not_versioned() {
   local found; found=$(grep_count 'baseline.*v[0-9]' "$CMD")
-  assert_zero "$found" "AC8-boundary: baseline.log NOT versioned (only deleted, not renamed)"
+  assert_zero "$found" "AC8-boundary: baseline.log NOT versioned (relocated to runs/, not renamed to -vN)"
 }
 
 # =============================================================================

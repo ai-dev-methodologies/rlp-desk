@@ -705,7 +705,7 @@ split_test_spec_by_us() {
 
 # --- Run command presets ---
 # Detects codex CLI availability and shows appropriate run command presets.
-# AC1: codex installed → cross-engine preset first, spark Pro, claude-only, basic
+# AC1: codex installed → cross-engine preset first, critical, claude-only, basic
 # AC2: codex not installed → tmux + claude-only first, install recommendation
 # AC3: full options reference with defaults always shown
 print_run_presets() {
@@ -719,9 +719,6 @@ print_run_presets() {
   if [[ $codex_available -eq 1 ]]; then
     echo "# Recommended: cross-engine + final-consensus, luna-first (cheapest capable tier; ladder auto-escalates on failure):"
     echo "/rlp-desk run $slug --mode tmux --worker-model gpt-6-luna:high --consensus final-only --debug"
-    echo ""
-    echo "# Small tasks only (single-file, AC <= 4, simple logic — spark 100k context limit):"
-    echo "/rlp-desk run $slug --mode tmux --worker-model spark:high --consensus final-only --debug"
     echo ""
     echo "# Critical (full consensus on every verify):"
     echo "/rlp-desk run $slug --mode tmux --worker-model gpt-6.1-sol:high --consensus all --debug"
@@ -757,7 +754,7 @@ print_run_presets() {
   echo ""
   echo "# Full options reference:"
   echo "#   --mode native|tmux                     (default: native; legacy 'agent' redirects to native)"
-  echo "#   --worker-model MODEL                   haiku|sonnet|opus|fable, or full claude id with effort (claude-opus-5-5:high), or gpt-6.1-sol:high|luna:high|spark:high|astra:high (default: haiku)  [native: family alias only, effort dropped]"
+  echo "#   --worker-model MODEL                   haiku|sonnet|opus|fable, or full claude id with effort (claude-opus-5-5:high), or gpt-6.1-sol:high|luna:high|astra:high (default: haiku)  [native: family alias only, effort dropped]"
   echo "#   --lock-worker-model                    disable auto model upgrade"
   echo "#   --verifier-model MODEL                 per-US verifier (default: sonnet)"
   echo "#   --final-verifier-model MODEL           final ALL verifier (default: claude-fable-5-1)"
@@ -855,18 +852,36 @@ ARCHIVED_COUNT=0
 local _arch_ts _arch_dir
 _arch_ts=$(date +%Y%m%d-%H%M%S)
 _arch_dir="$LOGS_DIR/runs/superseded-$_arch_ts"
-# request-m ② (collision-proof): a same-second prior archive (another leader/init
-# start in this wall-clock second) must NOT be overwritten — disambiguate
-# deterministically (-2, -3, …) instead of reusing/merging its dir.
-if [[ -d "$_arch_dir" && -n "$(ls -A "$_arch_dir" 2>/dev/null)" ]]; then
-  local _an=2
-  while [[ -e "$LOGS_DIR/runs/superseded-$_arch_ts-$_an" ]]; do (( _an++ )); done
-  _arch_dir="$LOGS_DIR/runs/superseded-$_arch_ts-$_an"
-fi
-_arch_mv() {  # <src> [dest-name]: 0 moved; 1 source absent (benign); a FAILED move of an existing source stops init
+# request-m ② (collision-proof): the destination is RESERVED ATOMICALLY on the first move
+# (_arch_reserve_dir): a plain `mkdir` (no -p) on the final dir either creates it or fails, so
+# two inits starting in the same wall-clock second can never share one dir — the loser takes the
+# next suffix (-2, -3, …). An existing dir (even an empty one) is never reused or merged.
+_arch_reserved=""
+_arch_reserve_dir() {  # reserve runs/superseded-<ts>[-N]; any failure other than a name collision stops init (exit 4)
+  [[ -n "$_arch_reserved" ]] && return 0
+  local _cand="$_arch_dir" _an=1
+  if ! mkdir -p "$LOGS_DIR/runs" 2>/dev/null; then
+    print -u2 "ERROR: could not create $LOGS_DIR/runs to archive into; init stopped before scaffolding. Nothing was moved; fix the cause and re-run init."
+    exit 4
+  fi
+  while (( _an <= 1000 )); do
+    if mkdir "$_cand" 2>/dev/null; then
+      _arch_dir="$_cand"; _arch_reserved=1
+      return 0
+    fi
+    [[ -e "$_cand" ]] || break   # mkdir failed but nothing is there: a real error, not a collision
+    (( _an++ ))
+    _cand="$LOGS_DIR/runs/superseded-$_arch_ts-$_an"
+  done
+  print -u2 "ERROR: could not reserve an archive dir under $LOGS_DIR/runs (superseded-$_arch_ts[-N]); init stopped before scaffolding. Files already archived are in $_arch_dir, everything else is untouched; fix the cause and re-run init."
+  exit 4
+}
+_arch_mv() {  # <src> [dest-name]: 0 moved; 1 source absent (benign); a FAILED move of an existing source stops init (never overwrites an archived file)
   [[ -f "$1" ]] || return 1
-  if ! { mkdir -p "$_arch_dir" && mv -f "$1" "$_arch_dir/${2:-}"; } 2>/dev/null; then
-    print -u2 "ERROR: could not archive $1 -> $_arch_dir/${2:-}; init stopped before scaffolding. Files already archived are in $_arch_dir, everything else is untouched; fix the cause and re-run init."
+  _arch_reserve_dir
+  local _dest="$_arch_dir/${2:-${1:t}}"
+  if [[ -e "$_dest" || -L "$_dest" ]] || ! mv -n "$1" "$_dest" 2>/dev/null || [[ -e "$1" ]]; then
+    print -u2 "ERROR: could not archive $1 -> $_dest (an archived file of that name already exists or the move failed; the original was left in place); init stopped before scaffolding. Files already archived are in $_arch_dir, everything else is untouched; fix the cause and re-run init."
     exit 4
   fi
 }
@@ -958,10 +973,18 @@ if [[ -n "$MODE" ]]; then
   # parent-dir write), so the lock does not block relocation.
   _archive_runtime_memos
 
-  # Delete status.json, baseline.log, cost-log.jsonl
-  for f in "$LOGS_DIR/runtime/status.json" "$LOGS_DIR/status.json" "$LOGS_DIR/baseline.log" "$LOGS_DIR/cost-log.jsonl"; do
-    [[ -f "$f" ]] && { rm "$f"; (( ++DELETED_COUNT )); }
+  # Archive the campaign state files (security-init-a5 F-08): memory.md, the 4 runtime-state
+  # files and, LAST, latest.md — same helper, same order and same fail-stop as the no-PRD
+  # fallback above (a failed move exits 4 here, before any destructive step below, and
+  # leaves the unmoved originals live). They were bare `rm`s: `.rlp-desk/` is gitignored, so a
+  # deleted cost log or memory was unrecoverable. runtime/status.json is stored as
+  # runtime-status.json because it shares a basename with status.json. A missing file is benign.
+  _arch_mv "$DESK/memos/$SLUG-memory.md" && (( ++ARCHIVED_COUNT ))
+  _arch_mv "$LOGS_DIR/runtime/status.json" runtime-status.json && (( ++ARCHIVED_COUNT ))
+  for f in "$LOGS_DIR/status.json" "$LOGS_DIR/baseline.log" "$LOGS_DIR/cost-log.jsonl"; do
+    _arch_mv "$f" && (( ++ARCHIVED_COUNT ))
   done
+  _arch_mv "$DESK/context/$SLUG-latest.md" && (( ++ARCHIVED_COUNT ))
 
   # Prompt templates always regenerate. The test-spec is a PLAN asset
   # (v0.22.3 US-002): fresh deletes it only when it is still the scaffold
@@ -992,8 +1015,7 @@ if [[ -n "$MODE" ]]; then
     fi
   fi
 
-  # Reset memory and context to fresh templates (rm here; scaffold below regenerates them)
-  rm -f "$DESK/memos/$SLUG-memory.md" "$DESK/context/$SLUG-latest.md"
+  # memory.md and latest.md were archived above; the scaffold below regenerates them.
 
   # PRD handling (v0.22.3 US-002): --mode fresh preserves an AUTHORED PRD
   # (byte-exact diff against the live scaffold — see _prd_is_authored); only

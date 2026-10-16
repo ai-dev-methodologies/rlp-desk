@@ -135,6 +135,22 @@ test('US-004 AC4.1 happy: assembleWorkerPrompt appends iteration context, fix co
   assert.match(prompt, /- \*\*Memory Stop Status\*\*: verify/);
   assert.match(prompt, /## IMPORTANT: Fix Contract from Verifier \(iteration 2\)/);
   assert.match(prompt, /- Fix the verifier issue/);
+  // F8: the fix-contract preamble separates code issues from done-claim record
+  // corrections (identical text to the zsh leader). The old blanket "do not just
+  // resubmit" sentence made workers re-implement the deliverable for a format-only reject.
+  assert.ok(
+    prompt.includes(
+      [
+        "The Verifier REJECTED your previous work. You MUST fix the issues below.",
+        "Where an issue is in the code, change the code — do not just resubmit the same work.",
+        "Where the contract asks you only to correct the done-claim record (format or TDD evidence), correct the record and resubmit it: keep the RED/GREEN evidence you already recorded, never reorder or relabel steps to differ from what you actually ran, and do not re-implement the deliverable.",
+        "",
+        "- Fix the verifier issue",
+      ].join("\n"),
+    ),
+    "F8 fix-contract preamble text must be present verbatim, as consecutive lines",
+  );
+  assert.doesNotMatch(prompt, /Do NOT just resubmit — actually change the code to address each issue\./);
   assert.match(prompt, /## PER-US SCOPE LOCK \(this iteration\) — OVERRIDES memory contract/);
   assert.match(prompt, /\*\*US-004\*\* is the next unverified story/);
   assert.match(prompt, /You MUST implement ONLY \*\*US-004\*\* in this iteration\./);

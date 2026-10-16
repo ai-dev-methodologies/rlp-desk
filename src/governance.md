@@ -14,7 +14,7 @@ The Leader orchestrates, while Worker/Verifier run in isolated fresh contexts ev
 - **Worker must NEVER modify Claude Code settings** (settings.json, settings.local.json). Permission prompts must be reported as blocked, not bypassed by editing settings.
 - **Verifier is independent**: The Verifier judges based on evidence alone, without knowledge of the Worker's reasoning process.
 - **Sentinels are Leader-owned**: Only the Leader writes COMPLETE/BLOCKED sentinels.
-- **Supported engines**: claude (default; models: haiku, sonnet, opus, fable) and codex (opt-in via `--worker-model spark:high` or `--worker-model gpt-5.5:high`).
+- **Supported engines**: claude (default; models: haiku, sonnet, opus, fable) and codex (opt-in via `--worker-model gpt-6-luna:high` or `--worker-model gpt-6.1-sol:high`).
 
 ## 1a. Iron Laws
 
@@ -272,14 +272,14 @@ Verifier records WHY each judgment was made in `verify-verdict.json`:
 - This proves the Verifier actually performed each check rather than rubber-stamping
 - **Test Coverage Audit (mandatory)**: Verifier MUST check that tests cover ALL code paths, not just happy paths. Specifically:
   - Every branch in `case` statements must have a test (e.g., all model types in get_next_model)
-  - Every engine/model combination must be tested (claude, codex 5.4, spark — not just 1-2)
-  - Every ceiling/boundary must be tested (not just "opus ceiling" — also spark ceiling, 5.4 ceiling)
+  - Every engine/model combination must be tested (claude, codex `gpt-6.1-sol`, codex `gpt-6-luna` — not just 1-2)
+  - Every ceiling/boundary must be tested (not just "opus ceiling" — also every codex ladder ceiling, e.g. `gpt-6.1-sol:ultra`)
   - If Worker's tests cover only 2 of 3 engine paths, verdict MUST be fail with "test coverage gap" issue
   - "Tests pass" is NOT sufficient — "tests cover all code paths" is required
 - **Field-name normalization**: three producers emit AC-verdict JSON with different field names for the same concepts — the verifier verdict template (`id`/`description`, `reasoning[]`), the zsh sequential-final failure path (`criterion`/`description`), and the Node integration-failure/oracle path (`criterion_id`/`summary`). `src/node/shared/verdict-schema.mjs` (and the equivalent zsh `jq` fallback chain) is the single source of truth for reading these fields — consumers read the normalized issue `label` (first present of `id`/`criterion`/`criterion_id`) and `text` (first present of `description`/`summary`), never one hardcoded field name.
 - **Integration Test (mandatory when functions call other functions)**: Verifier MUST check that function call chains produce correct end-to-end results, not just that each function works in isolation. Specifically:
   - If function A's output is function B's input, there MUST be a test that runs A→B together and verifies the result
-  - Example: `get_model_string()` returns "gpt-5.3-codex-spark:medium" — `get_next_model()` must accept that exact value and return the correct upgrade. A test must verify this chain.
+  - Example: `get_model_string()` returns "gpt-6-luna:medium" — `get_next_model()` must accept that exact value and return the correct upgrade. A test must verify this chain.
   - Unit tests (extract_fn + isolated run) are necessary but NOT sufficient for refactored code
   - Structural tests (grep for function existence) are necessary but NOT sufficient
   - "All unit tests pass" does NOT prove the system works — integration tests prove it
@@ -375,7 +375,7 @@ The Leader accepts a Worker done-claim that asserts a `commit` step with `exit_c
 
 **Placement**: the oracle runs on the shared post-done-claim-lock path, BEFORE the pre-gate layers (§3a) and BEFORE any Verifier dispatch (§7 step ⑦). This path is shared across every signal route that produces a done-claim — the normal Worker signal, the codex-exit fallback synth, and operator-recovery resume — so a false commit claim cannot slip through any of them.
 
-**No-op condition**: when the done-claim asserts no successful `commit` step (e.g. `verify_existing`, confirmation mode, or a `continue`/no-commit signal), the oracle is a silent no-op — it never blocks a claim it has nothing to check.
+**No-op condition**: when the done-claim asserts no successful `commit` step (e.g. `verify_existing`, confirmation mode, or a `continue`/no-commit signal), the oracle is a silent no-op — it never blocks a claim it has nothing to check. Because the oracle checks nothing in that case, the zsh leader adds one advisory safeguard at campaign COMPLETE: it logs a single warning (and repeats it in `campaign-report.md`) listing git-untracked, not-ignored files — excluding the desk dir — that became untracked during the campaign, since completeness is LLM-judged and may miss an uncommitted deliverable; this warning is advisory only and never changes the verdict or exit status.
 
 **Predicate** (checked independently, so the fix contract can name exactly which invariant was violated):
 - **HEAD advance**: current HEAD must differ from the per-ITERATION-start snapshot (not the campaign baseline — using the iteration snapshot is what rejects "clean tree + HEAD advanced by an EARLIER iteration + lie THIS iteration").
@@ -750,7 +750,7 @@ Speed lane: sol:medium → sol:high → sol:xhigh (ceiling)
 reaches it (2026-09-26 CB=4/3-rung wave; astra left the worker escalation
 path).
 
-`--worker-model spark:high` / `gpt-6-luna:max` format; `parse_model_flag()`
+`--worker-model gpt-6-luna:high` / `gpt-6-luna:max` format; `parse_model_flag()`
 auto-detects engine: plain names (haiku, sonnet, opus, fable) = claude;
 `name:reasoning` = codex unless the name is a claude alias/`claude-*` id.
 
@@ -776,7 +776,7 @@ Agent(
 
 `mode` is accepted for compatibility but ignored by Claude Code: subagents inherit the leader session's permission mode (rlp-desk.md Native Agent() Safety Contract, item 3).
 
-If `--worker-model` or `--verifier-model` uses codex format (e.g., `spark:high`, `gpt-5.5:high`) (opt-in):
+If `--worker-model` or `--verifier-model` uses codex format (e.g., `gpt-6-luna:high`, `gpt-6.1-sol:high`) (opt-in):
 ```
 # Worker or Verifier (codex engine)
 Bash("OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex exec --model <codex_model> -c model_reasoning_effort=\"<codex_reasoning>\" --disable plugins --disable hooks <prompt>")
@@ -840,7 +840,7 @@ claude -p "$(cat /path/to/prompt.md)" \
 When `WORKER_ENGINE=codex` or `VERIFIER_ENGINE=codex`, the `codex` CLI is used instead:
 ```bash
 # codex engine (opt-in)
-OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex -m gpt-5.5 \
+OMX_STATE_ROOT='.rlp-desk/logs/<slug>/runtime/omx-state' codex -m gpt-6.1-sol \
   -c model_reasoning_effort="high" \
   --disable plugins --disable hooks \
   --dangerously-bypass-approvals-and-sandbox \
@@ -923,9 +923,9 @@ No install channel creates a `templates/` directory — prompt templates are gen
 │   ├── iter-NNN-iter-signal.json    # Archived iter-signal per iteration (request-m ②; archived to runs/ on re-execution)
 │   ├── runs/                        # request-m ②: run-scoped evidence archive (NEVER deleted — see below)
 │   │   └── superseded-<ts>/         #   a prior run's iter-* + relocated memos/verified.jsonl, batched by superseding run's startup ts
-│   ├── status.json                  # Leader's loop state (deleted on re-execution)
-│   ├── baseline.log                 # Baseline capture (deleted on re-execution)
-│   └── cost-log.jsonl               # Per-iteration cost log (deleted on re-execution)
+│   ├── status.json                  # Leader's loop state (archived to runs/superseded-<ts>/ on init --mode fresh|improve)
+│   ├── baseline.log                 # Baseline capture (archived to runs/superseded-<ts>/ on init --mode fresh|improve)
+│   └── cost-log.jsonl               # Per-iteration cost log (archived to runs/superseded-<ts>/ on init --mode fresh|improve)
 └── analytics/                            # v0.12.0+: project-local (was ~/.claude/ralph-desk/analytics/ pre-v0.12.0)
     ├── <slug>--<hash8>/              # <hash8> = 8-char hash of the absolute project root (intra-machine only)
     │   ├── metadata.json                # Campaign metadata (slug, project_root, status, times)
@@ -958,8 +958,10 @@ Evidence is now **relocated, never deleted**:
   an existing archive is NEVER overwritten or merged.
 - **`init --mode fresh|improve`**: the `iter-*` artifacts, the runtime memos
   (`done-claim` / `iter-signal` / `verify-verdict` / `complete` / `blocked` /
-  `flywheel-*`), AND `verified.jsonl` are moved into the same
-  `runs/superseded-<ts>/` scheme instead of deleted. The LIVE paths are still
+  `flywheel-*`), `verified.jsonl`, `<slug>-memory.md`, `<slug>-latest.md` AND the 4
+  runtime-state files (`runtime/status.json`, `status.json`, `baseline.log`,
+  `cost-log.jsonl`) are moved into the same `runs/superseded-<ts>/` scheme instead
+  of deleted (`runtime/status.json` is stored as `runtime-status.json`). The LIVE paths are still
   emptied (a fresh campaign starts clean and cannot inherit stale credit), but the
   bytes survive under `runs/`.
   This applies also when no PRD exists yet (the first-run fallback), but only to the ledger and runtime memos (`done-claim` / `iter-signal` / `verify-verdict` / `complete` / `blocked` / `flywheel-*`, `verified.jsonl`), which are relocated exactly as above, plus `<slug>-memory.md`, `<slug>-latest.md` and the 4 runtime-state files (`runtime/status.json`, `status.json`, `baseline.log`, `cost-log.jsonl`), which are relocated there instead of deleted; the fallback leaves `iter-*` in place for leader startup to relocate. In both paths a failed relocation stops init with exit 4.
@@ -1118,7 +1120,7 @@ Worker completes US → signal verify
 - The complexity tier (LOW/MEDIUM/HIGH/CRITICAL) is chosen once at brainstorm
   time (rlp-desk.md Step 7) and baked into the run command flags —
   campaign-fixed thereafter.
-- spark is not allowed as a consensus cross verifier (100k output limit).
+- `spark` is a retired alias: as a consensus model (`--consensus-model` / `--final-consensus-model`) it remaps to `gpt-6-luna` on entry with a `[model-remap] WARNING` (level kept), and the level is then validated against `gpt-6-luna`: a level `gpt-6-luna` accepts is kept, while `spark:minimal` is rejected (`gpt-6-luna` does not support `minimal`).
 - Evidence basis for tiering: judgment tasks show large model-tier gaps
   (Internal Research Debugging sol 68.3 / terra 67.8 / luna 50.8; CodeRabbit
   review sol 69.7% vs terra 52.5%) — see the 2026-08-03 spec appendix.

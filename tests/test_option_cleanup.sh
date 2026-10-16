@@ -312,15 +312,15 @@ else
   fail "DOC4: rlp-desk.md should have 4-column model mapping"
 fi
 
-# DOC5: rlp-desk.md mentions spark:high in recommendations
+# DOC5: rlp-desk.md no longer recommends spark:high (spark is a retired alias -> gpt-6-luna; W3 J-08)
 if grep -q 'spark:high' "$CMD"; then
-  pass "DOC5: rlp-desk.md mentions spark:high"
+  fail "DOC5: rlp-desk.md still mentions spark:high (retired alias, must not be recommended)"
 else
-  fail "DOC5: rlp-desk.md should recommend spark:high"
+  pass "DOC5: rlp-desk.md does not recommend spark:high (retired alias)"
 fi
 
 # DOC6: rlp-desk.md has batch capacity check
-if grep -qi 'batch.*capacity\|batch.*spark.*100k\|wave.*split\|output.*limit.*batch' "$CMD"; then
+if grep -qi 'batch.*capacity\|wave.*split\|output.*limit.*batch' "$CMD"; then
   pass "DOC6: rlp-desk.md has batch capacity check"
 else
   fail "DOC6: rlp-desk.md missing batch capacity check"

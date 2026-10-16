@@ -118,12 +118,12 @@ test_ac2_l1_2() {
   fi
 }
 
-# AC2-L1-3: spark token limits mentioned in brainstorm
+# AC2-L1-3: the brainstorm no longer carries a spark token-limit claim (spark is a retired alias -> gpt-6-luna; W3 J-08)
 test_ac2_l1_3() {
   if echo "$BRAINSTORM_SECTION" | grep -qi 'spark.*token\|token.*spark\|spark.*limit\|100k\|100,000'; then
-    pass "AC2-L1-3: spark token limits mentioned in brainstorm"
+    fail "AC2-L1-3: brainstorm still carries a spark token-limit / 100k claim (retired alias)"
   else
-    fail "AC2-L1-3: spark token limits not found in brainstorm (need: spark + token limit or 100k)"
+    pass "AC2-L1-3: no spark token-limit / 100k claim in brainstorm (retired alias)"
   fi
 }
 

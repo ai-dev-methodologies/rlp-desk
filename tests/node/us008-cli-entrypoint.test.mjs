@@ -1149,8 +1149,10 @@ test('normalizeModelSpec: warns exactly once per remap and not at all otherwise'
   const warn = (message) => warnings.push(message);
   normalizeModelSpec('gpt-5.5:high', { warn });
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /^\[model-remap\] WARNING: 'gpt-5\.5:high' is retired — using 'gpt-6\.1-sol:high' instead\./);
-  assert.match(warnings[0], /rlp-desk-models\.json/, 'the warning must name the escape hatch, not just the substitution');
+  // R1-06: the remap never reads ~/.claude/rlp-desk-models.json, so the warning must not
+  // promise that pinning the old id there keeps it. Exact text, nothing after the period.
+  assert.equal(warnings[0], "[model-remap] WARNING: 'gpt-5.5:high' is retired — using 'gpt-6.1-sol:high' instead.");
+  assert.doesNotMatch(warnings[0], /rlp-desk-models\.json|pin it/);
   normalizeModelSpec('sonnet', { warn });
   normalizeModelSpec('gpt-5.6-sol:high', { warn });
   assert.equal(warnings.length, 1, 'normalization without a remap must stay silent');

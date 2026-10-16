@@ -133,7 +133,8 @@ export async function assembleWorkerPrompt({
     promptLines.push('---');
     promptLines.push(`## IMPORTANT: Fix Contract from Verifier (iteration ${iteration - 1})`);
     promptLines.push('The Verifier REJECTED your previous work. You MUST fix the issues below.');
-    promptLines.push('Do NOT just resubmit — actually change the code to address each issue.');
+    promptLines.push('Where an issue is in the code, change the code — do not just resubmit the same work.');
+    promptLines.push('Where the contract asks you only to correct the done-claim record (format or TDD evidence), correct the record and resubmit it: keep the RED/GREEN evidence you already recorded, never reorder or relabel steps to differ from what you actually ran, and do not re-implement the deliverable.');
     promptLines.push('');
     promptLines.push(fixContractContent.trimEnd());
   }
