@@ -101,6 +101,13 @@ exit 0
 TMUX_STUB
 
   chmod +x "$stub_bin/tmux"
+
+  # check_dependencies() hard-exits 1 when `claude` is not on PATH. A CI runner
+  # has no claude CLI (a dev machine does), so without this stub every rc==0
+  # path (AC2-happy, AC3-happy) fails there. The COMPLETE/BLOCKED sentinel paths
+  # terminate before any worker launch, so a no-op binary is sufficient.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_bin/claude"
+  chmod +x "$stub_bin/claude"
 }
 
 run_runner() {

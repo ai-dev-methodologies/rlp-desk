@@ -187,8 +187,11 @@ test('US-001 AC1.4 boundary: sendKeys includes the invalid pane id in the TmuxEr
   );
 });
 
-test('US-001 AC1.4 negative: sendKeys surfaces tmux pane lookup failures as rejected promises', async () => {
+test('US-001 AC1.4 negative: sendKeys surfaces tmux pane lookup failures as rejected promises', async (t) => {
   const { sendKeys, TmuxError } = await import('../../src/node/tmux/pane-manager.mjs');
+  // A live server makes tmux reach the pane lookup; with none (fresh CI runner)
+  // it fails earlier with "no server running", which is not the case under test.
+  await createSession(t);
 
   await assert.rejects(
     () => sendKeys('%998003', 'echo unreachable'),
