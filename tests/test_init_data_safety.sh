@@ -187,6 +187,35 @@ WORKDIR="$(mktemp -d)"
 cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
 
+# Run an ORACLE_COMMIT init (L-7, N-5 only — never the current init). That
+# historical init uses BSD-only `sed -i '' ...`, which GNU sed rejects, so on
+# a GNU-sed platform (ubuntu CI) it would emit no split file and the byte-
+# parity check would fail for a reason unrelated to parity. When sed is GNU,
+# put a shim first on PATH that rewrites `-i ''` to GNU's `-i` and execs the
+# real sed; all other invocations pass through. Portability of the CURRENT
+# init is covered by the A-* checks.
+# Usage: run_oracle_init <root> <init-script> <slug>
+run_oracle_init() {
+  local root="$1" script="$2" slug="$3"
+  if sed --version >/dev/null 2>&1; then
+    local real_sed shim_dir="$WORKDIR/oracle-sed-shim"
+    real_sed="$(command -v sed)"
+    mkdir -p "$shim_dir"
+    cat > "$shim_dir/sed" <<SHIM_EOF
+#!/bin/sh
+if [ "\$1" = "-i" ] && [ "\$#" -ge 2 ] && [ -z "\$2" ]; then
+  shift 2
+  exec "$real_sed" -i "\$@"
+fi
+exec "$real_sed" "\$@"
+SHIM_EOF
+    chmod +x "$shim_dir/sed"
+    PATH="$shim_dir:$PATH" ROOT="$root" zsh "$script" "$slug" >/dev/null 2>&1
+  else
+    ROOT="$root" zsh "$script" "$slug" >/dev/null 2>&1
+  fi
+}
+
 echo "=== init_ralph_desk.zsh data-safety: A-6 (sed portability) + A-7 (PRD authored detection) + split_prd_by_us ==="
 echo "Target: $INIT_ABS"
 echo ""
@@ -827,7 +856,7 @@ FIXTURE_EOF
   local root7_fixed="$WORKDIR/case-l7-fixed" root7_head="$WORKDIR/case-l7-head"
   first_run_init "$root7_fixed" "case-l7-slug"
   mkdir -p "$root7_head"
-  ROOT="$root7_head" zsh "$head_init_ts" "case-l7-slug" >/dev/null 2>&1
+  run_oracle_init "$root7_head" "$head_init_ts" "case-l7-slug"
   for d in "$root7_fixed" "$root7_head"; do
     cat >> "$d/.rlp-desk/plans/test-spec-case-l7-slug.md" <<'HEADING_EOF'
 
@@ -836,7 +865,7 @@ Some content here.
 HEADING_EOF
   done
   ROOT="$root7_fixed" zsh "$INIT_ABS" "case-l7-slug" >/dev/null 2>&1
-  ROOT="$root7_head" zsh "$head_init_ts" "case-l7-slug" >/dev/null 2>&1
+  run_oracle_init "$root7_head" "$head_init_ts" "case-l7-slug"
   local ts7_fixed="$root7_fixed/.rlp-desk/plans/test-spec-case-l7-slug-US-001.md"
   local ts7_head="$root7_head/.rlp-desk/plans/test-spec-case-l7-slug-US-001.md"
   if [[ -f "$ts7_fixed" && -f "$ts7_head" ]] && cmp -s "$ts7_fixed" "$ts7_head"; then
@@ -951,7 +980,7 @@ HEADING_EOF
   local root_fixed="$WORKDIR/case-n5-fixed" root_head="$WORKDIR/case-n5-head"
   first_run_init "$root_fixed" "case-n5-slug"
   mkdir -p "$root_head"
-  ROOT="$root_head" zsh "$head_init" "case-n5-slug" >/dev/null 2>&1
+  run_oracle_init "$root_head" "$head_init" "case-n5-slug"
   local split_fixed="$root_fixed/.rlp-desk/plans/prd-case-n5-slug-US-001.md"
   local split_head="$root_head/.rlp-desk/plans/prd-case-n5-slug-US-001.md"
   if [[ -f "$split_fixed" && -f "$split_head" ]] && cmp -s "$split_fixed" "$split_head"; then
