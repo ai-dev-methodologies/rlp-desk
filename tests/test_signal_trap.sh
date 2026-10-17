@@ -58,7 +58,8 @@ command -v jq >/dev/null 2>&1 || { print -u2 "FAIL: jq not installed"; exit 1; }
 
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); print "  PASS $1"; }
-no(){ FAIL=$((FAIL+1)); print -u2 "  FAIL $1"; }
+# On failure also surface each harness's captured output ($TMP/<label>.out) so CI logs keep the error text.
+no(){ FAIL=$((FAIL+1)); print -u2 "  FAIL $1"; local o; for o in "$TMP"/*.out(N.); do [[ -s "$o" ]] && { print -u2 "    --- ${o:t} (tail) ---"; tail -n 20 "$o" | sed 's/^/    | /' >&2; }; done; return 0; }
 
 TMP=$(mktemp -d)
 trap 'jobs -p | xargs -I{} kill -9 {} 2>/dev/null; rm -rf "$TMP"' EXIT
@@ -167,6 +168,16 @@ ACQUIRE_SLUG_LOCK_BODY=$(_extract_fn "acquire_slug_lock" "$LIB")
   || { print -u2 "FAIL: could not extract register_leader/unregister_leader/_leader_registry_dir/acquire_slug_lock from $LIB"; exit 1; }
 
 # --- Harness builder ---------------------------------------------------
+# CI-hang note (run 38577918782, macOS runner: this file hung for ~6 h): the
+# harness main loops below deliberately do NO stdio write (no `echo ... >>
+# "$LOG"`) between `sleep`s. zsh runs a trap synchronously inside the signal
+# handler; if the signal lands while the interrupted code holds a stdio lock
+# (an `echo`/`print` flush), the trap's `$(date)` fork deadlocks on that
+# lock in the child (sampled: redup -> fileno -> flockfile) and the harness
+# never exits. That is a zsh/macOS hazard, not what these scenarios assert, so
+# the loops avoid the window; the signal lands in `sleep`'s wait instead.
+# Each harness also touches "$LOG.ready" once its traps are armed so the test
+# signals it deterministically instead of guessing a startup delay.
 # $1=out_file $2=on_signal_body(yes-chain or no-chain variant) $3=1|0 apply
 # setopt POSIX_TRAPS $4=1|0 use the split-trap arm lines (0 = old combined
 # form, ignores $2/$3)
@@ -199,9 +210,9 @@ _build_harness() {
       print -r -- "$on_signal_body"
       echo 'main() {'
       print -r -- "$TRAP_LINES"
+      echo '  : > "$LOG.ready"'
       echo '  i=0'
       echo '  while (( i < 10000 )); do'
-      echo '    echo "LOOP $i" >> "$LOG"'
       echo '    sleep 0.05'
       echo '    (( i++ ))'
       echo '  done'
@@ -210,9 +221,9 @@ _build_harness() {
     else
       echo 'main() {'
       echo "  trap '_emit_launch_record_outcome; _emit_final_cost_log; cleanup' EXIT INT TERM HUP"
+      echo '  : > "$LOG.ready"'
       echo '  i=0'
       echo '  while (( i < 10000 )); do'
-      echo '    echo "LOOP $i" >> "$LOG"'
       echo '    sleep 0.05'
       echo '    (( i++ ))'
       echo '  done'
@@ -235,6 +246,26 @@ _wait_exit_within() { # $1=pid $2=budget_seconds -> echoes 1 exited / 0 still al
     (( waited >= budget * 10 )) && { echo 0; return; }
   done
   echo 1
+}
+
+# Kill $1 and all its descendants. The parent is stopped first so it cannot
+# fork replacements, then children go before the parent (killing the parent
+# first would orphan a child that may hold one of our pipes). pgrep -P matches
+# on parent pid only and exists on macOS and Linux (procps).
+_kill_tree() {
+  local pid="$1" child
+  kill -STOP "$pid" 2>/dev/null
+  for child in $(pgrep -P "$pid" 2>/dev/null); do _kill_tree "$child"; done
+  kill -9 "$pid" 2>/dev/null
+}
+
+_wait_ready() { # $1=marker file $2=budget_seconds -> 0 once it exists, 1 on budget exhaustion
+  local marker="$1" budget="$2" waited=0
+  until [[ -f "$marker" ]]; do
+    sleep 0.05
+    (( ++waited >= budget * 20 )) && return 1
+  done
+  return 0
 }
 
 _build_harness "$TMP/h_new.zsh"          "$ON_SIGNAL_BODY"         "$POSIX_TRAPS_PRESENT" 1
@@ -290,8 +321,13 @@ run_scenario() {
   local harness="$1" signame="$2" killsig="$3" expected_ec="$4" label="$5"
   local log="$TMP/${label}.log" meta="$TMP/${label}.meta.json" lr="$TMP/${label}.lr.json"
   : > "$log"; _seed_launch_record "$lr"
-  zsh -f "$harness" "$log" "$meta" "$lr" &
+  # stdin/stdout/stderr are detached from this function's: it runs inside
+  # $(...), which only returns at EOF on its stdout pipe, so any process the
+  # harness leaves behind (e.g. a deadlocked fork) holding the inherited pipe
+  # would hang the whole test forever (the CI hang).
+  zsh -f "$harness" "$log" "$meta" "$lr" </dev/null >"$TMP/${label}.out" 2>&1 &
   local pid=$!
+  _wait_ready "$log.ready" 10
   sleep 0.3
   kill "-$killsig" "$pid" 2>/dev/null
   local exited; exited=$(_wait_exit_within "$pid" 2)
@@ -299,7 +335,7 @@ run_scenario() {
   if [[ "$exited" == "1" ]]; then
     wait "$pid"; ec=$?
   else
-    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    _kill_tree "$pid"; wait "$pid" 2>/dev/null
   fi
   print -r -- "$exited|$ec|$log|$meta|$lr"
 }
@@ -506,9 +542,9 @@ _build_prologue_harness() {
     print -r -- "$ON_SIGNAL_BODY"
     echo 'main() {'
     print -r -- "$MAIN_PROLOGUE_BODY"
+    echo '  : > "$LOG.ready"'
     echo '  i=0'
     echo '  while (( i < 10000 )); do'
-    echo '    echo "LOOP $i" >> "$LOG"'
     echo '    sleep 0.05'
     echo '    (( i++ ))'
     echo '  done'
@@ -526,8 +562,9 @@ PR1_SLUG_LOCK="$TMP/pr1-slug.lock"
 PR1_DESK="$TMP/pr1-desk"; mkdir -p "$PR1_DESK"
 PR1_LOGS="$TMP/pr1-logs"; PR1_RUNTIME="$TMP/pr1-runtime"; PR1_OMX="$TMP/pr1-omx"
 PR1_LOG="$TMP/pr1.log"; : > "$PR1_LOG"
-zsh -f "$TMP/h_prologue.zsh" "$PR1_LOG" "$PR1_RUNNER_LOCK" "$PR1_SLUG_LOCK" "$PR1_DESK" "$PR1_LOGS" "$PR1_RUNTIME" "$PR1_OMX" &
+zsh -f "$TMP/h_prologue.zsh" "$PR1_LOG" "$PR1_RUNNER_LOCK" "$PR1_SLUG_LOCK" "$PR1_DESK" "$PR1_LOGS" "$PR1_RUNTIME" "$PR1_OMX" </dev/null >"$TMP/pr1.out" 2>&1 &
 pr1_pid=$!
+_wait_ready "$PR1_LOG.ready" 10
 sleep 0.3
 kill -INT "$pr1_pid" 2>/dev/null
 pr1_exited=$(_wait_exit_within "$pr1_pid" 2)
@@ -537,7 +574,7 @@ if [[ "$pr1_exited" == "1" ]]; then
     || no "prologue: expected exit 130, got $pr1_ec"
 else
   no "prologue: process did not exit within 2s of SIGINT"
-  kill -9 "$pr1_pid" 2>/dev/null; wait "$pr1_pid" 2>/dev/null
+  _kill_tree "$pr1_pid"; wait "$pr1_pid" 2>/dev/null
 fi
 (( $(_count '^CLEANUP_RAN$' "$PR1_LOG") == 1 )) \
   && ok "prologue: cleanup ran exactly once" || no "prologue: cleanup ran $(_count '^CLEANUP_RAN$' "$PR1_LOG") times"
@@ -609,7 +646,6 @@ _build_prologue_harness_old_order() {
     print -r -- "$TRAP_ARM_LINES_ONLY"   # armed LAST, mirroring the pre-fix bug
     echo '  i=0'
     echo '  while (( i < 10000 )); do'
-    echo '    echo "LOOP $i" >> "$LOG"'
     echo '    sleep 0.05'
     echo '    (( i++ ))'
     echo '  done'
@@ -625,7 +661,7 @@ PR2_SLUG_LOCK="$TMP/pr2-slug.lock"
 PR2_DESK="$TMP/pr2-desk"; mkdir -p "$PR2_DESK"
 PR2_LOGS="$TMP/pr2-logs"; PR2_RUNTIME="$TMP/pr2-runtime"; PR2_OMX="$TMP/pr2-omx"
 PR2_LOG="$TMP/pr2.log"; : > "$PR2_LOG"
-zsh -f "$TMP/h_prologue_old_order.zsh" "$PR2_LOG" "$PR2_RUNNER_LOCK" "$PR2_SLUG_LOCK" "$PR2_DESK" "$PR2_LOGS" "$PR2_RUNTIME" "$PR2_OMX" &
+zsh -f "$TMP/h_prologue_old_order.zsh" "$PR2_LOG" "$PR2_RUNNER_LOCK" "$PR2_SLUG_LOCK" "$PR2_DESK" "$PR2_LOGS" "$PR2_RUNTIME" "$PR2_OMX" </dev/null >"$TMP/pr2.out" 2>&1 &
 pr2_pid=$!
 sleep 0.3
 kill -INT "$pr2_pid" 2>/dev/null
@@ -645,7 +681,7 @@ kill -INT "$pr2_pid" 2>/dev/null
 # always force-kills afterward rather than asserting a particular exit
 # timing.
 _wait_exit_within "$pr2_pid" 2 >/dev/null
-kill -9 "$pr2_pid" 2>/dev/null; wait "$pr2_pid" 2>/dev/null
+_kill_tree "$pr2_pid"; wait "$pr2_pid" 2>/dev/null
 (( $(_count '^CLEANUP_RAN$' "$PR2_LOG") == 0 )) \
   && ok "mutation control: OLD order — cleanup never ran (no trap was registered for INT yet when the signal arrived)" \
   || no "mutation control: cleanup ran under the OLD order (unexpected — the trap shouldn't have been armed yet)"

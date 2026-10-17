@@ -28,6 +28,7 @@ jobs:
   sv-gate-fast:
     name: SV Gate Fast (~30s)
     runs-on: macos-latest  # macOS provides zsh + node; tmux installed below
+    timeout-minutes: 15  # ~1 min in practice; a hung step must never hold the runner for GitHub's 6h default
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,9 +72,15 @@ jobs:
   behavioral-suites:
     name: Behavioral suites (test:node + test:zsh)
     runs-on: macos-latest
+    # ~11 min in practice (test:zsh ~10 min, 137 files, slowest file ~94 s). A hung test once held
+    # this job for ~6 h until GitHub cancelled it (run 38577918782). Per-file caps in test:zsh
+    # (TEST_FILE_TIMEOUT) fail a hung file early; this is the outer backstop.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # tests read pinned historical commits via `git show` (ORACLE_COMMIT); a depth-1 clone cannot
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -117,9 +124,12 @@ jobs:
   ubuntu-compat:
     name: Ubuntu compat (test:node + init data-safety)
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # ~1-3 min in practice
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # tests read pinned historical commits via `git show` (ORACLE_COMMIT); a depth-1 clone cannot
 
       - name: Setup Node
         uses: actions/setup-node@v4
