@@ -243,14 +243,23 @@ out=$(zsh --no-rcs -c '
 
 # IMP-02 cleanup() teardown of the 4th pane. Extract the real cleanup() body, run
 # it with a RECORDING tmux mock, and assert the consensus pane is reaped.
+# C-01: cleanup() now reaches tmux through the REAL _sigsafe_tmux/_sigsafe_sh (a clean child) and waits with zselect instead of
+# sleep: only zselect is mocked; `tmux` itself is a PATH shim that records its argv, so the C-c, /exit and kill-pane calls are
+# all still observed end to end.
+SHIM="$TMP/shim"; mkdir -p "$SHIM"
+printf '#!/bin/sh\necho "$*" >> "$TMUX_SHIM_LOG"\n' > "$SHIM/tmux"; chmod +x "$SHIM/tmux"
+SIGSAFE_DEFS="$(sh "$REPO/tests/fixtures/forksafe-helpers.sh" "$LIB"; sed -n '/^_sigsafe_tmux() {/p' "$RUN")"
+[[ "$SIGSAFE_DEFS" == *"_sigsafe_tmux() {"* ]] && ok "real _sigsafe_tmux extracted" || no "could not extract _sigsafe_tmux"
 print -r -- "-- IMP-02 C4: cleanup() reaps the 4th (consensus) pane"
 cleanup_body=$(sed -n '/^cleanup() {$/,/^}$/p' "$RUN")
 [[ -n "$cleanup_body" ]] && ok "cleanup() extractable" || no "could not extract cleanup()"
 C4LOG="$TMP/c4-tmux.log"; : > "$C4LOG"
 zsh --no-rcs -c '
   log(){ :; }; log_debug(){ :; }; log_error(){ :; }
-  generate_campaign_report(){ :; }; generate_sv_report(){ :; }; sleep(){ :; }
-  tmux(){ print -r -- "$*" >> "'"$C4LOG"'"; }
+  generate_campaign_report(){ :; }; generate_sv_report(){ :; }
+  '"$SIGSAFE_DEFS"'
+  zselect(){ :; }
+  export PATH="'"$SHIM"'":"$PATH" TMUX_SHIM_LOG="'"$C4LOG"'"
   '"$cleanup_body"'
   CLEANUP_DONE=0; LOCKFILE_ACQUIRED=0
   LOCKFILE_PATH="'"$TMP"'/nolock1"; RUNNER_LOCKFILE_PATH="'"$TMP"'/nolock2"
@@ -264,14 +273,18 @@ zsh --no-rcs -c '
 ' >/dev/null 2>&1
 c4=$(cat "$C4LOG")
 [[ "$c4" == *"send-keys -t %99 C-c"* ]] && ok "cleanup C-c's the consensus pane %99" || no "C4 consensus C-c missing ($c4)"
+[[ "$c4" == *"send-keys -t %99 /exit C-m"* ]] && ok "cleanup sends /exit to the consensus pane %99" || no "C4 consensus /exit missing ($c4)"
+[[ "$c4" == *"send-keys -t %1 C-c"* && "$c4" == *"send-keys -t %1 /exit C-m"* && "$c4" == *"kill-pane -t %1"* ]] && ok "cleanup C-c / /exit / kill-pane on the worker pane %1" || no "C4 worker pane calls missing ($c4)"
 [[ "$c4" == *"kill-pane -t %99"* ]] && ok "cleanup kill-pane's the consensus pane %99" || no "C4 consensus kill-pane missing ($c4)"
 
 print -r -- "-- IMP-02 C5: cleanup() off-path — no consensus pane → byte-identical non-consensus teardown"
 C5LOG="$TMP/c5-tmux.log"; : > "$C5LOG"
 zsh --no-rcs -c '
   log(){ :; }; log_debug(){ :; }; log_error(){ :; }
-  generate_campaign_report(){ :; }; generate_sv_report(){ :; }; sleep(){ :; }
-  tmux(){ print -r -- "$*" >> "'"$C5LOG"'"; }
+  generate_campaign_report(){ :; }; generate_sv_report(){ :; }
+  '"$SIGSAFE_DEFS"'
+  zselect(){ :; }
+  export PATH="'"$SHIM"'":"$PATH" TMUX_SHIM_LOG="'"$C5LOG"'"
   '"$cleanup_body"'
   CLEANUP_DONE=0; LOCKFILE_ACQUIRED=0
   LOCKFILE_PATH="'"$TMP"'/nolock1"; RUNNER_LOCKFILE_PATH="'"$TMP"'/nolock2"

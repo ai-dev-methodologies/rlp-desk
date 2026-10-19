@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN="${RUN:-$REPO_ROOT/src/scripts/run_ralph_desk.zsh}"
 LIB="${LIB:-$REPO_ROOT/src/scripts/lib_ralph_desk.zsh}"
+FORKSAFE_HELPERS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/forksafe-helpers.sh"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
@@ -231,6 +232,7 @@ log() { :; }
 atomic_write() { local t="\$1" p="\${t}.tmp.\$\$"; cat>"\$p"; mv "\$p" "\$t"; }
 HARNESS
 
+  sh "$FORKSAFE_HELPERS" "$LIB" >> "$dir/h.zsh"   # C-01: generate_campaign_report now calls the lib fork-free helpers
   printf '%s\n' "$GCRF_BODY" >> "$dir/h.zsh"
 
   if [[ "$reset_guard" == "1" ]]; then

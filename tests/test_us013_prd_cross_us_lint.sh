@@ -363,8 +363,11 @@ fi
 # AC16: tmux campaign report renders blocked reason from sentinel
 # (codex final review issue #2).
 # ------------------------------------------------------------------
-assert_one "$LIB" 'blocked_reason=\$\(grep -m1' \
-  "AC16-a: tmux report extracts Reason: from BLOCKED_SENTINEL"
+# C-01: the Reason:/Category: scan moved from `$(grep -m1 ... | sed ...)` (4 forks on the signal path) to an in-process read loop.
+assert_one "$LIB" '\[Rr\]eason:.*blocked_reason="\$\{match\[1\]\}"' \
+  "AC16-a: tmux report extracts Reason: into blocked_reason"
+assert_one "$LIB" 'done < "\$BLOCKED_SENTINEL"' \
+  "AC16-a2: tmux report reads that Reason: from BLOCKED_SENTINEL"
 assert_one "$LIB" '"- Blocked reason: \$blocked_reason"' \
   "AC16-b: tmux report renders blocked reason line"
 

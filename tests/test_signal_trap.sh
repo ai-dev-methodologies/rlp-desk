@@ -154,11 +154,21 @@ print -r -- "$LOCK_RELEASE_BLOCK" | grep -q '"\$own_pid" == "\$\$"' \
 # sentinel exists) — a duplicate-runner exit must not write a spurious
 # campaign-report.md or overwrite metadata.json into a SAME-SLUG incumbent's
 # live log dir. Extract that exact guarded block (real code, not a mirror).
-GUARD_REPORT_BLOCK=$(awk '/^  local _skip_campaign_artifacts=0$/,/mv "\$\{METADATA_FILE\}\.tmp" "\$METADATA_FILE"$/' "$RUN")
+GUARD_REPORT_BLOCK=$(awk '/^  local _skip_campaign_artifacts=0$/,/campaign_status = .*"\$METADATA_FILE"$/' "$RUN")
 [[ -n "$GUARD_REPORT_BLOCK" ]] || { print -u2 "FAIL: cleanup()'s _skip_campaign_artifacts guard block not found in $RUN"; exit 1; }
 print -r -- "$GUARD_REPORT_BLOCK" | grep -q 'LOCKFILE_ACQUIRED:-0' \
   || { print -u2 "FAIL: _skip_campaign_artifacts guard does not check LOCKFILE_ACQUIRED"; exit 1; }
 GUARD_REPORT_BLOCK_FULL="$GUARD_REPORT_BLOCK"$'\n  fi'
+
+# C-01: the signal path no longer forks redirected children, so the real code it extracts above calls the
+# lib's fork-free helpers (_rlp_utc_iso/_rlp_civil timestamps, _sigsafe_sh clean-child runner) and zsh modules
+# (zsh/datetime EPOCHSECONDS, zsh/files zf_rm/zf_mv/zf_mkdir, zsh/stat zstat). Every harness below gets the REAL
+# helper bodies (extracted, never mirrored; tests/fixtures/forksafe-helpers.sh) plus the same zmodload lines the lib runs at source time.
+FORKSAFE_HELPERS=$(sh "$ROOT_DIR/tests/fixtures/forksafe-helpers.sh" "$LIB")
+for _h in _rlp_civil _rlp_utc_iso _sigsafe_sh; do
+  print -r -- "$FORKSAFE_HELPERS" | grep -q "^$_h() {" \
+    || { print -u2 "FAIL: fork-safe helper $_h not found in $LIB — C-01 fix not present"; exit 1; }
+done
 
 REGISTER_LEADER_BODY=$(_extract_fn "register_leader" "$LIB")
 UNREGISTER_LEADER_BODY=$(_extract_fn "unregister_leader" "$LIB")
@@ -185,6 +195,7 @@ _build_harness() {
   local out="$1" on_signal_body="$2" with_posix="$3" split_traps="$4"
   {
     echo '#!/bin/zsh'
+    print -r -- "$FORKSAFE_HELPERS"
     echo 'LOG="$1"; METADATA_FILE="$2"; LAUNCH_RECORD_FILE="$3"'
     echo 'COMPLETE_SENTINEL="/nonexistent-complete-sentinel"'
     echo 'BLOCKED_SENTINEL="/nonexistent-blocked-sentinel"'
@@ -283,6 +294,7 @@ _build_exit1_harness() {
   local out="$1" with_posix="$2"
   {
     echo '#!/bin/zsh'
+    print -r -- "$FORKSAFE_HELPERS"
     echo 'LOG="$1"; METADATA_FILE="$2"; LAUNCH_RECORD_FILE="$3"'
     echo 'COMPLETE_SENTINEL="/nonexistent-complete-sentinel"'
     echo 'BLOCKED_SENTINEL="/nonexistent-blocked-sentinel"'
@@ -484,6 +496,7 @@ _build_prologue_harness() {
   local out="$1" with_guard="${2:-1}"
   {
     echo '#!/bin/zsh'
+    print -r -- "$FORKSAFE_HELPERS"
     echo 'set -uo pipefail'
     echo 'setopt POSIX_TRAPS'
     echo 'LOG="$1"; RUNNER_LOCKFILE_PATH="$2"; LOCKFILE_PATH="$3"; DESK="$4"'
@@ -606,6 +619,7 @@ _build_prologue_harness_old_order() {
   local out="$1"
   {
     echo '#!/bin/zsh'
+    print -r -- "$FORKSAFE_HELPERS"
     echo 'set -uo pipefail'
     echo 'setopt POSIX_TRAPS'
     echo 'LOG="$1"; RUNNER_LOCKFILE_PATH="$2"; LOCKFILE_PATH="$3"; DESK="$4"'
@@ -776,6 +790,7 @@ _build_epilogue_harness() {
   local out="$1" with_posix="$2"
   {
     echo '#!/bin/zsh'
+    print -r -- "$FORKSAFE_HELPERS"
     (( with_posix )) && echo 'setopt POSIX_TRAPS'
     echo 'LAUNCH_RECORD_FILE="$1"'
     echo 'typeset -g SIGNAL_RECEIVED=""'

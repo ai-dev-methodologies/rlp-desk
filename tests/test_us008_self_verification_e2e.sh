@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN="${RUN:-$REPO_ROOT/src/scripts/run_ralph_desk.zsh}"
 LIB="${LIB:-$REPO_ROOT/src/scripts/lib_ralph_desk.zsh}"
+FORKSAFE_HELPERS="$REPO_ROOT/tests/fixtures/forksafe-helpers.sh"
 INIT="${INIT:-$REPO_ROOT/src/scripts/init_ralph_desk.zsh}"
 CMD="${CMD:-$REPO_ROOT/src/commands/rlp-desk.md}"
 GOV="${GOV:-$REPO_ROOT/src/governance.md}"
@@ -140,6 +141,7 @@ run_cr_harness() {
     echo 'log() { : ; }'
     # Extract required functions
     extract_fn atomic_write
+    sh "$FORKSAFE_HELPERS" "$LIB"   # C-01: generate_campaign_report now calls the lib fork-free helpers
     extract_fn generate_campaign_report
     echo "generate_campaign_report"
   } > "$tmpdir/harness-cr.zsh"

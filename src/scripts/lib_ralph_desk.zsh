@@ -14,19 +14,91 @@ fi
 # Utility Functions
 # =============================================================================
 
+# C-01: fork-free helpers for the signal path (see _on_signal). zsh/datetime provides
+# $EPOCHSECONDS; zsh/files provides zf_rm/zf_mv/zf_mkdir; zsh/stat provides zstat; zsh/zselect = sub-second sleep.
+# They are REQUIRED: without them cleanup would silently fall back to external commands (forks) or fail with "command not found"
+# in the middle of a signal, so a missing module aborts the leader here, before it acquires any lock, pane or registry entry.
+() {
+  local _miss=""
+  zmodload zsh/datetime 2>/dev/null || _miss+=" zsh/datetime(EPOCHSECONDS)"
+  zmodload zsh/zselect 2>/dev/null || _miss+=" zsh/zselect(zselect)"
+  zmodload zsh/parameter 2>/dev/null || _miss+=" zsh/parameter(functions,builtins)"
+  zmodload -F zsh/stat b:zstat 2>/dev/null || _miss+=" zsh/stat(zstat)"
+  zmodload -F zsh/files b:zf_rm b:zf_mv b:zf_mkdir 2>/dev/null || _miss+=" zsh/files(zf_rm,zf_mv,zf_mkdir)"
+  if [[ -n "$_miss" ]]; then
+    print -u2 "FATAL: lib_ralph_desk.zsh needs these zsh modules, which this zsh ($ZSH_VERSION) cannot load:$_miss"
+    exit 1
+  fi
+}
+
+# _sigsafe_sh <script> [args...]: run <script> in a CLEAN child shell. The fork is a plain exec (no fd
+# redirection in the forked child), so it cannot deadlock on the interrupted builtin's stdio lock; the
+# redirections inside <script> are performed by the fresh exec'd zsh, which owns fresh stdio.
+_sigsafe_sh() { command zsh -fc "$@"; }
+
+# C-01: async-signal-safe timestamps. libc localtime/strftime take the process-wide tz rwlock, which SELF-DEADLOCKS (or gets
+# the process SIGKILLed: measured 39/600 = 6.5% with a tight strftime loop) when a signal handler calls strftime while the
+# interrupted code is itself inside localtime. So the handler path may only use $EPOCHSECONDS + integer arithmetic.
+# The same holds for `printf -v` / `print -v`: zsh implements them with libc open_memstream -> __sfp (the global FILE-table
+# lock), and a signal landing inside that call deadlocks the handler's own `printf -v` (sampled: bin_print -> open_memstream ->
+# __sfp -> zhandler -> dotrap -> ... -> bin_print, state S, 0% cpu; 2 hangs (both INT) in ~5400 stresslog trials with a printf -v based
+# helper in the interrupted loop, 0 once replaced). Hence the zero-padding below is pure parameter expansion (${(l:N::0:)x}).
+# _rlp_civil <epoch> -> REPLY="Y m d H M S" (UTC, Gregorian; H. Hinnant days_from_civil inverse; valid for epoch >= 0).
+_rlp_civil() {
+  local -i t=$1 z=$(( $1 / 86400 + 719468 )) sod=$(( $1 % 86400 )) era doe yoe y doy mp d m
+  era=$(( z / 146097 )); doe=$(( z - era * 146097 ))
+  yoe=$(( (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365 )); y=$(( yoe + era * 400 ))
+  doy=$(( doe - (365 * yoe + yoe / 4 - yoe / 100) )); mp=$(( (5 * doy + 2) / 153 ))
+  d=$(( doy - (153 * mp + 2) / 5 + 1 )); m=$(( mp < 10 ? mp + 3 : mp - 9 )); (( m <= 2 )) && (( y++ ))
+  REPLY="$y $m $d $(( sod / 3600 )) $(( sod % 3600 / 60 )) $(( sod % 60 ))"
+}
+# _rlp_pad3 <n> -> REPLY: zero-pad to 3 digits like printf '%03d' (a value of 1000+ keeps all its digits; ${(l:3::0:)x} would cut it).
+_rlp_pad3() { REPLY=$1; (( ${#REPLY} < 3 )) && REPLY=${(l:3::0:)REPLY}; return 0; }
+_rlp_utc_iso() { local -a f; _rlp_civil "$1"; f=(${=REPLY}); REPLY="${(l:4::0:)f[1]}-${(l:2::0:)f[2]}-${(l:2::0:)f[3]}T${(l:2::0:)f[4]}:${(l:2::0:)f[5]}:${(l:2::0:)f[6]}Z"; }
+# The leader process makes NO in-process libc time call (strftime/localtime/mktime) on any path: a signal that lands inside one left the process in a
+# state where the handler later died (SIGKILL/SIGSEGV, exit 137/139; 18 of 2400 stresslog trials with a per-call strftime, 0 of 3600 without).
+# Local time = $EPOCHSECONDS + a cached UTC offset (pure arithmetic). The offset is read with `$(command date +%z)` -- the very form HEAD used on
+# every log line -- but only on the NORMAL path (a fork outside the signal handler is not a C-01 hazard), at most once per
+# _RLP_TZ_REFRESH_S seconds, and NEVER from the handler (which only uses the cached value).
+typeset -gi _RLP_TZOFF=0 _RLP_TZOFF_AT=0
+_rlp_tz_refresh() {
+  local _z
+  _z=$(command date +%z 2>/dev/null)
+  _RLP_TZOFF_AT=$EPOCHSECONDS   # also when the read failed: the old offset is kept and date is not re-forked on every call
+  [[ "$_z" == [+-][0-9][0-9][0-9][0-9] ]] || return 0   # failure/garbage: keep the last known offset (never reset to 0)
+  _RLP_TZOFF=$(( ${_z[1]}1 * ( 10#${_z[2,3]} * 3600 + 10#${_z[4,5]} * 60 ) ))
+}
+# _rlp_local_ts -> REPLY "YYYY-MM-DD HH:MM:SS" in local time. Outside the signal handler the offset is re-read (follows TZ and DST changes)
+# at most once per _RLP_TZ_REFRESH_S seconds; in the handler (SIGNAL_RECEIVED set by _on_signal) it is never refreshed. Setting
+# _RLP_TZ_REFRESH_S=0 makes every normal-path call refresh (used by the stress test so a signal can land during a refresh).
+# Ceiling: a TZ/DST change is picked up within _RLP_TZ_REFRESH_S s, and a change between the last refresh and a signal shifts the
+# handler's prefixes by that difference (<= 1 h for DST); upgrade trigger = anyone relying on prefix wall-clock across a DST boundary.
+typeset -gi _RLP_TZ_REFRESH_S=60
+_rlp_local_ts() {
+  local -a f
+  if [[ -z "${SIGNAL_RECEIVED:-}" ]] && (( EPOCHSECONDS - _RLP_TZOFF_AT >= _RLP_TZ_REFRESH_S )); then _rlp_tz_refresh; fi
+  _rlp_civil $(( EPOCHSECONDS + _RLP_TZOFF )); f=(${=REPLY})
+  REPLY="${(l:4::0:)f[1]}-${(l:2::0:)f[2]}-${(l:2::0:)f[3]} ${(l:2::0:)f[4]}:${(l:2::0:)f[5]}:${(l:2::0:)f[6]}"
+}
+
+_rlp_tz_refresh   # initial offset (at source time, before any signal handler exists)
+
 log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+  local _ts; _rlp_local_ts; _ts=$REPLY
+  echo "[$_ts] $*"
 }
 
 log_debug() {
   if (( DEBUG )); then
-    mkdir -p "$(dirname "$DEBUG_LOG")" 2>/dev/null
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] DEBUG: $*" >> "$DEBUG_LOG"
+    [[ -d "${DEBUG_LOG:h}" ]] || zf_mkdir -p "${DEBUG_LOG:h}" 2>/dev/null
+    local _ts; _rlp_local_ts; _ts=$REPLY
+    echo "[$_ts] DEBUG: $*" >> "$DEBUG_LOG"
   fi
 }
 
 log_error() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2
+  local _ts; _rlp_local_ts; _ts=$REPLY
+  echo "[$_ts] ERROR: $*" >&2
 }
 
 # _file_mtime() — GNU-first mtime lookup with a numeric guard (IMP-01).
@@ -1323,9 +1395,10 @@ register_leader() {
 
 # Remove this leader's own entry. Best-effort; never fatal. Always returns 0.
 unregister_leader() {
-  local entry; entry="$(_leader_registry_dir)/$$.json"
+  # C-01: inline the registry path (was entry="$(_leader_registry_dir)/$$.json" -> a cmd-subst fork) and zf_rm (builtin)
+  local entry="${DESK:-.}/logs/.rlp-desk-leaders-${ROOT_HASH:-unknown}.d/$$.json"
   [[ -e "$entry" ]] || return 0
-  rm -f "$entry" 2>/dev/null \
+  zf_rm -f "$entry" 2>/dev/null \
     && log_debug "[GOV] leader_registry=unregistered pid=$$" \
     || log_debug "[GOV] leader_registry=unregister_failed pid=$$ entry=$entry (advisory)"
   return 0
@@ -1659,11 +1732,8 @@ log_lifecycle_metric() {
   local -i _vm=$(( 10#$value_ms ))   # force base-10 (avoids leading-zero-as-octal); builtin, no fork
   zmodload -e zsh/datetime || zmodload zsh/datetime 2>/dev/null
   local _ts _rec
-  # zsh/datetime builtin, -s writes directly into $_ts (no $(...) fork either).
-  # This build's strftime has no -u flag; TZ=UTC as a one-command prefix forces
-  # UTC without forking (builtins get a scoped env override, not an exec) and
-  # without touching $TZ for the rest of the script (verified: does not leak).
-  TZ=UTC strftime -s _ts '%Y-%m-%dT%H:%M:%SZ' $EPOCHSECONDS   # replaces the old date-binary call, no fork
+  # UTC timestamp from $EPOCHSECONDS by integer arithmetic (_rlp_utc_iso): no fork and no libc time call.
+  _rlp_utc_iso $EPOCHSECONDS; _ts=$REPLY   # pure arithmetic: no libc time call (was a libc time call in the leader process)
   _rec="{\"metric\":\"$metric\",\"value_ms\":$_vm,\"ts\":\"$_ts\""
   [[ -n "$_iter" ]] && _rec+=",\"iter\":$_iter"
   [[ -n "$_us_id" ]] && _rec+=",\"us_id\":\"$_us_id\""
@@ -2695,14 +2765,16 @@ _emit_a4_fallback_audit() {
 # --- AC5: Write per-iteration cost estimate to cost-log.jsonl ---
 write_cost_log() {
   local iter="$1"
-  local iter_padded
-  iter_padded=$(printf '%03d' "$iter")
+  local iter_padded; _rlp_pad3 "$iter"; iter_padded=$REPLY
 
   local prompt_bytes=0 claim_bytes=0 verdict_bytes=0
+  local -a _sz
   local worker_prompt_file="$LOGS_DIR/iter-${iter_padded}.worker-prompt.md"
-  [[ -f "$worker_prompt_file" ]] && prompt_bytes=$(wc -c < "$worker_prompt_file" 2>/dev/null || echo 0)
-  [[ -f "$DONE_CLAIM_FILE" ]]   && claim_bytes=$(wc -c < "$DONE_CLAIM_FILE" 2>/dev/null || echo 0)
-  [[ -f "$VERDICT_FILE" ]]      && verdict_bytes=$(wc -c < "$VERDICT_FILE" 2>/dev/null || echo 0)
+  # C-01: zstat (builtin) instead of `wc -c < file` in $(...)
+  # (_sz is reset before every stat: a failed zstat -A leaves the previous array intact, which would reuse the previous size)
+  [[ -f "$worker_prompt_file" ]] && { _sz=(); zstat -A _sz +size "$worker_prompt_file" 2>/dev/null; prompt_bytes=${_sz[1]:-0}; }
+  [[ -f "$DONE_CLAIM_FILE" ]]   && { _sz=(); zstat -A _sz +size "$DONE_CLAIM_FILE" 2>/dev/null; claim_bytes=${_sz[1]:-0}; }
+  [[ -f "$VERDICT_FILE" ]]      && { _sz=(); zstat -A _sz +size "$VERDICT_FILE" 2>/dev/null; verdict_bytes=${_sz[1]:-0}; }
 
   local estimated_tokens=$(( (prompt_bytes + claim_bytes + verdict_bytes) / 4 ))
 
@@ -2736,13 +2808,13 @@ write_cost_log() {
   local worker_start_time="" worker_end_time="" worker_duration_s=0
   local verifier_start_time="" verifier_end_time="" verifier_duration_s=0
   if [[ -n "${ITER_WORKER_START:-}" ]]; then
-    worker_start_time=$(date -u -r "$ITER_WORKER_START" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
-    worker_end_time=$(date -u -r "${ITER_WORKER_END:-$ITER_WORKER_START}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    [[ "$ITER_WORKER_START" == <-> ]] && { _rlp_utc_iso "$ITER_WORKER_START"; worker_start_time=$REPLY; } || worker_start_time=""
+    [[ "${ITER_WORKER_END:-$ITER_WORKER_START}" == <-> ]] && { _rlp_utc_iso "${ITER_WORKER_END:-$ITER_WORKER_START}"; worker_end_time=$REPLY; } || worker_end_time=""
     worker_duration_s=$(( ${ITER_WORKER_END:-$ITER_WORKER_START} - ITER_WORKER_START ))
   fi
   if [[ -n "${ITER_VERIFIER_START:-}" ]]; then
-    verifier_start_time=$(date -u -r "$ITER_VERIFIER_START" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
-    verifier_end_time=$(date -u -r "${ITER_VERIFIER_END:-$ITER_VERIFIER_START}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    [[ "$ITER_VERIFIER_START" == <-> ]] && { _rlp_utc_iso "$ITER_VERIFIER_START"; verifier_start_time=$REPLY; } || verifier_start_time=""
+    [[ "${ITER_VERIFIER_END:-$ITER_VERIFIER_START}" == <-> ]] && { _rlp_utc_iso "${ITER_VERIFIER_END:-$ITER_VERIFIER_START}"; verifier_end_time=$REPLY; } || verifier_end_time=""
     verifier_duration_s=$(( ${ITER_VERIFIER_END:-$ITER_VERIFIER_START} - ITER_VERIFIER_START ))
   fi
 
@@ -2763,7 +2835,8 @@ write_cost_log() {
     cost_note="no_actual_usage_recorded"
   fi
 
-  echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","us_id":"'"$cost_us_id"'","worker_model":"'"$cost_worker_model"'","worker_engine":"'"$cost_worker_engine"'","worker_effort":"'"$cost_worker_effort"'","verifier_engine":"'"$cost_verifier_engine"'","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"worker_start_time":"'"$worker_start_time"'","worker_end_time":"'"$worker_end_time"'","worker_duration_s":'"$worker_duration_s"',"verifier_start_time":"'"$verifier_start_time"'","verifier_end_time":"'"$verifier_end_time"'","verifier_duration_s":'"$verifier_duration_s"''"$consensus_fields"',"note":"'"$cost_note"'","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' >> "$COST_LOG"
+  local _now_iso; _rlp_utc_iso "$EPOCHSECONDS"; _now_iso=$REPLY
+  echo '{"iteration":'"$iter"',"estimated_tokens":'"$estimated_tokens"',"token_source":"estimated","us_id":"'"$cost_us_id"'","worker_model":"'"$cost_worker_model"'","worker_engine":"'"$cost_worker_engine"'","worker_effort":"'"$cost_worker_effort"'","verifier_engine":"'"$cost_verifier_engine"'","prompt_bytes":'"$prompt_bytes"',"claim_bytes":'"$claim_bytes"',"verdict_bytes":'"$verdict_bytes"',"worker_start_time":"'"$worker_start_time"'","worker_end_time":"'"$worker_end_time"'","worker_duration_s":'"$worker_duration_s"',"verifier_start_time":"'"$verifier_start_time"'","verifier_end_time":"'"$verifier_end_time"'","verifier_duration_s":'"$verifier_duration_s"''"$consensus_fields"',"note":"'"$cost_note"'","timestamp":"'"$_now_iso"'"}' >> "$COST_LOG"
 }
 
 # codex round 2 R2-3: set on EVERY write_campaign_jsonl call (success or
@@ -2904,12 +2977,13 @@ generate_campaign_report() {
     # JSON sidecar + status + console + report. Pull both Reason and
     # Category lines for the report. Tolerate legacy sentinels missing
     # either field (back-compat).
-    blocked_reason=$(grep -m1 -E '^[Rr]eason:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
-      | sed -E 's/^[Rr]eason:[[:space:]]*//' \
-      || true)
-    blocked_category=$(grep -m1 -E '^[Cc]ategory:[[:space:]]*' "$BLOCKED_SENTINEL" 2>/dev/null \
-      | sed -E 's/^[Cc]ategory:[[:space:]]*//' \
-      || true)
+    # C-01: first matching line of each, in-process (was grep | sed in $(...): 4 forks)
+    # (grep -m1 semantics: the FIRST matching line decides, even when its value is empty; `|| [[ -n ]]` keeps an unterminated last line)
+    local _bl _brf=0 _bcf=0
+    while IFS= read -r _bl || [[ -n "$_bl" ]]; do
+      if (( ! _brf )) && [[ "$_bl" =~ '^[Rr]eason:[[:space:]]*(.*)$' ]]; then blocked_reason="${match[1]}"; _brf=1; fi
+      if (( ! _bcf )) && [[ "$_bl" =~ '^[Cc]ategory:[[:space:]]*(.*)$' ]]; then blocked_category="${match[1]}"; _bcf=1; fi
+    done < "$BLOCKED_SENTINEL" 2>/dev/null
   # A-5 (reaudit wave 1, round 2): SIGNAL_RECEIVED (run_ralph_desk.zsh global,
   # shared into this sourced-in process) is set by _on_signal before it calls
   # the cleanup chain — distinguishes an INT/TERM/HUP-driven exit from a
@@ -2927,7 +3001,7 @@ generate_campaign_report() {
   # without this the write below would fail silently (log line below would
   # then be inaccurate). Idempotent/harmless on every other call path where
   # LOGS_DIR already exists.
-  mkdir -p "$LOGS_DIR" 2>/dev/null
+  zf_mkdir -p "$LOGS_DIR" 2>/dev/null
 
   local report_file="$LOGS_DIR/campaign-report.md"
 
@@ -2935,25 +3009,31 @@ generate_campaign_report() {
   if [[ -f "$report_file" ]]; then
     local v=1
     while [[ -f "${report_file%.md}-v${v}.md" ]]; do (( v++ )); done
-    mv "$report_file" "${report_file%.md}-v${v}.md"
+    zf_mv "$report_file" "${report_file%.md}-v${v}.md"
   fi
 
-  local end_time
-  end_time=$(date +%s)
+  # C-01: this function runs on the signal path (INSIDE zsh's signal handler), where any fork that
+  # redirects fds ($(...), pipes, cmd 2>/dev/null) can deadlock. Builtins only here; the git/jq work
+  # goes through _sigsafe_sh (clean child, plain exec) writing to temp files that we read with $(<f).
+  local _rt="$LOGS_DIR/report.$$.tmp"
+  local end_time=$EPOCHSECONDS
   local elapsed=$(( end_time - START_TIME ))
 
   local baseline_commit_val="${BASELINE_COMMIT:-none}"
   local files_changed=""
-  if [[ "$baseline_commit_val" != "none" ]]; then
-    files_changed=$(git -C "$ROOT" diff --stat "${baseline_commit_val}" 2>/dev/null || echo "(git diff unavailable)")
-  elif git -C "$ROOT" rev-parse HEAD &>/dev/null; then
-    files_changed=$(git -C "$ROOT" diff --stat HEAD 2>/dev/null || echo "(git diff unavailable)")
-  else
-    files_changed="(no commits in repo — cannot diff)"
-  fi
+  # Both git results are captured BEFORE either temp file is created, so the untracked listing can never contain our own temps.
+  _sigsafe_sh '
+    if [ "$2" != none ]; then d=$(git -C "$1" diff --stat "$2" 2>/dev/null) || d="(git diff unavailable)"
+    elif git -C "$1" rev-parse HEAD >/dev/null 2>&1; then d=$(git -C "$1" diff --stat HEAD 2>/dev/null) || d="(git diff unavailable)"
+    else d="(no commits in repo — cannot diff)"; fi
+    u=$(git -C "$1" ls-files --others --exclude-standard 2>/dev/null | head -20)
+    print -rn -- "$d" > "$3"; print -rn -- "$u" > "$4"
+  ' zsh "$ROOT" "$baseline_commit_val" "$_rt.diff" "$_rt.untracked"
+  files_changed=$(<"$_rt.diff")
   # Include untracked new files
   local untracked
-  untracked=$(git -C "$ROOT" ls-files --others --exclude-standard 2>/dev/null | head -20)
+  untracked=$(<"$_rt.untracked")
+  zf_rm -f "$_rt.diff" "$_rt.untracked" 2>/dev/null
   if [[ -n "$untracked" ]]; then
     files_changed="${files_changed}
 
@@ -2963,8 +3043,9 @@ ${untracked}"
 
   local sv_summary=""
   if (( WITH_SELF_VERIFICATION )); then
-    local sv_report
-    sv_report=$(ls -t "$LOGS_DIR"/self-verification-report-*.md 2>/dev/null | head -1)
+    local sv_report; local -a _svr
+    _svr=( "$LOGS_DIR"/self-verification-report-*.md(Nom[1]) )   # C-01: newest-first by mtime (was ls -t | head -1); om = newest first, Om would be the OLDEST
+    sv_report="${_svr[1]:-}"
     if [[ -n "$sv_report" ]]; then
       sv_summary="See: $sv_report"
     else
@@ -2976,15 +3057,22 @@ ${untracked}"
     sv_summary="N/A — --with-self-verification not enabled"
   fi
 
+  local _gen_iso _gcr_failed=0; _rlp_utc_iso "$EPOCHSECONDS"; _gen_iso=$REPLY
+  {   # try block: HEAD ran this body in a pipeline subshell, where a fatal error (set -u) lost only the subshell; see `always` below
   {
     echo "# Campaign Report: $SLUG"
     echo ""
-    echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ) | Status: $final_status | Iterations: $ITERATION"
+    echo "Generated: $_gen_iso | Status: $final_status | Iterations: $ITERATION"
     echo ""
     echo "## Objective"
     local prd_file="$DESK/plans/prd-$SLUG.md"
     if [[ -f "$prd_file" ]]; then
-      grep '^## Objective' -A3 "$prd_file" 2>/dev/null | tail -n +2 | head -3
+      # C-01: first "## Objective" heading + the 3 lines after it, in-process (was grep -A3 | tail | head)
+      local _ol _oseen=0 _on=0
+      while IFS= read -r _ol || [[ -n "$_ol" ]]; do
+        if (( _oseen )); then print -r -- "$_ol"; (( ++_on >= 3 )) && break
+        elif [[ "$_ol" == "## Objective"* ]]; then _oseen=1; fi
+      done < "$prd_file"
     else
       echo "(PRD not found)"
     fi
@@ -3010,22 +3098,30 @@ ${untracked}"
     echo "## Verification Results"
     local ri=1
     local us_id
+    # C-01: one clean child runs the $(jq) per done-claim and writes the us_ids, NUL-terminated and in file order (no key, no
+    # delimiter a path or a value could contain); they are read back in order and paired with the file list.
+    local -a _dcf=() _uus=()
     while (( ri <= ITERATION )); do
-      local iter_dc="$LOGS_DIR/iter-$(printf '%03d' $ri)-done-claim.json"
-      if [[ -f "$iter_dc" ]]; then
-        us_id=$(jq -r '.us_id // "unknown"' "$iter_dc" 2>/dev/null)
-        echo "- $(basename "$iter_dc"): us_id=$us_id"
-      fi
+      _rlp_pad3 "$ri"
+      [[ -f "$LOGS_DIR/iter-${REPLY}-done-claim.json" ]] && _dcf+=( "$LOGS_DIR/iter-${REPLY}-done-claim.json" )
       (( ri++ ))
     done
+    if (( ${#_dcf} )); then
+      _sigsafe_sh 'out=$1; shift; for f in "$@"; do printf "%s\0" "$(jq -r "(.us_id // \"unknown\") | if type == \"string\" then . else tojson end | gsub(\"\\u0000\"; \"\")" "$f" 2>/dev/null)"; done > "$out"' zsh "$_rt.us" "${_dcf[@]}"
+      local _uu _uk
+      while IFS= read -r -d '' _uu; do _uus+=( "$_uu" ); done < "$_rt.us"
+      zf_rm -f "$_rt.us" 2>/dev/null
+      _uk=1
+      while (( _uk <= ${#_dcf} )); do echo "- ${_dcf[_uk]:t}: us_id=${_uus[_uk]-}"; (( _uk++ )); done
+    fi
     echo ""
     echo "## Issues Encountered"
     local fi_found=0
     local fi_i=1
     while (( fi_i <= ITERATION )); do
-      local fix_f="$LOGS_DIR/iter-$(printf '%03d' $fi_i).fix-contract.md"
+      _rlp_pad3 "$fi_i"; local fix_f="$LOGS_DIR/iter-${REPLY}.fix-contract.md"
       if [[ -f "$fix_f" ]]; then
-        echo "- $(basename "$fix_f")"
+        echo "- ${fix_f:t}"
         fi_found=1
       fi
       (( fi_i++ ))
@@ -3046,15 +3142,37 @@ ${untracked}"
       local unknown_family_seen=0
       typeset -A final_model_by_us
       local -a final_model_us_order
-      local line t row_worker_model row_worker_engine row_worker_effort row_us_id
-      while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
+      local t row_worker_model row_worker_engine row_worker_effort row_us_id
+      # C-01: ONE clean-child jq pass emits the five fields of every non-empty line, each NUL-terminated (no delimiter a value
+      # can contain; a newline or any text in a field stays inside that field). Every row yields exactly five fields: a row that
+      # is not JSON, not an object, or whose fields are not scalars degrades per field (tojson text / the old defaults) instead
+      # of vanishing, so tokens and row counts match the per-row `jq ... || echo 0` fallbacks this replaces.
+      local _ct="$_rt.cost"
+      local _jqc='def s: (if type == "string" then . else tojson end) | gsub("\u0000"; "");   # a NUL inside a value would shift the framing
+select(length > 0)
+| ((try fromjson catch {}) as $r
+   | try [($r.estimated_tokens // 0), ($r.worker_model // ""), ($r.worker_engine // ""), ($r.worker_effort // ""), ($r.us_id // "unknown")]
+     catch ["0", "", "", "", "unknown"])
+| .[] | s, "\u0000"'
+      _sigsafe_sh 'jq -Rj "$3" "$1" > "$2" 2>/dev/null' zsh "$COST_LOG" "$_ct" "$_jqc"
+      # C-01: _cost_factor_x100 forks jq 2-3x per codex row; compute each distinct codex model's factor ONCE in a
+      # clean child (it re-defines the very same function body, so the lookup semantics are unchanged). Output: NUL-terminated
+      # triples model, factor, unknown-flag; the parent looks a model up by exact string comparison.
+      local _cf="$_rt.cf" _cfq='select(length > 0) | (try fromjson catch {}) | try (select(.worker_engine == "codex") | (.worker_model // empty) | if type == "string" then . else tojson end | gsub("\u0000"; "")) catch empty | ., "\u0000"'
+      local -a _cfm=() _cfx=() _cfu=()
+      _sigsafe_sh '_cost_factor_x100() {
+'"${functions[_cost_factor_x100]}"'
+}
+LIB_DIR=$1; typeset -a ms; while IFS= read -r -d "" m; do ms+=("$m"); done < <(jq -Rj "$4" "$2" 2>/dev/null)
+for m in "${(@u)ms}"; do _cost_factor_x100 "$m"; printf "%s\0%s\0%s\0" "$m" "$_COST_FACTOR_X100" "$_COST_FACTOR_LAST_UNKNOWN"; done > "$3"' zsh "$LIB_DIR" "$COST_LOG" "$_cf" "$_cfq"
+      local _cm _cx _cu _ck
+      while IFS= read -r -d '' _cm && IFS= read -r -d '' _cx && IFS= read -r -d '' _cu; do _cfm+=( "$_cm" ); _cfx+=( "$_cx" ); _cfu+=( "$_cu" ); done < "$_cf"
+      zf_rm -f "$_cf" 2>/dev/null
+      while IFS= read -r -d '' t && IFS= read -r -d '' row_worker_model && IFS= read -r -d '' row_worker_engine && IFS= read -r -d '' row_worker_effort && IFS= read -r -d '' row_us_id; do
         (( raw_rows++ ))
-        t=$(echo "$line" | jq -r '.estimated_tokens // 0' 2>/dev/null || echo 0)
         [[ "$t" =~ ^-?[0-9]+$ ]] || t=0
         total_tokens=$(( total_tokens + t ))
 
-        row_worker_model=$(echo "$line" | jq -r '.worker_model // ""' 2>/dev/null)
         # LOW-2 (SV gate): this leader's "unattributed" PREDICATE is
         # "worker_model is absent/empty" — every row in cost-log.jsonl is a
         # real worker-dispatch record (this file has no non-dispatch event
@@ -3080,16 +3198,19 @@ ${untracked}"
           continue
         fi
         (( attributed_rows++ ))
-        row_worker_engine=$(echo "$line" | jq -r '.worker_engine // ""' 2>/dev/null)
-        row_worker_effort=$(echo "$line" | jq -r '.worker_effort // ""' 2>/dev/null)
-        row_us_id=$(echo "$line" | jq -r '.us_id // "unknown"' 2>/dev/null)
 
         if [[ "$row_worker_engine" == "codex" ]]; then
           # C1 rounding contract: accumulate estimated_tokens × factor_x1000
           # (integer) across ALL codex rows and divide by 1000 exactly ONCE,
           # after the loop — never per-row. Per-row division would truncate
           # small rows (e.g. 10 luna tokens × 0.055) to zero (RC-12/F11).
-          _cost_factor_x100 "$row_worker_model"
+          # C-01: precomputed above (exact string match; unknown model = the resolver's own default)
+          _COST_FACTOR_X100=1000; _COST_FACTOR_LAST_UNKNOWN=1
+          _ck=1
+          while (( _ck <= ${#_cfm} )); do
+            [[ "${_cfm[_ck]}" == "$row_worker_model" ]] && { _COST_FACTOR_X100=${_cfx[_ck]}; _COST_FACTOR_LAST_UNKNOWN=${_cfu[_ck]}; break; }
+            (( _ck++ ))
+          done
           codex_sol_x100_sum=$(( codex_sol_x100_sum + t * _COST_FACTOR_X100 ))
           (( _COST_FACTOR_LAST_UNKNOWN )) && unknown_family_seen=1
         elif [[ "$row_worker_engine" == "claude" ]]; then
@@ -3119,7 +3240,8 @@ ${untracked}"
         else
           final_model_by_us[$row_us_id]="$row_worker_model"
         fi
-      done < "$COST_LOG"
+      done < "$_ct"
+      zf_rm -f "$_ct" 2>/dev/null
 
       local codex_sol_equivalent=$(( codex_sol_x100_sum / 1000 ))
       echo "- Codex legs sol-equivalent: ${codex_sol_equivalent} tokens  (factors relative to gpt-5.6-sol = 1.0: gpt-6.1-sol 0.5 / gpt-5.6-terra 0.55 / gpt-6-luna 0.025 / gpt-5.6-luna 0.055)"
@@ -3134,7 +3256,10 @@ ${untracked}"
       # one (G1-3 "Escalation count" derivation).
       local status_model_upgraded=""
       if [[ -n "${STATUS_FILE:-}" && -f "${STATUS_FILE:-/nonexistent}" ]]; then
-        status_model_upgraded=$(jq -r '.model_upgraded // empty' "$STATUS_FILE" 2>/dev/null)
+        # C-01: a `$(jq ...)` here is a redirected fork on the signal path (status.json exists in every real campaign): clean child.
+        _sigsafe_sh 'jq -r ".model_upgraded // empty" "$1" > "$2" 2>/dev/null' zsh "$STATUS_FILE" "$_rt.status"
+        [[ -r "$_rt.status" ]] && status_model_upgraded=$(<"$_rt.status")
+        zf_rm -f "$_rt.status" 2>/dev/null
       fi
       if [[ -n "$status_model_upgraded" ]]; then
         local status_saw_upgrade=0 cost_log_saw_upgrade=0
@@ -3200,9 +3325,23 @@ ${untracked}"
       echo "- Check the working tree and last iteration's committed state before resuming"
       echo "- Re-run with the same slug to resume the campaign from where it left off"
     fi
-  } | atomic_write "$report_file"
+  } >| "$report_file.tmp.$$" && zf_mv "$report_file.tmp.$$" "$report_file"   # C-01: builtin redirect + zf_mv (was a pipe to atomic_write: fork)
+  } always {
+    if (( TRY_BLOCK_ERROR )); then
+      # HEAD parity: its pipeline subshell died but atomic_write still published the partial output, so publish the partial temp here too;
+      # the error is logged and there is no "Campaign report written" line (it would be a false success).
+      local _pub="NOT published (the rename failed or there was nothing to publish)"
+      [[ -e "$report_file.tmp.$$" ]] && zf_mv "$report_file.tmp.$$" "$report_file" 2>/dev/null && _pub="published"
+      log_error "campaign report generation aborted by an error inside the report body (see the message above); partial report $_pub"
+      TRY_BLOCK_ERROR=0   # swallow it: cleanup continues exactly as it did when the body was a subshell
+      _gcr_failed=1
+    fi
+    # atomic_write removed its temp file when the write or the rename failed; so do we, and nothing of ours may outlive this call.
+    [[ -e "$report_file.tmp.$$" ]] && zf_rm -f "$report_file.tmp.$$" 2>/dev/null
+    local -a _lit=( "$_rt".*(N) ); (( ${#_lit} )) && zf_rm -f "${_lit[@]}" 2>/dev/null
+  }
 
-  log "Campaign report written: $report_file"
+  (( _gcr_failed )) || log "Campaign report written: $report_file"
 }
 
 generate_sv_report() {

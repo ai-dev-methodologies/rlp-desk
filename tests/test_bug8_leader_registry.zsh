@@ -63,6 +63,7 @@ trap 'rm -rf "$TMP" "$EXTRACT"' EXIT
   awk '/^register_leader\(\)/,/^}$/'            "$LIB"
   awk '/^unregister_leader\(\)/,/^}$/'          "$LIB"
   awk '/^_leader_registry_foreign_live\(\)/,/^}$/' "$LIB"
+  sh "${0:A:h}/fixtures/forksafe-helpers.sh" "$LIB"   # C-01: unregister_leader uses zf_rm (zsh/files)
 } > "$EXTRACT/h.zsh"
 for fn in _bug8_check_synth_allowed _git_dirty_base _git_dirty_names atomic_write \
           _leader_registry_dir register_leader unregister_leader \

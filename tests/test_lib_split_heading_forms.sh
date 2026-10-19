@@ -144,7 +144,14 @@ print -r -- "$(_extract_fn "_prd_us_set" "$LIB")" | grep -q 'RLP_US_HEADING_ERE_
   || { print -u2 "FAIL: _prd_us_set does not reference RLP_US_HEADING_ERE_PRD"; exit 1; }
 grep -q 'US_LIST=\$(grep -oE "\$RLP_US_HEADING_ERE_PRD"' "$RUN" \
   || { print -u2 "FAIL: run_ralph_desk.zsh's US_LIST derivation does not reference RLP_US_HEADING_ERE_PRD"; exit 1; }
-grep -q 'expected_us=\$(grep -oE "\$RLP_US_HEADING_ERE_PRD"' "$RUN" \
+# C-01: the DEBUG per-US diagnostic now derives expected_us inside the signal-path clean child: the shared constant is
+# passed as $2 of _sigsafe_sh and the child greps with it (was expected_us=$(grep -oE "$RLP_US_HEADING_ERE_PRD" ...)).
+# The whole chain must be intact: constant -> child grep -> temp file -> _dbg_v -> expected_us (the runtime check is the
+# "per_us_coverage ... verified=2/2" assertion in test_signal_deadlock.zsh, which needs the dash-form heading to count).
+grep -q 'prd-\$SLUG.md" "\$RLP_US_HEADING_ERE_PRD" "\$DEBUG_LOG" "\$_dbg_t"' "$RUN" \
+  && grep -q 'e=\$(grep -oE "\$2" "\$1"' "$RUN" \
+  && grep -qF '_dbg_v=( "${(@f)$(<"$_dbg_t")}" )' "$RUN" \
+  && grep -qF 'expected_us="${_dbg_v[1]:-}"' "$RUN" \
   || { print -u2 "FAIL: run_ralph_desk.zsh's expected_us (per-US coverage diagnostic) does not reference RLP_US_HEADING_ERE_PRD"; exit 1; }
 print -r -- "$(_extract_fn "_extract_prd_us_list" "$LIB")" | grep -q 'RLP_US_HEADING_ERE_PRD_LIST' \
   || { print -u2 "FAIL: _extract_prd_us_list does not reference the PERMISSIVE RLP_US_HEADING_ERE_PRD_LIST constant"; exit 1; }

@@ -26,6 +26,10 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 # --- Extract the REAL implementation --------------------------------------
 EX="$TMP/extract.zsh"
 {
+  # C-01: _untracked_names runs git via the lib's fork-safe _sigsafe_sh and removes its temp file with zf_rm.
+  print -r -- 'zmodload -F zsh/files b:zf_rm 2>/dev/null'
+  grep '^_sigsafe_sh()'                          "$LIB"
+  grep '^typeset -g _UNTRACKED_NAMES='           "$RUN"
   awk '/^_untracked_names\(\)/,/^}$/'            "$RUN"
   awk '/^_untracked_snapshot_t0\(\)/,/^}$/'      "$RUN"
   awk '/^_untracked_complete_warning\(\)/,/^}$/' "$RUN"

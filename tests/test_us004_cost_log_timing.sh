@@ -8,6 +8,7 @@
 
 RUN="${RUN:-src/scripts/run_ralph_desk.zsh}"
 LIB="${LIB:-src/scripts/lib_ralph_desk.zsh}"
+FORKSAFE_HELPERS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/forksafe-helpers.sh"
 PASS=0; FAIL=0
 
 pass() { echo "  PASS: $1"; (( PASS++ )); }
@@ -73,6 +74,7 @@ ITER_VERIFIER_CLAUDE_DURATION_S="$claude_dur"
 ITER_VERIFIER_CODEX_DURATION_S="$codex_dur"
 HARNESS
 
+  sh "$FORKSAFE_HELPERS" "$LIB" >> "$dir/h.zsh"   # C-01: write_cost_log now calls the lib fork-free helpers
   printf '%s\n' "$WCL_BODY" >> "$dir/h.zsh"
   printf 'write_cost_log 1\n' >> "$dir/h.zsh"
 
@@ -94,6 +96,7 @@ DONE_CLAIM_FILE=""
 VERDICT_FILE=""
 HARNESS
 
+  sh "$FORKSAFE_HELPERS" "$LIB" >> "$dir/h.zsh"   # C-01: write_cost_log now calls the lib fork-free helpers
   printf '%s\n' "$WCL_BODY" >> "$dir/h.zsh"
   printf 'write_cost_log 1\n' >> "$dir/h.zsh"
 
@@ -160,6 +163,7 @@ ITER_VERIFIER_CODEX_DURATION_S=""
 HARNESS
 
   sed -i.bak "s|__LOGS__|$logs|;s|__COSTLOG__|$cost_log|" "$dir/h.zsh"
+  sh "$FORKSAFE_HELPERS" "$LIB" >> "$dir/h.zsh"   # C-01: write_cost_log now calls the lib fork-free helpers
   printf '%s\n' "$WCL_BODY" >> "$dir/h.zsh"
   printf 'write_cost_log 1\n' >> "$dir/h.zsh"
 
@@ -431,6 +435,7 @@ ITER_VERIFIER_CLAUDE_DURATION_S=""
 ITER_VERIFIER_CODEX_DURATION_S=""
 HARNESS
 
+  sh "$FORKSAFE_HELPERS" "$LIB" >> "$dir/h.zsh"   # C-01: write_cost_log now calls the lib fork-free helpers
   printf '%s\n' "$WCL_BODY" >> "$dir/h.zsh"
   cat >> "$dir/h.zsh" << HARNESS
 write_cost_log 1

@@ -298,6 +298,10 @@ _validate_int_knob RLP_SHELL_READY_TIMEOUT_S 8 1
 # launches fail-open after the timeout (the echo-verify still guards).
 RLP_SHELL_READY_CMDS="${RLP_SHELL_READY_CMDS:-zsh|bash}"
 
+# C-01: tmux with its stderr silenced for the signal path (cleanup). It runs via a clean child (_sigsafe_sh, lib):
+# the `2>/dev/null` redirect is performed by the exec'd shell, never by a forked child of the interrupted leader.
+_sigsafe_tmux() { _sigsafe_sh 'exec tmux "$@" 2>/dev/null' zsh "$@"; }
+
 # US-021 R9 P2-I: track repeated same-reason blocks. infra_failure category and
 # the very first iteration are exempt (mission setup blocks shouldn't trip
 # the abort). Returns 0 if loop should continue, 1 (after writing
@@ -364,13 +368,9 @@ _emit_launch_record_outcome() {
   if [[ -z "${LAUNCH_RECORD_FILE:-}" || ! -f "$LAUNCH_RECORD_FILE" ]]; then
     return 0
   fi
-  local ts
-  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  jq --arg ts "$ts" --argjson exit_code "$exit_code" \
-    '.phase = "exited" | .exited_at = $ts | .exit_code = $exit_code' \
-    "$LAUNCH_RECORD_FILE" > "${LAUNCH_RECORD_FILE}.tmp.$$" 2>/dev/null \
-    && mv "${LAUNCH_RECORD_FILE}.tmp.$$" "$LAUNCH_RECORD_FILE" 2>/dev/null
-  rm -f "${LAUNCH_RECORD_FILE}.tmp.$$" 2>/dev/null
+  # C-01: signal-path safe: strftime (builtin) for the timestamp; jq+mv run in a clean child via _sigsafe_sh.
+  local ts; _rlp_utc_iso "$EPOCHSECONDS"; ts=$REPLY
+  _sigsafe_sh 'jq --arg ts "$1" --argjson exit_code "$2" ".phase = \"exited\" | .exited_at = \$ts | .exit_code = \$exit_code" "$3" > "$3.tmp.$4" 2>/dev/null && mv "$3.tmp.$4" "$3" 2>/dev/null; rm -f "$3.tmp.$4" 2>/dev/null' zsh "$ts" "$exit_code" "$LAUNCH_RECORD_FILE" "$$"
   return 0
 }
 
@@ -4621,15 +4621,31 @@ TRIGGER_EOF
 # returns non-zero (prints nothing) when $1 is not a git work tree or git
 # errors. Deliberately NOT _git_snapshot: that helper sleeps 2s and logs to
 # stderr on failure, and this check is advisory — a git failure skips it.
+#
+# C-01: this is also reached from the signal path (cleanup -> _untracked_complete_warning), where a
+# redirected fork ($(...), pipe, `cmd 2>/dev/null`) can deadlock; git therefore runs in a clean child
+# (_sigsafe_sh) that writes the NUL-separated list to a temp file read back in-process with $(<f). The result
+# is ALSO left in $_UNTRACKED_NAMES so a signal-path caller can skip the $(...) around this function.
+typeset -g _UNTRACKED_NAMES=""
 _untracked_names() {
-  local root="$1" desk="$2" _raw _rel=""
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
-  _raw=$(git -C "$root" ls-files --others --exclude-standard -z 2>/dev/null) || return 1
+  local root="$1" desk="$2" _raw="" _rel="" _rc _d="${LOGS_DIR:-}"
+  [[ -d "$_d" ]] || _d="${TMPDIR:-/tmp}"
+  local _t="$_d/untracked.$$.tmp.names"   # not a dot name: cleanup's *.tmp.* sweep covers it
+  _UNTRACKED_NAMES=""
+  # The list is captured into a variable BEFORE the temp file is created, so it can never list its own temp file.
+  _sigsafe_sh 'git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 1
+u=$(git -C "$1" ls-files --others --exclude-standard -z 2>/dev/null) || exit 1
+print -rn -- "$u" > "$2"' zsh "$root" "$_t"
+  _rc=$?
+  [[ -r "$_t" ]] && _raw=$(<"$_t")
+  zf_rm -f "$_t" 2>/dev/null
+  (( _rc == 0 )) || return 1
   [[ "$desk" == "$root"/* ]] && _rel="${desk#$root/}"
   local -a _arr=("${(@0)_raw}")
   _arr=("${_arr[@]:#}")
   [[ -n "$_rel" ]] && _arr=("${_arr[@]:#${_rel}/*}")
-  print -rn -- "${(F)${(@o)_arr}}"
+  _UNTRACKED_NAMES="${(F)${(@o)_arr}}"
+  print -rn -- "$_UNTRACKED_NAMES"
   return 0
 }
 
@@ -4660,10 +4676,13 @@ _untracked_complete_warning() {
   (( ${CAMPAIGN_UNTRACKED_SNAPSHOT_OK:-0} )) || return 0
   [[ -f "$COMPLETE_SENTINEL" ]] || return 0
   local _now
-  if ! _now=$(_untracked_names "$ROOT" "$DESK"); then
+  # C-01: no $(...) here (a redirected fork on the signal path): _untracked_names leaves its result in
+  # $_UNTRACKED_NAMES; the function-call redirect below is applied in-process, not in a forked child.
+  if ! _untracked_names "$ROOT" "$DESK" >/dev/null; then
     log_debug "[F5] untracked COMPLETE check skipped (git error)"
     return 0
   fi
+  _now="$_UNTRACKED_NAMES"
   local -a _cur=("${(@f)_now}") _pre=("${(@f)CAMPAIGN_PREEXISTING_UNTRACKED}") _new
   _cur=("${_cur[@]:#}"); _pre=("${_pre[@]:#}")
   _new=("${(@)_cur:|_pre}")
@@ -4727,7 +4746,7 @@ cleanup() {
 
   # Remove lockfile
   if (( LOCKFILE_ACQUIRED )); then
-    rm -f "$LOCKFILE_PATH" 2>/dev/null
+    zf_rm -f "$LOCKFILE_PATH" 2>/dev/null
   else
     log_debug "cleanup: lockfile not owned by this process, skipping removal"
   fi
@@ -4737,10 +4756,10 @@ cleanup() {
   # pid match — remove the lock file, the metadata sidecar, and the recovery mutex.
   if [[ -f "$RUNNER_LOCKFILE_PATH" ]]; then
     local own_pid
-    own_pid=$(cat "$RUNNER_LOCKFILE_PATH" 2>/dev/null)
+    own_pid=$(<"$RUNNER_LOCKFILE_PATH") 2>/dev/null   # C-01: $(<file) reads in-process (was $(cat ...): fork)
     if [[ "$own_pid" == "$$" ]]; then
-      rm -f "$RUNNER_LOCKFILE_PATH" "${RUNNER_LOCKFILE_PATH}.meta" 2>/dev/null
-      rm -rf "${RUNNER_LOCKFILE_PATH}.recovery.d" 2>/dev/null
+      zf_rm -f "$RUNNER_LOCKFILE_PATH" "${RUNNER_LOCKFILE_PATH}.meta" 2>/dev/null
+      zf_rm -rf "${RUNNER_LOCKFILE_PATH}.recovery.d" 2>/dev/null
     fi
   fi
 
@@ -4753,12 +4772,12 @@ cleanup() {
   # Kill claude processes then kill panes
   log_debug "cleanup: WORKER_PANE=${WORKER_PANE:-unset} VERIFIER_PANE=${VERIFIER_PANE:-unset} CONSENSUS_PANE=${CONSENSUS_PANE:-unset}"
   if [[ -n "${WORKER_PANE:-}" ]]; then
-    tmux send-keys -t "$WORKER_PANE" C-c 2>/dev/null
-    tmux send-keys -t "$WORKER_PANE" "/exit" C-m 2>/dev/null
+    _sigsafe_tmux send-keys -t "$WORKER_PANE" C-c
+    _sigsafe_tmux send-keys -t "$WORKER_PANE" "/exit" C-m
   fi
   if [[ -n "${VERIFIER_PANE:-}" ]]; then
-    tmux send-keys -t "$VERIFIER_PANE" C-c 2>/dev/null
-    tmux send-keys -t "$VERIFIER_PANE" "/exit" C-m 2>/dev/null
+    _sigsafe_tmux send-keys -t "$VERIFIER_PANE" C-c
+    _sigsafe_tmux send-keys -t "$VERIFIER_PANE" "/exit" C-m
   fi
   # IMP-02: the lazily-created 4th consensus pane (codex cross-verifier TUI) is a
   # lifecycle citizen too — without this teardown the codex TUI keeps running (and
@@ -4766,25 +4785,25 @@ cleanup() {
   # VERIFIER_PANE idiom exactly; guard on presence since the pane is absent for
   # most campaigns.
   if [[ -n "${CONSENSUS_PANE:-}" ]]; then
-    tmux send-keys -t "$CONSENSUS_PANE" C-c 2>/dev/null
-    tmux send-keys -t "$CONSENSUS_PANE" "/exit" C-m 2>/dev/null
+    _sigsafe_tmux send-keys -t "$CONSENSUS_PANE" C-c
+    _sigsafe_tmux send-keys -t "$CONSENSUS_PANE" "/exit" C-m
   fi
-  sleep 2
+  zselect -t 200   # C-01: 2s (centiseconds); was `sleep 2` (a fork/exec)
   # Kill panes on completion
   if [[ -n "${WORKER_PANE:-}" ]]; then
-    tmux kill-pane -t "$WORKER_PANE" 2>/dev/null
+    _sigsafe_tmux kill-pane -t "$WORKER_PANE"
   fi
   if [[ -n "${VERIFIER_PANE:-}" ]]; then
-    tmux kill-pane -t "$VERIFIER_PANE" 2>/dev/null
+    _sigsafe_tmux kill-pane -t "$VERIFIER_PANE"
   fi
   if [[ -n "${CONSENSUS_PANE:-}" ]]; then
-    tmux kill-pane -t "$CONSENSUS_PANE" 2>/dev/null
+    _sigsafe_tmux kill-pane -t "$CONSENSUS_PANE"
   fi
   log "  Panes cleaned up."
 
   # Remove any leftover tmp files (setopt nonomatch to avoid zsh glob errors)
   setopt local_options nonomatch 2>/dev/null
-  rm -f "$LOGS_DIR"/*.tmp.* "$MEMOS_DIR"/*.tmp.* 2>/dev/null
+  zf_rm -f "$LOGS_DIR"/*.tmp.* "$MEMOS_DIR"/*.tmp.* 2>/dev/null
 
   # Round-2 follow-up (trap-arm relocation review): a duplicate-runner exit
   # (another leader already holds RUNNER_LOCKFILE_PATH or LOCKFILE_PATH) now
@@ -4824,8 +4843,7 @@ cleanup() {
   fi
 
   # Print summary
-  local end_time
-  end_time=$(date +%s)
+  local end_time=$EPOCHSECONDS   # C-01: was $(date +%s)
   local elapsed=$(( end_time - START_TIME ))
   local minutes=$(( elapsed / 60 ))
   local seconds=$(( elapsed % 60 ))
@@ -4842,14 +4860,31 @@ cleanup() {
 
   # --- Update metadata.json with final status ---
   if (( ! _skip_campaign_artifacts )) && [[ -f "$METADATA_FILE" ]]; then
-    jq --arg status "$final_status" --arg end_time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '.campaign_status = $status | .end_time = $end_time' \
-      "$METADATA_FILE" > "${METADATA_FILE}.tmp" && mv "${METADATA_FILE}.tmp" "$METADATA_FILE"
+    local _end_iso; _rlp_utc_iso "$EPOCHSECONDS"; _end_iso=$REPLY
+    _sigsafe_sh 'jq --arg status "$1" --arg end_time "$2" ".campaign_status = \$status | .end_time = \$end_time" "$3" > "$3.tmp" && mv "$3.tmp" "$3"' zsh "$final_status" "$_end_iso" "$METADATA_FILE"
   fi
 
   if (( DEBUG )); then
-    local end_ts=$(date +%s)
+    local end_ts=$EPOCHSECONDS   # C-01: was $(date +%s) (a redirected fork on the signal path)
     local elapsed=$((end_ts - START_TIME))
+
+    # C-01: this block runs on the signal path too. Every grep/sort/tr/sed pipeline it needs runs in ONE clean
+    # child (_sigsafe_sh) that writes five lines (expected US list, then the four dispatch/fix/CB counts)
+    # to a temp file read back with $(<f); counts that were `grep -c ... || echo 0` are a plain 0 when
+    # nothing matches (the old form printed "0" twice there).
+    local _dbg_t="$LOGS_DIR/debug-flow.$$.tmp.out"   # matches cleanup's *.tmp.* sweep
+    local -a _dbg_v
+    _sigsafe_sh '
+      e=""; [ -f "$1" ] && e=$(grep -oE "$2" "$1" | grep -oE "US-[0-9]+" | sort -u | tr "\n" "," | sed "s/,\$//")
+      c() { n=$(grep -c "$1" "$2" 2>/dev/null); echo "${n:-0}"; }
+      { echo "$e"
+        c "\[FLOW\].*phase=worker.*dispatched=true" "$3"
+        c "\[FLOW\].*phase=verifier.*dispatched=true" "$3"
+        c "\[DECIDE\].*phase=fix_loop" "$3"
+        c "\[GOV\].*circuit_breaker=" "$3"
+      } > "$4" 2>/dev/null' zsh "$DESK/plans/prd-$SLUG.md" "$RLP_US_HEADING_ERE_PRD" "$DEBUG_LOG" "$_dbg_t"
+    [[ -r "$_dbg_t" ]] && _dbg_v=( "${(@f)$(<"$_dbg_t")}" )
+    zf_rm -f "$_dbg_t" 2>/dev/null
 
     log_debug "[FLOW] final status=$final_status iterations=$ITERATION elapsed=${elapsed}s"
 
@@ -4872,10 +4907,12 @@ cleanup() {
         # which this DEBUG-only diagnostic (per_us_coverage logging) missed when
         # US_LIST/count_prd_us were widened, so a dash-form or 2-hash PRD would
         # log a false per_us_coverage=INCOMPLETE even on a fully-covered campaign.
-        expected_us=$(grep -oE "$RLP_US_HEADING_ERE_PRD" "$prd_file" | grep -oE 'US-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//')
+        expected_us="${_dbg_v[1]:-}"   # C-01: computed by the clean child above (same grep|grep|sort|tr|sed pipeline)
       fi
-      local verified_count=$(echo "$VERIFIED_US" | tr ',' '\n' | grep -c 'US-' 2>/dev/null || echo 0)
-      local expected_count=$(echo "$expected_us" | tr ',' '\n' | grep -c 'US-' 2>/dev/null || echo 0)
+      # C-01: count comma-separated fields containing "US-" in-process (was echo|tr|grep -c in $(...))
+      local -a _vus=( ${(s:,:)VERIFIED_US} ) _eus=( ${(s:,:)expected_us} )
+      local verified_count=${#${(M)_vus:#*US-*}}
+      local expected_count=${#${(M)_eus:#*US-*}}
 
       if [[ "$final_status" = "COMPLETE" ]]; then
         if (( verified_count >= expected_count )); then
@@ -4898,16 +4935,16 @@ cleanup() {
     fi
 
     # 4. Engine match: did the configured engines actually run?
-    local worker_dispatches=$(grep -c '\[FLOW\].*phase=worker.*dispatched=true' "$DEBUG_LOG" 2>/dev/null || echo 0)
-    local verifier_dispatches=$(grep -c '\[FLOW\].*phase=verifier.*dispatched=true' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    local worker_dispatches="${_dbg_v[2]:-0}"
+    local verifier_dispatches="${_dbg_v[3]:-0}"
     log_debug "[FLOW] dispatches worker=$worker_dispatches verifier=$verifier_dispatches"
 
     # 5. Fix loops: how many fix contracts were generated?
-    local fix_count=$(grep -c '\[DECIDE\].*phase=fix_loop' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    local fix_count="${_dbg_v[4]:-0}"
     log_debug "[FLOW] fix_loops=$fix_count consecutive_failures=$CONSECUTIVE_FAILURES"
 
     # 6. Circuit breakers: any triggered?
-    local cb_count=$(grep -c '\[GOV\].*circuit_breaker=' "$DEBUG_LOG" 2>/dev/null || echo 0)
+    local cb_count="${_dbg_v[5]:-0}"
     log_debug "[FLOW] circuit_breakers_triggered=$cb_count"
 
     # 7. Overall result

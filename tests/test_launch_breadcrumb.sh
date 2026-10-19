@@ -28,6 +28,8 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 TMP_LIB="$TMP/launch-record-lib.zsh"
 awk '/^_write_launch_record_t0\(\)/,/^}/'     "$RUN" >  "$TMP_LIB"
 awk '/^_emit_launch_record_outcome\(\)/,/^}/' "$RUN" >> "$TMP_LIB"
+# C-01: _emit_launch_record_outcome runs on the signal path and calls the lib's fork-free helpers (real bodies, extracted).
+sh "$REPO/tests/fixtures/forksafe-helpers.sh" "$REPO/src/scripts/lib_ralph_desk.zsh" >> "$TMP_LIB"
 
 if [[ -s "$TMP_LIB" ]] && grep -q "_write_launch_record_t0" "$TMP_LIB" && grep -q "_emit_launch_record_outcome" "$TMP_LIB"; then
   ok "extracted both production functions from run_ralph_desk.zsh"
