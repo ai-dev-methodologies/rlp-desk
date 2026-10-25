@@ -25,6 +25,8 @@ Below: the native-mode dispatch (`--mode native`, via `Agent()`). `--mode tmux` 
 
 ## What's new
 
+**v0.28.0** — five opt-in Node commands (`trend`, `rule-pack`, `mutation`, `visual`, `speckit`), a fail-closed prompt auto-approve, echo-verified worker/verifier launches, and a leader that no longer deadlocks when INT/TERM/HUP arrives during output. See [Node CLI Tools](#node-cli-tools-opt-in).
+
 See [CHANGELOG.md](CHANGELOG.md) for the complete, version-by-version release notes.
 
 ## Deterministic Pre-Gates
@@ -289,6 +291,20 @@ When all US pass individually, the final ALL verify runs **sequentially per-US**
 /rlp-desk logs  <slug> [N]             Show iteration logs
 /rlp-desk clean <slug> [--kill-session] [--remove-worktree]  Reset for re-run
 ```
+
+### Node CLI Tools (opt-in)
+
+These run on demand and are never started by a campaign on their own. Invoke them with `node ~/.claude/ralph-desk/node/run.mjs <command>`:
+
+```
+trend [<slug>] [--json] [--last N] [--out <file>] [--dir <analytics-dir>]  Run-over-run campaign metrics (read-only)
+rule-pack <list|validate|apply> [options]                                   Domain rule packs rendered into the test-spec (first pack: finance)
+mutation <detect|run> [options]                                             Stryker / mutmut 3 / go-mutesting wrapper with a uniform score
+visual <detect|run> [options]                                               Wrapper around the project's own Playwright (baseline guard)
+speckit <spec.md> [--slug <slug>] [--out <file>] [--json]                   Draft a test-spec skeleton from a Spec Kit spec.md
+```
+
+Run any command with `--help` for its options and exit codes. The `mutation` and `visual` wrappers detect gate-gaming shortcuts; they are not a security boundary against deliberate same-user tampering, so CRITICAL work re-runs the gate in a fresh clone unless the owner waives it. The `finance` rule pack is engineering guidance, not a compliance certification. See the [Rule Pack Authoring Guide](docs/rlp-desk/rule-pack-authoring.md) and the [Visual Verification Guide](docs/rlp-desk/visual-verification-guide.md).
 
 ### Run Options
 
@@ -657,6 +673,8 @@ Five metrics are emitted per iteration:
 - [Architecture](docs/rlp-desk/architecture.md) — Design philosophy, Agent() and tmux execution modes
 - [Getting Started](docs/rlp-desk/getting-started.md) — Step-by-step tutorial with the calculator example
 - [Protocol Reference](docs/rlp-desk/protocol-reference.md) — Full protocol specification
+- [Rule Pack Authoring Guide](docs/rlp-desk/rule-pack-authoring.md) — write and apply domain rule packs
+- [Visual Verification Guide](docs/rlp-desk/visual-verification-guide.md) — Playwright screenshot verification for `Type: visual` stories
 - [Failure Modes Atlas](docs/rlp-desk/failure-modes.md) — known failure patterns + recovery procedures
 - [Future Plans](docs/rlp-desk/TODO-verification-next.md) — P3 items and upcoming features
 

@@ -19,6 +19,34 @@ Entry template:
 
 ---
 
+## 2026-10-25 — v0.28.0 release tree: final 3-scenario SV gate + Linux signal tests
+
+- **Target**: the v0.28.0 release tree (`c5aa143` on top of the C-01 signal-trap
+  fixes and the 2026-10-14 backlog sweep): fork-safe leader signal path,
+  echo-verified verifier/restart launches, fail-closed prompt auto-approve,
+  `init` archival and quarantine fixes, Linux (GNU `stat`, mawk) fixes, and the
+  five new opt-in Node commands (`trend`, `rule-pack`, `mutation`, `visual`,
+  `speckit`).
+- **Method**: the mandatory 3-scenario SV gate on the final tree with real
+  LLM Worker and Verifier runs, plus the full suites and a Linux container run
+  of the signal tests (ubuntu 24.04, mawk, GNU `stat`).
+
+  | Scenario | Risk | Run | Worker / Verifier | Result |
+  |---|---|---|---|---|
+  | g55low | LOW | a9 | haiku / claude-sonnet-5-5:high | PASS |
+  | g55med | MEDIUM | a12 | claude-sonnet-5-5:medium / claude-opus-5-5:low | PASS |
+  | g55crit | CRITICAL | a12 | claude-opus-5-5:high / claude-opus-5-5:max | PASS |
+
+- **Result**: **PASS** — all 3 scenarios PASS. Suites: `test:node` 1064/1064,
+  `test:zsh` 160 files exit 0, `sv-gate:fast` 101/101. The Linux signal tests
+  pass in the ubuntu 24.04 container.
+- **Findings**: an earlier g55low run (a8) failed in the collector
+  because the haiku Worker recorded `python`, which the host does not have; the
+  leader's pre-gate caught it and behaved correctly (LLM/environment variance,
+  no product change). The final g55low run above passed on the release tree.
+- **Artifacts**: commit `c5aa143`; `.omc/artifacts/backlog-2026-10-25/`
+  (`REPORT.md`, `sv/`, `final/`).
+
 ## 2026-09-08 — Model-generation wave: Fable 5.1 + Codex 6 Astra (fix/reaudit-wave-1)
 
 - **Target**: adding Claude Fable 5.1 (`claude-fable-5-1`) and Codex 6 Astra

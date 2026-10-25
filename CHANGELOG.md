@@ -10,6 +10,36 @@ For pre-v0.15.4 versions, refer to `git log` and individual GitHub release notes
 - Phase D.1 (handoff documents) + Phase D.2 (per-stage agent role specialization) — both deferred per `docs/plans/v0.15.4-release-runbook.md` §7.6.
 - Cost-log campaign-exit row attribution (`final-verify` / `campaign-exit` buckets instead of `unknown`) — spec ready in `docs/plans/manifest-followup-handoff.md`.
 
+## [0.28.0] — 2026-10-25
+
+### Added
+- **Five opt-in Node commands** (run as `node ~/.claude/ralph-desk/node/run.mjs <command>`; nothing runs unless you invoke it or accept it during brainstorm):
+  - `trend [<slug>]` — run-over-run campaign metrics from `campaign*.jsonl` (read-only; `--json`, `--last N`, `--out FILE`).
+  - `rule-pack list|validate|apply` — data-only domain rule packs rendered idempotently into the test-spec header. The first shipped pack is `finance`: engineering guidance, not a compliance certification.
+  - `mutation detect|run` — wraps Stryker, mutmut 3 and go-mutesting and reports one uniform score against `--min-score`. Only a closed list of passthrough options is accepted, so scope, report and kill-decision options cannot be changed from the command line.
+  - `visual detect|run` — wraps the project's own Playwright and refuses `--update-snapshots` / `--ignore-snapshots`. With `--baseline-ref` it flags modified or deleted baseline images and changed Playwright configs, and it rejects skipped tests, `test.fail()` annotations and incomplete reports.
+  - `speckit <spec.md>` — drafts a test-spec skeleton from a Spec Kit `spec.md` (stdout by default; fails closed on an unrecognized layout).
+- **Governance and brainstorm support for the new gates**: verdict rules for the mutation and visual gates (a configured gate that cannot run is a FAIL), a domain rule-pack section, and brainstorm steps for rule-pack selection, mutation and visual preflight, and a fresh-clone re-run decision for CRITICAL work.
+- **Trust boundary stated explicitly**: the mutation and visual wrappers catch gate-gaming shortcuts; they are not a security boundary against deliberate same-user tampering. CRITICAL work re-runs the gate in a fresh `git clone` at the start sha unless the owner records a waiver.
+
+### Changed
+- **Worker, verifier and restart launches are echo-verified**: the leader writes the launch command to a `0600` launcher file and pastes only the short `source '<launcher>'` line, then checks that the whole line echoed on the pane's bottom row. This now covers the verifier and restart paths as well, so narrow panes no longer break launches. The 200-launch-per-label cap is gone, and a launcher that was created but cannot be written fails fast instead of looping.
+- **Prompt auto-approve is fail-closed** (zsh leader and the dormant Node mirror): Enter is pressed only on a live dialog whose cursor is on an accept option. Any other picker is refused rather than matched by the old `Do you want to` text. The claude bypass-permissions warning is refused with guidance (accepting it stores `skipDangerousModePermissionPrompt` in your Claude settings, so accept it once by hand). The Node dismisser recognizes the codex 0.162 trust dialog (`Trust and continue`).
+- **Codex trigger scripts** the leader writes are now runnable replay records (`codex exec`, `-c mcp_servers='{}'`); the leader never executes them, and the docs no longer describe them as the launch path.
+- A resumed `status.json` re-normalizes retired model ids, and the retired-model warning no longer promises a models-file pin. `spark` is documented as a retired alias (no spark preset).
+- A Worker may correct only the done-claim record under the fix contract without reordering steps. COMPLETE logs an advisory warning for files that became untracked during the campaign.
+
+### Fixed
+- **Leader deadlock on INT / TERM / HUP**: a signal that arrived while the leader was writing output could deadlock the cleanup in a forked child, so the leader never exited and kept its runner lock, panes and registry entry. The whole signal-trap cleanup path is now fork-safe, including the BLOCKED-sentinel report loop.
+- **Prompt word-wrap detection** now uses the text extent inside the box border and the right border's column as the wrap column; it fails closed when the evidence is missing.
+- **`init` really quarantines a foreign-`us_id` iteration signal**, and two quarantines in the same second can no longer overwrite each other.
+- **`init --mode fresh|improve` with a PRD** archives memory, latest, status, baseline and cost-log state into `runs/superseded-<ts>/` instead of deleting it; the move never overwrites.
+- **Linux**: file mtimes use the GNU `stat` form first (the BSD-first form left the done-claim freshness window empty), and story guards no longer rely on regex intervals that mawk lacks (acceptance-criteria counts were 0).
+
+### Docs
+- New guides: [Rule Pack Authoring](docs/rlp-desk/rule-pack-authoring.md) and [Visual Verification Guide](docs/rlp-desk/visual-verification-guide.md).
+- Documentation that described the codex trigger files as the launch path is corrected.
+
 ## [0.27.0] — 2026-10-14
 
 ### Changed
@@ -1232,5 +1262,7 @@ For changelog-style notes prior to 0.15.4, refer to:
 - GitHub Releases at https://github.com/ai-dev-methodologies/rlp-desk/releases
 - `docs/plans/v0.15-stabilization-plan.md` for v0.15.x stabilization track context
 
-[Unreleased]: https://github.com/ai-dev-methodologies/rlp-desk/compare/v0.15.4...HEAD
+[Unreleased]: https://github.com/ai-dev-methodologies/rlp-desk/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/ai-dev-methodologies/rlp-desk/compare/v0.27.0...v0.28.0
+[0.27.0]: https://github.com/ai-dev-methodologies/rlp-desk/compare/v0.26.0...v0.27.0
 [0.15.4]: https://github.com/ai-dev-methodologies/rlp-desk/compare/v0.15.3...v0.15.4
