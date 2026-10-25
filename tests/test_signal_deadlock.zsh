@@ -31,6 +31,20 @@
 # Platform note: the flockfile deadlock is a macOS libc behaviour; on Linux this test is a
 # plain behavioural check of the same chain (not verified on Linux from this session).
 #
+# Static signal-path analysis (H-R5-01): xtrace prints nothing from inside a function called with stderr redirected or from a compound command
+# whose stderr is redirected, so the traced guard below cannot see a fork there. The analyzer (`_c01_scan`, further down) reads the canonical text zsh
+# prints (`${functions[f]}`, tokenized with `${(z)}`) of an over-approximated closure of `_on_signal` (built from raw text; currently 23 functions, a superset of the real call graph) and flags those constructs; its self-test table is
+# confirmed against real xtrace. ACCEPTED LIMITS (none of them occurs on the signal path today; the analysis is not a full shell parser):
+#   - a quoted or escaped command word is resolved only in plain simple-command position (`'f' 2>/dev/null`, `\f 2>/dev/null`); a word built from
+#     `$var`, a command word that is itself a `$(...)`, or an `eval`/`builtin`/`command` prefix are not followed;
+#   - `case` arms (`x) cmd 2>/dev/null ;;`), `coproc`, `exec {fd}>...` / fd-number juggling other than `exec 2>`, and several heredocs on one line;
+#   - an escaped `\$(` inside `[[ ... ]]` is judged as a fork (a false positive, never a miss);
+#   - a change of the xtrace option itself on the path (`set +x`, `unsetopt xtrace`, `setopt noxtrace`) is not flagged;
+#   - `_sigsafe_sh '...'` clean-child scripts are single opaque quoted words: nothing inside them is analysed (they run in a fresh zsh with no xtrace);
+#   - nested function definitions inside a signal-path function (a redirected call to such a function is not analysed; today the only nested definition
+#     on the path is inside a _sigsafe_sh child script).
+# A construct of one of these kinds appearing on the signal path would have to be added to the self-test (and handled) first.
+#
 # Knobs: C01_TRIALS_STRESS / C01_TRIALS_STRESSLOG / C01_TRIALS_STRESSDEBUG (default 40/12/12),
 #        C01_PAR (default 12), C01_BUDGET_S (exit budget per trial, default 10), C01_MAX_HANGS (default 2).
 set -uo pipefail
@@ -485,41 +499,256 @@ _trace_scenario() {   # <name> <state interrupted|blocked|complete>
     && ok "[$name] COMPLETE path produced the specific untracked-deliverables warning naming newdeliverable.txt" \
     || no "[$name] the COMPLETE untracked-deliverables warning is missing: $(grep -m1 -i 'warning' "$rep" 2>/dev/null)"; }
 }
-# N-06: xtrace output is LOST inside a shell function that is called with STDERR redirected (`f 2>/dev/null`, `if ! f 2>/dev/null`, `f &>x`),
-# so the traced guard above cannot see forks in such a function. Statically: the only user-defined function called on a line with a
-# stderr redirect on the signal path is write_cost_log (pre-traced explicitly above), and its body contains no command substitution, pipe
-# or backtick. (Stdout-only redirects such as `_untracked_names ... >/dev/null` do not blind xtrace and are not flagged.) The detector looks
-# at EVERY command position of a line, not only its first word.
-_redirected_fn_calls() {   # <function body on stdin>: prints the user functions called on a line that also carries a stderr redirect
-  local line seg w
-  while IFS= read -r line; do
-    [[ "$line" =~ '^[[:space:]]*#' ]] && continue
-    [[ "$line" == *2\>* || "$line" == *\&\>* || "$line" == *\>\&* ]] || continue
-    line=${line//[;|&{}()!]/$'\n'}; line=${line// then /$'\n'}; line=${line// do /$'\n'}; line=${line// else /$'\n'}; line=${line//if /$'\n'}
-    for seg in "${(@f)line}"; do
-      w=${${=seg}[1]:-}
-      [[ -n "$w" && -n "${KNOWN[$w]:-}" && -z "${builtins[$w]:-}" && ${reswords[(ie)$w]} -gt ${#reswords} && "$w" != _sigsafe_* ]] && print -r -- "$w"
-    done
+# N-06 / H-R5-01 / K-02 / K-03: xtrace output is LOST inside a shell function that is called with STDERR redirected (`f 2>/dev/null`, `f |& g`,
+# `2>/dev/null f`) AND inside a compound command whose stderr is redirected (`while ...; done < f 2>/dev/null`, `{ ...; } 2>/dev/null`, `( ... ) 2>`,
+# `if ...; fi \<newline> 2>/dev/null`, `for ...; { ...; } 2>`, `case ...; esac 2>`, a function definition `g() { ...; } 2>`), and `exec 2>/dev/null` silences
+# everything after it. The traced guard above cannot see a fork in any of them, so they are checked statically over the signal path (an over-approximated
+# closure of `_on_signal`, built from raw text; currently 23 functions, a superset of the real call graph; computed below). The analysis runs on the CANONICAL function text zsh itself prints (`${functions[f]}` after sourcing the real
+# lib and the extracted run functions: continuations joined, comments gone, redirections after their command, quoting resolved), tokenized with `${(z)...}`:
+# quoted words (including every `_sigsafe_sh '...'` clean-child script) are single opaque tokens, so no quote or continuation state machine is needed.
+#   Only redirects of fd 2 count: `2>`, `2>>`, `2>&n`, `&>`, `&>>`, `>& file`, `>>&`, `|&`; `1>&2`, `>&2` and `>file` are stdout-only and pass.
+#   FN-CALL   a user-defined function called with a stderr redirect (the only one allowed on the signal path is write_cost_log, pre-traced explicitly
+#             above, and its body must contain no command substitution or pipe)
+#   COMPOUND  a `done|fi|esac|}|)` closer carrying a stderr redirect, unless allow-listed in _ALLOW_REDIR_CLOSERS ("<function>|<closer> <redirects>") AND its
+#             block body forks nothing (no `$(` other than `$(<`, no backtick, `<(`/`>(`, pipe or `&`)
+#   EXEC      `exec` with only redirections, one of which is a stderr redirect
+#   COND-FORK a `[[ ... ]]` / `(( ... ))` carrying a stderr redirect whose expression forks (a conditional has no body, so a plain `[[ =~ ]] 2>/dev/null`
+#             hides no command and is fine)
+#   Ceiling: alias expansion is not modelled; a heredoc body is skipped by a line pass that finds `<<WORD` as a real operator token, so a heredoc on
+#   the signal path is only supported when its lines are tokenizable one by one; none exists there today.
+typeset -gA _ALLFN _ALLOW_REDIR_CLOSERS
+_ALLOW_REDIR_CLOSERS=()
+_c01_forky() {   # <tokens...>: returns 0 when a token forks (command substitution other than $(<...), backtick, process substitution, pipe, background)
+  local x
+  for x in "$@"; do
+    [[ "$x" == \'* ]] && continue   # a single-quoted word is data (e.g. a child script)
+    [[ "$x" == '|' || "$x" == '|&' || "$x" == '&' || "$x" == '&!' || "$x" == '&|' || "$x" == coproc ]] && return 0
+    [[ "$x" =~ '\$\([^<(]|`|[<>]\(' ]] && return 0
   done
+  return 1
 }
-# discrimination: the detector must see a redirected call in ANY command position, and must ignore stdout-only redirects and builtins
-_rd_bad=$(print -r -- $'if ! _rlp_pad3 1 2>/dev/null; then :; fi\nx=1; _rlp_utc_iso 5 &>/dev/null\n[[ -n 1 ]] && log_error hi 2>/dev/null' | _redirected_fn_calls | sort -u | tr '\n' ' ')
-_rd_ok=$(print -r -- $'_rlp_pad3 1 >/dev/null\nzf_rm -f x 2>/dev/null\ndone < f 2>/dev/null\n# log_error hi 2>/dev/null' | _redirected_fn_calls)
-[[ "$_rd_bad" == "_rlp_pad3 _rlp_utc_iso log_error " && -z "$_rd_ok" ]] \
-  && ok 'N-06 detector self-test: finds redirected calls after if !, after a semicolon and after && ; ignores stdout-only redirects, builtins and comments' \
-  || no "N-06 detector self-test failed: found=[$_rd_bad] false-positives=[$_rd_ok]"
-_path_fns=(_emit_launch_record_outcome _emit_final_cost_log cleanup _untracked_names _untracked_complete_warning generate_campaign_report write_cost_log unregister_leader log log_debug log_error _on_signal _sigsafe_tmux)
-_redir=()
-for _fn in $_path_fns; do
+_c01_OPRE='^([0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(<>|<<<|<<-?|<&|<|>>&|>&|>>|>\||>!|>|&>>|&>\||&>!|&>)$'
+_c01_is_op() { [[ "$1" =~ $_c01_OPRE || "$1" == '|&' ]]; }
+_c01_hits_stderr() {   # <op token> <next token>: returns 0 when the redirection operator touches fd 2 (or fd 1 and 2 together)
+  local op="$1" nxt="${2:-}"
+  [[ "$op" == '|&' ]] && return 0
+  [[ "$op" =~ $_c01_OPRE ]] || return 1
+  local fd="${match[1]}" o="${match[2]}"
+  [[ "$fd" == 2 ]] && return 0
+  [[ -n "$fd" ]] && return 1
+  [[ "$o" == '&>'* || "$o" == '>>&' ]] && return 0
+  if [[ "$o" == '>&' ]]; then [[ "$nxt" == <-> || "$nxt" == - ]] && return 1; return 0; fi   # `>&2` / `>&-` are stdout-only; `>& file` merges both
+  return 1
+}
+_c01_flush() {   # evaluates the segment collected by _c01_scan (dynamic scope: reads its locals)
+  local w k i
+  if (( _hit )); then
+    if (( _iscond )); then
+      _c01_forky "${_condtoks[@]}" && print -r -- "COND-FORK $_fn: ${_condtoks[*]} $_descr"
+    elif [[ -n "$_closer" ]]; then
+      k="$_fn|$_closer $_descr"
+      if [[ -z "${_ALLOW_REDIR_CLOSERS[$k]:-}" ]]; then print -r -- "COMPOUND $_fn: $_closer $_descr"
+      elif _c01_forky "${(@)_t[_bodystart,_closeridx]}"; then print -r -- "ALLOW-LISTED-BODY-FORKS $_fn: $_closer $_descr"; fi
+    else
+      i=1
+      while (( i <= ${#_seg} )); do   # skip assignments (`V="a b"`, `a[1]=x`, `a=( ... )`) and precommand modifiers
+        w=${_seg[i]}
+        if [[ "$w" =~ '^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=' ]]; then
+          if [[ "$w" == *'=(' ]]; then while (( i <= ${#_seg} )) && [[ "${_seg[i]}" != ')' ]]; do (( ++i )); done; fi
+          (( ++i )); continue
+        fi
+        [[ "$w" == (noglob|nocorrect|time|-) ]] && { (( ++i )); continue; }
+        break
+      done
+      w=${(Q)${_seg[i]:-}}   # quotes and backslashes of the command word removed (S-02): `'f' 2>/dev/null` and `\f 2>/dev/null` still call f
+      if [[ "$w" == exec ]]; then (( i == ${#_seg} )) && print -r -- "EXEC $_fn: $_descr"
+      elif [[ -n "$w" && -n "${_ALLFN[$w]:-}" ]]; then print -r -- "FN-CALL $_fn:$w"; fi
+    fi
+  fi
+  _seg=(); _hit=0; _descr=''; _closer=''; _iscond=0; _condtoks=()
+}
+_c01_scan() {   # <function name> <canonical text>: prints one line per violation
+  local _fn="$1" _text="$2" tok nxt line d j cmdpos hd=''
+  local -a _t _seg _condtoks stk lines lt
+  local -i _hit=0 _iscond=0 _bodystart=0 _closeridx=0 i=1 n
+  local _closer='' _descr=''
+  # heredoc pass: drop the body lines of every real `<<WORD` operator (a quoted `} 2>/dev/null` inside it is data, not code)
+  lines=("${(@f)_text}"); _text=''
+  for line in "${lines[@]}"; do
+    if [[ -n "$hd" ]]; then [[ "${line##$'\t'#}" == "$hd" ]] && hd=''; continue; fi
+    if [[ "$line" == *'<<'* && "$line" != *'<<<'* ]]; then
+      lt=(${(z)line})
+      for (( j = 1; j < ${#lt}; j++ )); do
+        [[ "${lt[j]}" == '<<' || "${lt[j]}" == '<<-' ]] && { hd=${lt[j+1]//[\'\"\\]/}; break; }
+      done
+    fi
+    _text+="$line"$'\n'
+  done
+  _t=(${(z)_text}); n=${#_t}
+  while (( i <= n )); do
+    tok=${_t[i]}; nxt=${_t[i+1]:-}
+    if [[ "$tok" == (';'|';;'|';&'|';|'|'&&'|'||'|'|'|'&'|'&!'|'&|') ]]; then _c01_flush; (( ++i )); continue; fi   # separators end the command
+    if [[ "$tok" == '|&' ]]; then _hit=1; _descr+="${_descr:+ }|&"; _c01_flush; (( ++i )); continue; fi
+    cmdpos=0; (( ${#_seg} == 0 && _iscond == 0 )) && [[ -z "$_closer" ]] && cmdpos=1
+    if (( cmdpos )); then
+      case "$tok" in
+        '{'|'(') stk+=($i); (( ++i )); continue ;;
+        if|while|until) stk+=($i); (( ++i )); continue ;;
+        for|select|case|repeat|foreach) stk+=($i) ;;
+        then|do|else|elif|'!') (( ++i )); continue ;;
+        done|fi|esac|'}'|')')
+          _closer=$tok; _closeridx=$i
+          if (( ${#stk} )); then _bodystart=${stk[-1]}; stk[-1]=(); else _bodystart=$i; fi
+          (( ++i )); continue ;;
+        '[[')
+          _iscond=1; d=$(( i + 1 ))
+          while (( d <= n )) && [[ "${_t[d]}" != ']]' ]]; do _condtoks+=("${_t[d]}"); (( ++d )); done
+          i=$(( d + 1 )); continue ;;
+        '(('*) _iscond=1; _condtoks=("$tok"); (( ++i )); continue ;;
+      esac
+    fi
+    if _c01_is_op "$tok"; then
+      _c01_hits_stderr "${tok#\{*\}}" "$nxt" && { _hit=1; _descr+="${_descr:+ }$tok $nxt"; }
+      i=$(( i + 2 )); continue
+    fi
+    _seg+=("$tok"); (( ++i ))
+  done
+  _c01_flush
+}
+
+# Discrimination on constructed functions. Each body is canonicalized by real zsh; where it carries the marked fork `x=$(print MARK)` it is ALSO run
+# under real xtrace: a must-flag construct has to LOSE the marked fork from the trace (so the blind spot is real) and a must-pass construct has to KEEP it.
+# _case <name> <expected violation kinds, sorted, "-" = none> <trace: H hidden | V visible | - not traced> <body>
+typeset -ga _cases=()
+_case() { _cases+=("$1"$'\x01'"$2"$'\x01'"$3"$'\x01'"$4"); }
+_case while-done-stderr   COMPOUND  H $'while read -r l; do x=$(print MARK); done < /etc/hosts 2>/dev/null'
+_case brace-group         COMPOUND  H $'{ x=$(print MARK); } 2>/dev/null'
+_case if-fi               COMPOUND  H $'if true; then x=$(print MARK); fi 2>/dev/null'
+_case fi-continued        COMPOUND  H $'if true; then\n  x=$(print MARK)\nfi \\\n  2>/dev/null'
+_case subshell-oneline    COMPOUND  H $'( x=$(print MARK) ) 2>/dev/null'
+_case for-brace           COMPOUND  H $'for i in 1; { x=$(print MARK); } 2>/dev/null'
+_case case-esac           COMPOUND  H $'case x in (x) x=$(print MARK);; esac 2>/dev/null'
+_case funcdef-redirect    COMPOUND  H $'g() { x=$(print MARK); } 2>/dev/null\ng'
+_case closer-merge-both   COMPOUND  H $'{ x=$(print MARK); } &>/dev/null'
+_case closer-2-dup        COMPOUND  H $'{ x=$(print MARK); } 2>&1'
+_case exec-stderr         EXEC      H $'exec 2>/dev/null\nx=$(print MARK)'
+_case fn-pipe-amp         FN-CALL   H $'uf |& cat'
+_case fn-redirect-first   FN-CALL   H $'2>/dev/null uf'
+_case fn-quoted-prefix    FN-CALL   H $'V="a b" uf 2>/dev/null'
+_case fn-while-cond       FN-CALL   H $'while uf 2>/dev/null; do break; done'
+_case fn-until-cond       FN-CALL   H $'until uf 2>/dev/null; do :; done'
+_case fn-elif-cond        FN-CALL   H $'if false; then :; elif uf 2>/dev/null; then :; fi'
+_case fn-after-andand     FN-CALL   H $'true && uf 2>/dev/null'
+_case fn-amp-redirect     FN-CALL   H $'uf &>/dev/null'
+_case fn-amp-append       FN-CALL   H $'uf &>>/dev/null'
+_case fn-2-dup-1          FN-CALL   H $'uf 2>&1'
+_case fn-append           FN-CALL   H $'uf 2>>/dev/null'
+_case fn-after-if-not     FN-CALL   H $'if ! uf 2>/dev/null; then :; fi'
+_case fn-quoted-word      FN-CALL   H $'\'uf\' 2>/dev/null'
+_case fn-backslash-word   FN-CALL   H $'\\uf 2>/dev/null'
+_case fn-merge-file       FN-CALL   H $'uf >& /dev/null'
+_case cond-with-fork      COND-FORK H $'[[ $(print MARK) == MARK ]] 2>/dev/null'
+_case closer-after-heredoc COMPOUND H $'cat <<\'E\' >/dev/null\n} 2>/dev/null\nE\n{ x=$(print MARK); } 2>/dev/null'
+_case closer-stdout-dup   -         V $'{ x=$(print MARK); } 1>&2'
+_case closer-stdout-dup2  -         V $'{ x=$(print MARK); } >&2'
+_case closer-stdout-file  -         V $'{ x=$(print MARK); } >/dev/null'
+_case fn-stdout-only      -         V $'uf >/dev/null'
+_case fn-stdout-dup       -         V $'uf 1>&2'
+_case heredoc-data        -         V $'cat <<\'E\' >/dev/null\n} 2>/dev/null\nfi 2>/dev/null\nE\nx=$(print MARK)'
+_case string-data         -         V $'print -r -- "} 2>/dev/null"; print -r -- \'done 2>/dev/null\'\nx=$(print MARK)'
+_case assign-glob-chars   -         - $'x=${y//[(){}]/} 2>/dev/null'
+_case empty-array-assign  -         - $'list=() 2>/dev/null'
+_case cond-no-fork        -         - $'[[ $a =~ \'^x\' ]] 2>/dev/null'
+_case arith-no-fork       -         - $'(( a = 1 )) 2>/dev/null'
+_case builtin-redirect    -         - $'zf_rm -f x 2>/dev/null'
+_case cmdsubst-file       -         - $'own=$(<f) 2>/dev/null'
+_case zstat-redirect      -         - $'_sz=(); zstat -A _sz +size f 2>/dev/null'
+_case prefix-builtin      -         - $'V=1 print -r -- x 2>/dev/null'
+_case keyword-as-arg      -         - $'print -r -- done fi esac 2>/dev/null'
+_case inner-simple        -         - $'if true; then print x 2>/dev/null; fi'
+_case child-script        -         - $'_sigsafe_sh \'while read l; do :; done 2>/dev/null\n  } 2>/dev/null\' zsh a'
+_case child-script-concat -         - $'_sigsafe_sh \'f() {\n\'"${functions[f]}"\'\n}\nwhile read m; do :; done < <(jq "$2" 2>/dev/null)\' zsh x'
+
+_c01_run_cases() {   # prints one line per mismatching case; the number of cases checked is left in _cases_n, traced controls in _cases_traced
+  local row name want tr body i n=0 nt=0 kinds cnt
+  local -a canon
+  { print -r -- 'uf() { x=$(print MARK); }'
+    i=0; for row in "${_cases[@]}"; do (( ++i )); print -r -- "c$i() {"; print -r -- "${row##*$'\x01'}"; print -r -- "}"; done
+    i=0; for row in "${_cases[@]}"; do (( ++i )); print -r -- "print -r -- '@@CASE $i'; print -r -- \"\${functions[c$i]}\""; done
+  } > "$TMP/cases.zsh"
+  zsh -f "$TMP/cases.zsh" > "$TMP/cases.canon" 2>"$TMP/cases.err" || { print -r -- "case batch did not load: $(<"$TMP/cases.err")"; return; }
+  local cur=0 line
+  while IFS= read -r line; do
+    if [[ "$line" == '@@CASE '* ]]; then cur=${line#@@CASE }; canon[cur]=''; else canon[cur]+="$line"$'\n'; fi
+  done < "$TMP/cases.canon"
+  _ALLFN[uf]=1
+  i=0
+  for row in "${_cases[@]}"; do
+    (( ++i )); (( ++n ))
+    name=${row%%$'\x01'*}; row=${row#*$'\x01'}; want=${row%%$'\x01'*}; row=${row#*$'\x01'}; tr=${row%%$'\x01'*}; body=${row#*$'\x01'}
+    kinds=${(j: :)${(ou)${${(f)"$(_c01_scan "case:$name" "${canon[i]}")"}%% *}}}; [[ -n "$kinds" ]] || kinds=-
+    [[ "$kinds" == "$want" ]] || print -r -- "$name: static verdict [$kinds], expected [$want]"
+    if [[ "$tr" != - ]]; then
+      (( ++nt ))
+      { print -r -- 'zmodload zsh/system; uf() { x=$(print MARK); }'; print -r -- "probe() {"; print -r -- "$body"; print -r -- "}"
+        print -r -- 'PS4=$'"'"'@@${sysparams[pid]}:%_@@ '"'"'; setopt PROMPT_SUBST xtrace'; print -r -- 'probe'; } > "$TMP/trace-case.zsh"
+      zsh -f "$TMP/trace-case.zsh" </dev/null >/dev/null 2>"$TMP/trace-case.err"
+      cnt=$(grep -c 'print MARK' "$TMP/trace-case.err")
+      if [[ "$tr" == H && "$cnt" != 0 ]]; then print -r -- "$name: real xtrace still shows the marked fork ($cnt lines): the construct is not blind, the rule is wrong"; fi
+      if [[ "$tr" == V && "$cnt" == 0 ]]; then print -r -- "$name: real xtrace lost the marked fork: the construct IS blind, the rule misses it"; fi
+    fi
+  done
+  _cases_n=$n; _cases_traced=$nt
+  unset "_ALLFN[uf]"
+}
+typeset -gi _cases_n=0 _cases_traced=0
+_c01_run_cases > "$TMP/cases.mm"; _mm=$(<"$TMP/cases.mm")
+[[ -z "$_mm" && $_cases_n -ge 40 ]] \
+  && ok "K-02/K-03 analyzer self-test: $_cases_n constructs (every redirect form, continuations, one-line groups, |&, exec 2>, 2>file before the command, quoted prefixes, heredoc and string data, stdout-only dups) classified as expected; $_cases_traced of them also run under real xtrace: each flagged one loses the marked fork, each passing one keeps it" \
+  || no "K-02/K-03 analyzer self-test ($_cases_n constructs): $_mm"
+# the signal path = every function reachable from _on_signal by name (an over-approximation: safe for a "must not contain" check)
+for _b in $(grep -ohE '^[A-Za-z_][A-Za-z0-9_]*\(\) \{' "$LIB" "$RUN" | sed 's/() {//'); do _ALLFN[$_b]=1; done
+typeset -A _seen
+_q=(_on_signal)
+while (( ${#_q} )); do
+  _fn=${_q[1]}; _q=("${(@)_q[2,-1]}"); [[ -n "${_seen[$_fn]:-}" ]] && continue; _seen[$_fn]=1
   _src="$LIB"; grep -q "^$_fn() {" "$LIB" || _src="$RUN"
-  for _w in ${(f)"$(_extract_fn $_fn $_src | _redirected_fn_calls)"}; do _redir+=("$_fn:$_w"); done
+  for _w in ${(u)${(f)"$(_extract_fn $_fn $_src | grep -vE '^[[:space:]]*#' | grep -oE '[A-Za-z_][A-Za-z0-9_]*')"}}; do
+    [[ "$_w" != "$_fn" && -n "${_ALLFN[$_w]:-}" ]] && _q+=($_w)
+  done
 done
-_redir=(${(u)_redir})
-[[ "${(j: :)_redir}" == "_emit_final_cost_log:write_cost_log" ]] \
+_path_fns=(${(ko)_seen})
+_path_miss=(); for _fn in _emit_launch_record_outcome _emit_final_cost_log cleanup _untracked_names _untracked_complete_warning generate_campaign_report write_cost_log unregister_leader log log_debug log_error _on_signal _sigsafe_tmux; do
+  [[ -n "${_seen[$_fn]:-}" ]] || _path_miss+=($_fn)
+done
+(( ${#_path_fns} >= 13 && ${#_path_miss} == 0 )) \
+  && ok "signal path enumerated from _on_signal by name: ${#_path_fns} functions (includes the 13 known ones: ${_path_fns[*]})" \
+  || no "signal-path enumeration is broken: ${#_path_fns} functions, missing known ones: ${_path_miss[*]}"
+# canonical text of every signal-path function: the real lib sourced and the extracted run functions defined in a fresh zsh, then `${functions[f]}`
+{ print -r -- 'set -uo pipefail'; print -r -- 'setopt POSIX_TRAPS'; print -r -- 'source "$C01_LIB"'
+  for _f in $OPTIONAL_FNS $REQUIRED_FNS; do _extract_fn "$_f" "$RUN"; print; done
+  for _fn in $_path_fns; do print -r -- "print -r -- '@@FN $_fn'; print -r -- \"\${functions[$_fn]}\""; done
+} > "$TMP/canon-real.zsh"
+C01_LIB="$LIB" zsh -f "$TMP/canon-real.zsh" > "$TMP/canon-real.out" 2>"$TMP/canon-real.err"
+typeset -A _CANON; _cur=''
+while IFS= read -r _line; do
+  if [[ "$_line" == '@@FN '* ]]; then _cur=${_line#@@FN }; _CANON[$_cur]=''; else _CANON[$_cur]+="$_line"$'\n'; fi
+done < "$TMP/canon-real.out"
+_canon_empty=(); for _fn in $_path_fns; do [[ -n "${_CANON[$_fn]//[[:space:]]/}" ]] || _canon_empty+=($_fn); done
+(( ${#_canon_empty} == 0 )) \
+  && ok "canonical text obtained for all ${#_path_fns} signal-path functions (${#${(j::)${(v)_CANON}}} characters)" \
+  || no "no canonical text for ${_canon_empty[*]} (the analysis would silently see nothing): $(<"$TMP/canon-real.err")"
+_viol=(); for _fn in $_path_fns; do _viol+=(${(f)"$(_c01_scan $_fn "${_CANON[$_fn]}")"}); done
+_vfn=(${(M)_viol:#FN-CALL*}); _vother=(${_viol:#FN-CALL*})
+[[ "${(j: :)${(ou)_vfn}}" == "FN-CALL _emit_final_cost_log:write_cost_log" ]] \
   && ok "N-06 the only user function called with a STDERR redirect on the signal path is write_cost_log (via _emit_final_cost_log)" \
-  || no "N-06 unexpected stderr-redirected function calls on the signal path (xtrace is blind inside them): ${_redir[*]}"
-_wcl_forks=$(_extract_fn write_cost_log "$LIB" | grep -vE '^ *#' | grep -E '\$\([^<(]|`|[^|]\| *[a-z]|[^&]& *$' | head -3)
-[[ -z "$_wcl_forks" ]] && ok "N-06 write_cost_log has no command substitution, pipe or backtick of its own (nothing hidden by its redirected call)" || no "N-06 write_cost_log forks: $_wcl_forks"
+  || no "N-06 unexpected stderr-redirected function calls on the signal path (xtrace is blind inside them): ${_vfn[*]}"
+(( ${#_vother} == 0 )) \
+  && ok "H-R5-01 no stderr-redirected compound block, exec 2>, or forking conditional on the signal path (${#_path_fns} functions analysed): xtrace sees every loop and group body" \
+  || no "H-R5-01 blind construct(s) on the signal path (xtrace is blind inside them; rewrite with a guard and no redirect): ${(j: | :)_vother}"
+_c01_forky ${(z)${_CANON[write_cost_log]}} \
+  && no "N-06 write_cost_log forks (command substitution, pipe or background): its redirected call hides it from xtrace" \
+  || ok "N-06 write_cost_log has no command substitution, pipe or background of its own (nothing hidden by its redirected call)"
 
 _trace_scenario interrupted interrupted
 _trace_scenario blocked blocked

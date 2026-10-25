@@ -214,6 +214,94 @@ out=$(TZ=Asia/Seoul zsh -fc 'zmodload zsh/datetime; source "$1"; export TZ=Ameri
 leak=$(zsh -fc 'zmodload zsh/datetime; source "$1"; print -r -- "z=${+_z} s=${+_s} f=${+f}"' zsh "$LIB" 2>&1)
 [[ "$leak" == "z=0 s=0 f=0" ]] && ok "L-11 sourcing the lib leaks no temporary globals (_z/_s/f)" || no "L-11 global leak after source: $leak"
 
+# --- K-06: the BLOCKED sentinel loop gives the VALUES and the SILENCE of the pre-fix loop on every input ----------------------------------------
+# Pre-fix (3fca805) the whole loop ended in `2>/dev/null`; the signal-path guard needs it without that redirect (a stderr-redirected compound command is
+# invisible to xtrace). The oracle below is the pre-fix loop verbatim. Invalid UTF-8 makes `=~` print "regex matching error" in a UTF-8 locale (the old
+# redirect hid it) and makes that line NOT match; NUL truncates a captured value: all of it must stay as it was, in a UTF-8 and in the C locale.
+# Not compared: a missing/unreadable sentinel (the old `<` failed before its `2>` applied and leaked "no such file"/"permission denied"; the branch is
+# only entered after `[[ -f ]]`, and the guard now skips an unreadable file silently with empty reason/category).
+_k06d="$TMP/k06fx"; mkdir -p "$_k06d"
+printf '' > "$_k06d/empty"
+printf 'Reason: stuck\nCategory: infra_failure\n' > "$_k06d/normal"
+printf 'Reason: stuck\nCategory: infra' > "$_k06d/unterminated"
+printf 'reason:   lower\ncategory:\tcat\n' > "$_k06d/lower"
+printf 'Category: first\nReason: second\n' > "$_k06d/catfirst"
+printf 'Reason:\nReason: later\nCategory:\nCategory: later\n' > "$_k06d/emptyfirst"
+printf 'Reason: bad \xff\xfe bytes\nReason: good\nCategory: ok\n' > "$_k06d/badutf_then_good"
+printf 'Reason: only \xc0\xaf overlong\nCategory: x\xff\n' > "$_k06d/badutf_only"
+printf 'Reason: nul\0inside\nCategory: c\0\n' > "$_k06d/nul"
+printf 'Reason: crlf\r\nCategory: c\r\n' > "$_k06d/crlf"
+printf 'Reason: caf\xc3\xa9 \xe2\x9c\x93\nCategory: \xe6\x97\xa5\xe6\x9c\xac\n' > "$_k06d/validutf"
+printf 'Reason: a "q" $x `y` *?[ \nCategory: [x]\n' > "$_k06d/special"
+# The oracle is the pre-fix loop verbatim; the candidate is the block EXTRACTED from the live lib (not a copy). Both run in the same frame, which captures the
+# status of the block ($?) explicitly. Compared byte for byte: stdout (values + status) and the FULL stderr, not a grep for particular messages.
+_k06_oracle_blk='    while IFS= read -r _bl || [[ -n "$_bl" ]]; do
+      if (( ! _brf )) && [[ "$_bl" =~ '"'"'^[Rr]eason:[[:space:]]*(.*)$'"'"' ]]; then blocked_reason="${match[1]}"; _brf=1; fi
+      if (( ! _bcf )) && [[ "$_bl" =~ '"'"'^[Cc]ategory:[[:space:]]*(.*)$'"'"' ]]; then blocked_category="${match[1]}"; _bcf=1; fi
+    done < "$BLOCKED_SENTINEL" 2>/dev/null'
+_k06_cand_blk=$(awk '/^    if \[\[ -r "\$BLOCKED_SENTINEL" \]\]; then$/ { grab = 1 } grab { print } grab && /^    fi$/ { exit }' "$LIB")
+_k06_cand_lines=("${(@f)_k06_cand_blk}")
+[[ "$_k06_cand_blk" == *'done < "$BLOCKED_SENTINEL"'* && ${#_k06_cand_lines} -ge 4 ]] \
+  && ok "K-06 the BLOCKED sentinel block was extracted from the live lib (${#_k06_cand_lines} lines)" \
+  || no "K-06 could not extract the BLOCKED sentinel block from $LIB (the comparison below would test nothing)"
+# the embedded oracle is the 3fca805 loop: confirm against the commit when it is reachable (a shallow clone skips this, it is not a failure)
+if _k06_old=$(git -C "$ROOT_DIR" show 3fca805:src/scripts/lib_ralph_desk.zsh 2>/dev/null) && [[ -n "$_k06_old" ]]; then
+  [[ "$(print -r -- "$_k06_old" | awk '/^    while IFS= read -r _bl \|\| \[\[ -n "\$_bl" \]\]; do$/ { grab = 1 } grab { print } grab && /done < "\$BLOCKED_SENTINEL" 2>\/dev\/null$/ { exit }')" == "$_k06_oracle_blk" ]] \
+    && ok "K-06 the embedded oracle is byte-identical to the BLOCKED loop of 3fca805" || no "K-06 the embedded oracle differs from the BLOCKED loop of 3fca805"
+fi
+_k06_frame() {   # <block text>: a harness that runs the block on $1 and prints "<reason>\x01<category>\x01<block status>"
+  print -r -- 'BLOCKED_SENTINEL=$1'
+  print -r -- 'f() {'
+  print -r -- '  local blocked_reason="" blocked_category="" _rc=0'
+  print -r -- '  local _bl _brf=0 _bcf=0'
+  print -r -- "$1"
+  print -r -- '  _rc=$?'
+  print -r -- '  print -rn -- "$blocked_reason"$'"'"'\x01'"'"'"$blocked_category"$'"'"'\x01'"'"'"$_rc"'
+  print -r -- '}'
+  print -r -- 'f'
+}
+_k06_run() {   # <name> <block text> <fixture> <locale>: leaves <name>.out and <name>.err (the harness's stdout and complete stderr)
+  _k06_frame "$2" > "$TMP/$1.zsh"
+  LC_ALL=$4 zsh -f "$TMP/$1.zsh" "$3" > "$TMP/$1.out" 2> "$TMP/$1.err"
+}
+_k06_same() {   # <fixture> <locale> <candidate block text>: 0 when candidate and oracle agree byte for byte on stdout (values + status) and stderr
+  _k06_run k06-o "$_k06_oracle_blk" "$1" "$2"; _k06_run k06-c "$3" "$1" "$2"
+  cmp -s "$TMP/k06-o.out" "$TMP/k06-c.out" && cmp -s "$TMP/k06-o.err" "$TMP/k06-c.err"
+}
+_k06_locs=(C); _l=${${(f)"$(locale -a 2>/dev/null | grep -i 'utf-\{0,1\}8$')"}[1]:-}; [[ -n "$_l" ]] && _k06_locs+=($_l)
+_k06_bad=(); _k06_n=0
+for _loc in $_k06_locs; do
+  for _fx in "$_k06d"/*(N); do
+    (( ++_k06_n ))
+    # (1) the block itself: stdout, block status and full stderr identical to the oracle
+    _k06_same "$_fx" "$_loc" "$_k06_cand_blk" || _k06_bad+=("${_fx:t}@$_loc: block differs from the oracle: out [${(q+)$(<"$TMP/k06-c.out")}] want [${(q+)$(<"$TMP/k06-o.out")}], stderr [${(q+)$(<"$TMP/k06-c.err")}] want [${(q+)$(<"$TMP/k06-o.err")}]")
+    # (2) through the real generate_campaign_report: the values in the report, and a stderr identical to the oracle's
+    _want=$(<"$TMP/k06-o.out"); _want=${_want%$'\x01'*}; _werr=$(<"$TMP/k06-o.err")
+    L=$(LC_ALL=$_loc _gcr "k06_$_k06_n" 'cp "'"$_fx"'" "$BLOCKED_SENTINEL"'); R=$(_rep "$L"); _err=$(<"$TMP/k06_$_k06_n/err")
+    _rr=${${(M)${(f)R}:#- Blocked reason: *}[1]:-}; _rr=${_rr#- Blocked reason: }; _cc=${${(M)${(f)R}:#- Blocked category: *}[1]:-}; _cc=${_cc#- Blocked category: }
+    [[ "$_rr"$'\x01'"$_cc" == "$_want" ]] || _k06_bad+=("${_fx:t}@$_loc: report values [${(q+)_rr}|${(q+)_cc}] want [${(q+)_want}]")
+    cmp -s "$TMP/k06_$_k06_n/err" "$TMP/k06-o.err" || _k06_bad+=("${_fx:t}@$_loc: report stderr [${(q+)_err[1,100]}] differs from the oracle's [${(q+)_werr}]")
+  done
+done
+(( ${#_k06_bad} == 0 && _k06_n >= 24 )) \
+  && ok "K-06 BLOCKED sentinel loop: values, block status and the full stderr equal the pre-fix loop on $_k06_n runs (12 inputs incl. invalid UTF-8, NUL, CRLF, unterminated; locales ${_k06_locs[*]})" \
+  || no "K-06 BLOCKED sentinel loop drifted from the pre-fix loop (runs=$_k06_n): ${(j: ; :)_k06_bad[1,6]}"
+# discrimination: the comparison must catch a block that emits a different stderr line, one that changes the block status, and (in a UTF-8 locale) one that
+# lets the regex error through
+typeset -A _k06_mut; _k06_mut=(); _k06_blind=()
+_k06_mut[stderr-line]=${_k06_cand_blk/'then blocked_reason='/'then print -u2 drift; blocked_reason='}
+_k06_mut[status]="$_k06_cand_blk"$'\nfalse'
+(( ${#_k06_locs} > 1 )) && _k06_mut[regex-error]=${_k06_cand_blk//\] 2>\/dev\/null; then/\]; then}
+for _m in ${(k)_k06_mut}; do
+  [[ "${_k06_mut[$_m]}" != "$_k06_cand_blk" ]] || { _k06_blind+=("$_m(mutation not applied)"); continue; }
+  _k06_caught=0
+  for _loc in $_k06_locs; do for _fx in "$_k06d"/*(N); do _k06_same "$_fx" "$_loc" "${_k06_mut[$_m]}" || _k06_caught=1; done; done
+  (( _k06_caught )) || _k06_blind+=("$_m")
+done
+(( ${#_k06_blind} == 0 && ${#_k06_mut} >= 2 )) \
+  && ok "K-06 discrimination: the comparison fails on a block that emits a different stderr line, on one that changes the block status${_k06_mut[regex-error]:+, and on one that lets the regex error through}" \
+  || no "K-06 discrimination: the comparison did not catch: ${_k06_blind[*]}"
+
 # M-04: no scenario harness above may have aborted
 _badrc=(); for _rcf in "$TMP"/*/rc(N); do [[ "$(<$_rcf)" == 0 ]] || _badrc+=("${_rcf:h:t}=$(<$_rcf)"); done
 (( ${#_badrc} == 0 )) && ok "M-04 every scenario harness exited 0 (no aborted run behind a passing assertion)" || no "M-04 aborted scenario harness(es): ${_badrc[*]}"

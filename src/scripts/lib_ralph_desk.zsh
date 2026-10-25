@@ -2980,10 +2980,16 @@ generate_campaign_report() {
     # C-01: first matching line of each, in-process (was grep | sed in $(...): 4 forks)
     # (grep -m1 semantics: the FIRST matching line decides, even when its value is empty; `|| [[ -n ]]` keeps an unterminated last line)
     local _bl _brf=0 _bcf=0
-    while IFS= read -r _bl || [[ -n "$_bl" ]]; do
-      if (( ! _brf )) && [[ "$_bl" =~ '^[Rr]eason:[[:space:]]*(.*)$' ]]; then blocked_reason="${match[1]}"; _brf=1; fi
-      if (( ! _bcf )) && [[ "$_bl" =~ '^[Cc]ategory:[[:space:]]*(.*)$' ]]; then blocked_category="${match[1]}"; _bcf=1; fi
-    done < "$BLOCKED_SENTINEL" 2>/dev/null
+    # H-R5-01 / K-06: no `2>/dev/null` on the loop (xtrace prints nothing from inside a stderr-redirected compound command, so the
+    # signal-path guard could not see its body). The redirect sits on each `[[ =~ ]]` alone: a conditional has no body to hide, and the
+    # regex engine stays the same, so invalid UTF-8 (a "regex matching error" that did not match) and NUL keep the values and the silence of
+    # the old loop. An unreadable sentinel is skipped by the guard, leaving reason/category empty.
+    if [[ -r "$BLOCKED_SENTINEL" ]]; then
+      while IFS= read -r _bl || [[ -n "$_bl" ]]; do
+        if (( ! _brf )) && [[ "$_bl" =~ '^[Rr]eason:[[:space:]]*(.*)$' ]] 2>/dev/null; then blocked_reason="${match[1]}"; _brf=1; fi
+        if (( ! _bcf )) && [[ "$_bl" =~ '^[Cc]ategory:[[:space:]]*(.*)$' ]] 2>/dev/null; then blocked_category="${match[1]}"; _bcf=1; fi
+      done < "$BLOCKED_SENTINEL"
+    fi
   # A-5 (reaudit wave 1, round 2): SIGNAL_RECEIVED (run_ralph_desk.zsh global,
   # shared into this sourced-in process) is set by _on_signal before it calls
   # the cleanup chain — distinguishes an INT/TERM/HUP-driven exit from a
