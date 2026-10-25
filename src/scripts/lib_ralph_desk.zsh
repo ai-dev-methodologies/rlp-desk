@@ -2463,7 +2463,7 @@ _extract_prd_us_list() {
 
 # --- US-022 (R10 P2-J): Quarantine stale iter-signal.json from prior mission ---
 # Worker autonomy is preserved: the signal is moved (not deleted) to
-# .sisyphus/quarantine/iter-signal.<epoch>.json so the operator can recover.
+# .sisyphus/quarantine/iter-signal.<epoch>[-<k>].json (exclusive, never overwritten) so the operator can recover.
 # Argument 4 (force) skips the PRD scope check and quarantines unconditionally
 # (used for tests / invasive cleanups).
 _quarantine_stale_signal() {
@@ -2484,14 +2484,33 @@ _quarantine_stale_signal() {
   fi
   local qdir="$desk/.sisyphus/quarantine"
   mkdir -p "$qdir" 2>/dev/null
-  local qfile="$qdir/iter-signal.$(date +%s).json"
-  if mv "$signal_file" "$qfile" 2>/dev/null; then
+  # A-C1-05: the destination is allocated EXCLUSIVELY (sysopen O_EXCL placeholder, then mv over our own
+  # placeholder), so a second quarantine in the same second never overwrites the first recovery copy.
+  # When no destination can be allocated the source stays in place for the generic archive step.
+  local _qts qfile _qk=1
+  _qts=$(date +%s)
+  if ! zmodload zsh/system 2>/dev/null; then
+    echo "[lane] cross-mission stale us_id ($stale_us) — zsh/system unavailable, left in place for the archive step" >&2
+    return 0
+  fi
+  while true; do
+    (( _qk == 1 )) && qfile="$qdir/iter-signal.${_qts}.json" || qfile="$qdir/iter-signal.${_qts}-${_qk}.json"
+    if ( umask 077; local _qfd=""; sysopen -w -o excl,creat -m 600 -u _qfd -- "$qfile" 2>/dev/null ); then break; fi
+    if [[ ! -e "$qfile" && ! -L "$qfile" ]]; then
+      echo "[lane] cross-mission stale us_id ($stale_us) — cannot allocate $qfile, left in place for the archive step" >&2
+      return 0
+    fi
+    (( _qk++ ))
+  done
+  if mv -f "$signal_file" "$qfile" 2>/dev/null; then
     # Lifecycle stale-mark class closure (codex round 4): this mv is the one
     # monitored-file mutation outside the atomic_write hook and the rm sites.
     # Its current caller is init-only (empty mark map), but clear after a
     # successful mv anyway so the class invariant holds for future callers.
     _lifecycle_clear_lock_mark "${signal_file:t}"
     echo "[lane] cross-mission stale us_id ($stale_us) — quarantined to $qfile" >&2
+  else
+    rm -f "$qfile" 2>/dev/null   # our own empty placeholder; the source stays for the archive step
   fi
   return 0
 }
@@ -2557,6 +2576,7 @@ _verdict_is_fail_variant() {
 # in the test-spec (lines like `### Test ` or `**T-`). Emits a warning when any
 # US has < 3 tests / AC. Mode 'strict' returns non-zero so callers can `exit 1`.
 # Reference: governance §7f.
+# awk story-block guards use `^###?` (not `^#{2,3}`): mawk, the default awk on Ubuntu, has no regex intervals.
 _lint_test_density() {
   local prd_file="$1"
   local spec_file="$2"
@@ -2591,16 +2611,16 @@ _lint_test_density() {
     # ACs in this US block of the PRD
     local ac_count=""
     ac_count=$(awk -v us="$us" '
-      $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
-      in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
+      $0 ~ "^###?[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+      in_us && /^###?[[:space:]]+US-[0-9]+/ { in_us=0 }
       in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ { c++ }
       END { print c+0 }
     ' "$prd_file")
 
     local test_count=""
     test_count=$(awk -v us="$us" '
-      $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
-      in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
+      $0 ~ "^###?[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+      in_us && /^###?[[:space:]]+US-[0-9]+/ { in_us=0 }
       in_us && (/^###[[:space:]]+Test[[:space:]]/ || /^\*\*T-/) { c++ }
       END { print c+0 }
     ' "$spec_file")
@@ -2645,8 +2665,8 @@ _prd_us_ac_ids() {
   # <prd_file> <us_id> → sorted-unique ACN ids declared in that US's PRD block.
   [[ -f "$1" ]] || return 0
   awk -v us="$2" '
-    $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
-    in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
+    $0 ~ "^###?[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+    in_us && /^###?[[:space:]]+US-[0-9]+/ { in_us=0 }
     in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ {
       if (match($0, /AC[0-9]+/)) print substr($0, RSTART, RLENGTH)
     }
@@ -2656,8 +2676,8 @@ _prd_us_ac_count() {
   # <prd_file> <us_id> → count of `- ACN` lines in that US's block.
   [[ -f "$1" ]] || { printf 0; return 0; }
   awk -v us="$2" '
-    $0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
-    in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 }
+    $0 ~ "^###?[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next }
+    in_us && /^###?[[:space:]]+US-[0-9]+/ { in_us=0 }
     in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ { c++ }
     END { print c+0 }
   ' "$1"

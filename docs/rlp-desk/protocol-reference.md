@@ -535,10 +535,10 @@ This section documents the tmux-specific patterns used by `run_ralph_desk.zsh`. 
 The single most important pattern. **Never** send data (prompts, large strings) through `tmux send-keys` directly.
 
 1. Write the prompt to a file: `logs/<slug>/iter-NNN.worker-prompt.md`
-2. Write a trigger script to a file: `logs/<slug>/iter-NNN.worker-trigger.sh`
-3. Send only a short command via `send-keys`: `bash /path/to/trigger.sh`
+2. Write a trigger script to a file: `logs/<slug>/iter-NNN.worker-trigger.sh` (a written record / manual replay script; the leader does NOT execute it)
+3. Launch the engine through the TUI launcher (`_paste_cmd_echo_verified`): the exact command goes into a 0600 launcher file and only a short echo-verified `source '<launcher>'` line is sent via `send-keys` (`launch_worker_codex`, `launch_verifier_codex`, and the claude equivalents)
 
-The trigger script reads the prompt file and invokes `claude -p "$(cat /path/to/prompt.md)" --model <model> --dangerously-skip-permissions`.
+The trigger script, if replayed by hand, reads the prompt file and invokes the engine non-interactively (`claude -p "$(cat /path/to/prompt.md)" --model <model> --dangerously-skip-permissions`, or `codex exec ...` for codex).
 
 ### Signal File Polling
 
@@ -553,7 +553,7 @@ The Leader reads these files with `jq` to extract status/verdict fields for cont
 
 ### Heartbeat Monitoring
 
-Each trigger script writes a heartbeat file (`worker-heartbeat.json` or `verifier-heartbeat.json`) in a background loop. The Leader periodically checks the heartbeat's timestamp to detect stale processes (no update within `HEARTBEAT_STALE_THRESHOLD` seconds).
+The only heartbeat writer (`worker-heartbeat.json` / `verifier-heartbeat.json`) is inside the generated trigger scripts, which the Leader never executes (engines are launched via the TUI launcher). The Leader's heartbeat check (`check_heartbeat`, `HEARTBEAT_STALE_THRESHOLD`) is therefore inert by design (D-7: retained as a reversible fallback; a future leader-side emitter could re-activate it). Production liveness is owned by `check_dead_pane` / `check_prompt_stall` / `check_no_progress` / `check_and_nudge_idle_pane`.
 
 ### Idle Pane Nudging
 

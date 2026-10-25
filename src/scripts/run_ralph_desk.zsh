@@ -1014,7 +1014,7 @@ check_dead_pane() {
   elif [[ "$poll_cmd" == "zsh" ]]; then
     return 0  # bare zsh = dead
   elif [[ "$poll_cmd" == "bash" && "$engine" != "codex" ]]; then
-    return 0  # bash = dead for claude (codex uses bash trigger)
+    return 0  # bash = dead for claude (a codex pane may show bash while its TUI launcher sources)
   fi
   return 1  # alive
 }
@@ -1073,13 +1073,13 @@ _wait_pane_shell_ready() {
 #   $1 pane_id   $2 command text (the caller sends Enter AFTER this returns 0)
 #   $3 accept_re (optional) — shell-ready accept-set forwarded to
 #      _wait_pane_shell_ready; codex launches pass `zsh` (see that helper).
-#   $4 label     (optional, default "worker" — its only callers are the worker launches)
-#      — names the launcher file.
-# W5 (r19-trust-echo.md Part 2): the ~350-460 char command is NOT pasted BY THIS HELPER (the first
-# launch of launch_worker_claude / launch_worker_codex goes through it). Paths that still paste the
-# FULL command, unverified: the 15-attempt claude restart inside launch_worker_claude,
-# launch_verifier_claude / launch_verifier_codex and restart_worker (backlog S-8 — they never had echo
-# verification). Real tmux does not
+#   $4 label     (optional, default "worker") — names the launcher file. Callers: the worker
+#      launches ("worker"), the verifier launches ("verifier") and the claude worker restarts
+#      (launch_worker_claude 15-attempt restart, restart_worker: "worker-restart").
+# W5 (r19-trust-echo.md Part 2): the ~350-460 char command is NOT pasted BY THIS HELPER (every
+# launch/restart of a claude/codex TUI goes through it: launch_worker_claude incl. its 15-attempt
+# restart, launch_worker_codex, launch_verifier_claude / launch_verifier_codex and restart_worker
+# — backlog S-8 closed). Real tmux does not
 # soft-wrap-join the rows ZLE draws (capture-pane -J cannot rebuild them), so reading a long
 # pasted line back off the screen fails on narrow panes (rows needed > the tail window, or
 # > the pane height where ZLE truncates the line and nothing can recover it). Instead the
@@ -1111,7 +1111,11 @@ _paste_cmd_echo_verified() {
     log_error "  launch launcher: no RUNTIME_DIR/LOGS_DIR set — cannot write the launcher file"
     return 1
   fi
-  local _lbase="$_rt/launch-${label}-iter$(printf '%03d' "${ITERATION:-0}")" _lf _k=1
+  # R1-04: remember the next free -k per base in this shell, so N launches cost O(N) probes (not O(N^2))
+  # and there is no cap: the loop below ends on success, or on a path that is not an existing regular file.
+  typeset -gA _LAUNCH_NEXT_K
+  local _lbase="$_rt/launch-${label}-iter$(printf '%03d' "${ITERATION:-0}")" _lf _k _wrc
+  _k=${_LAUNCH_NEXT_K[$_lbase]:-1}
   if [[ "$_lbase" == *"'"* ]]; then
     log_error "  launch launcher: path contains a single quote ($_lbase) — refusing (the pasted source line is single-quoted)"
     return 1
@@ -1124,14 +1128,28 @@ _paste_cmd_echo_verified() {
   zmodload zsh/system 2>/dev/null || { log_error "  launch launcher: zsh/system (sysopen) is unavailable — cannot create the launcher safely"; return 1; }
   while true; do
     (( _k == 1 )) && _lf="${_lbase}.zsh" || _lf="${_lbase}-${_k}.zsh"
-    if ( umask 077; local _fd=""; sysopen -w -o excl,creat -m 600 -u _fd -- "$_lf" 2>/dev/null && print -r -u $_fd -- "$cmd" ); then break; fi
+    # A-C2-03: only a failed CREATE (rc 1: the path exists) advances k. A launcher that was created but
+    # could not be written (ulimit -f, ENOSPC, EIO) is removed and fails the launch (rc 2); SIGXFSZ is
+    # ignored so the failed write surfaces as an error instead of killing the subshell.
+    ( umask 077; trap "" XFSZ 2>/dev/null; local _fd=""
+      sysopen -w -o excl,creat -m 600 -u _fd -- "$_lf" 2>/dev/null || exit 1
+      print -r -u $_fd -- "$cmd" 2>/dev/null || { rm -f -- "$_lf" 2>/dev/null; exit 2; } )
+    _wrc=$?
+    if (( _wrc == 0 )); then
+      _LAUNCH_NEXT_K[$_lbase]=$(( _k + 1 )); break
+    fi
+    if (( _wrc != 1 )); then
+      rm -f -- "$_lf" 2>/dev/null
+      log_error "  launch launcher: could not write $_lf (rc=$_wrc; disk full / file-size limit / I/O error?) — refusing"
+      return 1
+    fi
     # an existing REGULAR file is a previous attempt's launcher (next name); anything else
     # (FIFO, symlink, directory, ...) at our path is refused outright
     if [[ -L "$_lf" ]] || { [[ -e "$_lf" ]] && [[ ! -f "$_lf" ]]; }; then
       log_error "  launch launcher: $_lf exists and is not a regular file (FIFO/symlink/other) — refusing"
       return 1
     fi
-    if [[ ! -e "$_lf" ]] || (( _k >= 200 )); then
+    if [[ ! -e "$_lf" ]]; then
       log_error "  launch launcher: cannot write $_lf"
       return 1
     fi
@@ -1531,7 +1549,13 @@ launch_worker_claude() {
     tmux send-keys -t "$pane_id" "/exit" C-m 2>/dev/null
     sleep 2
     wait_for_pane_ready "$pane_id" 10 2>/dev/null || true
-    paste_to_pane "$pane_id" "$worker_launch"
+    # S-8: same echo-verified short-line launch as the first launch (default zsh|bash accept-set:
+    # claude was just /exit-ed back to the shell).
+    if ! _paste_cmd_echo_verified "$pane_id" "$worker_launch" "" worker-restart; then
+      log_error "Worker claude restart launch command failed to echo intact after retries"
+      log_debug "[FLOW] iter=$iter worker_restart_recovery=failed"
+      return 1
+    fi
     tmux send-keys -t "$pane_id" C-m
     if wait_for_pane_ready "$pane_id" 30 claude && _claude_presubmit_guard "$pane_id" worker_restart; then
       sleep 3
@@ -1570,7 +1594,12 @@ launch_verifier_codex() {
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
   fi
-  paste_to_pane "$pane_id" "$verifier_launch"
+  # S-8: echo-verify the launch command before Enter, zsh-only accept-set exactly like
+  # launch_worker_codex (a reused codex pane's running trigger process is `bash`).
+  if ! _paste_cmd_echo_verified "$pane_id" "$verifier_launch" zsh verifier; then
+    log_error "Verifier codex launch command failed to echo intact after retries"
+    return 1
+  fi
   tmux send-keys -t "$pane_id" C-m
 
   # Wait for codex TUI prompt (› pre-0.144, ❯ from 0.144) instead of shell prompt
@@ -1610,7 +1639,7 @@ launch_verifier_codex() {
     # command (live smoke: codex booting, cmd already non-shell, only `❯ codex ...` on
     # screen): look only below the last echo of the launch command.
     if [[ -n "$_codex_cmd" && "$_codex_cmd" != (zsh|bash|sh|fish) ]] \
-       && _codex_ready_surface "$_pane_text" "$verifier_launch"; then
+       && _codex_ready_surface "$_pane_text" "${_LAUNCH_ECHO_LINE:-$verifier_launch}"; then
       _codex_ready=1
       log_debug "Verifier codex TUI ready after ${_codex_wait}s"
       break
@@ -1641,7 +1670,7 @@ launch_verifier_codex() {
   # update / Daybreak / model-error / unknown dialogs must never receive the instruction): the
   # trust dialog is accepted (bounded), anything else at the bottom or an inactive input surface
   # -> no paste, loud failure.
-  _codex_presubmit_guard "$pane_id" "$verifier_launch" verifier_submit || { log_error "Verifier codex not submittable — aborting launch"; return 1; }
+  _codex_presubmit_guard "$pane_id" "${_LAUNCH_ECHO_LINE:-$verifier_launch}" verifier_submit || { log_error "Verifier codex not submittable — aborting launch"; return 1; }
   paste_to_pane "$pane_id" "$verifier_instruction"
   tmux send-keys -t "$pane_id" C-m
   log_debug "Verifier codex instruction sent"
@@ -1694,7 +1723,11 @@ launch_verifier_claude() {
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 0.5
     tmux send-keys -t "$pane_id" C-c 2>/dev/null; sleep 1
   fi
-  paste_to_pane "$pane_id" "$verifier_launch"
+  # S-8: echo-verify the launch command before Enter (default zsh|bash accept-set, as the claude worker).
+  if ! _paste_cmd_echo_verified "$pane_id" "$verifier_launch" "" verifier; then
+    log_error "Verifier claude launch command failed to echo intact after retries"
+    return 1
+  fi
   tmux send-keys -t "$pane_id" C-m
 
   if ! wait_for_pane_ready "$pane_id" 30 claude; then
@@ -2709,9 +2742,13 @@ paste_to_pane() {
 }
 
 # --- governance.md s7 step 5: Send with copy-mode guard and retry ---
+# $3 launch_label (optional, S-8): $2 is a shell LAUNCH command — after the same guards, send it through
+# _paste_cmd_echo_verified (launcher file + echo-verified short line, label = $3) and a single Enter instead
+# of the plain paste + submit loops. Returns 1 when a guard refuses or the echo never verifies.
 safe_send_keys() {
   local pane_id="$1"
   local text="$2"
+  local launch_label="${3:-}"
 
   # --- Exact tmux sendToWorker pattern (tmux-session.js:527-626) ---
 
@@ -2786,6 +2823,14 @@ safe_send_keys() {
   # matched the real "✨ Update available!" banner, so it was dead code).
   if _dismiss_codex_update_prompt "$pane_id" 1; then
     log_debug " Codex update prompt detected — dismissed (F-1)"
+  fi
+  if [[ -n "$launch_label" ]]; then
+    if ! _paste_cmd_echo_verified "$pane_id" "$text" "" "$launch_label"; then
+      log_error "safe_send_keys: launch command failed to echo intact after retries — pane=$pane_id"
+      return 1
+    fi
+    tmux send-keys -t "$pane_id" C-m
+    return 0
   fi
   # Send text via buffer paste (reliable for long strings)
   log_debug " Pasting text to pane $pane_id (${#text} chars)"
@@ -3266,9 +3311,18 @@ _claude_dialog_footer_at_bottom() {
 #   R2-02        Ink wraps option text with its own newlines (tmux -J does not join them). A
 #                row right below an option row (or another continuation row) belongs to that
 #                option ONLY with word-wrap evidence — length(previous row) + 1 +
-#                length(its first word) > pane width — AND when it is indented exactly to
+#                length(its first word) > the CONTENT width — AND when it is indented exactly to
 #                the option text column. $2 = the pane width (#{pane_width}); without a
 #                valid width no continuation is allowed (the frozen rule refuses).
+#   R3-02        wrap column of a boxed row = (column of its RIGHT border) - 2, i.e. the content area
+#                between the borders minus the padding column before the right border. Only a row that
+#                shows BOTH borders has one (R1-05: a left border alone proves nothing about the right
+#                side), and only when the right border sits where a box on this pane would put it: on the
+#                last column, or inside a right margin no wider than the left one (R2-05); any other row
+#                uses the raw pane width. A left margin before the border is not an inset. The length of a
+#                right-bordered row is its text extent: the trailing padding and `│` are not text.
+#                Ceiling: assumes one padding column before the right border; upgrade if a captured real
+#                dialog shows otherwise.
 #   R3-01        a continuation row after the LAST option row additionally needs the block to be
 #                terminated by a recognized footer line; continuations between options do not.
 #
@@ -3287,15 +3341,30 @@ _claude_dialog_footer_at_bottom() {
 #            a cursor): the caller keeps its own inline-prompt logic
 _bottom_prompt_selection() {
   _claude_bypass_dialog_visible "$1" && { print -r -- bypass; return 0; }
-  local -a _L _kind _lab _cur _tc _len _pk _bc _ix
+  local -a _L _kind _lab _cur _tc _len _pk _bc _ix _wc
   _L=("${(@f)1}")
   local _w="${2:-}"
   [[ "$_w" == <1-> ]] || _w=0
-  local _n=${#_L[@]} _i _l _t _footer=0 _ind _rest _fw
+  local _n=${#_L[@]} _i _l _t _footer=0 _ind _rest _fw _rbm _lim
   for (( _i = 1; _i <= _n; _i++ )); do
-    _l="${_L[_i]}"; _cur[_i]=0; _lab[_i]=""; _tc[_i]=0; _pk[_i]=0; _bc[_i]=0; _ix[_i]=0
+    _l="${_L[_i]}"; _cur[_i]=0; _lab[_i]=""; _tc[_i]=0; _pk[_i]=0; _bc[_i]=0; _ix[_i]=0; _wc[_i]=0
     [[ "$_l" =~ '^(.*[^[:space:]])[[:space:]]*$' ]] && _l="${match[1]}"
     _len[_i]=${#_l}
+    # R3-02: a row with BOTH a leading and a trailing box border carries its own wrap column: the content
+    # area lies between the borders, so text can reach the right-border column minus its padding column
+    # (_wc = rb_col - 2); the border and the padding before it are not text (_len = text extent). A left
+    # margin before the border is not an inset (R2-05: it is already part of every column). R1-05/R2-05: the
+    # border only counts when it is where a box on this pane would put it (flush right, or a right margin no
+    # wider than the left one); otherwise nothing proves the wrap column and the raw pane width applies.
+    if [[ "$_l" =~ '^([[:space:]]*)│' ]]; then
+      _ind=${#match[1]}
+      if [[ "$_l" =~ '^(.*[^[:space:]│])[[:space:]]*│$' ]]; then
+        # A-C3-01: the border padding is never text, whether or not the border qualifies as the wrap column
+        _len[_i]=${#match[1]}
+        _rbm=$(( _w - ${#_l} ))
+        (( _w > 0 && _rbm >= 0 && _rbm <= _ind )) && _wc[_i]=$(( ${#_l} - 2 ))
+      fi
+    fi
     if [[ -z "${_l//[[:space:]]/}" ]]; then
       _kind[_i]=b
     elif [[ "$_l" == *"Enter to confirm"* || "$_l" == *"Esc to cancel"* || "$_l" == *"Press enter to continue"* || "$_l" == *"Tab to amend"* ]]; then
@@ -3325,7 +3394,8 @@ _bottom_prompt_selection() {
            && [[ "$_l" =~ '^([[:space:]]*(│[[:space:]]*)?)([^[:space:]].*)$' ]]; then
         # R2-02: a word-wrapped continuation of the option row above (evidence + option-text indent)
         _ind=${#match[1]}; _rest="${match[3]}"; _fw="${_rest%%[[:space:]]*}"
-        if (( _ind == _tc[_i-1] && _len[_i-1] + 1 + ${#_fw} > _w )); then
+        _lim=$_w; (( _wc[_i-1] > 0 )) && _lim=${_wc[_i-1]}
+        if (( _ind == _tc[_i-1] && _len[_i-1] + 1 + ${#_fw} > _lim )); then
           _kind[_i]=w; _tc[_i]=${_tc[_i-1]}
         fi
       fi
@@ -4095,7 +4165,14 @@ restart_worker() {
     _require_codex_effort "$WORKER_CODEX_REASONING" "worker-restart"
     safe_send_keys "$pane_id" "$(_codex_launch_with_hook_fallback "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $WORKER_CODEX_MODEL -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} --disable plugins --dangerously-bypass-approvals-and-sandbox")"
   else
-    safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")"
+    # S-8: safe_send_keys keeps its dialog guards (bypass warning, trust dialog, ...) and sends the launch
+    # as an echo-verified short line (default zsh|bash accept-set: claude was just /exit-ed). A refusal or a
+    # missing echo counts the attempt and fails like the worker launches (caller writes BLOCKED).
+    if ! safe_send_keys "$pane_id" "$(build_claude_cmd tui "$WORKER_MODEL" "" "" "$WORKER_EFFORT")" worker-restart; then
+      log_error "Worker restart launch command was refused or failed to echo intact"
+      WORKER_RESTARTS[$iter]=$((restart_count + 1))
+      return 1
+    fi
   fi
   WORKER_RESTARTS[$iter]=$((restart_count + 1))
   return 0
@@ -4374,12 +4451,12 @@ write_worker_trigger() {
   # Engine-specific launch command (expanded at write time)
   if [[ "$WORKER_ENGINE" = "codex" ]]; then
     _require_codex_effort "$WORKER_CODEX_REASONING" "worker-trigger"
-    local engine_cmd=$(_codex_launch_with_hook_fallback "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} \\
+    local engine_cmd=$(_codex_launch_with_hook_fallback "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} exec \\
   -m $WORKER_CODEX_MODEL \\
-  -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\"${_CODEX_NO_UPDATE_FLAG} \\
+  -c model_reasoning_effort=\"$WORKER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\"")
-    local engine_comment="# Run codex with fresh context (fallback trigger — TUI primary launch via launch_worker_codex)"
+    local engine_comment="# Run codex non-interactively (codex exec exits when done; a bare-prompt TUI never would). Replay artifact only: the leader launches the worker via launch_worker_codex (TUI launcher)"
   else
     local engine_cmd
     engine_cmd=$(build_claude_cmd print "$WORKER_MODEL" "$prompt_file" "$output_log" "$WORKER_EFFORT")
@@ -4563,12 +4640,12 @@ write_verifier_trigger() {
   # Engine-specific launch command (expanded at write time)
   if [[ "$verifier_engine" = "codex" ]]; then
     _require_codex_effort "$VERIFIER_CODEX_REASONING" "verifier-trigger"
-    local engine_cmd=$(_codex_launch_with_hook_fallback "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} -m $VERIFIER_CODEX_MODEL \\
-  -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\"${_CODEX_NO_UPDATE_FLAG} \\
+    local engine_cmd=$(_codex_launch_with_hook_fallback "OMX_STATE_ROOT=${(q)OMX_STATE_DIR} ${CODEX_BIN:-codex} exec -m $VERIFIER_CODEX_MODEL \\
+  -c model_reasoning_effort=\"$VERIFIER_CODEX_REASONING\" -c mcp_servers='{}'${_CODEX_NO_UPDATE_FLAG} \\
   --disable plugins --dangerously-bypass-approvals-and-sandbox \\
   \"\$(cat $prompt_file)\" \\
   > >(tee $output_log) 2>&1")
-    local engine_comment="# Run codex with fresh context (governance.md s7 step 7) — process substitution preserves tty"
+    local engine_comment="# Run codex non-interactively (codex exec: the TUI refuses a non-tty stdout, so the tee below needs exec) with fresh context (governance.md s7 step 7). Replay artifact only: the leader launches the verifier via launch_verifier_codex (TUI launcher)"
   else
     local engine_cmd
     engine_cmd=$(build_claude_cmd print "$verifier_model" "$prompt_file" "$output_log" "$VERIFIER_EFFORT")
@@ -7111,8 +7188,9 @@ main() {
         # the window it actually ran in (PR-A validation gates its integrity).
         if [[ -z "${ITER_WINDOW_START:-}" && -f "$DONE_CLAIM_FILE" ]]; then
           local _dc_epoch=""
-          _dc_epoch=$(stat -f %m "$DONE_CLAIM_FILE" 2>/dev/null || stat -c %Y "$DONE_CLAIM_FILE" 2>/dev/null || echo "")
-          if [[ -n "$_dc_epoch" ]]; then
+          # GNU-first + numeric guard (_file_mtime): a BSD-first `stat -f %m` is the filesystem report on GNU
+          _dc_epoch=$(_file_mtime "$DONE_CLAIM_FILE")
+          if [[ "$_dc_epoch" == <-> ]] && (( _dc_epoch > 0 )); then
             ITER_WINDOW_START=$(date -u -r "$_dc_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null               || date -u -d "@$_dc_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
           fi
         fi

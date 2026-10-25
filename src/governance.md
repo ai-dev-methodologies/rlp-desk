@@ -187,6 +187,31 @@ L2 is included in MEDIUM+ rows but is marked N/A when no external services exist
 - HIGH: database migration, CI/CD change, deployment config
 - CRITICAL: payment processing, auth, encryption, PII handling
 
+### Mutation Gate Verdict (CRITICAL, tool configured in test-spec)
+
+This defines the "mutation testing / mutation score" requirement of the CRITICAL row above and of Checkpoint 2 (§1e). It applies only when the test-spec `Mutation Testing Gate` section names a `Tool:` other than `N/A`, and only at Checkpoint 2 (`us_id=ALL`).
+
+- **Command**: the test-spec Command block is `node ~/.claude/ralph-desk/node/run.mjs mutation run --tool <go-mutesting|mutmut|stryker> --target <core business logic files> --min-score <n> --json`. Extra tool arguments after `--` come from a closed allow-list (Stryker: `--disableBail`, `--concurrency`/`-c`, `--maxConcurrentTestRunners`, `--maxTestRunnerReuse`, `--logLevel`, `--fileLogLevel`, `--allowConsoleColors`, `--cleanTempDir`, `--coverageAnalysis`; mutmut: `--max-children`; go-mutesting: `--verbose`, `--debug`), so none can change scope, timeouts (a timeout scores as a kill), runner, plugins, incremental reuse or the report: anything else is refused (exit 64). A Stryker report that mutated files outside `--target`, or a report path that is or sits under a symlink, is not scored (exit 2). The Verifier runs it itself (fresh evidence) and cites `mutation:<tool> score=<n> min=<m> total=<t> ignored=<i>` in the evidence.
+- **Exit 0** (score >= min): the gate is met. **Exit 1** (score below min): verdict `fail`, `issues[].id` `MUT-SCORE`, `fix_hint` names the first `survivors` entries. **Exit 2** (tool absent, error, timeout, unparseable output, or zero scoreable mutants): verdict `fail`, `issues[].id` `MUT-GATE-UNMET`, severity `major`. A configured gate that cannot run is never a pass.
+- **Preflight (brainstorm)**: before the test-spec `Tool:` line names a tool, the Leader runs `node ~/.claude/ralph-desk/node/run.mjs mutation detect` and may name only a tool reported `present`; if none is present the line stays `N/A` with owner approval. This is what keeps `MUT-GATE-UNMET` from burning the circuit breaker on an environment gap the Worker cannot fix.
+- **Suppression**: `ignored` mutants (Stryker `Ignored`, mutmut `skipped`) are excluded from the score, and a mutmut `# pragma: no mutate` makes mutants disappear from the count entirely, so a suppression can raise the score. The Verifier therefore treats `ignored > 0`, or any suppression added since the campaign start sha recorded in the test-spec (`git diff <start-sha> -- <target files>`, grep `Stryker disable`, `pragma: no mutate`, and tool-config changes that exclude code such as Stryker `mutate` globs, mutmut `do_not_mutate`, go-mutesting `--disable`/`--match`/`--blacklist` arguments; and the auto-discovered, Worker-writable `stryker.config.*` keys that change selection, the kill decision or the report: `ignorePatterns`, `ignorers`, `ignoreStatic`, `mutator.excludedMutations`, `checkers`, `timeoutMS`, `timeoutFactor`, `dryRunTimeoutMinutes`, `testRunner`, `commandRunner`, `buildCommand`, `testFiles`, `plugins`, `incremental`/`incrementalFile`, `jsonReporter.fileName`), as needing a justification in the PRD; without one the verdict is `fail`, `issues[].id` `MUT-SUPPRESSED`. The wrapper only reports `ignored` (in the evidence string and a warning); it does not read the diff.
+- **Trust boundary**: the visual/mutation wrappers and the `--out` guard detect common gate-gaming shortcuts (regenerated baselines, loosened config, hidden/ignored files, symlink swaps, skip-worktree, clean filters, `git replace`, scope-narrowing flags, pre-planted report paths) and exit 2 on anything they cannot verify; cheap static checks are implemented, unclosable same-user races are documented ceilings.
+  They are NOT a security boundary against deliberate same-user tampering (git internals, `node_modules`, tool binaries, raced files): Worker and Verifier share one user and one checkout by design (§1f, "not a Byzantine boundary").
+  A wrapper exit code is evidence the Verifier weighs under the Evidence Gate and Anti-Gaming audits, never a verdict: it waives no Iron Law or Suppression check, and exit 2 or any `*_unverifiable` reason is FAIL "gate unmet".
+  The Verifier re-runs the gate in a fresh CLONE of the repository (`git clone`, never `git worktree add`: a linked worktree shares `refs/replace` and `.git/info/attributes`) at the campaign start sha with the Worker's done-claim commit checked out, after `npm ci`, or in CI; that run's output is the evidence.
+  This re-run is REQUIRED for every CRITICAL-risk US, waived only by the owner writing `Fresh-clone re-run: not required (owner)` in the global test-spec `test-spec-<slug>.md`, in its header above the first `## US-` heading; for other risk levels it is required only if the owner writes `Fresh-clone re-run: required (owner)` there. The Verifier prompt lists only that global file under Required reads; the per-US `test-spec-<slug>-US-*.md` copies are Worker-only, so the line is not copied into them.
+  The owner writes that line during brainstorm (rlp-desk.md step 5.8); the Worker may not add or edit it (the test-spec is lane-protected, §7e) and the Leader cannot waive it. Any unexplained `config_changed`, `*_unverifiable` or `ignored > 0` also calls for the re-run.
+- **Immutable**: the Worker must not edit `--min-score` or `Target:` in the test-spec (a test-spec mtime change during a Worker iteration is a lane violation, §7e).
+- **Pre-gate**: the mutation run takes minutes, so a Worker that records it in `execution_steps` uses a step name that does not start with `verify` (Layer 2 replay, §3a, skips it) or the campaign raises `--pre-gate-cmd-timeout`.
+
+## 1c¾. Domain Rule Packs (opt-in)
+
+A domain rule pack (`rule-pack apply <slug> --pack <name>`; format and authoring in `docs/rlp-desk/rule-pack-authoring.md`) renders a marked block of domain rules into the test-spec's global header. It is applied manually and is off by default.
+
+- **Authority**: the block is part of the test-spec, so Worker and Verifier read it like any other criterion and the gate-receipt seals it.
+- **Verdict**: each rule is an additional acceptance criterion for every in-scope US. A `critical` rule that is violated, or has no cited evidence (file:line, test name, or command output), is a FAIL; the Verifier cites the rule ID in `issues[].id`.
+- **Never weaker**: a pack cannot lower the required layers (§1c½), skip consensus, or relax an Iron Law. It only adds criteria.
+
 ## 1d. Verification Layers
 
 Four layers of verification, each targeting a different failure mode.
@@ -211,6 +236,14 @@ Four layers of verification, each targeting a different failure mode.
 - Scope: production/staging environment health after deployment
 - Evidence: health check response + deployment status + monitoring state
 - When N/A: "N/A — no deployment (library/tool, local-only change)"
+
+### Visual Verdict (only a US whose test-spec names a `visual run` command)
+- **Command**: the test-spec Command block is `node ~/.claude/ralph-desk/node/run.mjs visual run --baseline-ref <campaign-start-sha> --json`. The Verifier runs it itself (fresh evidence); setup is in `docs/rlp-desk/visual-verification-guide.md`.
+- **exit 0**: evidence = `stats` + the `baseline` lists. Each path in `baseline.added` is opened and judged against the AC (a codex-mode Verifier cannot view images: record `request_info`).
+- **exit 1**: FAIL, citing `screenshot_failures[0]` (`expected` / `actual` / `diff` paths). A non-empty `baseline.modified` or `baseline.deleted` is also FAIL unless the PRD AC explicitly authorizes re-baselining. A Playwright config changed since the start sha (`config_modified`, listed in `baseline.config_changed`; the comparison threshold, `snapshotPathTemplate`, `updateSnapshots` and `ignoreSnapshots` all live there) is likewise FAIL unless the PRD AC authorizes it (the guard compares raw bytes with the start commit's tree and sees git-ignored files, symlink retargets and `git replace` too), and so are `update_snapshots_enabled`, `ignore_snapshots_enabled`, `tests_skipped` and `expected_failure` (a `test.fail()` annotation turns a red test into "expected"). Spec files fixed by the contract are listed with `--protect '<glob>'` in the command; a change to a protected path is FAIL unless the PRD AC authorizes it. The wrapper rejects `--update-snapshots` / `-u` (any spelling) and `--ignore-snapshots`; a Worker never runs them.
+- **exit 2** (tool absent, browser missing, no tests, timeout, unverifiable baseline or config outside the repo, skip-worktree/assume-unchanged flags or a git content filter on a guarded path, a symlinked or nested snapshot directory too large to list, incomplete or inconsistent report, internal error): FAIL "gate unmet: `<reason>`" — a configured gate that cannot run is not a pass.
+- **Preflight (brainstorm)**: before a test-spec names a visual command, the Leader runs `visual detect` (must report `present`) and records the campaign start sha (`git rev-parse HEAD`) in the sealed test-spec, so `--baseline-ref` is a fixed reference. Baselines are committed before the campaign starts. The Verifier runs from a clean install (`npm ci`): `node_modules` is the comparator and a Worker can write it, which the guard cannot see (stated limit; see the guide).
+- **Trust boundary**: see §1c½ Mutation Gate Verdict (same rule for the visual wrapper; a visual exit 2 or `*_unverifiable` is FAIL "gate unmet").
 
 ### Rules
 - L1 and L3: always required regardless of risk level.
@@ -810,8 +843,8 @@ LOOP_NAME=<slug> ROOT=$(pwd) ~/.claude/ralph-desk/run_ralph_desk.zsh
 
 The tmux runner (`run_ralph_desk.zsh`) creates a tmux session with three panes:
 - **Leader pane** — deterministic shell loop (no LLM)
-- **Worker pane** — receives `claude -p` invocations via trigger scripts
-- **Verifier pane** — receives `claude -p` invocations via trigger scripts
+- **Worker pane** — receives the engine launch via the TUI launcher
+- **Verifier pane** — receives the engine launch via the TUI launcher
 
 ### Canonical layout contract (v0.22.20)
 
@@ -854,10 +887,10 @@ Characteristics:
 - Leader is a shell script, not an LLM — zero tokens consumed for orchestration.
 - Leader reads ONLY `iter-signal.json` and `verify-verdict.json` for control flow (structured JSON via `jq`). No markdown parsing.
 - Model routing is static via environment variables (`WORKER_MODEL`, `VERIFIER_MODEL`). This is an explicit trade-off vs Agent() mode's dynamic routing.
-- **Write-then-notify:** All prompts and payloads are written to files first. Only short trigger commands (`bash /path/to/trigger.sh`) are sent via `tmux send-keys`.
+- **Write-then-notify:** All prompts and payloads are written to files first. The generated `iter-NNN.*-trigger.sh` files are a written record / manual replay script (the leader never executes them); engines are launched through the TUI launcher (`_paste_cmd_echo_verified`: a 0600 launcher file plus a short echo-verified `source` line sent via `tmux send-keys`, used by `launch_worker_codex` / `launch_verifier_codex` and the claude equivalents).
 - **Pane IDs (`%N` format):** Captured at pane creation, stored in `session-config.json`. Never uses positional indices.
 - **Copy-mode guard:** Checks `#{pane_in_mode}` before every `send-keys` to avoid sending into scrollback.
-- **Heartbeat monitoring:** Trigger scripts write heartbeat files; Leader checks freshness.
+- **Heartbeat monitoring:** The only heartbeat writer is inside the trigger scripts, which the leader never executes, so the leader's freshness check is inert by design (D-7); production liveness uses `check_dead_pane` / `check_prompt_stall` / `check_no_progress` / `check_and_nudge_idle_pane`.
 - **Atomic file writes:** All file writes use `{path}.tmp.{pid}` + `mv` for crash safety.
 - Can run detached (`tmux detach`) for overnight/CI campaigns.
 - User can watch Worker/Verifier execution in real-time via tmux panes.

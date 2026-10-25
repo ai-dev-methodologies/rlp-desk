@@ -235,11 +235,11 @@ six(){ local e="${1-DEFAULT}"; print "$e"; }   # mirror of ${6-...} for the pass
 [[ "$(six '')" == '' && "$(six)" == DEFAULT && "$(six medium)" == medium ]] \
   && ok "D-1c fix(MED): \${6-} preserves explicit empty (unset→default, ''→'', val→val)" || no "D-1c fix(MED): \${6-} semantics"
 # D-1c codex LOW: malformed model:reasoning rejected → fall back to globals (xhigh is VALID — re-review LOW)
-grep -qF '"$model" != *:*:*' "$RUN" && grep -qF '"$_r" == (minimal|low|medium|high|xhigh)' "$RUN" \
-  && ok "D-1c fix(LOW): malformed model:reasoning validated (>1 colon / bad reasoning → fallback; xhigh allowed)" || no "D-1c fix(LOW): malformed-spec validation missing"
+grep -qF '"$model" != *:*:*' "$RUN" && grep -qF '"$_r" == (minimal|low|medium|high|xhigh|max|ultra)' "$RUN" \
+  && ok "D-1c fix(LOW): malformed model:reasoning validated (>1 colon / bad reasoning → fallback; xhigh/max/ultra allowed)" || no "D-1c fix(LOW): malformed-spec validation missing"
 # logic mirror: validation accept/reject table (xhigh is a real upgrade-table ceiling level)
-cxvalid(){ local m="$1" mo re; if [[ "$m" == *:* ]]; then mo="${m%%:*}" re="${m##*:}"; if [[ -n "$mo" && "$m" != *:*:* && "$re" == (minimal|low|medium|high|xhigh) ]]; then print "OK:$mo:$re"; else print FALLBACK; fi; else print "BARE:$m"; fi; }
-[[ "$(cxvalid 'gpt-5.5:medium')" == 'OK:gpt-5.5:medium' && "$(cxvalid 'gpt-5.5:xhigh')" == 'OK:gpt-5.5:xhigh' && "$(cxvalid 'gpt-5.5:')" == FALLBACK && "$(cxvalid ':medium')" == FALLBACK && "$(cxvalid 'foo:bar:baz')" == FALLBACK && "$(cxvalid 'gpt-5.5:turbo')" == FALLBACK && "$(cxvalid 'gpt-5.5')" == 'BARE:gpt-5.5' ]] \
+cxvalid(){ local m="$1" mo re; if [[ "$m" == *:* ]]; then mo="${m%%:*}" re="${m##*:}"; if [[ -n "$mo" && "$m" != *:*:* && "$re" == (minimal|low|medium|high|xhigh|max|ultra) ]]; then print "OK:$mo:$re"; else print FALLBACK; fi; else print "BARE:$m"; fi; }
+[[ "$(cxvalid 'gpt-5.5:medium')" == 'OK:gpt-5.5:medium' && "$(cxvalid 'gpt-5.5:xhigh')" == 'OK:gpt-5.5:xhigh' && "$(cxvalid 'gpt-5.6:max')" == 'OK:gpt-5.6:max' && "$(cxvalid 'gpt-5.6:ultra')" == 'OK:gpt-5.6:ultra' && "$(cxvalid 'gpt-5.5:')" == FALLBACK && "$(cxvalid ':medium')" == FALLBACK && "$(cxvalid 'foo:bar:baz')" == FALLBACK && "$(cxvalid 'gpt-5.5:turbo')" == FALLBACK && "$(cxvalid 'gpt-5.5')" == 'BARE:gpt-5.5' ]] \
   && ok "D-1c fix(LOW): valid(incl xhigh)→split, empty/multi-colon/unknown→fallback, bare→global" || no "D-1c fix(LOW): validation logic"
 
 # ---- D-16: last-US pass finalizes directly (leader-synthesized ALL signal, no worker round-trip) ----
@@ -305,15 +305,18 @@ fvval(){ local v="$1"; if ! [[ "$v" == <-> ]] || (( v < 1 || v > 10 )); then pri
 # BLOCK with a misleading "deadlock" reason (observed: CRITICAL att.1 + D-16 dogfood att.1).
 # codex MEDIUM fix: single banner-specific pattern (API Error + the distinctive
 # multi-word phrase on one line), NOT loose standalone patterns.
-grep -qF "grep -qiE 'api error.*temporarily limiting requests'" "$RUN" \
+# IMP-07 (dd85fc1) moved the detector into lib_ralph_desk.zsh detect_api_error; the banner is now one alternative of its unconditional-phrase grep.
+grep -qF "api error.*temporarily limiting requests" "$LIB" \
   && ok "D-17a: banner pattern requires 'API Error' + 'temporarily limiting requests' together" || no "D-17a: banner pattern missing"
-grep -qF "grep -qiE '(^|[^[:digit:]])429([^[:digit:]]|\$)'" "$RUN" \
+grep -qF "(^|[^[:digit:]])(500|529|429)([^[:digit:]]|\$)" "$LIB" \
   && ok "D-17a: HTTP 429 added (mirrors 500/529)" || no "D-17a: 429 missing"
 # loose patterns must be GONE (codex MEDIUM: false-positive on legit rate-limit discussion)
-grep -qF "grep -qiE 'api error.*rate.?limit'" "$RUN" && no "D-17a fix: loose 'api error.*rate.?limit' still present (false-positive risk)" \
+grep -qF "grep -qiE 'api error.*rate.?limit'" "$LIB" "$RUN" && no "D-17a fix: loose 'api error.*rate.?limit' still present (false-positive risk)" \
   || ok "D-17a fix(MED): loose patterns removed (no standalone 'temporarily limiting requests' / 'api error.*rate.?limit')"
-# logic mirror: match the real banner + 429; do NOT match legit discussion/feature/quote
-rlmatch(){ echo "$1" | grep -qiE 'api error.*temporarily limiting requests' || echo "$1" | grep -qiE '(^|[^[:digit:]])429([^[:digit:]]|$)'; }
+# behavior: run the REAL lib detect_api_error (extracted by name, drift-proof): match the real banner + 429; do NOT match legit discussion/feature/quote
+_D17A_SRC=$(mktemp)
+awk '/^detect_api_error\(\)/{f=1} f{print} f&&/^\}/{f=0}' "$LIB" > "$_D17A_SRC"; source "$_D17A_SRC"; rm -f "$_D17A_SRC"
+rlmatch(){ detect_api_error "$1"; }
 rlmatch '⏺ API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited' && b1=Y || b1=N
 rlmatch '⏺ API Error: 429 Too Many Requests' && b2=Y || b2=N
 rlmatch 'def rate_limit(n): # implement a rate limiter' && f1=Y || f1=N
@@ -393,8 +396,11 @@ finalpath(){ local m="$1"; if suc "$m" ALL; then print CONSENSUS; else print SEQ
 # ids from prose/dependencies inflated the list + coverage and made _all_us_verified
 # (D-16) require a never-verifiable phantom (D-16 never armed). Now heading-anchored,
 # matching count_prd_us (the live re-split). (Independently flagged: codex audit NEW-3.)
+# C-01 (3fca805) moved expected_us into a fork-safe child (_sigsafe_sh): the child greps
+# its arg $2 and the leader passes RLP_US_HEADING_ERE_PRD as that arg, so both halves are pinned.
 grep -qF 'US_LIST=$(grep -oE "$RLP_US_HEADING_ERE_PRD" "$prd_file" | grep -oE' "$RUN" \
-  && grep -qF 'expected_us=$(grep -oE "$RLP_US_HEADING_ERE_PRD" "$prd_file" | grep -oE' "$RUN" \
+  && grep -qF 'e=$(grep -oE "$2" "$1" | grep -oE "US-[0-9]+"' "$RUN" \
+  && grep -qF '"$DESK/plans/prd-$SLUG.md" "$RLP_US_HEADING_ERE_PRD" "$DEBUG_LOG"' "$RUN" \
   && ok "D-23: initial US_LIST + expected_us heading-anchored (RLP_US_HEADING_ERE_PRD), matching count_prd_us" || no "D-23: extraction not anchored"
 grep -qF 'if [[ -n "$current_us_list" ]]; then' "$LIB" && grep -qF 'no blank-overwrite' "$LIB" \
   && ok "D-23: check_prd_update keeps prior US_LIST when re-split empty (no blank-overwrite)" || no "D-23: blank-overwrite guard missing"
@@ -418,9 +424,9 @@ ext2v3(){ grep -oE '^#{2,3}[[:space:]]+US-[0-9]+([[:space:]:-]|$)' <<<"$1" | gre
   && ok "D-24: extractor logic (### PRD + ## test-spec both matched; 3-hash no longer empty)" || no "D-24: extractor logic"
 # D-24 (codex review b): _lint_test_density awk story-block guards now ^#{2,3} (was ^## only →
 # AC count 0 on every 3-hash PRD story → density lint vacuously skipped at run:897 `[[ ac==0 ]] && continue`).
-grep -qF '$0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)"' "$LIB" && grep -qF 'in_us && /^#{2,3}[[:space:]]+US-[0-9]+/' "$LIB" \
-  && ok "D-24 fix(b): lint AC/test awk story-block guards are ^#{2,3} (count ACs on canonical 3-hash PRD)" || no "D-24 fix(b): lint awk still 2-hash"
-aclint(){ awk -v us="$2" '$0 ~ "^#{2,3}[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next } in_us && /^#{2,3}[[:space:]]+US-[0-9]+/ { in_us=0 } in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ { c++ } END { print c+0 }' <<<"$1"; }
+grep -qF '$0 ~ "^###?[[:space:]]+"us"([[:space:]]|:|-|$)"' "$LIB" && grep -qF 'in_us && /^###?[[:space:]]+US-[0-9]+/' "$LIB" \
+  && ok "D-24 fix(b): lint AC/test awk story-block guards are ^###? (2-or-3 hash, no interval: mawk) (count ACs on canonical 3-hash PRD)" || no "D-24 fix(b): lint awk still 2-hash"
+aclint(){ awk -v us="$2" '$0 ~ "^###?[[:space:]]+"us"([[:space:]]|:|-|$)" { in_us=1; next } in_us && /^###?[[:space:]]+US-[0-9]+/ { in_us=0 } in_us && /^[[:space:]]*-[[:space:]]+AC[0-9]+/ { c++ } END { print c+0 }' <<<"$1"; }
 [[ "$(aclint $'### US-001: a\n- AC1: x\n- AC2: y\n### US-002: b' US-001)" -eq 2 ]] \
   && ok "D-24 fix(b): AC count = 2 on a 3-hash PRD story (was 0 → vacuous lint pass)" || no "D-24 fix(b): AC count logic"
 

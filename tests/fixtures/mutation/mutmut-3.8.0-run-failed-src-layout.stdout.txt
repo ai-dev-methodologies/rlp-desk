@@ -1,0 +1,84 @@
+⠋ Generating mutants⠙ Generating mutants⠹ Generating mutants⠸ Generating mutants⠼ Generating mutants⠴ Generating mutants⠦ Generating mutants⠧ Generating mutants⠇ Generating mutants⠏ Generating mutants⠋ Generating mutants⠙ Generating mutants⠹ Generating mutants⠸ Generating mutants⠼ Generating mutants⠴ Generating mutants⠦ Generating mutants⠧ Generating mutants⠇ Generating mutants⠏ Generating mutants⠋ Generating mutants⠙ Generating mutants⠹ Generating mutants⠸ Generating mutants⠼ Generating mutants⠴ Generating mutants⠦ Generating mutants⠧ Generating mutants⠇ Generating mutants⠏ Generating mutants⠋ Generating mutants⠙ Generating mutants⠹ Generating mutants⠸ Generating mutants⠸ Generating mutants⠼ Generating mutants⠼ Generating mutants
+    done in 47ms (2 files mutated, 0 ignored, 0 unmodified)
+⠸ Running stats     ⠼ Running stats⠴ Running stats⠦ Running stats⠧ Running stats⠇ Running stats⠏ Running stats⠋ Running stats⠙ Running stats⠹ Running stats⠸ Running stats⠼ Running stats⠴ Running stats⠦ Running stats⠧ Running stats⠇ Running stats
+F
+=================================== FAILURES ===================================
+___________________________________ test_add ___________________________________
+Traceback (most recent call last):
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+                             ~~~~^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/_pytest/runner.py", line 250, in <lambda>
+    lambda: runtest_hook(item=item, **kwds),
+            ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_caller.py", line 197, in __call__
+    return self._hookexec(
+           ~~~~~~~~~~~~~~^
+        self.name, self._hookimpls.copy(), call_kwargs, firstresult
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_manager.py", line 183, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_execution.py", line 195, in _multicall
+    raise exception
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/_pytest/logging.py", line 865, in pytest_runtest_call
+    yield
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/_pytest/capture.py", line 900, in pytest_runtest_call
+    return (yield)
+            ^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/_pytest/skipping.py", line 268, in pytest_runtest_call
+    return (yield)
+            ^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_execution.py", line 147, in _multicall
+    res = hook_impl.function(*args)
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/_pytest/runner.py", line 184, in pytest_runtest_call
+    item.runtest()
+    ~~~~~~~~~~~~^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/_pytest/python.py", line 1707, in runtest
+    self.ihook.pytest_pyfunc_call(pyfuncitem=self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_caller.py", line 197, in __call__
+    return self._hookexec(
+           ~~~~~~~~~~~~~~^
+        self.name, self._hookimpls.copy(), call_kwargs, firstresult
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_manager.py", line 183, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_execution.py", line 195, in _multicall
+    raise exception
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/pluggy/_execution.py", line 147, in _multicall
+    res = hook_impl.function(*args)
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/_pytest/python.py", line 167, in pytest_pyfunc_call
+    result = testfunction(**testargs)
+  File "/FIXTURE_ROOT/mm/mutants/tests/test_age.py", line 5, in test_add
+    assert add(1, 2) == 3
+           ~~~^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/mutmut/mutation/trampoline.py", line 172, in _trampoline_wrapper
+    return trampoline(*args, **kwargs)
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/mutmut/mutation/trampoline.py", line 97, in trampoline
+    record_trampoline_hit(orig_qual_name, caller=caller_name)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/FIXTURE_HOME/.cache/uv/archive-v0/qJIvzMfSgARVYdfLep2OD/lib/python3.15/site-packages/mutmut/stats.py", line 151, in record_trampoline_hit
+    assert not name.startswith("src."), "Failed trampoline hit. Module name starts with `src.`, which is invalid"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Failed trampoline hit. Module name starts with `src.`, which is invalid
+=========================== short test summary info ============================
+FAILED tests/test_age.py::test_add - AssertionError: Failed trampoline hit. M...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.01s
+failed to collect stats. runner returned 1
+

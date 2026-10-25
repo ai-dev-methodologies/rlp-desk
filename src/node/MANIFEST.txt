@@ -6,6 +6,8 @@ models.json
 polling/signal-poller.mjs
 prompts/prompt-assembler.mjs
 reporting/campaign-reporting.mjs
+reporting/campaign-trend.mjs
+rule-packs/finance.pack.json
 run.mjs
 runner/campaign-main-loop.mjs
 runner/done-claim-lint.mjs
@@ -19,10 +21,15 @@ shared/paths.mjs
 shared/verdict-schema.mjs
 shared/waivers.mjs
 tmux/pane-manager.mjs
+tools/mutation.mjs
+tools/rule-pack.mjs
+tools/speckit.mjs
+tools/visual.mjs
 util/debug-log.mjs
 util/desk-root.mjs
 util/gate-receipt.mjs
 util/ledger-seed.mjs
 util/lifecycle-metrics.mjs
+util/out-path-guard.mjs
 util/reason-category.mjs
 util/shell-quote.mjs

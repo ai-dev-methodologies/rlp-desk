@@ -177,16 +177,61 @@ check "fresh path: launch succeeds" "RC=0" "$out"
 [[ "$(_mode "$rt/$LF1")" == 600 && -f "$rt/$LF1" && ! -L "$rt/$LF1" ]] && ok "fresh launcher: regular file, mode 0600, not a symlink" || no "fresh launcher wrong type/mode"
 grep -q 'sysopen' "$RUN" && ok "source creates the launcher with zsh/system sysopen" || no "source does not use sysopen"
 
-# R2-07: the helper's header must not claim the full command is never pasted — the 15-attempt restart path in
-# launch_worker_claude, launch_verifier_claude / launch_verifier_codex and restart_worker still paste it.
+# R2-07 / S-8: the helper's header must not list paths that paste the full command unverified now that the 15-attempt
+# restart in launch_worker_claude, launch_verifier_claude / launch_verifier_codex and restart_worker all go through it.
 hdr=$(awk '/^_paste_cmd_echo_verified\(\) \{/ {exit} {print}' "$RUN" | tail -40)
-[[ "$hdr" == *"15-attempt"* && "$hdr" == *"restart_worker"* && "$hdr" == *"launch_verifier_claude"* && "$hdr" == *"FULL command"* ]] \
-  && ok "R2-07: the launcher comment names the paths that still paste the full command" || no "R2-07: the launcher comment does not name the paths that still paste the full command"
+[[ "$hdr" != *"still paste the"* && "$hdr" != *"unverified:"* ]] \
+  && ok "S-8: the launcher comment no longer lists paths that paste the full command unverified" || no "S-8: the launcher comment still lists unverified full-command paths"
 [[ "$hdr" != *"is NOT pasted. Real tmux"* ]] && ok "R2-07: the unqualified 'the command is NOT pasted' claim is gone" || no "R2-07: the unqualified claim is still there"
-lwc=$(_extract_fn launch_worker_claude "$RUN"); lvc=$(_extract_fn launch_verifier_claude "$RUN"); rw=$(_extract_fn restart_worker "$RUN")
-print -r -- "$lwc" | grep -q 'paste_to_pane "$pane_id" "$worker_launch"' && ok "R2-07 fact: launch_worker_claude's restart path pastes the full command" || no "R2-07 fact: no full-command paste in launch_worker_claude"
-print -r -- "$lvc" | grep -q 'paste_to_pane "$pane_id" "$verifier_launch"' && ok "R2-07 fact: launch_verifier_claude pastes the full command" || no "R2-07 fact: no full-command paste in launch_verifier_claude"
-print -r -- "$rw" | grep -q 'safe_send_keys "$pane_id" "$(build_claude_cmd' && ok "R2-07 fact: restart_worker sends the full command" || no "R2-07 fact: restart_worker does not send the full command"
+lwc=$(_extract_fn launch_worker_claude "$RUN"); lvc=$(_extract_fn launch_verifier_claude "$RUN"); lvx=$(_extract_fn launch_verifier_codex "$RUN"); rw=$(_extract_fn restart_worker "$RUN")
+print -r -- "$lwc" | grep -q 'paste_to_pane "$pane_id" "$worker_launch"' && no "S-8: launch_worker_claude's restart path still pastes the full command" || ok "S-8: launch_worker_claude's restart path no longer pastes the full command"
+print -r -- "$lvc" | grep -q 'paste_to_pane "$pane_id" "$verifier_launch"' && no "S-8: launch_verifier_claude still pastes the full command" || ok "S-8: launch_verifier_claude no longer pastes the full command"
+print -r -- "$lvx" | grep -q 'paste_to_pane "$pane_id" "$verifier_launch"' && no "S-8: launch_verifier_codex still pastes the full command" || ok "S-8: launch_verifier_codex no longer pastes the full command"
+print -r -- "$rw" | grep -qE 'safe_send_keys "\$pane_id" "\$\(build_claude_cmd[^)]*\)" worker-restart' && ok "S-8: restart_worker sends the launch through safe_send_keys with the worker-restart launch label" || no "S-8: restart_worker does not pass the worker-restart launch label"
+for _f in lwc lvc lvx; do print -r -- "${(P)_f}" | grep -q '_paste_cmd_echo_verified' && ok "S-8: $_f goes through _paste_cmd_echo_verified" || no "S-8: $_f does not use _paste_cmd_echo_verified"; done
+
+# R1-04: the launcher name must stay unique for MORE than 200 launches with one label in one iteration
+# (the whole sequential final verify runs in a single ITERATION and every verifier launch uses label
+# `verifier`); no linear probe from -2 each time, no cap.
+rt=$(newrt); RUNTIME_DIR="$rt"; ERRLOG="$TMPD/r104.err"; : > "$ERRLOG"
+sleep() { :; }
+paste_to_pane() { _LASTP="$2"; }
+tmux() { case "$1" in capture-pane) print -r -- "user@host ~ % $_LASTP";; esac; return 0; }
+_bad=0; _t0=$SECONDS
+for (( _n = 1; _n <= 260; _n++ )); do _paste_cmd_echo_verified "%9" "$CMD" "" verifier || (( _bad++ )); done
+unfunction sleep paste_to_pane tmux
+_nfiles=$(ls "$rt" | wc -l | tr -d ' ')
+{ (( _bad == 0 && _nfiles == 260 )); } \
+  && ok "R1-04: 260 launches with one label in one iteration all succeed, 260 distinct launchers ($(( SECONDS - _t0 ))s)" \
+  || no "R1-04: failures=$_bad launchers=$_nfiles err=$(tail -1 "$ERRLOG")"
+[[ -f "$rt/launch-verifier-iter001.zsh" && "$(_mode "$rt/launch-verifier-iter001.zsh")" == 600 ]] \
+  && ok "R1-04: the first launcher keeps the plain launch-<label>-iterNNN.zsh name, mode 0600" || no "R1-04: first launcher name/mode changed"
+
+# A-C2-03 / R2-04: a launcher that was CREATED but could not be WRITTEN (ulimit -f 0, ENOSPC, EIO) is not a
+# collision: no endless loop of empty launchers, the half-made file is removed, rc 1 with a loud error.
+_extract_fn _paste_cmd_echo_verified "$RUN" > "$TMPD/fn.zsh"
+rt=$(newrt)
+# the child reports on stdout only: under ulimit -f 0 it cannot write any regular file itself
+cat > "$TMPD/wfail.zsh" <<WF
+log(){ :; }; log_debug(){ :; }; log_error(){ print -r -- "ERR \$*"; }
+_wait_pane_shell_ready(){ return 0; }
+paste_to_pane(){ print -r -- "PASTE \$2"; }
+tmux(){ return 0; }
+sleep(){ :; }
+source "$TMPD/fn.zsh"
+RUNTIME_DIR="$rt"; ITERATION=1
+trap "" XFSZ
+ulimit -f 0
+_paste_cmd_echo_verified "%9" "$CMD" "" verifier; print "RC=\$?"
+WF
+wout=$(perl -e 'alarm 20; exec @ARGV' /bin/zsh -f "$TMPD/wfail.zsh" 2>&1); _wrc=$?
+_left=$(ls "$rt" | wc -l | tr -d ' ')
+{ [[ "$wout" == *"RC=1"* ]] && (( _wrc == 0 )); } \
+  && ok "R2-04: write failure under ulimit -f 0 -> rc 1 promptly (no endless loop)" \
+  || no "R2-04: out='${wout:0:200}' shell-rc=$_wrc (142 = killed by the 20 s alarm)"
+{ (( _left == 0 )); } && ok "R2-04: no leftover empty launcher files" || no "R2-04: $_left leftover launcher file(s)"
+[[ "$wout" != *PASTE* ]] && ok "R2-04: nothing pasted after the failed launcher write" || no "R2-04: pasted after a failed write"
+[[ "$wout" == *"ERR   launch launcher: could not write"* ]] && ok "R2-04: loud log_error" || no "R2-04: no log_error: ${wout:0:200}"
 
 print ""
 print "f1_launcher_and_echo: PASS=$PASS FAIL=$FAIL"

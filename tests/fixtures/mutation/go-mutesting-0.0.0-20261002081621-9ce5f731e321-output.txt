@@ -1,0 +1,47 @@
+PASS "/FIXTURE_TMP/go-mutesting-N/age.go.0" with checksum 7d7e8ff5a1fda15393ac0d84f066e722
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PASS "/FIXTURE_TMP/go-mutesting-N/age.go.1" with checksum 2734779ff6369ee4ad306983805de737
+------------------------------------------------------------------------------------------------------------------------------------------------------
+--- Original
++++ New
+@@ -3,7 +3,7 @@
+ func Add(a, b int) int { return a + b }
+ 
+ func IsAdult(age int) bool {
+-	if age >= 18 {
++	if age > 18 {
+ 		return true
+ 	}
+ 	return false
+
+FAIL "/FIXTURE_TMP/go-mutesting-N/age.go.2" with checksum a3dab401eb74b9e126e647d8a282075e
+------------------------------------------------------------------------------------------------------------------------------------------------------
+--- Original
++++ New
+@@ -3,7 +3,7 @@
+ func Add(a, b int) int { return a + b }
+ 
+ func IsAdult(age int) bool {
+-	if age >= 18 {
++	if age >= 17 {
+ 		return true
+ 	}
+ 	return false
+
+FAIL "/FIXTURE_TMP/go-mutesting-N/age.go.3" with checksum a5f3e2e3e92147b57fe5a29410863e06
+------------------------------------------------------------------------------------------------------------------------------------------------------
+--- Original
++++ New
+@@ -3,7 +3,7 @@
+ func Add(a, b int) int { return a + b }
+ 
+ func IsAdult(age int) bool {
+-	if age >= 18 {
++	if age >= 19 {
+ 		return true
+ 	}
+ 	return false
+
+FAIL "/FIXTURE_TMP/go-mutesting-N/age.go.4" with checksum 8a0a11e91ed95a511b91d4ef28719b3e
+------------------------------------------------------------------------------------------------------------------------------------------------------
+The mutation score is 0.400000 (2 passed, 3 failed, 0 duplicated, 0 skipped, total is 5)

@@ -295,7 +295,7 @@ assert_one "$LOOP" '^[[:space:]]*blockedReason,$' \
 # and confirm it renders. Uses node --input-type=module to avoid a tmp .mjs.
 report_out=$(node --input-type=module -e "
 import { generateCampaignReport } from './src/node/reporting/campaign-reporting.mjs';
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 const tmp = await mkdtemp(path.join(tmpdir(), 'us013-report-'));
@@ -314,6 +314,7 @@ await generateCampaignReport({
   blockedReason: 'verifier-blocked: AC3 unsatisfiable',
 });
 const txt = await readFile(reportFile, 'utf8');
+await rm(tmp, { recursive: true, force: true });
 process.stdout.write(txt.includes('Blocked reason: verifier-blocked: AC3 unsatisfiable') ? 'OK' : 'MISSING');
 " 2>&1)
 if [[ "$report_out" == "OK" ]]; then
@@ -395,7 +396,7 @@ write_blocked_sentinel 'verifier-blocked: AC3 unsatisfiable'
 got_first=$(head -1 "$TMP_SENT")
 got_us=$(head -1 "$TMP_SENT" | awk '{print $2}')
 got_reason=$(grep -m1 '^Reason:' "$TMP_SENT" | sed 's/^Reason: //')
-rm -f "$TMP_SENT"
+rm -f "$TMP_SENT" "$TMP_SENT.json"
 if [[ "$got_first" == "BLOCKED: US-042" && "$got_us" == "US-042" && "$got_reason" == "verifier-blocked: AC3 unsatisfiable" ]]; then
   pass "AC19-c: wrapper parsing (head -1, awk \$2, grep ^Reason:) succeeds on zsh sentinel"
 else
@@ -412,7 +413,7 @@ atomic_write() { cat > \"\$1\"; }
 write_blocked_sentinel 'API unavailable after 5 retries'
 "
 got_us2=$(head -1 "$TMP_SENT2" | awk '{print $2}')
-rm -f "$TMP_SENT2"
+rm -f "$TMP_SENT2" "$TMP_SENT2.json"
 if [[ "$got_us2" == "ALL" ]]; then
   pass "AC19-d: CURRENT_US-less call falls back to 'BLOCKED: ALL'"
 else

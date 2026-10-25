@@ -45,9 +45,61 @@
 #     on the path is inside a _sigsafe_sh child script).
 # A construct of one of these kinds appearing on the signal path would have to be added to the self-test (and handled) first.
 #
+# Cleanup when this test is killed from OUTSIDE (Q-01): no leader, no tmux server it created and no temp byte may survive (bound ~15 s; asserted per kill mode by
+# tests/test_signal_deadlock_external_kill.zsh: TERM, INT, HUP, closed stdout, SIGKILL of the test, SIGKILL of its process group, orphaned leaders, normal exit).
+# Two halves (the in-process traps and the reaper; code and rationale next to `_final_cleanup` and `_REAPER_PL` below):
+#   - HUP/INT/TERM traps end the test with 128+signo. With the reaper up the handler does nothing else (it must not fork, and a raw `kill -9 <pid>` could hit a
+#     recycled pid); the reaper does the cleanup. SIGPIPE is deliberately left at its default action (status 141): see the note at the traps.
+#   - SIGKILL runs no trap, so ONE reaper (perl, started before any leader, own process group, signals ignored, stdio on /dev/null) outlives the test, waits for it to
+#     be gone, then stops and kills the trial subshells and leaders that REGISTERED themselves (`$TMP/subs`, `$TMP/pids`: "<pid> <own clock>", written before
+#     exec) and their descendants, kills the tmux servers of the run (labels are recorded BEFORE the server is created) and removes $TMP. It signals only what it
+#     can prove is ours (registration time against process start time, then ancestry in the same `ps` snapshot): a command line that merely mentions $TMP or this
+#     script authorises nothing. It is a child of the test, never of a leader, so the hang classifier below (which counts the leader's children) cannot see it.
+# LIMITS: without perl the reaper is absent (one loud stderr line) and only the traps and the normal exit clean up; the handler then execs a fresh zsh
+# of this file (`--degraded-cleanup`) that signals a recorded pid only after checking its start time against its registration time, and kills each leader once, so a
+# child it forked at that instant can orphan; descendants are not hunted. The reaper itself being
+# SIGKILLed, or the whole machine/session going away with it, is not covered; a SIGKILL in the first tens of milliseconds, before the reaper is ready, leaves only the
+# empty $TMP (no process exists yet); a closed stdout pipe is noticed at the next stdout write, which is between modes and at the end unless C01_PROGRESS is set;
+# a leader's descendants are found only while the leader is alive (an exec'd child that outlives its killed parent, e.g. an old tmux client or sleep, is short-lived
+# and left to finish). Pane life (B-C2-04) does not exist in this design. $TMP honours $TMPDIR (macOS `mktemp -d` alone does not). Verified on macOS only (BSD
+# `ps -axww -o pid=,ppid=,stat=,etime=,command=`, lsof); not on Linux.
+# Leaders are exec'd through a perl that unblocks INT/TERM/HUP in the signal mask (a long-lived zsh driver can leak a BLOCKED INT mask to every fork, and zsh keeps an inherited mask,
+# so the leader's INT trap would never fire in a builtin loop: backlog item 2); without perl it is a plain exec and the INT-mask check is skipped. C01_UNBLOCK=0 disables the reset.
+# C01_KEEP_TMP=1 keeps $TMP for debugging (the reaper still kills processes and servers but leaves the directory).
+#
 # Knobs: C01_TRIALS_STRESS / C01_TRIALS_STRESSLOG / C01_TRIALS_STRESSDEBUG (default 40/12/12),
-#        C01_PAR (default 12), C01_BUDGET_S (exit budget per trial, default 10), C01_MAX_HANGS (default 2).
+#        C01_PAR (default 12), C01_BUDGET_S (exit budget per trial, default 10), C01_MAX_HANGS (default 2),
+#        C01_PROGRESS (non-empty: print one "." per trial started; default off).
 set -uo pipefail
+SELF="${0:A}"; ARGV0="$0"   # ARGV0: the script path as invoked, i.e. what appears in the test's own `ps` command line
+
+# Degraded cleanup (no perl, so no reaper): the signal handler execs a fresh clean zsh of this file in this mode, and the EXIT trap runs it as a child. It runs in
+# normal context, so it may fork `ps`: a recorded pid is signalled only if the live process with that pid started no later than its registration time + 2 s
+# (a recycled pid starts after the registrant died) AND its command line (same `ps` call) names this run: a leader (pids/) must run `$TMP/harness.zsh` or still
+# carry the test's own command line (between fork and exec it is a forked copy of the test), a trial subshell (subs/) must carry the test's own command line
+# (ARGV0, the path as invoked). Then the tmux servers of the run are ended, their socket files and $TMP removed. Descendants of a killed leader are not hunted (no
+# reaper): a child it was forking at that instant can orphan. Usage: --degraded-cleanup <TMP> <exit status> <script path as invoked>
+if [[ "${1:-}" == --degraded-cleanup ]]; then
+  TMP="${2:-}"; zmodload zsh/datetime
+  [[ "$TMP" == /*/rlpc01.* ]] || exit "${3:-0}"
+  _secs() { local e="${1// /}" d=0 s=0 x; [[ "$e" == *-* ]] && { d=${e%%-*}; e=${e#*-}; }; for x in ${(s.:.)e}; do s=$(( s * 60 + 10#$x )); done; print -r -- $(( d * 86400 + s )); }
+  for f in "$TMP"/subs/*(N) "$TMP"/pids/*(N); do   # subshells first: they would spawn new leaders
+    read -r p reg < "$f" 2>/dev/null || continue
+    [[ "$p" == <2-> && "$reg" == <-> ]] || continue
+    line=$(ps -o etime= -o command= -p "$p" 2>/dev/null); [[ -n "$line" ]] || continue
+    read -r et cmd <<< "$line"   # ps pads etime (procps ~11 columns, BSD right-aligned); `read` splits without needing EXTENDED_GLOB, which a bare ${x## #} does
+    (( EPOCHSECONDS - $(_secs "$et") <= reg + 2 )) || continue
+    if [[ "${f:h:t}" == pids ]]; then [[ "$cmd" == *"$TMP/harness.zsh"* || ( -n "${4:-}" && "$cmd" == *"$4"* ) ]] || continue
+    else [[ -n "${4:-}" && "$cmd" == *"$4"* ]] || continue; fi
+    kill -9 "$p" 2>/dev/null
+  done
+  for f in "$TMP"/labels/*(N); do
+    l=$(<"$f"); [[ "$l" == rlpc01_* ]] || continue
+    tmux -L "$l" kill-server >/dev/null 2>&1; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$UID/$l"
+  done
+  [[ -n "${C01_KEEP_TMP:-}" ]] && print -u2 "kept: $TMP" || rm -rf "$TMP"
+  exit "${3:-0}"
+fi
 
 SCRIPT_DIR="${0:A:h}"
 ROOT_DIR="${SCRIPT_DIR:h}"
@@ -73,21 +125,160 @@ ok(){ PASS=$((PASS+1)); print "  PASS $1"; }
 no(){ FAIL=$((FAIL+1)); print -u2 "  FAIL $1"; }
 
 HAVE_TMUX=0; command -v tmux >/dev/null 2>&1 && HAVE_TMUX=1
-TMP=$(mktemp -d)
-mkdir -p "$TMP/res" "$TMP/pids" "$TMP/labels"
-_final_cleanup() {
-  local f p l
-  for f in "$TMP"/pids/*(N); do
-    p=$(<"$f"); [[ -n "$p" ]] || continue
-    for c in $(pgrep -P "$p" 2>/dev/null); do kill -9 "$c" 2>/dev/null; done
-    kill -9 "$p" 2>/dev/null
-  done
-  for f in "$TMP"/labels/*(N); do
-    l=$(<"$f"); [[ -n "$l" ]] && tmux -L "$l" kill-server 2>/dev/null
-  done
-  [[ -n "${C01_KEEP_TMP:-}" ]] && print -u2 "kept: $TMP" || rm -rf "$TMP"
+TMP=$(mktemp -d "${${TMPDIR:-/tmp}%/}/rlpc01.XXXXXX") || { print -u2 "FAIL: cannot create a temp dir under ${TMPDIR:-/tmp}"; exit 1; }   # macOS bare `mktemp -d` ignores $TMPDIR
+[[ "$TMP" == /* ]] || TMP="$PWD/$TMP"
+mkdir -p "$TMP/res" "$TMP/pids" "$TMP/labels" "$TMP/subs"
+MAIN_PID=$$
+
+# --- Q-01 cleanup, in-process half: signal traps + EXIT (the out-of-group reaper below is the half that survives SIGKILL) ---
+# zsh runs a trap synchronously inside the signal handler (see the C-01 root cause above): a signal that interrupted a stdio write leaves the handler holding that
+# lock, and a fork with fd redirection or a pipe made from there ($(...), `cmd 2>/dev/null`) deadlocks in the child. So with the reaper up (the normal case) the
+# HUP/INT/TERM handler does NOTHING but end the process with 128+n: every signal sent to a pid is authorised by an identity check (registration time against the
+# process start time, see the reaper), which needs `ps`, i.e. a fork. Without perl (degraded, loud warning at start) the handler execs a fresh clean zsh of this
+# file in `--degraded-cleanup` mode (top of the file): no fork happens in the handler, and the identity check runs in normal context.
+_reaper_up() { [[ -s "$TMP/reaper.ready" ]]; }
+_final_cleanup() {   # EXIT trap (normal context)
+  local f l; local -a lbls live
+  if _reaper_up; then
+    live=("$TMP"/subs/*(N) "$TMP"/pids/*(N))
+    (( ${#live} )) && return 0   # a trial is still registered (abnormal exit): leave records, servers and $TMP to the reaper, which stops and kills the tree
+  else
+    command zsh -f "$SELF" --degraded-cleanup "$TMP" 0 "$ARGV0"   # no reaper: the same identity-checked cleanup the degraded handler uses
+    return 0
+  fi
+  lbls=(); for f in "$TMP"/labels/*(N); do l=$(<"$f"); [[ -n "$l" ]] && lbls+=("$l"); done
+  # tmux 3.8 leaves the socket FILE behind after kill-server or after a server exits by itself (B-H2-03): remove it too
+  (( ${#lbls} )) && command zsh -fc 'for l; do tmux -L "$l" kill-server >/dev/null 2>&1; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$UID/$l"; done' zsh "${lbls[@]}"
+  [[ -n "${C01_KEEP_TMP:-}" ]] && print -u2 "kept: $TMP" || command rm -rf "$TMP"
 }
+_on_kill() {   # <signal number>: HUP INT TERM end the test with 128+n
+  (( ${sysparams[pid]} == MAIN_PID )) || exit $(( 128 + $1 ))   # a forked trial subshell may inherit this trap: it only dies, the main process cleans up
+  trap - EXIT HUP INT TERM                                       # a second signal during the cleanup kills at once; the reaper finishes the job
+  _reaper_up || exec zsh -f "$SELF" --degraded-cleanup "$TMP" $(( 128 + $1 )) "$ARGV0"   # no fork in the handler: a fresh zsh does the identity-checked cleanup
+  exit $(( 128 + $1 ))
+}
+# SIGPIPE (closed stdout) is deliberately NOT trapped: the write that raises it holds the stdio lock; the default action ends the process at once (status 141)
+# and the reaper does the cleanup.
 trap '_final_cleanup' EXIT
+trap '_on_kill 1' HUP
+trap '_on_kill 2' INT
+trap '_on_kill 15' TERM
+
+# --- Q-01 cleanup, out-of-group half: the reaper. SIGKILL (of the test, or of its whole process group as the npm runner's `kill 9,-$p` does) runs no trap,
+# so one helper process outlives it. It is a direct child of THIS shell (never of a leader: the hang classifier counts the leader's children), starts its own
+# process group, ignores HUP/INT/TERM/PIPE, has stdio on /dev/null, and polls until this process is gone (a zombie counts as gone: getppid changes at exit).
+# OWNERSHIP RULE: a signal is sent only to (a) a REGISTERED process: a trial subshell or leader that wrote "<pid> <its own clock>" into $TMP/subs or $TMP/pids
+# before doing anything else, and whose start time (now - etime from `ps`) is not later than that registration time (+2 s of ps resolution), so a recycled
+# pid, which starts after the registrant died, is rejected; leaders must also run `$TMP/harness.zsh`, subshells must carry the test's own exact command line;
+# (b) a descendant of such a verified process in the same `ps` snapshot. A command line that merely mentions $TMP or the script name authorises nothing.
+# Targets are SIGSTOPped until the set stops growing (a stopped process cannot fork), re-verified in a fresh snapshot, and only then SIGKILLed; a pid that fails
+# re-verification is SIGCONTed instead. tmux servers are ended by recorded label (`tmux -L <label> kill-server`), by `rlpc01_<testpid>_*` socket name, and, for an
+# unlinked socket, by an open socket path through lsof; socket files are unlinked; then $TMP is removed. It repeats until a round finds nothing; after a normal
+# exit it finds nothing and ends at once.
+read -r -d '' _REAPER_PL <<'PERL'
+use strict; use warnings; use File::Path qw(remove_tree);
+my ($tpid, $tmp, $keep) = @ARGV; $keep = '' unless defined $keep;
+exit 2 unless defined $tmp && $tpid =~ /^[1-9][0-9]*$/ && $tmp =~ m{^/(?:[^/\0]+/)*rlpc01\.[A-Za-z0-9]+$};
+$SIG{$_} = 'IGNORE' for qw(HUP INT TERM PIPE QUIT);
+setpgrp(0, 0);
+open(STDIN, '<', '/dev/null'); open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null');
+my $direct = (getppid() == $tpid) ? 1 : 0;
+my $tag = "rlpc01_${tpid}_";
+my $sockdir = ($ENV{TMUX_TMPDIR} || '/tmp') . '/tmux-' . $<;
+sub slurp { my ($f) = @_; open(my $fh, '<', $f) or return ''; my $l = <$fh>; close $fh; $l = '' unless defined $l; $l =~ s/\s+//g; $l }
+sub files { my ($d) = @_; opendir(my $dh, $d) or return (); my @f = map { "$d/$_" } grep { !/^\./ } readdir $dh; closedir $dh; @f }
+sub secs { my ($e) = @_; my $d = 0; $d = $1 * 86400, $e = $2 if $e =~ /^(\d+)-(.*)$/; my $s = 0; $s = $s * 60 + $_ for split /:/, $e; $d + $s }
+sub ptable {   # pid => [ppid, stat, command, start-time-in-epoch-seconds (now - etime)]
+  my %t; my $now = time;
+  open(my $ph, '-|', 'ps', '-axww', '-o', 'pid=', '-o', 'ppid=', '-o', 'stat=', '-o', 'etime=', '-o', 'command=') or return %t;
+  while (my $l = <$ph>) { chomp $l; next unless $l =~ /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/; my ($p, $pp, $st, $et, $cm) = ($1, $2, $3, $4, $5); $t{$p} = [$pp, $st, $cm, $now - secs($et)] }
+  close $ph; %t;
+}
+my %t0 = ptable(); my $tcmd = $t0{$tpid} ? $t0{$tpid}[2] : undef;   # the test's own command line: its forked subshells carry the same one
+sub gone {
+  return 1 if $direct && getppid() != $tpid;
+  return 1 unless kill 0, $tpid;
+  return 0 if $direct;
+  my $s = `ps -o stat= -p $tpid 2>/dev/null`; return $s =~ /^\s*Z/ ? 1 : 0;
+}
+if (open(my $fh, '>', "$tmp/reaper.ready.$$")) { print $fh "$$\n"; close $fh; rename("$tmp/reaper.ready.$$", "$tmp/reaper.ready") }
+sub marked {   # pids we own in snapshot $t: verified registered roots and, by ppid in the same snapshot, all their descendants
+  my ($t) = @_; my %mark;
+  for my $d ('subs', 'pids') {
+    for my $f (files("$tmp/$d")) {
+      open(my $fh, '<', $f) or next; my $l = <$fh>; close $fh;
+      next unless defined $l && $l =~ /^([1-9][0-9]*) ([0-9]+)\s*$/;
+      my ($p, $reg) = ($1, $2);
+      my $e = $t->{$p};
+      next unless $e && $p > 1 && $p != $$ && $p != $tpid && $e->[3] <= $reg + 2 && $e->[1] !~ /^Z/;
+      next unless $d eq 'pids' ? index($e->[2], "$tmp/harness.zsh") >= 0 : (defined $tcmd && $e->[2] eq $tcmd);
+      $mark{$p} = 1;
+    }
+  }
+  for (my $grew = 1; $grew;) {
+    $grew = 0;
+    for my $p (keys %$t) { next if $mark{$p} || $p <= 1 || $p == $$ || $p == $tpid; if ($mark{$t->{$p}[0]}) { $mark{$p} = 1; $grew = 1 } }
+  }
+  %mark;
+}
+sub reap {
+  my ($n, %stopped) = (0);
+  # SIGSTOP until the owned set stops growing, then SIGKILL: a stopped process cannot fork, so a child born while we were looking is found by the next snapshot
+  # instead of escaping as an orphan of a killed parent (B-H2-04). A pid is recorded as stopped only if the STOP was delivered, together with the start time the
+  # snapshot showed for it. Every later signal to that pid (CONT or KILL) is sent only while a fresh snapshot still shows the SAME start time: if the process died
+  # and the pid was recycled, the replacement gets nothing (A-C1-02). The STOP itself rests on the snapshot taken a few milliseconds earlier.
+  my $same = sub { my ($t, $p) = @_; $t->{$p} && abs($t->{$p}[3] - $stopped{$p}[1]) <= 2 };
+  for (1 .. 8) {
+    my %t = ptable(); my %mark = marked(\%t);
+    for my $p (keys %stopped) {
+      my $s = $same->(\%t, $p);
+      next if $s && $mark{$p};            # still ours and still stopped
+      kill 'CONT', $p if $s;              # the same process, but no longer in the owned set: release it
+      delete $stopped{$p};                # a replacement under the same pid gets no signal (and is picked up again below if it is owned)
+    }
+    my @new = grep { !$stopped{$_} && $t{$_}[1] !~ /^Z/ } keys %mark;
+    last unless @new;
+    for my $p (@new) { $stopped{$p} = [time, $t{$p}[3]] if kill 'STOP', $p }
+    select(undef, undef, undef, 0.05);
+  }
+  my %t = ptable(); my %mark = marked(\%t);   # final re-verification right before the kill
+  for my $p (sort { $a <=> $b } keys %stopped) {
+    next unless $same->(\%t, $p);             # not the process we stopped: no signal at all
+    if ($mark{$p}) { $n++ if kill 9, $p } else { kill 'CONT', $p }
+  }
+  my %lbl;
+  for my $f (files("$tmp/labels")) { my $l = slurp($f); $lbl{$l} = 1 if $l =~ /^rlpc01_[0-9]+_[A-Za-z]+_[0-9]+$/ }
+  for my $f (files($sockdir)) { my ($b) = $f =~ m{([^/]+)$}; $lbl{$b} = 1 if index($b, $tag) == 0 && $b =~ /^rlpc01_[0-9]+_[A-Za-z]+_[0-9]+$/ }
+  for my $l (sort keys %lbl) { $n++ if system('tmux', '-L', $l, 'kill-server') == 0; unlink("$sockdir/$l") if -S "$sockdir/$l" }
+  my %t2 = ptable();
+  for my $p (keys %t2) {
+    next unless $t2{$p}[2] =~ m{^(?:\S*/)?tmux(?:\s|:|$)} && $t2{$p}[1] !~ /^Z/;   # candidates for lsof only; the kill is authorised by the open socket path below
+    open(my $lh, '-|', 'lsof', '-a', '-p', $p, '-U', '-Fn') or next;
+    my $hit = 0;
+    while (my $l = <$lh>) { chomp $l; next unless $l =~ s/^n//; $hit = 1 if index($l, "/$tag") >= 0 || grep { index($l, "/$_") >= 0 } keys %lbl }
+    close $lh;
+    $n++ if $hit && kill 9, $p;
+  }
+  if (-e $tmp && $keep eq '') { remove_tree($tmp); $n++ unless -e $tmp }
+  $n;
+}
+until (gone()) { select(undef, undef, undef, 0.25) }
+for (1 .. 8) { last unless reap(); select(undef, undef, undef, 0.3) }
+exit 0;
+PERL
+# Leader launch hardening (backlog item 2, .omc/artifacts/backlog-2026-10-25/w2-item2.md): a long-lived zsh driver can end up with SIGINT BLOCKED in its signal
+# mask, every fork inherits it, zsh keeps the inherited mask, so the leader's INT trap is armed but INT is never delivered while it runs a builtin-only loop (a
+# spurious INT "deadlock"). With perl the leader is exec'd through a mask-resetting perl (same pid, so the recorded pid, the hang classifier and the reaper still see
+# the leader); without perl it is a plain exec. C01_UNBLOCK=0 turns the reset off (used to show the INT-mask check below fails without it).
+typeset -a _LEADER_PRE=() _PRE_BLOCK=()
+if command -v perl >/dev/null 2>&1; then
+  [[ "${C01_UNBLOCK:-1}" == 0 ]] || _LEADER_PRE=(perl -MPOSIX -e 'sigprocmask(SIG_UNBLOCK, POSIX::SigSet->new(SIGINT, SIGTERM, SIGHUP)); exec @ARGV or die "exec: $!"')
+  perl -e "$_REAPER_PL" -- $$ "$TMP" "${C01_KEEP_TMP:+keep}" </dev/null >/dev/null 2>&1 &!   # &! = background AND disown: the trial loop's `wait` and job counts must not see it
+  for (( _i = 0; _i < 300; _i++ )); do [[ -s "$TMP/reaper.ready" ]] && break; sleep 0.05; done
+  [[ -s "$TMP/reaper.ready" ]] || print -u2 "WARNING: the Q-01 reaper did not start within 15 s: cleanup after SIGKILL of this test is NOT covered (traps only)"
+else
+  print -u2 "WARNING: perl not found: Q-01 cleanup after SIGKILL of this test (or of its process group) is degraded to the traps only; HUP/INT/TERM and normal exit are still cleaned"
+fi
 
 # --- Extract the REAL implementation (brace-depth aware; same awk as test_signal_trap.sh) ---
 _extract_fn() {
@@ -194,6 +385,10 @@ chmod +x "$HAR"
 # Writes $TMP/res/<mode>.<id> as space-separated key=value fields.
 _trial() {
   local mode="$1" id="$2" dbg="$3" loop="$4" sig="$5" delay_ms="$6" tzr="${7:-}"
+  # Q-01: register this trial subshell BEFORE anything else, then make sure the main process is still our parent: if it died first, the reaper may already
+  # have read subs/, so stop here instead of spawning a leader nobody will reap.
+  local subpid=${sysparams[pid]}
+  print -r -- "$subpid $EPOCHSECONDS" > "$TMP/subs/$mode.$id"; [[ "${sysparams[ppid]}" == "$MAIN_PID" ]] || return 9
   local T; T=$(mktemp -d "$TMP/trial.XXXXXX") || return 9
   cp -R "$TPL/." "$T/"; mkdir -p "$T/lock.d" "$T/tmp"   # the leader's TMPDIR: anything it leaves there is litter
   local lbl="rlpc01_${$}_${mode}_${id}" sock="" w="" v=""
@@ -209,11 +404,12 @@ _trial() {
   # sig and delay_ms are drawn by the PARENT loop (`_run_mode`): background subshells all inherit the parent's RANDOM state and would
   # repeat one signal and one delay for every trial of a run.
   # env -i is not used on purpose: the real leader inherits the operator environment.
-  ( [[ -n "$sock" ]] && export TMUX="$sock,1,0" || unset TMUX
+  # The leader registers its own pid before exec (no window between fork and the record) and stops if its trial subshell is already gone.
+  ( print -r -- "${sysparams[pid]} $EPOCHSECONDS" > "$TMP/pids/$mode.$id"; [[ "${sysparams[ppid]}" == "$subpid" ]] || exit 1
+    [[ -n "$sock" ]] && export TMUX="$sock,1,0" || unset TMUX
     export TMPDIR="$T/tmp" C01_LIB="$LIB" C01_LIBDIR="${LIB:h}" C01_DEBUG="$dbg" C01_TZ_REFRESH="$tzr" C01_WORKER_PANE="$w" C01_VERIFIER_PANE="$v"
-    exec zsh -f "$HAR" "$T" "$loop" </dev/null >"$T/out" 2>"$T/err" ) &
+    exec "${_PRE_BLOCK[@]}" "${_LEADER_PRE[@]}" zsh -f "$HAR" "$T" "$loop" </dev/null >"$T/out" 2>"$T/err" ) &
   local pid=$!
-  print -r -- "$pid" > "$TMP/pids/$mode.$id"
   local waited=0
   until [[ -f "$T/ready" ]] || ! kill -0 $pid 2>/dev/null; do sleep 0.02; (( ++waited > 500 )) && break; done
   sleep $(( delay_ms / 1000.0 ))                  # 50..950 ms after ready: arbitrary loop phase
@@ -270,6 +466,7 @@ _trial() {
   debug_final=1; (( dbg )) && { grep -q '\[FLOW\] final status=INTERRUPTED' "$L/debug.log" 2>/dev/null || debug_final=0; }
   print -r -- "hang=$hang sig=$sig ec=${ec:-none} exp=${expect[$sig]} cleanups=$cleanups cost_rows=$cost_rows lr_exit=${lr_exit:-none} meta=${meta:-none} report=$report lock_left=$lock_left reg_left=$reg_left panes_left=${panes_left:-0} debug_final=$debug_final tmp_left=$tmp_left lat=$(printf %.1f $lat) $hangnote" > "$TMP/res/$mode.$id"
   if (( HAVE_TMUX )); then tmux -L "$lbl" kill-server 2>/dev/null; [[ -n "$sock" ]] && rm -f "$sock"; fi
+  rm -f "$TMP/pids/$mode.$id" "$TMP/subs/$mode.$id" "$TMP/labels/$mode.$id"   # leader dead and reaped, server killed: drop the records (a recycled pid is never killed later)
   rm -rf "$T"
 }
 
@@ -279,6 +476,7 @@ _run_mode() {   # <mode label> <trials> <debug 0|1> <harness loop stress|stressl
   while (( i < n )); do
     while (( ${#jobstates} >= PAR )); do wait -n 2>/dev/null || sleep 0.05; done
     (( ++i ))
+    [[ -n "${C01_PROGRESS:-}" ]] && print -n .   # progress dot: a stdout write while trials run (the Q-01 closed-pipe scenario needs one)
     sig=${sigs[$(( i % 3 + 1 ))]}; dl=$(( RANDOM % 900 + 50 ))   # drawn HERE, in the parent: round-robin signals, random delay
     _trial "$mode" $i "$dbg" "$loop" "$sig" "$dl" "$tzr" &
   done
@@ -299,6 +497,23 @@ print "  all trials finished in $(printf %.0f $elapsed)s"
 typeset -A EXPECTED_TRIALS=(stress $N_STRESS stresslog $N_STRESSLOG stressdebug $N_STRESSDEBUG stressrefresh $N_STRESSREFRESH)
 _total=0; _hang=0; _bad=0; _hang_kids=0; _hang_nonfloor=0; _hang_unknown=0; typeset -A _hang_sig=() _sig_all=()
 _field() { local k="$1" line="$2" x; for x in ${=line}; do [[ "$x" == "$k="* ]] && { print -r -- "${x#*=}"; return; }; done }
+# INT-mask check (deterministic): one INT trial whose launcher has SIGINT BLOCKED (perl SIG_BLOCK exec in front of the normal launch chain, for this trial only).
+# With the mask-resetting exec the leader must still handle INT (exit 130, cleanup once); without it (C01_UNBLOCK=0) the blocked INT is never delivered and the
+# leader hangs. Needs perl for the blocking wrapper.
+if command -v perl >/dev/null 2>&1; then
+  _PRE_BLOCK=(perl -MPOSIX -e 'sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGINT)); exec @ARGV or die "exec: $!"')
+  _trial intmask 1 0 stress INT 300 "" &
+  wait
+  _PRE_BLOCK=()
+  _mline=$(<"$TMP/res/intmask.1" 2>/dev/null)
+  if [[ "$(_field hang "$_mline")" == 0 && "$(_field ec "$_mline")" == 130 && "$(_field cleanups "$_mline")" == 1 ]]; then
+    ok "INT-mask: a leader whose launcher had SIGINT blocked still handled INT (exit 130, cleanup once)"
+  else
+    no "INT-mask: a leader whose launcher had SIGINT blocked did not handle INT (the INT is never delivered to a leader that inherited the blocked mask): $_mline"
+  fi
+else
+  print "  INT-mask check skipped: no perl (no way to block SIGINT for one trial)"
+fi
 for mode in stress stresslog stressdebug stressrefresh; do
   m_total=0; m_hang=0; m_bad=0
   for f in "$TMP"/res/$mode.*(N); do

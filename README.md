@@ -341,8 +341,8 @@ The brainstorm phase evaluates complexity (US count, file scope, logic, dependen
 RLP Desk has three execution modes, all honoring the same governance protocol. **`--mode tmux` is the canonical, recommended path for any real campaign** (see [ADR-001](docs/plans/adr-001-leader-consolidation.md)).
 
 > **Mode status:**
-> - **`--mode tmux`** (zsh-backed) — **stable / production / canonical.** Full safety net (heartbeat,
->   copy-mode guard, prompt-stall timeout, no-progress detection, model upgrade chain). Use this for
+> - **`--mode tmux`** (zsh-backed) — **stable / production / canonical.** Full safety net (pane-liveness
+>   checks, copy-mode guard, prompt-stall timeout, no-progress detection, model upgrade chain). Use this for
 >   long campaigns and autonomous loops.
 > - **`--mode native`** (the slash-command **default**) — the current Claude Code session is the Leader,
 >   dispatching via `Agent()`. Works anywhere (no tmux), good for short/interactive use, but is a

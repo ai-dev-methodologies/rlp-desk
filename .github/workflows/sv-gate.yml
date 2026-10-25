@@ -152,6 +152,26 @@ jobs:
         continue-on-error: true   # FLIP to blocking after one clean CI cycle (GAP-1)
         run: npm run test:node
 
+      # C-01 / H-R5-01 signal-path tests, run on Linux (backlog 2026-10-25 item 3). Verified in an
+      # ubuntu:24.04 container (zsh 5.9, tmux 3.4, mawk): all seven pass, ~85 s in total. NOTE: the flockfile
+      # deadlock itself is a macOS libc behaviour and does not reproduce on glibc (the stress trials report
+      # 0 hangs even against the pre-fix code), so on Linux these are behavioural + static-analysis checks.
+      # Non-blocking for the first cycle, same rollout rule as test:node above (GAP-1); FLIP to blocking
+      # together with test:node after one clean CI cycle. The parity test runs here too: its K-06
+      # discrimination no longer assumes BSD libc regexec (Linux fix applied; 48/48 in the container).
+      - name: Run signal/trap tests
+        continue-on-error: true   # FLIP to blocking after one clean CI cycle (GAP-1)
+        run: |
+          rc=0
+          for f in tests/test_signal_deadlock.zsh tests/test_signal_deadlock_external_kill.zsh \
+                   tests/test_signal_trap.sh tests/test_ci_signal_trap_hang.sh \
+                   tests/test_init_quarantines_foreign_signal.sh tests/test_iter_signal_key_tolerance.sh \
+                   tests/test_signal_path_report_parity.zsh; do
+            echo "=== $f ==="
+            case "$(head -1 "$f")" in *zsh*) timeout 300 zsh "$f";; *) timeout 300 bash "$f";; esac || rc=1
+          done
+          exit $rc
+
       - name: Upload logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v4

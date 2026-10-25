@@ -957,10 +957,18 @@ if [[ -n "$MODE" ]]; then
   # the normal reset deletes it. Cleanup (.sisyphus/quarantine/) preserves the
   # foreign signal so the operator can recover it; only signals whose us_id is
   # absent from the current PRD are quarantined.
+  # _quarantine_stale_signal lives only in lib_ralph_desk.zsh, so it runs in a subshell that
+  # sources the lib (same pattern as the 3-doc lint at the end of this file): no lib globals
+  # leak into init and no second copy of the function can drift. Best-effort by design: when
+  # the lib is unreachable or the call fails, the signal stays in place and the archive step
+  # below still preserves it under runs/superseded-<ts>/ (security-init-a5 F-07).
   local _r10_signal="$DESK/memos/$SLUG-iter-signal.json"
   local _r10_prd="$DESK/plans/prd-$SLUG.md"
-  if [[ -f "$_r10_signal" ]]; then
-    _quarantine_stale_signal "$_r10_signal" "$_r10_prd" "$DESK" 2>/dev/null || true
+  local _r10_lib="${0:A:h}/lib_ralph_desk.zsh"
+  if [[ -f "$_r10_signal" && -f "$_r10_lib" ]]; then
+    ( source "$_r10_lib" 2>/dev/null
+      log() { :; }; log_error() { :; }; log_warn() { :; }; log_debug() { :; }
+      _quarantine_stale_signal "$_r10_signal" "$_r10_prd" "$DESK" ) || true
   fi
 
   # Archive the runtime memos + the verified ledger (request-m ②: relocate, don't

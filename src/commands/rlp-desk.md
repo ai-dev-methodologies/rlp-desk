@@ -29,6 +29,7 @@ Ask about these items one by one (or in small groups):
    - Note constraints the Worker will encounter (dependencies, build system, existing code style)
    - Present findings: "I explored the codebase and found: [patterns], [constraints], [existing tests]. This informs the US breakdown below."
    - If the project is new/empty, skip this step and note "greenfield project."
+   - If the project contains Spec Kit artifacts (`specs/*/spec.md`), read them as input to the PRD and the ambiguity scorecard; do not copy their acceptance scenarios without making each `Then` quantitative. `node ~/.claude/ralph-desk/node/run.mjs speckit <spec.md> --slug <slug>` prints a deterministic test-spec DRAFT to stdout (TODO methods, `needs_quantification` flags; it rejects an unfilled template and never writes a sealable file name). Use it as a starting point only; it is never sealed as is.
 3. **User Stories** — discrete units with testable acceptance criteria. Propose a breakdown, ask the user to confirm/modify.
    - Apply INVEST criteria: each US must be Independent, Negotiable, Valuable, Estimable, Small, Testable.
    - **Dependency Rule (per-us mode)**:
@@ -164,6 +165,7 @@ After all items are confirmed:
       - Which model tiers underperformed for this project's complexity
       - Specific brainstorm/PRD/test-spec recommendations from prior campaigns
    d. Present findings to user: "Prior campaign analysis found: [patterns]. Recommendations: [suggestions]."
+   (Optional: for run-over-run direction of a slug with several prior runs, run `node ~/.claude/ralph-desk/node/run.mjs trend <slug>` — read-only, deterministic.)
    e. If no prior reports exist, skip and note "No prior campaign data available."
    (governance §8½)
 1. **Ambiguity Gate (IL-2)** — score each AC per governance §1a IL-2 (6 dimensions, 0-12 points).
@@ -180,6 +182,10 @@ After all items are confirmed:
    - "start fresh" → pass `--mode fresh` to init
    - If no PRD exists: standard first-run (no --mode needed)
 5. On approval, offer to run `init`.
+5.5. **Domain rule pack (OPTIONAL — only if the user named a domain, e.g. finance).** Offer it; never apply it on your own. After `init` and before sealing, if the user accepts, run `node ~/.claude/ralph-desk/node/run.mjs rule-pack list`, then `... rule-pack apply <slug> --pack <name>` (idempotent; renders the rules into the test-spec header, so the seal in step 6 covers them). Packs are engineering guidance, not a compliance certification. See `docs/rlp-desk/rule-pack-authoring.md`.
+5.6. **Mutation preflight (only for a CRITICAL US).** Before the test-spec `Mutation Testing Gate` `Tool:` line names a tool, run `node ~/.claude/ralph-desk/node/run.mjs mutation detect` and name only a tool it reports `present` (`--print-snippet` prints the paste-ready lines); if none is present, leave `Tool: N/A` with the owner's approval, because a configured gate that cannot run is a FAIL (`MUT-GATE-UNMET`, governance §1c½).
+5.7. **Visual gate preflight (only for a US with `Type: visual`).** Run `node ~/.claude/ralph-desk/node/run.mjs visual detect`; name a `visual run` command in the test-spec only if it reports `present` (otherwise tell the owner to install Playwright per `docs/rlp-desk/visual-verification-guide.md`: a configured visual gate that cannot run is a FAIL, governance §1d). Record the campaign start sha (`git rev-parse HEAD`, with the baseline images already committed) in the test-spec and use it in the command: `visual run --baseline-ref <sha> --json`.
+5.8. **Fresh-clone re-run (only when a CRITICAL US uses a mutation or visual gate).** Ask the owner whether the gate must be re-run in a fresh `git clone` at the start sha (governance §1c½ Trust boundary): it is required by default for CRITICAL risk; record the answer as `Fresh-clone re-run: required (owner)` or `Fresh-clone re-run: not required (owner)` in the global test-spec `test-spec-<slug>.md`, in its header above the first `## US-` heading, before sealing (the Verifier reads only that file, so the per-US `test-spec-<slug>-US-*.md` copies need no copy). Never write it on the owner's behalf.
 6. **Seal the gate (REQUIRED — gate-receipt binding).** Once `init` has written the PRD and test-spec files (`prd-<slug>.md` + any `prd-<slug>-US-*.md`; `test-spec-<slug>.md` + any `test-spec-<slug>-US-*.md`), run:
    ```
    node ~/.claude/ralph-desk/node/run.mjs gate-receipt <slug> --scorecard "PASS:<n> WARN:<m> REJECT:<k>"
@@ -362,7 +368,7 @@ Legacy `--mode agent` typed against this slash command emits a deprecation notic
 > **Stability tiers:**
 > - `--mode tmux` is the **stable, production** path. The slash command spawns
 >   the Node leader, which spawns `run_ralph_desk.zsh` — the zsh runner has the
->   full safety net (heartbeat, copy-mode guard, prompt-stall, no-progress
+>   full safety net (pane-liveness checks, copy-mode guard, prompt-stall, no-progress
 >   detection, claude model upgrade chain). Recommend this for autonomous
 >   campaigns.
 > - `--mode native` is **for short / interactive campaigns**. Native Agent()
@@ -921,6 +927,7 @@ Data sources:
 - `campaign.jsonl` — per-iteration structured records
 - `metadata.json` — project root, campaign status, timestamps
 - `self-verification-data.json` — campaign-level quality metrics
+- `campaign-v{N}.jsonl` — earlier runs; `node ~/.claude/ralph-desk/node/run.mjs trend [<slug>]` computes run-over-run metrics from them (read-only; `--json`)
 
 ## `resume <slug>`
 
@@ -986,15 +993,17 @@ Run options:
 +-------------------------------------+
 | Leader pane (shell loop)            |
 | - writes prompts to files           |
-| - sends short triggers via send-keys|
+| - sends launcher `source` lines     |
+|   via send-keys (echo-verified)     |
 | - polls iter-signal.json            |
-| - monitors heartbeat files          |
+| - monitors pane liveness            |
 | - writes sentinels                  |
 +------------------+------------------+
 | Worker pane      | Verifier pane    |
-| bash trigger.sh  | bash trigger.sh  |
-| -> claude -p ... | -> claude -p ... |
-| heartbeat writer | heartbeat writer |
+| engine TUI       | engine TUI       |
+| (launcher+source)| (launcher+source)|
+| (no heartbeat    | (no heartbeat    |
+|  writer; inert)  |  writer; inert)  |
 | (fresh context)  | (fresh context)  |
 +------------------+------------------+
 ```

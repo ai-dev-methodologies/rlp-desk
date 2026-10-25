@@ -268,7 +268,7 @@ _k06_same() {   # <fixture> <locale> <candidate block text>: 0 when candidate an
   _k06_run k06-o "$_k06_oracle_blk" "$1" "$2"; _k06_run k06-c "$3" "$1" "$2"
   cmp -s "$TMP/k06-o.out" "$TMP/k06-c.out" && cmp -s "$TMP/k06-o.err" "$TMP/k06-c.err"
 }
-_k06_locs=(C); _l=${${(f)"$(locale -a 2>/dev/null | grep -i 'utf-\{0,1\}8$')"}[1]:-}; [[ -n "$_l" ]] && _k06_locs+=($_l)
+_k06_locs=(C); _ll=(${(f)"$(locale -a 2>/dev/null | grep -i 'utf-\{0,1\}8$')"}); _l=${_ll[1]:-}; [[ -n "$_l" ]] && _k06_locs+=($_l)
 _k06_bad=(); _k06_n=0
 for _loc in $_k06_locs; do
   for _fx in "$_k06d"/*(N); do
@@ -291,7 +291,8 @@ done
 typeset -A _k06_mut; _k06_mut=(); _k06_blind=()
 _k06_mut[stderr-line]=${_k06_cand_blk/'then blocked_reason='/'then print -u2 drift; blocked_reason='}
 _k06_mut[status]="$_k06_cand_blk"$'\nfalse'
-(( ${#_k06_locs} > 1 )) && _k06_mut[regex-error]=${_k06_cand_blk//\] 2>\/dev\/null; then/\]; then}
+# glibc regexec reports invalid UTF-8 as a plain non-match (no stderr); only BSD/macOS libc prints "regex matching error", so the mutation is observable only there
+[[ -n "$(LC_ALL=${_k06_locs[2]:-C} zsh -fc '[[ $1 =~ x ]]' zsh $'a\xffb' 2>&1)" ]] && _k06_mut[regex-error]=${_k06_cand_blk//\] 2>\/dev\/null; then/\]; then}
 for _m in ${(k)_k06_mut}; do
   [[ "${_k06_mut[$_m]}" != "$_k06_cand_blk" ]] || { _k06_blind+=("$_m(mutation not applied)"); continue; }
   _k06_caught=0

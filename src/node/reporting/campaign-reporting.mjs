@@ -112,7 +112,7 @@ function deriveZshDuration(record) {
   return Number(record.duration_worker_s ?? 0) + Number(record.duration_verifier_s ?? 0);
 }
 
-async function readAnalytics(analyticsFile) {
+export async function readAnalytics(analyticsFile) {
   if (!(await exists(analyticsFile))) {
     // Same shape as the populated-file return path below: malformedCount is
     // always a number, never absent, so `analytics.malformedCount` (and the

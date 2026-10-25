@@ -175,7 +175,7 @@ EOF
   if [[ ! -f "$td/memos/test-iter-signal.json" ]] && \
      ls "$td/.sisyphus/quarantine/"iter-signal.*.json >/dev/null 2>&1; then
     grep -q '_quarantine_stale_signal' "$LIB" && \
-      grep -q 'quarantine' "$INIT" && \
+      grep -qE '^[[:space:]]*_quarantine_stale_signal ' "$INIT" && \
       pass "R10: stale US-005 quarantined AND helper in lib AND wired into init (anti-tautology)" || \
       fail "R10: helper or init wiring missing"
   else

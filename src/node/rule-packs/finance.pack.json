@@ -1,0 +1,121 @@
+{
+  "schema": "rlp-desk.rule-pack/1",
+  "name": "finance",
+  "version": "1.0.0",
+  "description": "Engineering guidance for code that stores, moves, or computes money; it is engineering guidance, not a compliance certification, and not legal or PCI advice.",
+  "recommended_for": {
+    "risk": ["HIGH", "CRITICAL"]
+  },
+  "rules": [
+    {
+      "id": "FIN-001",
+      "title": "No binary floating point for money",
+      "severity": "critical",
+      "statement": "Monetary amounts MUST be stored, added, compared and serialized as integer minor units or an arbitrary-precision decimal type; never as IEEE-754 float or double.",
+      "verify": {
+        "method": "test",
+        "how": "A test sums 0.10 + 0.20 through the production money type and asserts exactly 0.30 (30 minor units); the Verifier greps the diff for float, double, Number or parseFloat on money-typed fields and cites file:line for each hit or reports none."
+      }
+    },
+    {
+      "id": "FIN-002",
+      "title": "One explicit rounding mode, tested at the half-unit boundary",
+      "severity": "critical",
+      "statement": "Every operation that can produce a fractional minor unit (percentage, tax, interest, split, currency conversion) MUST round through one named, single-sourced rounding function with a documented mode; no inline rounding calls elsewhere.",
+      "verify": {
+        "method": "test",
+        "how": "A test feeds the exact half-unit input (for example 0.5 minor units and 1.5 minor units) plus one unit above and below it, and asserts the documented mode for each; the Verifier greps the diff for round, floor, ceil and toFixed calls outside the single rounding function and cites each hit."
+      }
+    },
+    {
+      "id": "FIN-003",
+      "title": "Currency travels with the amount",
+      "severity": "critical",
+      "statement": "An amount MUST NOT exist without its currency code (ISO 4217) in any value object, API field, database column or message; arithmetic or comparison across different currencies MUST be rejected, not coerced.",
+      "verify": {
+        "method": "test",
+        "how": "A test adds a USD amount to an EUR amount and asserts a rejection (error or typed failure) with no result value; the Verifier inspects the changed schemas and API types and cites any amount field that has no currency next to it."
+      }
+    },
+    {
+      "id": "FIN-004",
+      "title": "Idempotency key on every money-moving operation",
+      "severity": "critical",
+      "statement": "Every operation that moves or commits money (charge, refund, transfer, payout, posting) MUST accept a caller-supplied idempotency key, and replaying the same key MUST return the original result without a second effect.",
+      "verify": {
+        "method": "test",
+        "how": "A test calls the operation twice with the same idempotency key and asserts one balance or ledger effect and an identical response; a third call with the same key but a different amount asserts a conflict error."
+      }
+    },
+    {
+      "id": "FIN-005",
+      "title": "Ledger postings balance and are atomic",
+      "severity": "critical",
+      "statement": "Every posting set MUST sum to zero per currency (debits equal credits), and a failure part-way through a multi-leg operation MUST leave no partial posting committed.",
+      "verify": {
+        "method": "test",
+        "how": "A test asserts the sum of all legs is zero per currency after a normal operation, then injects a failure on the second leg and asserts that no leg of that operation is visible afterwards."
+      }
+    },
+    {
+      "id": "FIN-006",
+      "title": "Amount validation at the boundary",
+      "severity": "major",
+      "statement": "Inputs that carry an amount MUST be validated where they enter the system: zero, negative (unless the operation defines a sign), NaN or non-numeric, above the documented maximum, and more fractional digits than the currency allows MUST each be rejected with a distinct error.",
+      "verify": {
+        "method": "test",
+        "how": "One negative test per rejected class (0, -1, NaN, maximum plus one minor unit, one digit too many for the currency), each asserting rejection and that no state changed."
+      }
+    },
+    {
+      "id": "FIN-007",
+      "title": "Authorization before any balance mutation",
+      "severity": "critical",
+      "statement": "The caller's authority over the account and the operation MUST be checked before any balance is read for update or changed; a missing or insufficient authorization MUST fail closed.",
+      "verify": {
+        "method": "test",
+        "how": "A negative test calls the operation as an actor without authority over the account and asserts rejection with the balance and ledger unchanged; the Verifier inspects the call path and cites the file:line where authorization runs ahead of the first write."
+      }
+    },
+    {
+      "id": "FIN-008",
+      "title": "Append-only audit trail",
+      "severity": "major",
+      "statement": "Every change to a monetary value MUST append an audit record with actor, UTC timestamp, operation, and before and after values; audit records MUST NOT be updated or deleted by application code.",
+      "verify": {
+        "method": "test",
+        "how": "A test performs one mutation and asserts exactly one new audit record with all five fields; the Verifier greps the diff for update or delete statements against the audit store and cites any hit."
+      }
+    },
+    {
+      "id": "FIN-009",
+      "title": "No card data, credentials or personal data in logs, errors, fixtures or snapshots",
+      "severity": "critical",
+      "statement": "Full card numbers (PAN), card verification codes, credentials, tokens and personal identifiers MUST NOT appear in log lines, error messages, test fixtures, snapshots or committed sample data; display values MUST be masked or tokenized.",
+      "verify": {
+        "method": "test",
+        "how": "A test triggers the failure and success paths with a known marker value in each sensitive field and asserts the marker is absent from captured log output and error text; the Verifier greps the diff and the changed fixtures for 13 to 19 digit runs and cites each hit."
+      }
+    },
+    {
+      "id": "FIN-010",
+      "title": "Explicit time zone and injectable clock for cut-offs and accrual",
+      "severity": "major",
+      "statement": "Any logic that depends on a business date, cut-off time or accrual period MUST use an explicit time zone and an injectable clock, never the ambient system time zone.",
+      "verify": {
+        "method": "test",
+        "how": "Tests inject a fixed clock one unit before, exactly at, and one unit after the cut-off and assert the documented outcome for each; the Verifier greps the diff for direct system-clock calls (Date.now, new Date(), now()) in the cut-off logic and cites each hit."
+      }
+    },
+    {
+      "id": "FIN-011",
+      "title": "Concurrent debits cannot overdraw",
+      "severity": "major",
+      "statement": "Concurrent operations against the same balance MUST NOT produce a negative balance (or exceed a limit) that a serial execution would reject; the check and the update MUST be one atomic step (lock, conditional update or serializable transaction).",
+      "verify": {
+        "method": "test",
+        "how": "A test starts at least 10 concurrent debits whose total exceeds the balance and asserts the final balance is never below zero and the number of accepted debits equals the number the balance can cover."
+      }
+    }
+  ]
+}

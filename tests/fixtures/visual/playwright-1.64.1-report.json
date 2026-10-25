@@ -1,0 +1,253 @@
+{
+  "config": {
+    "argv": [
+      "/opt/homebrew/Cellar/node/26.12.0/bin/node",
+      "/FIXTURE_ROOT/node_modules/.bin/playwright",
+      "test",
+      "--reporter=json"
+    ],
+    "configFile": "/FIXTURE_ROOT/playwright.config.js",
+    "rootDir": "/FIXTURE_ROOT/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/FIXTURE_ROOT/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "/FIXTURE_ROOT/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "filteredProjects": [
+      {
+        "grep": {},
+        "grepInvert": null,
+        "outputDir": "/FIXTURE_ROOT/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "name": "",
+        "testDir": "/FIXTURE_ROOT/tests",
+        "snapshotDir": "/FIXTURE_ROOT/tests",
+        "testIgnore": [],
+        "testMatch": "**/*.@(spec|test).?(c|m)[jt]s?(x)",
+        "timeout": 30000,
+        "use": {
+          "viewport": {
+            "width": 400,
+            "height": 200
+          }
+        },
+        "dependencies": [],
+        "ignoreSnapshots": false,
+        "__projectId": ""
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "default",
+    "updateSourceMethod": "patch",
+    "version": "1.64.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "visual.spec.js",
+      "file": "visual.spec.js",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "plain pass",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 51,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-25T04:37:25.436Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "19ca25ef9cb7f0c9b81c-e80c2d66d1156d7417de",
+          "file": "visual.spec.js",
+          "line": 3,
+          "column": 1
+        },
+        {
+          "title": "screenshot matches",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 145,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-25T04:37:25.557Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "19ca25ef9cb7f0c9b81c-63245d19fb8f763b74cb",
+          "file": "visual.spec.js",
+          "line": 4,
+          "column": 1
+        },
+        {
+          "title": "screenshot differs",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 381,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\n  78860 pixels (ratio 0.99 of all image pixels) are different.\n\n  Snapshot: diff.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(diff.png)\" with timeout 5000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - taking page screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - 78860 pixels (ratio 0.99 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - taking page screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 78860 pixels (ratio 0.99 of all image pixels) are different.\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\n  78860 pixels (ratio 0.99 of all image pixels) are different.\n\n  Snapshot: diff.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(diff.png)\" with timeout 5000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - taking page screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - 78860 pixels (ratio 0.99 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - taking page screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 78860 pixels (ratio 0.99 of all image pixels) are different.\u001b[22m\n\n    at /FIXTURE_ROOT/tests/visual.spec.js:5:124",
+                    "location": {
+                      "file": "/FIXTURE_ROOT/tests/visual.spec.js",
+                      "column": 124,
+                      "line": 5
+                    },
+                    "snippet": "\u001b[0m \u001b[90m 3 |\u001b[39m test(\u001b[32m'plain pass'\u001b[39m\u001b[33m,\u001b[39m \u001b[36masync\u001b[39m ({ page }) \u001b[33m=>\u001b[39m { \u001b[36mawait\u001b[39m page\u001b[33m.\u001b[39msetContent(html(\u001b[32m'#fff'\u001b[39m))\u001b[33m;\u001b[39m \u001b[36mawait\u001b[39m expect(page\u001b[33m.\u001b[39mlocator(\u001b[32m'h1'\u001b[39m))\u001b[33m.\u001b[39mtoHaveText(\u001b[32m'Hello'\u001b[39m)\u001b[33m;\u001b[39m })\u001b[33m;\u001b[39m\n \u001b[90m 4 |\u001b[39m test(\u001b[32m'screenshot matches'\u001b[39m\u001b[33m,\u001b[39m \u001b[36masync\u001b[39m ({ page }) \u001b[33m=>\u001b[39m { \u001b[36mawait\u001b[39m page\u001b[33m.\u001b[39msetContent(html(\u001b[32m'#fff'\u001b[39m))\u001b[33m;\u001b[39m \u001b[36mawait\u001b[39m expect(page)\u001b[33m.\u001b[39mtoHaveScreenshot(\u001b[32m'match.png'\u001b[39m)\u001b[33m;\u001b[39m })\u001b[33m;\u001b[39m\n\u001b[31m\u001b[1m>\u001b[22m\u001b[39m\u001b[90m 5 |\u001b[39m test(\u001b[32m'screenshot differs'\u001b[39m\u001b[33m,\u001b[39m \u001b[36masync\u001b[39m ({ page }) \u001b[33m=>\u001b[39m { \u001b[36mawait\u001b[39m page\u001b[33m.\u001b[39msetContent(html(process\u001b[33m.\u001b[39menv\u001b[33m.\u001b[39m\u001b[33mBG\u001b[39m \u001b[33m||\u001b[39m \u001b[32m'#fff'\u001b[39m))\u001b[33m;\u001b[39m \u001b[36mawait\u001b[39m expect(page)\u001b[33m.\u001b[39mtoHaveScreenshot(\u001b[32m'diff.png'\u001b[39m)\u001b[33m;\u001b[39m })\u001b[33m;\u001b[39m\n \u001b[90m   |\u001b[39m                                                                                                                            \u001b[31m\u001b[1m^\u001b[22m\u001b[39m\n \u001b[90m 6 |\u001b[39m\u001b[0m"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "/FIXTURE_ROOT/tests/visual.spec.js",
+                        "column": 124,
+                        "line": 5
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mpage\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\n  78860 pixels (ratio 0.99 of all image pixels) are different.\n\n  Snapshot: diff.png\n\nCall log:\n\u001b[2m  - Expect \"toHaveScreenshot(diff.png)\" with timeout 5000ms\u001b[22m\n\u001b[2m    - verifying given screenshot expectation\u001b[22m\n\u001b[2m  - taking page screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - 78860 pixels (ratio 0.99 of all image pixels) are different.\u001b[22m\n\u001b[2m  - waiting 100ms before taking screenshot\u001b[22m\n\u001b[2m  - taking page screenshot\u001b[22m\n\u001b[2m    - disabled all CSS animations\u001b[22m\n\u001b[2m  - waiting for fonts to load...\u001b[22m\n\u001b[2m  - fonts loaded\u001b[22m\n\u001b[2m  - captured a stable screenshot\u001b[22m\n\u001b[2m  - 78860 pixels (ratio 0.99 of all image pixels) are different.\u001b[22m\n\n\n  3 | test('plain pass', async ({ page }) => { await page.setContent(html('#fff')); await expect(page.locator('h1')).toHaveText('Hello'); });\n  4 | test('screenshot matches', async ({ page }) => { await page.setContent(html('#fff')); await expect(page).toHaveScreenshot('match.png'); });\n> 5 | test('screenshot differs', async ({ page }) => { await page.setContent(html(process.env.BG || '#fff')); await expect(page).toHaveScreenshot('diff.png'); });\n    |                                                                                                                            ^\n  6 |\n    at /FIXTURE_ROOT/tests/visual.spec.js:5:124"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-25T04:37:25.706Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "diff-expected.png",
+                      "contentType": "image/png",
+                      "path": "/FIXTURE_ROOT/tests/visual.spec.js-snapshots/diff-darwin.png"
+                    },
+                    {
+                      "name": "diff-actual.png",
+                      "contentType": "image/png",
+                      "path": "/FIXTURE_ROOT/test-results/visual-screenshot-differs/diff-actual.png"
+                    },
+                    {
+                      "name": "diff-diff.png",
+                      "contentType": "image/png",
+                      "path": "/FIXTURE_ROOT/test-results/visual-screenshot-differs/diff-diff.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "/FIXTURE_ROOT/test-results/visual-screenshot-differs/error-context.md"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "/FIXTURE_ROOT/tests/visual.spec.js",
+                    "column": 124,
+                    "line": 5
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "19ca25ef9cb7f0c9b81c-8d9ab2a35cf9e7f3ab79",
+          "file": "visual.spec.js",
+          "line": 5,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-25T04:37:25.249Z",
+    "duration": 869.374,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 1,
+    "flaky": 0
+  }
+}

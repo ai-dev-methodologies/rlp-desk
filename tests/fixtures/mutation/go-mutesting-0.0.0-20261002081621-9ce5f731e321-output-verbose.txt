@@ -1,0 +1,65 @@
+Enable mutator "arithmetic/assign_invert"
+Enable mutator "arithmetic/assignment"
+Enable mutator "arithmetic/base"
+Enable mutator "arithmetic/bitwise"
+Enable mutator "branch/case"
+Enable mutator "branch/else"
+Enable mutator "branch/if"
+Enable mutator "expression/comparison"
+Enable mutator "expression/remove"
+Enable mutator "loop/break"
+Enable mutator "loop/condition"
+Enable mutator "loop/range_break"
+Enable mutator "numbers/decrementer"
+Enable mutator "numbers/incrementer"
+Enable mutator "statement/remove"
+Save mutations into "/FIXTURE_TMP/go-mutesting-N"
+Mutate "age.go"
+PASS "/FIXTURE_TMP/go-mutesting-N/age.go.0" with checksum 0ff36e45df066ac4d75b67e2a6ed8bfa
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PASS "/FIXTURE_TMP/go-mutesting-N/age.go.1" with checksum f6a43547e7e7c657f0ed36c5dda159c1
+------------------------------------------------------------------------------------------------------------------------------------------------------
+--- Original
++++ New
+@@ -3,7 +3,7 @@
+ func Add(a, b int) int { return a + b }
+ 
+ func IsAdult(age int) bool {
+-	if age > 18 {
++	if age >= 18 {
+ 		return true
+ 	}
+ 	return false
+
+FAIL "/FIXTURE_TMP/go-mutesting-N/age.go.2" with checksum 49e53b660f4df84f708a4b4e52679be2
+------------------------------------------------------------------------------------------------------------------------------------------------------
+--- Original
++++ New
+@@ -3,7 +3,7 @@
+ func Add(a, b int) int { return a + b }
+ 
+ func IsAdult(age int) bool {
+-	if age > 18 {
++	if age > 17 {
+ 		return true
+ 	}
+ 	return false
+
+FAIL "/FIXTURE_TMP/go-mutesting-N/age.go.3" with checksum 7586c116d050c8fdae5bafb9d0cfc336
+------------------------------------------------------------------------------------------------------------------------------------------------------
+--- Original
++++ New
+@@ -3,7 +3,7 @@
+ func Add(a, b int) int { return a + b }
+ 
+ func IsAdult(age int) bool {
+-	if age > 18 {
++	if age > 19 {
+ 		return true
+ 	}
+ 	return false
+
+FAIL "/FIXTURE_TMP/go-mutesting-N/age.go.4" with checksum 125bde109fa3b5a95489e333c6ed0069
+------------------------------------------------------------------------------------------------------------------------------------------------------
+The mutation score is 0.400000 (2 passed, 3 failed, 0 duplicated, 0 skipped, total is 5)
+Save report into "report.json"

@@ -1,0 +1,2 @@
+    mypkg.age.x_is_adult__mutmut_1: survived
+    mypkg.age.x_is_adult__mutmut_2: survived

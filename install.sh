@@ -120,6 +120,10 @@ fetch "$REPO_URL/docs/rlp-desk/signal-protocol.md" "$DESK_DIR/docs/rlp-desk/sign
 fetch "$REPO_URL/docs/rlp-desk/verification-history.md" "$DESK_DIR/docs/rlp-desk/verification-history.md"
 # 2026-08-10: FMEA atlas — leader specs cite F1.x by name (US-001 F1.19).
 fetch "$REPO_URL/docs/rlp-desk/failure-modes.md" "$DESK_DIR/docs/rlp-desk/failure-modes.md"
+# D2: domain rule pack format + authoring guide.
+fetch "$REPO_URL/docs/rlp-desk/rule-pack-authoring.md" "$DESK_DIR/docs/rlp-desk/rule-pack-authoring.md"
+# D3: visual verification (Playwright wrapper) CI/environment guide.
+fetch "$REPO_URL/docs/rlp-desk/visual-verification-guide.md" "$DESK_DIR/docs/rlp-desk/visual-verification-guide.md"
 # Dev meta docs under docs/rlp-desk/internal/ are NOT fetched: the directory is
 # gitignored (local-only), so its raw URLs 404 and `fetch`'s curl -f would abort
 # the whole install (2026-08-10 dogfood finding — the curl channel was broken

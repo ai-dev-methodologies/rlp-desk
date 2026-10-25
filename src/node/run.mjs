@@ -87,6 +87,11 @@ function buildHelpText() {
     '  logs <slug> [N]              Show iteration log (not implemented in the Node rewrite yet)',
     '  clean <slug> [--kill-session] [--remove-worktree]  Reset for re-run (removes sentinels + runtime/; preserves PRD/prompts/memory)',
     '  resume <slug>                Resume loop (not implemented in the Node rewrite yet)',
+    '  trend [<slug>]               Run-over-run metrics from campaign*.jsonl (read-only; --json, --last N, --out FILE)',
+    '  visual <detect|run>          Project\'s own Playwright: detect it, or run it with a baseline-integrity guard (--baseline-ref; exit 0 pass / 1 fail / 2 cannot judge)',
+    '  speckit <spec.md>            Draft a test-spec skeleton from a Spec Kit spec.md (stdout by default; never writes a sealable name)',
+    '  rule-pack <list|validate|apply>  Domain rule packs: list packs, validate one, or apply one to a slug\'s test-spec (manual, idempotent)',
+    '  mutation <detect|run>        Mutation-testing gate for CRITICAL US: detect mutmut/Stryker/go-mutesting, or run one over --target and score it (exit 0 >= min / 1 below / 2 cannot run)',
     '',
     'Run Options:',
     '  --mode tmux|agent|native       (CLI: tmux=production [default], agent=hard-errors (ADR-001), native=errors with redirect to slash command)',
@@ -1006,6 +1011,16 @@ async function runRunCommand(args, deps) {
   return 0;
 }
 
+// D1/D2: opt-in tool subcommands. Loaded lazily so `run`/`init` cold start is
+// unchanged; each module exports `runCommand(args, deps) -> Promise<number>`.
+const TOOL_MODULES = {
+  trend: './reporting/campaign-trend.mjs',
+  visual: './tools/visual.mjs',
+  speckit: './tools/speckit.mjs',
+  'rule-pack': './tools/rule-pack.mjs',
+  mutation: './tools/mutation.mjs',
+};
+
 export async function main(argv = process.argv.slice(2), overrides = {}) {
   const deps = {
     cwd: overrides.cwd ?? process.cwd(),
@@ -1048,6 +1063,20 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
         return await runStatusCommand(rest, deps);
       case 'clean':
         return await runCleanCommand(rest, deps);
+      case 'visual':
+      case 'speckit':
+      case 'trend':
+      case 'mutation':
+      case 'rule-pack': {
+        const tool = await import(TOOL_MODULES[command]);
+        return await tool.runCommand(rest, {
+          cwd: deps.cwd,
+          env: process.env,
+          stdout: deps.stdout,
+          stderr: deps.stderr,
+          requireCanonicalSlug, // module-private; injected to avoid an import cycle
+        });
+      }
       case 'brainstorm':
       case 'logs':
       case 'resume':

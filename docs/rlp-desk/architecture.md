@@ -74,7 +74,7 @@ Key design decisions:
 
 **Agent() mode** is synchronous and simple: each `Agent()` call blocks until the subprocess finishes, then the Leader reads the filesystem. No polling, no signal files, no tmux.
 
-**Tmux mode** trades dynamic routing for visibility and independence. The shell Leader writes prompts to files, sends short trigger commands via `tmux send-keys`, and polls structured JSON signal files (`iter-signal.json`, `verify-verdict.json`) for control flow. It uses proven tmux patterns — write-then-notify, pane ID stability, copy-mode guards, heartbeat monitoring — for reliable, race-free orchestration.
+**Tmux mode** trades dynamic routing for visibility and independence. The shell Leader writes prompts to files, sends short launcher `source` lines via `tmux send-keys`, and polls structured JSON signal files (`iter-signal.json`, `verify-verdict.json`) for control flow. It uses proven tmux patterns — write-then-notify, pane ID stability, copy-mode guards, pane-liveness checks (`check_dead_pane` / `check_prompt_stall` / `check_no_progress` / `check_and_nudge_idle_pane`; the heartbeat freshness check itself is inert by design, D-7) — for reliable, race-free orchestration.
 
 The tmux script is a second implementation of the governance protocol. Traceability is maintained via governance.md section 7 step-number comments throughout the script.
 
@@ -85,15 +85,17 @@ The tmux script is a second implementation of the governance protocol. Traceabil
 +-------------------------------------+
 | Leader pane (shell loop)            |
 | - writes prompts to files           |
-| - sends short triggers via send-keys|
+| - sends launcher `source` lines     |
+|   via send-keys (echo-verified)     |
 | - polls iter-signal.json via jq     |
-| - monitors heartbeat files          |
+| - monitors pane liveness            |
 | - writes sentinels                  |
 +------------------+------------------+
 | Worker pane      | Verifier pane    |
-| bash trigger.sh  | bash trigger.sh  |
-| -> claude -p ... | -> claude -p ... |
-| heartbeat writer | heartbeat writer |
+| engine TUI       | engine TUI       |
+| (launcher+source)| (launcher+source)|
+| (no heartbeat    | (no heartbeat    |
+|  writer; inert)  |  writer; inert)  |
 | (fresh context)  | (fresh context)  |
 +------------------+------------------+
 ```

@@ -20,7 +20,7 @@ ok(){ PASS=$((PASS+1)); print "  PASS $1"; }
 no(){ FAIL=$((FAIL+1)); print -u2 "  FAIL $1"; }
 
 _extract_fn() { awk -v n="$1" '$0 ~ "^"n"\\(\\) \\{" {p=1} p {print} p && /^}/ {exit}' "$RUN"; }
-TMP_LIB=$(mktemp -t codex-ready.XXXXXX); trap 'rm -f "$TMP_LIB" "$CNT" "$CNT.seen"' EXIT
+TMP_LIB=$(mktemp -t codex-ready.XXXXXX); trap 'rm -f "$TMP_LIB" "$CNT" "$CNT.seen" "$CAP"' EXIT
 { grep -E "^_RLP_CODEX_UPDATE_RE=" "$RUN"
   for f in launch_worker_codex launch_verifier_codex _dismiss_codex_update_prompt _codex_dialog_kind _codex_ready_surface _codex_presubmit_guard; do _extract_fn $f; done; } > "$TMP_LIB"
 for f in launch_worker_codex launch_verifier_codex _dismiss_codex_update_prompt; do
@@ -29,13 +29,15 @@ done
 
 typeset -ga EV ERRS
 CNT=$(mktemp -t codex-ready-cnt.XXXXXX)
-typeset -g STATE=codex_ready DELAY_TARGET="" DELAY_AT=0 NARROW=0
+CAP=$(mktemp -t codex-ready-cap.XXXXXX)   # capture-pane call counter (file: captures run in subshells)
+typeset -g STATE=codex_ready DELAY_TARGET="" DELAY_AT=0 DELAY_CAPS=0 NARROW=0
 sleep() { command sleep 0.01; }
 log() { :; }; log_debug() { :; }; log_error() { ERRS+=("$*"); }
 ITERATION=1
 _paste_cmd_echo_verified() { EV+=("LAUNCH_PASTE"); return 0; }
-_eff() { if [[ -n "$DELAY_TARGET" ]] && (( EPOCHREALTIME >= DELAY_AT )); then print -r -- "$DELAY_TARGET"; else print -r -- "$STATE"; fi; }
-_settle() { if [[ -n "$DELAY_TARGET" ]] && (( EPOCHREALTIME >= DELAY_AT )); then STATE="$DELAY_TARGET"; DELAY_TARGET=""; fi; }
+_due() { [[ -n "$DELAY_TARGET" ]] || return 1; if (( DELAY_CAPS > 0 )); then (( $(<"$CAP") >= DELAY_CAPS )); else (( EPOCHREALTIME >= DELAY_AT )); fi; }   # DELAY_CAPS>0: flip after that many capture-pane calls (load-independent); else wall clock
+_eff() { if _due; then print -r -- "$DELAY_TARGET"; else print -r -- "$STATE"; fi; }
+_settle() { if _due; then STATE="$DELAY_TARGET"; DELAY_TARGET=""; fi; }
 _pcmd() { case "$(_eff)" in shell_echo) print zsh ;; *) print codex ;; esac; }
 paste_to_pane() { _settle; if [[ "$2" == codex-launch-cmd ]]; then EV+=("LAUNCH_PASTE"); else EV+=("PASTE@$STATE"); fi; }
 # NARROW=1: 14-column pane — plain capture-pane soft-wraps (fold), -J returns the joined lines.
@@ -60,6 +62,7 @@ _late_ui() { # after readiness (capture 3+) the pane shows: $1
 tmux() {
   case "$1" in
     capture-pane)
+      print -r -- $(( $(<"$CAP") + 1 )) > "$CAP"
       { case "$(_eff)" in
         late_chat)       _late_ui chat ;;
         late_stucktrust) _late_ui stucktrust ;;
@@ -91,7 +94,7 @@ tmux() {
   return 0
 }
 source "$TMP_LIB"; _DBG=${RLP_DBG:-0}
-_reset() { EV=(); ERRS=(); DELAY_TARGET=""; DELAY_AT=0; NARROW=0; STATE="$1"; }
+_reset() { EV=(); ERRS=(); DELAY_TARGET=""; DELAY_AT=0; DELAY_CAPS=0; NARROW=0; STATE="$1"; print -r -- 0 > "$CAP"; }
 _enters_before_paste() { local e n=0; for e in "${EV[@]}"; do [[ "$e" == PASTE@* ]] && break; [[ "$e" == KEY:Enter ]] && n=$((n+1)); done; print -r -- $n; }
 _first_instr() { local e; for e in "${EV[@]}"; do [[ "$e" == PASTE@* ]] && { print -r -- "$e"; return; }; done; print -r -- none; }
 
@@ -128,7 +131,7 @@ for LF in launch_worker_codex launch_verifier_codex; do
   [[ "${(j:,:)EV}" == *KEY:Enter* && "$(_first_instr)" == PASTE@codex_ready && $rc == 0 ]] \
     && ok "R4b[$LF] codex 0.162 trust prompt (› 1. Trust and continue) accepted before any instruction" || no "R4b[$LF] rc=$rc ev=${(j:,:)EV[1,6]}"
 
-  _reset shell_echo; DELAY_TARGET=late_trust; DELAY_AT=$(( EPOCHREALTIME + 0.4 )); print -r -- 0 > "$CNT"; rm -f "$CNT.seen"
+  _reset shell_echo; DELAY_TARGET=late_trust; DELAY_CAPS=3; print -r -- 0 > "$CNT"; rm -f "$CNT.seen"
   $LF "%t" "/tmp/p.md" 1 "codex-launch-cmd"; rc=$?
   (( _DBG )) && print -u2 "DBG R6 ev=${(j:,:)EV}"
   [[ "$(_first_instr)" == PASTE@codex_ready && "${(j:,:)EV}" == *KEY:Enter*PASTE* && $rc == 0 ]] \
@@ -147,12 +150,12 @@ for LF in launch_worker_codex launch_verifier_codex; do
   $LF "%t" "/tmp/p.md" 1 "codex-launch-cmd"; rc=$?
   [[ $rc == 0 && "$(_first_instr)" == PASTE@wrapecho_ready ]] && ok "RA2[$LF] wrapped echo, codex banner+prompt appears: ready, pasted after" || no "RA2[$LF] rc=$rc first-instr=$(_first_instr)"
 
-  _reset shell_echo; DELAY_TARGET=late_chat; DELAY_AT=$(( EPOCHREALTIME + 0.4 )); print -r -- 0 > "$CNT"; rm -f "$CNT.seen"
+  _reset shell_echo; DELAY_TARGET=late_chat; DELAY_CAPS=3; print -r -- 0 > "$CNT"; rm -f "$CNT.seen"
   $LF "%t" "/tmp/p.md" 1 "codex-launch-cmd"; rc=$?
   _enters=$(_enters_before_paste)
   [[ $rc == 0 && "$(_first_instr)" == PASTE@late_chat && $_enters -le 1 ]] && ok "RB1[$LF] 'Do you trust' quoted in chat is NOT a trust dialog: no Enter sent, instruction pasted (launch Enters: $_enters)" || no "RB1[$LF] rc=$rc enters=$_enters ev=${(j:,:)EV[1,10]}"
   for K in stucktrust update modelerr; do
-    _reset shell_echo; DELAY_TARGET=late_$K; DELAY_AT=$(( EPOCHREALTIME + 0.4 )); print -r -- 0 > "$CNT"; rm -f "$CNT.seen"
+    _reset shell_echo; DELAY_TARGET=late_$K; DELAY_CAPS=3; print -r -- 0 > "$CNT"; rm -f "$CNT.seen"
     $LF "%t" "/tmp/p.md" 1 "codex-launch-cmd"; rc=$?
     [[ $rc != 0 && "$(_first_instr)" == none && ${#ERRS[@]} -ge 1 ]] && ok "RB2[$LF][$K] dialog at the bottom at submit time: NO paste, loud failure (rc=$rc)" || no "RB2[$LF][$K] rc=$rc first-instr=$(_first_instr) errs=${#ERRS[@]} ev=${(j:,:)EV[1,8]}"
   done
@@ -162,7 +165,7 @@ for LF in launch_worker_codex launch_verifier_codex; do
 
   # ---- round 8: a numbered menu is an ACTIVE dialog only when no codex input surface is below it ----
   for K in promo quoted; do
-    _reset shell_echo; DELAY_TARGET=late_$K; DELAY_AT=$(( EPOCHREALTIME + 0.4 )); print -r -- 0 > "$CNT"; rm -f "$CNT.seen"
+    _reset shell_echo; DELAY_TARGET=late_$K; DELAY_CAPS=3; print -r -- 0 > "$CNT"; rm -f "$CNT.seen"
     $LF "%t" "/tmp/p.md" 1 "codex-launch-cmd"; rc=$?
     _enters=$(_enters_before_paste)
     [[ $rc == 0 && "$(_first_instr)" == PASTE@late_$K && $_enters -le 1 ]] && ok "R8a[$LF][$K] menu with codex's input surface BELOW it is non-blocking: no key sent, instruction pasted (rc=$rc, launch Enters=$_enters)" || no "R8a[$LF][$K] rc=$rc enters=$_enters first-instr=$(_first_instr) errs=${(j:|:)ERRS}"

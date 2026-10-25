@@ -73,6 +73,10 @@ function runtimeSources(home) {
     ["docs/rlp-desk/verification-history.md", path.join(docsDir, "rlp-desk", "verification-history.md")],
     // 2026-08-10: FMEA atlas — both leader specs cite F1.x entries by name (US-001 F1.19).
     ["docs/rlp-desk/failure-modes.md", path.join(docsDir, "rlp-desk", "failure-modes.md")],
+    // D2: domain rule pack format + authoring guide (shipped finance pack lives under src/node/rule-packs/).
+    ["docs/rlp-desk/rule-pack-authoring.md", path.join(docsDir, "rlp-desk", "rule-pack-authoring.md")],
+    // D3: visual verification (Playwright wrapper) CI/environment guide.
+    ["docs/rlp-desk/visual-verification-guide.md", path.join(docsDir, "rlp-desk", "visual-verification-guide.md")],
   ];
 }
 
